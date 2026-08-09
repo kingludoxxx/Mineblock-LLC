@@ -10,8 +10,9 @@
 // POST /api/v1/ai-developer/chat   → SSE stream: text deltas, job events,
 //                                    final {reply, ops, jobs}
 // GET  /api/v1/ai-developer/jobs/:id → proxied Higgsfield job status
-import { randomBytes } from 'crypto';
+import { randomBytes, createHmac, timingSafeEqual } from 'crypto';
 import { Router } from 'express';
+import env from '../config/env.js';
 import { pgQuery } from '../db/pg.js';
 import { authenticate } from '../middleware/auth.js';
 import { requirePermission } from '../middleware/rbac.js';
@@ -33,7 +34,7 @@ const MAX_IMAGES = 5; // per request
 const MAX_IMAGE_BYTES = 2 * 1024 * 1024; // decoded bytes per image
 const MAX_TOOL_ROUNDS = 6;
 const MAX_OPS_PER_CALL = 20;
-const CHAT_LIMIT = 20; // requests…
+const CHAT_LIMIT = parseInt(process.env.AI_DEV_CHAT_LIMIT, 10) || 20; // requests…
 const CHAT_WINDOW_SEC = 5 * 60; // …per user per 5 minutes
 
 const isPlainObject = (v) => v != null && typeof v === 'object' && !Array.isArray(v);
@@ -45,6 +46,106 @@ const isPlainObject = (v) => v != null && typeof v === 'object' && !Array.isArra
 // ---------------------------------------------------------------------------
 const OP_TYPES = new Set(['replace_props', 'insert_block', 'remove_block', 'move_block']);
 const genBlockId = () => `blk_ai_${randomBytes(5).toString('hex')}`;
+
+// ---------------------------------------------------------------------------
+// Executable-HTML defense (review MAJOR #1). funnelRender emits html-bearing
+// props VERBATIM on public pages while the admin canvas previews them in
+// sandbox="" — so a prompt-injected model could smuggle a live <script> the
+// operator never sees run before publishing. Every op that introduces or
+// modifies an HTML-bearing prop (props.html / props.css / props.embed /
+// row props.columns[].html) is scanned with LINEAR passes (not one fragile
+// regex) and rejected so Claude re-emits cleanly.
+// ---------------------------------------------------------------------------
+const BANNED_TAGS = new Set(['script', 'iframe', 'object', 'embed', 'base', 'form']);
+
+// Returns a short human description of the first dangerous construct found,
+// or null when the string is clean.
+export function scanHtmlString(value) {
+  const lower = String(value).toLowerCase();
+  const isWs = (c) => c === ' ' || c === '\t' || c === '\n' || c === '\r' || c === '\f';
+
+  // 1. Banned tags — walk each '<', skip whitespace and '/', read the tag
+  //    name. Catches any casing and `<  script`/`</script` style tricks.
+  for (let i = 0; i < lower.length; i++) {
+    if (lower[i] !== '<') continue;
+    let j = i + 1;
+    while (j < lower.length && (isWs(lower[j]) || lower[j] === '/')) j++;
+    let name = '';
+    while (j < lower.length && lower[j] >= 'a' && lower[j] <= 'z') { name += lower[j]; j++; }
+    if (BANNED_TAGS.has(name)) return `a <${name}> tag`;
+  }
+
+  // 2. Event-handler attributes: "on" + letters + optional whitespace + "=",
+  //    at a word boundary. Catches onclick=, onerror = , unquoted variants.
+  for (let i = 0; i + 2 < lower.length; i++) {
+    if (lower[i] !== 'o' || lower[i + 1] !== 'n') continue;
+    const prev = i === 0 ? '' : lower[i - 1];
+    if (prev && /[a-z0-9_-]/.test(prev)) continue; // inside a word (button, salon…)
+    let j = i + 2;
+    let letters = 0;
+    while (j < lower.length && lower[j] >= 'a' && lower[j] <= 'z') { j++; letters++; }
+    if (!letters) continue; // bare "on =" is not an event handler
+    let k = j;
+    while (k < lower.length && isWs(lower[k])) k++;
+    if (lower[k] === '=') return `an ${lower.slice(i, j)}= event handler`;
+  }
+
+  // 3. Dangerous URL schemes — scan a copy with browser-ignored whitespace/
+  //    control chars stripped so "jav\nascript:" tricks collapse. Covers
+  //    href/src/srcset/action AND url(javascript:…) in style/css.
+  const compact = lower.replace(/[\s\u0000-\u001f]+/g, '');
+  if (compact.includes('javascript:')) return 'a javascript: URL';
+  if (compact.includes('data:text/html')) return 'a data:text/html URL';
+
+  return null;
+}
+
+// Scan the HTML-bearing props of a props object. Non-HTML props (headline,
+// text, items, …) are untouched — the public renderer escapes those.
+function scanHtmlProps(props) {
+  if (!isPlainObject(props)) return null;
+  const check = (val, where) => {
+    if (typeof val !== 'string') return null;
+    const hit = scanHtmlString(val);
+    return hit ? `${where} contains ${hit}` : null;
+  };
+  let err = check(props.html, 'html') || check(props.css, 'css') || check(props.embed, 'embed');
+  if (err) return err;
+  if (Array.isArray(props.columns)) {
+    for (let c = 0; c < props.columns.length; c++) {
+      const col = props.columns[c];
+      if (isPlainObject(col)) {
+        err = check(col.html, `columns[${c}].html`);
+        if (err) return err;
+      }
+    }
+  }
+  return null;
+}
+
+const htmlRejection = (i, detail) =>
+  `ops[${i}]: raw script/event-handler/javascript: content is not allowed (${detail}); re-emit the op without it — no <script>/<iframe>/<object>/<embed>/<base>/<form> tags, no on*= attributes, no javascript: or data:text/html URLs`;
+
+// ---------------------------------------------------------------------------
+// Job → user binding (review MINOR #2). Stateless: an HMAC-SHA256 tag over
+// jobId + userId, keyed with the server's existing JWT access secret (the
+// same secret the auth middleware verifies with). The tag is handed to the
+// creating user in the SSE job event and must come back on every poll via
+// the X-Job-Token HEADER (never the URL). No DB writes — survives restarts.
+// ---------------------------------------------------------------------------
+export function jobToken(jobId, userId) {
+  return createHmac('sha256', env.JWT_ACCESS_SECRET)
+    .update(`${jobId}:${userId}`)
+    .digest('hex');
+}
+
+function verifyJobToken(jobId, userId, provided) {
+  if (typeof provided !== 'string' || !provided) return false;
+  const expected = Buffer.from(jobToken(jobId, userId), 'utf8');
+  const given = Buffer.from(provided, 'utf8');
+  if (given.length !== expected.length) return false;
+  return timingSafeEqual(expected, given);
+}
 
 // Returns { error } or { blocks, ops } where ops is the normalized list and
 // blocks is the state after applying them. Pure — never mutates input.
@@ -66,6 +167,8 @@ export function applyOps(currentBlocks, rawOps) {
     if (op.op === 'replace_props') {
       if (idx === -1) return { error: `ops[${i}]: unknown block_id "${op.block_id}" — use an id from the page's block JSON` };
       if (!isPlainObject(op.props)) return { error: `ops[${i}]: props must be a plain object` };
+      const htmlErr = scanHtmlProps(op.props);
+      if (htmlErr) return { error: htmlRejection(i, htmlErr) };
       blocks[idx] = { ...blocks[idx], props: op.props };
       ops.push({ op: 'replace_props', block_id: op.block_id, props: op.props });
     } else if (op.op === 'remove_block') {
@@ -90,6 +193,8 @@ export function applyOps(currentBlocks, rawOps) {
       if (blk.props !== undefined && !isPlainObject(blk.props)) {
         return { error: `ops[${i}]: block.props must be a plain object` };
       }
+      const htmlErr = scanHtmlProps(blk.props);
+      if (htmlErr) return { error: htmlRejection(i, htmlErr) };
       let id = typeof blk.id === 'string' && /^[A-Za-z0-9_-]{1,64}$/.test(blk.id) ? blk.id : genBlockId();
       if (blocks.some((b) => b.id === id)) id = genBlockId();
       const at = op.index === undefined ? blocks.length : Number(op.index);
@@ -451,6 +556,8 @@ router.post('/chat', async (req, res) => {
               id: job.id,
               kind: job.kind,
               prompt: String(tu.input?.prompt || '').slice(0, 300),
+              // Poll credential — binds this job to the creating user.
+              token: jobToken(job.id, req.user.id),
             };
             jobs.push(jobEntry);
             sseSend(res, 'job', jobEntry);
@@ -493,6 +600,12 @@ router.post('/chat', async (req, res) => {
 // ---------------------------------------------------------------------------
 router.get('/jobs/:id', async (req, res) => {
   try {
+    // Job → user binding: the poller must present the HMAC tag issued to the
+    // creating user (X-Job-Token header). Anyone else — wrong user, missing
+    // or garbage tag — gets an indistinguishable 404, never the asset URL.
+    if (!verifyJobToken(req.params.id, req.user.id, req.get('x-job-token'))) {
+      return res.status(404).json({ error: 'Job not found' });
+    }
     const job = await getJob(req.params.id);
     if (!job.ok) return res.status(502).json({ error: job.error });
     let url = null;

