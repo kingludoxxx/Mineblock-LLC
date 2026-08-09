@@ -44,6 +44,40 @@ async function recordSplitExposure({ funnelId, sessionId, visitorId, scope }) {
   await recordExposure({ sessionId, testId: test.id, armKey });
 }
 
+// SPLIT DELIVERY (offer scope): which offer does THIS visitor's arm show?
+// Returns a full, enabled, funnel-pinned offer row when the assigned arm names
+// one — the caller swaps it in BEFORE display, so accept/decline reference
+// exactly what the buyer saw (a buyer must never be charged an offer they
+// were not shown). Test selection is IDENTICAL to recordSplitExposure's
+// (first live offer-scope test on the funnel) so the displayed arm and the
+// recorded exposure can never disagree. Fail-open: null = keep the default.
+async function resolveOfferArmOverride({ funnelId, visitorId }) {
+  try {
+    if (!funnelId || !visitorId) return null;
+    const [test] = await pgQuery(
+      `SELECT id FROM lb_split_tests
+       WHERE funnel_id = $1 AND scope = 'offer' AND enabled AND NOT archived
+       ORDER BY created_at ASC LIMIT 1`,
+      [String(funnelId).slice(0, 64)]
+    );
+    if (!test) return null;
+    const { arm } = await resolveArm({ visitorId, testId: test.id });
+    if (!arm || !arm.offer_id) return null;
+    const [offer] = await pgQuery(
+      `SELECT id, funnel_id, variant_id, price, title, enabled FROM co_upsells WHERE id = $1`,
+      [String(arm.offer_id).slice(0, 80)]
+    );
+    if (!offer || !offer.enabled) return null;
+    if (offer.funnel_id && offer.funnel_id !== funnelId) return null;
+    return offer;
+  } catch (err) {
+    console.error('[checkout] offer-arm override failed (fail-open):', err.message);
+    return null;
+  }
+}
+// Exposed for the delivery harness only — not part of the route surface.
+export const _splitInternals = { resolveOfferArmOverride };
+
 const router = Router();
 
 // This router is mounted BEFORE the app-level body/cookie parsers (auth
@@ -909,6 +943,16 @@ router.get('/upsell/offer', async (req, res) => {
     if (offer.funnel_id && offer.funnel_id !== (session.funnel_id || '')) {
       return res.status(404).json({ success: false, error: { code: 'offer_not_found' } });
     }
+
+    // SPLIT DELIVERY: the visitor's assigned arm overrides WHICH offer is
+    // shown (the response's offer_id drives the later accept/decline, so the
+    // whole flow follows the arm). Fail-open — no live test, no arm offer, or
+    // any error keeps the default offer resolved above.
+    const armOffer = await resolveOfferArmOverride({
+      funnelId: session.funnel_id || '',
+      visitorId: String(req.cookies?._fos_vid || ''),
+    });
+    if (armOffer && armOffer.id !== offer.id) offer = armOffer;
 
     const variantId = offer.variant_id || '';
     const hasFixedPrice = offer.price !== null && offer.price !== undefined;

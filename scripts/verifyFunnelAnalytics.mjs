@@ -688,9 +688,12 @@ async function main() {
   // REFUSE to name a winner until SPLIT_DELIVERY_WIRED flips — otherwise the
   // significance engine eventually prints a confident winner from sampling
   // error. (The engine's own math is asserted directly below.)
-  eq(sr.verdict.status, 'not_ready', 'API refuses a winner while arms are not served');
-  eq(sr.verdict.blocked_reason, 'arm_delivery_not_wired', 'the refusal names its reason');
-  eq(sr.verdict.leader, null, 'no leader is published while unscoreable');
+  // DELIVERY IS WIRED (splitDelivery.js + funnelPublic/checkoutPublic): the
+  // API now publishes the verdict the engine computes — the old
+  // arm_delivery_not_wired refusal retired with the wiring commit.
+  eq(sr.verdict.status, 'winner', 'API publishes the winner now that arms are actually served');
+  eq(sr.verdict.blocked_reason, undefined, 'no delivery-refusal reason remains');
+  eq(sr.verdict.leader, 'b', 'the leader is published (delivery wired)');
   {
     // The underlying engine is unaffected — it still finds b on this data.
     const raw = buildVerdict([
@@ -724,7 +727,7 @@ async function main() {
   const cc = sr3.verdict.perArm.c.revenue_confidence;
   console.log(`  per-arm rev confidence: b=${(cb * 100).toFixed(2)}%  c=${(cc * 100).toFixed(2)}%`);
   assert(cb !== cc, `arm b and arm c carry DIFFERENT confidences (${cb} vs ${cc})`);
-  eq(sr3.verdict.leader, null, 'multi-arm: no leader published while unscoreable');
+  assert(sr3.verdict.leader !== null, 'multi-arm: the leader is published (delivery wired)');
   eq(sr3.verdict.perArm.c.significant && c3.rev_per_visitor > a3.rev_per_visitor, false,
     'the LOSING arm is never reported as a significant winner');
   // F8: `significant` must agree with the Bonferroni gate, not a flat 0.05.

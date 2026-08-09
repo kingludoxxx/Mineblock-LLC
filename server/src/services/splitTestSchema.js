@@ -224,6 +224,28 @@ async function addOperatorColumns(query) {
     `CREATE UNIQUE INDEX IF NOT EXISTS uq_split_arms_entry
      ON lb_split_arms (test_id) WHERE is_entry AND NOT archived`
   );
+
+  // ── Delivery views — the VISITOR denominator of a page-scope test ─────────
+  // One row per (test, visitor), written on the first DELIVERED render of the
+  // visitor's assigned arm (funnel-os counts its impression on the delivered
+  // render, not the redirect). Kept OUT of lb_split_credits on purpose: that
+  // ledger is money (exposure = a checkout session that can convert; credit =
+  // a charge), and mixing page views into it would double-count the money
+  // denominator — funnel-os likewise keeps impressions in counters/stats, not
+  // in the conversions ledger. Append-only, unique per visitor: assignment is
+  // a sticky hash, so a visitor's arm can never change and one row is the
+  // whole story. "Visitors" per arm = COUNT(*) on this table.
+  await query(`
+    CREATE TABLE IF NOT EXISTS lb_split_views (
+      test_id TEXT NOT NULL,
+      visitor_id TEXT NOT NULL,
+      arm_key TEXT NOT NULL,
+      day DATE NOT NULL DEFAULT (NOW() AT TIME ZONE 'UTC')::date,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      PRIMARY KEY (test_id, visitor_id)
+    )
+  `);
+  await query(`CREATE INDEX IF NOT EXISTS idx_split_views_test_arm ON lb_split_views (test_id, arm_key)`);
 }
 
 export const EXPOSURE_CHARGE_SENTINEL = '__exposure__';

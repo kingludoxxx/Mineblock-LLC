@@ -491,6 +491,16 @@ export async function readResults({ testId }, { query = pgQuery } = {}) {
      GROUP BY arm_key`,
     [String(testId)]
   );
+  // Delivery views — the page-scope "Visitors" denominator (lb_split_views,
+  // one row per test+visitor, written on the delivered render). Zero for
+  // offer-scope tests and for tests created before delivery wiring; exposures
+  // remain the MONEY denominator either way.
+  const views = await query(
+    `SELECT arm_key, COUNT(*)::int AS visitors
+     FROM lb_split_views WHERE test_id = $1 GROUP BY arm_key`,
+    [String(testId)]
+  );
+  const viewsByArm = new Map(views.map((r) => [r.arm_key, Number(r.visitors || 0)]));
   const byArm = new Map(agg.map((r) => [r.arm_key, r]));
   // Dedupe arm definitions per key, preferring the live one (the partial
   // unique index only guards non-archived keys, so an archived 'a' can coexist
@@ -517,6 +527,7 @@ export async function readResults({ testId }, { query = pgQuery } = {}) {
         weight: a.weight === null ? null : Number(a.weight),
         is_control: a.is_control,
         archived: Boolean(a.archived),
+        visitors: viewsByArm.get(a.arm_key) || 0,
         exposures,
         conversions,
         credited_legs: Number(r.credited_legs || 0),
@@ -528,6 +539,7 @@ export async function readResults({ testId }, { query = pgQuery } = {}) {
     });
   const totals = result.reduce(
     (t, a) => ({
+      visitors: t.visitors + a.visitors,
       exposures: t.exposures + a.exposures,
       conversions: t.conversions + a.conversions,
       credited_legs: t.credited_legs + a.credited_legs,
@@ -535,7 +547,7 @@ export async function readResults({ testId }, { query = pgQuery } = {}) {
       refunded: Math.round((t.refunded + a.refunded) * 100) / 100,
       net_revenue: Math.round((t.net_revenue + a.net_revenue) * 100) / 100,
     }),
-    { exposures: 0, conversions: 0, credited_legs: 0, gross_revenue: 0, refunded: 0, net_revenue: 0 }
+    { visitors: 0, exposures: 0, conversions: 0, credited_legs: 0, gross_revenue: 0, refunded: 0, net_revenue: 0 }
   );
   return { testId: String(testId), arms: result, totals };
 }
