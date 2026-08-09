@@ -2104,5 +2104,76 @@ BUILT: (MAJOR #1) stripScripts replaced by sanitizeGeneratedHtml() in aiPageGene
 TESTED: route-stream.mjs extended 31→58 checks, all against execution: one assertion PER reviewed vector — onerror unquoted (before `<img src=x onerror=alert(1)>` → after `<img src="x">`), `onerror = ` whitespace + uppercase ONLOAD, svg onload, javascript: href (before `<a href="javascript:alert(1)">x</a>` → after `<a>x</a>`), entity-encoded jav&#x61;script:, control-char java\tscript:, iframe-with-content, object/embed, base, form-unwrap (action gone, input/button kept), <style> url(javascript:)+expression(), style="" url( javascript:), data:text/html src dropped vs data:image kept vs data:image in href still dropped, srcset per-entry filter; lb-ai-image byte-identical through the sanitizer; benign kitchen-sink (https links/target/imgs/srcset/data:image/style-block url(https)) NOT over-stripped, asserted at unit AND streamed level; hostile streamed section arrives with script+onerror+javascript: all gone and real copy intact. NEW 3b: client aborts fetch after architecture → mock counts the upstream socket teardown (aborts 0→>0) and no further section calls. NEW 3c: HANG_SECTION mock (5s delay) under 1.5s harness timeout → error event "Section 1 ... timed out after 2s", bounded wall time, no done. tokenizers.mjs unchanged 29/29. node --check on route/index/harness. vite build green.
 OUTPUT: "58 passed, 0 failed" (route-stream), "29 passed, 0 failed" (tokenizers), "✓ built in 641ms" (vite) — verbatim.
 DECISIONS: DECISION MADE — <form> is UNWRAPPED (tags + action dropped, children kept) rather than removed with content: the submit surface disappears while generated visible copy survives; orphan inputs are inert. DECISION MADE — unknown URL schemes are dropped (allowlist http/https/mailto/tel + gated data:image), stricter than the reviewer's minimum. DECISION MADE — maxRetries 1 on model calls (2 attempts) so a 120s timeout cannot hold a section for the SDK-default 3 attempts. DECISION MADE — disconnect detection listens on res 'close' (+ req 'error') with a writableEnded guard, not req 'close' — req 'close' was proven insufficient by the first failing harness run (aborts 0→0, 3 sections generated post-abort).
+TIMESTAMP: 2026-08-09 17:55
+TASK: Phase-1 server-side tracking (feat/tracking-server)
+BUILT: Network CRUD in trackingAdmin.js (GET/PUT /:funnelId/networks[/:kind] with
+masked reads, AES-256-GCM capi_token at rest via gatewayConfigs encryptSecret,
+kind registry TRACKING_NETWORKS open for ga4/google_ads/gtm) + GET
+/:funnelId/tracking/summary (24h sent/failed/deduped/queued per kind, breaker
+state, server_channel_ready, click_id_params). trackingDelivery.js: duplicate
+branch now logs status='deduped'; Meta graph version defaults v23.0 with
+per-pixel config.graph_version override; gcm1: tokens decrypt at send, legacy
+plaintext passes through, decrypt failure is retryable. trackingService.js:
+fireUpsellPurchaseConversion(sessionId, chargeRowId, value), event_id
+pur_<sid>_u_<chargeRowId>, paid-gated, fire-and-forget (call-site is the
+integrator's). trackingRuntime.js: consent-gated fbq base loader for enabled
+native/hybrid meta pixels (template-literal-safe: no regex/backslash/backtick/
+dollar-brace). trackingSchema.js: UNIQUE (funnel_id, kind) on lb_pixels.
+TESTED: server/tests/tracking/admin-crud.mjs (37/37) + delivery-patches.mjs
+(35/35) against embedded PG 5433 + mock relay. Edge cases: 401 unauthed,
+unknown kind/mode 400, ''-vs-null token semantics, corrupt gcm1 ciphertext
+(queued, no throw, no wire), not-paid/missing session, non-finite value,
+double-fire idempotency. Regression: money-path seam-fixes 15/15,
+session-auth 9/9, shopify-order-create 66/66, shopify-refund-reflect 35/35,
+split-delivery 33/33, ssrf-guard 15/15; funnel-settings patch-settings 22/22,
+domains-tab 23/23; page-types 81/81; funnels 27/27+17/17; builder-metrics
+40/40; clone-page 92/92. node --check clean on all changed files.
+OUTPUT: all new checks PASS; render-settings byte-identity vs merge-base
+diverges BY DESIGN (fbq loader) — scratch delta-check proved the diff is
+confined to the inline tracking <script> in all 8 templates (self-heals when
+this branch merges and the merge-base moves). upsell-page.mjs 3 pre-existing
+fails reproduce identically on main (live-Shopify data dependency);
+review-regression.mjs needs an external :4003 harness server (env
+precondition, BLOCKED in this environment, unrelated to this change).
+DECISIONS: server_channel_ready additionally requires mode s2s|hybrid (native
+is browser-only, so it is not a ready SERVER channel) - DECISION MADE.
+token_decrypt_failed is retryable, not hard, so fixing CHECKOUT_CREDS_KEY
+heals the queued backlog - DECISION MADE. failed_24h counts skipped+error;
+queued_24h surfaced separately (pending retry is not failure) - DECISION MADE.
+STATUS: COMPLETE
+---
+
+---
+TIMESTAMP: 2026-08-09 18:20
+TASK: Phase-1 tracking — adversarial review fixes (1 MAJOR + 4 MINOR + 2 NIT)
+BUILT: MAJOR#1 runDelivery drain now writes ledger rows on settle (sent on
+success, error on dead, source='drain', original envelope fields) and summary
+queued_now derives from LIVE lb_postback_queue (queued/sending joined to
+lb_pixels by kind) instead of the ledger. MINOR#2 fireUpsellPurchaseConversion
+refuses null/undefined value (no_value) — explicit 0 stays legal. MINOR#3
+errOf redacts access_token values (redactTokens, before slicing) so an echoing
+endpoint can never persist token bytes into error fields. MINOR#4 PUT network
+config merges SQL-side: config = (stored - cleared::text[]) || patch::jsonb,
+scalars via COALESCE(null=keep) — no read-merge-write lost updates. MINOR#5
+per-network pixel_id regex (meta ^\d{5,20}$) → 400 invalid_pixel_id. NIT#6
+enabled accepts only JSON booleans → 400 invalid_enabled. NIT#7
+ensureTrackingTables dedupes lb_pixels (keep newest per funnel+kind) before
+creating the unique index.
+TESTED: admin-crud.mjs 44/44 ×2 (incl. T0 dedupe+index, T7b disjoint partial
+PUTs all survive, T9 live queued_now flip 1→0); delivery-patches.mjs 47/47 ×2
+(incl. T6b outage→drain: queue done/dead + ledger sent/error rows + live depth
+0; T6c echo-endpoint redaction on the wire and at rest; T7 null/undefined
+refused, explicit 0 sends). money-path: 15/15, 9/9, 66/66, 35/35, 33/33,
+15/15, upsell-page 46/3 (same 3 pre-existing live-Shopify fails as main).
+node --check clean on all 7 files.
+OUTPUT: one implementation bug caught BY EXECUTION mid-fix: pre-stringifying
+the jsonb patch double-encoded it into a jsonb string scalar ('cannot delete
+from scalar') — postgres.js serializes jsonb params itself; fixed by passing
+the raw object (documented at the call site).
+DECISIONS: queue counter renamed queued_24h → queued_now because its meaning
+changed to live queue depth (a 24h suffix would misdescribe it; no consumer
+existed yet — field was introduced this same branch) - DECISION MADE. Drain
+dead-letters log status 'error' per reviewer wording, distinct from inline
+'skipped' hard errors - DECISION MADE.
 STATUS: COMPLETE
 ---

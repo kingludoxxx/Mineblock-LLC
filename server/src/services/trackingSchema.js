@@ -187,6 +187,18 @@ async function createTables() {
     )
   `);
   await pgQuery(`CREATE INDEX IF NOT EXISTS idx_lb_pixels_funnel ON lb_pixels (funnel_id, enabled)`);
+  // One row per (funnel, kind): the admin network CRUD (trackingAdmin.js)
+  // upserts by kind and its ON CONFLICT needs this constraint. The write
+  // surface was zero before the index landed, so duplicates can only be
+  // hand-inserts — dedupe first (keep the NEWEST row per key, id as the
+  // tiebreak) so the CREATE UNIQUE INDEX can never fail a boot. Idempotent:
+  // a no-op once the index exists.
+  await pgQuery(`
+    DELETE FROM lb_pixels a USING lb_pixels b
+    WHERE a.funnel_id = b.funnel_id AND a.kind = b.kind AND a.id <> b.id
+      AND (a.updated_at < b.updated_at OR (a.updated_at = b.updated_at AND a.id < b.id))
+  `);
+  await pgQuery(`CREATE UNIQUE INDEX IF NOT EXISTS uq_lb_pixels_funnel_kind ON lb_pixels (funnel_id, kind)`);
 
   // ── lb_consent — one row per (vid, funnel): the recorded consent signal ──
   // Analytics-only. A consent-denied visitor writes a consent row but NO

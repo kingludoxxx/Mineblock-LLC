@@ -92,9 +92,27 @@ function firePixels(vid,url){try{
     post('/collect',{funnel_id:CFG.funnel_id,event_name:'PageView',event_id:eid,consent:'granted',url:url,identity:{fbp:ck('_fbp'),fbc:ck('_fbc')}});
   }).catch(function(){});
 }catch(e){}}
+function loadFbq(){try{
+  if(window.fbq)return;
+  var n=function(){n.callMethod?n.callMethod.apply(n,arguments):n.queue.push(arguments);};
+  n.push=n;n.loaded=true;n.version='2.0';n.queue=[];
+  window.fbq=n;if(!window._fbq){window._fbq=n;}
+  var t=document.createElement('script');t.async=true;
+  t.src='https://connect.facebook.net/en_US/fbevents.js';
+  var s=document.getElementsByTagName('script')[0];
+  if(s&&s.parentNode){s.parentNode.insertBefore(t,s);}else{(document.head||document.documentElement).appendChild(t);}
+}catch(e){}}
 function fireOne(px,vid,url){
   // Browser pixel — pixel id used as a VALUE, never written as markup.
-  if(px.kind==='meta_pixel'&&window.fbq){try{window.fbq('init',px.pixel_id);window.fbq('track','PageView');}catch(e){}}
+  // The fbq BASE snippet loads lazily here, which keeps it behind the same
+  // consent gate as everything else: fireOne only runs from runPipeline,
+  // which only runs after consent resolves granted. /track/config already
+  // returns only enabled native|hybrid pixels; the mode check is kept
+  // explicit so an s2s-only config can never boot a browser pixel.
+  if(px.kind==='meta_pixel'&&(px.mode==='native'||px.mode==='hybrid')){
+    loadFbq();
+    try{window.fbq('init',px.pixel_id);window.fbq('track','PageView');}catch(e){}
+  }
 }
 function deny(){try{post('/consent',{funnel_id:CFG.funnel_id,status:'denied'});}catch(e){}}
 window.__fosConsent=window.__fosConsent||{};
