@@ -19,7 +19,7 @@ import {
   splitHtmlSections, splitBodyEnd, parseCssDoc, parseBlocksSection,
   parseCodeDocs, normalizeMarkup, stripScaffold,
   escapeMarkers, unescapeMarkers, makeNonce, CodeDocRefusal, PROTECTED_TYPES,
-  SERVER_RENDER_PLACEHOLDER, MARK,
+  SERVER_RENDER_PLACEHOLDER, MARK, codeDocEpochAction,
 } from '../../../client/src/pages/funnels/builder/codeDoc.js';
 
 let pass = 0, fail = 0;
@@ -395,6 +395,39 @@ ok(Array.isArray(parseBlocksSection('<p>x</p>', [null, 7, B('a', 'custom_html', 
   eq(two.blocks, one.blocks, 'STABILITY: a second open/save cycle is a fixed point (blocks)');
   eq(two.code, one.code, 'STABILITY: a second open/save cycle is a fixed point (code)');
 }
+
+// ===========================================================================
+// codeDocEpochAction — BLOCKER #2, the stale-document gate
+//
+// The pane builds its document ONCE. A version restore and an applied AI batch
+// both replace the page from OUTSIDE the tab ternary, so a "Save code" taken
+// afterwards used to write the pre-replacement document back over the change —
+// silently undoing the restore, or the whole batch.
+// ===========================================================================
+eq(
+  codeDocEpochAction({ seenEpoch: 3, docEpoch: 3, dirty: false }), 'none',
+  'epoch: unchanged + clean → nothing happens'
+);
+eq(
+  codeDocEpochAction({ seenEpoch: 3, docEpoch: 3, dirty: true }), 'none',
+  'epoch: unchanged + DIRTY → nothing happens, typing is never interrupted by a no-op'
+);
+eq(
+  codeDocEpochAction({ seenEpoch: 3, docEpoch: 4, dirty: false }), 'rebuild',
+  'epoch: the page changed under a CLEAN document → rebuild, the operator loses nothing'
+);
+eq(
+  codeDocEpochAction({ seenEpoch: 3, docEpoch: 4, dirty: true }), 'block',
+  'epoch: the page changed under a DIRTY document → BLOCK Save (this is the data-loss case)'
+);
+eq(
+  codeDocEpochAction({ seenEpoch: 0, docEpoch: 9, dirty: true }), 'block',
+  'epoch: several replacements while typing still resolves to one block, not a rebuild'
+);
+eq(
+  codeDocEpochAction({ seenEpoch: 4, docEpoch: 3, dirty: true }), 'block',
+  'epoch: any INEQUALITY counts — a decrement is still "not the page I was built from"'
+);
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

@@ -26,6 +26,7 @@ import {
 } from 'lucide-react';
 import {
   buildHtmlDoc, buildCssDoc, docBlockIds, parseCodeDocs, makeNonce, CodeDocRefusal,
+  codeDocEpochAction,
 } from './codeDoc';
 import { newBlockId } from './blockRegistry';
 import {
@@ -102,7 +103,19 @@ function Editor({ value, language, onChange }) {
   );
 }
 
-export default function CodeTab({ code, blocks, onApply }) {
+// `docEpoch` is bumped by PageBuilderPage every time the page is REPLACED
+// underneath this document — a version restore, or an applied AI batch. Both
+// render outside the tab ternary, so either can happen with this pane open and
+// neither changes `blocks` in a way the mount-once build could notice. Saving
+// afterwards wrote the PRE-replacement document straight back: a silent
+// rollback of the restore, or of the whole AI batch.
+//
+// The response depends on whether the operator has typed:
+//   · clean document → rebuild it, they lose nothing and see the new page
+//   · dirty document → HARD-BLOCK Save and say why. Auto-rebuilding would
+//     throw their text away; letting Save through would throw the page away.
+//     Neither is ours to choose, so the pane asks.
+export default function CodeTab({ code, blocks, onApply, docEpoch = 0, onDirtyChange }) {
   const [tab, setTab] = useState('full');
   const [htmlDoc, setHtmlDoc] = useState('');
   const [cssDoc, setCssDoc] = useState('');
@@ -117,6 +130,10 @@ export default function CodeTab({ code, blocks, onApply }) {
   // data-lb="page-js" script can never swap places with the real one.
   const builtRef = useRef({ html: '', css: '', ids: [], nonce: '' });
 
+  // Set when the page changed under a DIRTY document. Save stays refused until
+  // the operator resolves it with Refresh.
+  const [staleEpoch, setStaleEpoch] = useState(null);
+
   const rebuild = useCallback(() => {
     const nonce = makeNonce();
     const { text: html } = buildHtmlDoc(code, blocks, nonce);
@@ -125,6 +142,7 @@ export default function CodeTab({ code, blocks, onApply }) {
     setHtmlDoc(html);
     setCssDoc(css);
     setNotice(null);
+    setStaleEpoch(null);
   }, [code, blocks]);
 
   // Build once on mount only. Rebuilding on every `blocks` change would
@@ -138,8 +156,45 @@ export default function CodeTab({ code, blocks, onApply }) {
 
   const dirty = htmlDoc !== builtRef.current.html || cssDoc !== builtRef.current.css;
 
+  // Latest-value mirrors for the two effects below. Written in an effect with
+  // NO dependency array — which runs on every commit, and (React guarantees
+  // effect order within a commit) BEFORE the epoch gate declared after it. A
+  // render-phase `ref.current = x` would be the same value here but is not
+  // safe under a re-render React throws away.
+  const dirtyCbRef = useRef(onDirtyChange);
+  const dirtyNowRef = useRef(dirty);
+  const rebuildRef = useRef(rebuild);
+  useEffect(() => {
+    dirtyCbRef.current = onDirtyChange;
+    dirtyNowRef.current = dirty;
+    rebuildRef.current = rebuild;
+  });
+
+  // The tab switch UNMOUNTS this pane, so the page above needs to know whether
+  // there is text to lose before it does (F3). The unmount report is what stops
+  // a stale "dirty" from making the NEXT tab switch ask about nothing.
+  useEffect(() => { dirtyCbRef.current?.(dirty); }, [dirty]);
+  useEffect(() => () => dirtyCbRef.current?.(false), []);
+
+  // Epoch gate (BLOCKER #2). `rebuild`/`dirty` are deliberately NOT
+  // dependencies — `rebuild` closes over `code`/`blocks` and changes on every
+  // autosave response, so depending on it would run this on every echo rather
+  // than on an actual replacement of the page.
+  const seenEpochRef = useRef(docEpoch);
+  useEffect(() => {
+    const action = codeDocEpochAction({
+      seenEpoch: seenEpochRef.current,
+      docEpoch,
+      dirty: dirtyNowRef.current,
+    });
+    if (action === 'none') return;
+    seenEpochRef.current = docEpoch;
+    if (action === 'block') setStaleEpoch(docEpoch);
+    else rebuildRef.current();
+  }, [docEpoch]);
+
   const save = useCallback(async () => {
-    if (saving || !dirty) return;
+    if (saving || !dirty || staleEpoch != null) return;
     setSaving(true);
     setNotice(null);
     try {
@@ -188,7 +243,7 @@ export default function CodeTab({ code, blocks, onApply }) {
     } finally {
       setSaving(false);
     }
-  }, [saving, dirty, htmlDoc, cssDoc, blocks, onApply]);
+  }, [saving, dirty, staleEpoch, htmlDoc, cssDoc, blocks, onApply]);
 
   // ⌘/Ctrl+S — the reference's binding. Held-key repeats are ignored.
   useEffect(() => {
@@ -268,8 +323,10 @@ export default function CodeTab({ code, blocks, onApply }) {
         </button>
         <button
           onClick={save}
-          disabled={saving || !dirty}
-          title="Apply this document to the page (⌘S)"
+          disabled={saving || !dirty || staleEpoch != null}
+          title={staleEpoch != null
+            ? 'This page changed underneath the document — Refresh before saving'
+            : 'Apply this document to the page (⌘S)'}
           className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold cursor-pointer bg-accent text-white
             disabled:opacity-40 disabled:pointer-events-none"
         >
@@ -277,6 +334,21 @@ export default function CodeTab({ code, blocks, onApply }) {
           {saving ? 'Applying…' : 'Save code'}
         </button>
       </div>
+
+      {staleEpoch != null && (
+        <div className="flex items-start gap-2 rounded-lg px-3 py-2 text-[12px] shrink-0 leading-relaxed border border-danger/40 bg-danger/5 text-danger">
+          <AlertTriangle className="w-4 h-4 mt-0.5 shrink-0" />
+          <div className="min-w-0">
+            <div className="font-semibold">This page changed underneath this document.</div>
+            <div className="mt-0.5">
+              A version restore or an AI batch replaced the page after this document was built, so saving it
+              would write the OLD page back over that change. Save is disabled until you press Refresh, which
+              rebuilds from the page as it is now and discards your unsaved code edits. Copy anything you want
+              to keep first — nothing here has been saved.
+            </div>
+          </div>
+        </div>
+      )}
 
       {notice && (
         <div
