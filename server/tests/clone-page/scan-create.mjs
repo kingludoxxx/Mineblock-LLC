@@ -243,9 +243,68 @@ await sql`INSERT INTO funnels (id, slug, name) VALUES (${FID}, 'clone-test', 'Cl
   check('T11 server still answers after bad body', alive.status === 200);
 }
 
+// ── T12: original_url quote-breakout — a hostile base URL whose resolved
+//    value carries a single quote must NOT close a single-quoted attribute
+//    (WHATWG serializer leaves ' unescaped; the rewriter must %27 it) ───────
+{
+  const evilBase = "http://evil.com/a'onerror=alert(1)//";
+  const { sections } = scanHtml(
+    `<div><img src='pic.png' alt='x'><img srcset='thumb.png 1x' src='thumb.png'></div>`,
+    { originalUrl: evilBase }
+  );
+  const all = sections.map((s) => s.html).join('\n');
+  // Blank out every quoted attribute value; any onerror= left is a LIVE attribute.
+  const attrsStripped = all.replace(/=\s*"[^"]*"/g, '=""').replace(/=\s*'[^']*'/g, "=''");
+  check('T12 no live onerror attribute materializes', !/onerror\s*=/i.test(attrsStripped), attrsStripped);
+  check('T12 rewritten src stays one quoted value with %27, no raw quote',
+    /src='http:\/\/evil\.com\/a%27onerror=alert\(1\)\/\/pic\.png'/.test(all), all);
+  check('T12 srcset rewrites are quote-encoded too', all.includes("a%27onerror=alert(1)//thumb.png 1x"), all);
+
+  // Same property through the HTTP route (original_url passes URL validation).
+  const r = await post('/scan', { html: `<div><img src='pic.png'></div>`, original_url: evilBase });
+  const httpAll = (r.json?.data?.sections || []).map((s) => s.html).join('\n');
+  const httpStripped = httpAll.replace(/=\s*"[^"]*"/g, '=""').replace(/=\s*'[^']*'/g, "=''");
+  check('T12 /scan route: no breakout, %27 present',
+    r.status === 200 && !/onerror\s*=/i.test(httpStripped) && httpAll.includes('%27'), `${r.status} ${httpAll}`);
+}
+
+// ── T13: two CONCURRENT first-page creates on an empty funnel → the DB
+//    arbitrates is_home: exactly ONE row ends up is_home=TRUE ───────────────
+const FID2 = 'fnl_clonerace';
+await sql`DELETE FROM funnel_pages WHERE funnel_id = ${FID2}`;
+await sql`DELETE FROM funnels WHERE id = ${FID2}`;
+await sql`INSERT INTO funnels (id, slug, name) VALUES (${FID2}, 'clone-race', 'Clone race')`;
+{
+  const [a, b] = await Promise.all([
+    post('/create', { funnel_id: FID2, title: 'Race A', sections: ['<div>a</div>'] }),
+    post('/create', { funnel_id: FID2, title: 'Race B', sections: ['<div>b</div>'] }),
+  ]);
+  check('T13 both concurrent creates → 201', a.status === 201 && b.status === 201,
+    `${a.status}/${b.status} ${JSON.stringify(a.json)} ${JSON.stringify(b.json)}`);
+  const homes = await sql`SELECT COUNT(*)::int AS n FROM funnel_pages WHERE funnel_id = ${FID2} AND is_home = TRUE AND archived = FALSE`;
+  const total = await sql`SELECT COUNT(*)::int AS n FROM funnel_pages WHERE funnel_id = ${FID2}`;
+  check('T13 exactly ONE is_home=TRUE row', homes[0].n === 1, `got ${homes[0].n} home of ${total[0].n} rows`);
+  check('T13 both rows persisted', total[0].n === 2, `got ${total[0].n}`);
+}
+
+// ── T14: meta http-equiv refresh is stripped even when it also carries
+//    charset=; pure charset + viewport metas survive ────────────────────────
+{
+  const { html } = cleanHtml(
+    '<meta charset=x http-equiv=refresh content="0;url=http://evil">' +
+    '<meta charset="utf-8">' +
+    '<meta name="viewport" content="width=device-width, initial-scale=1">'
+  );
+  check('T14 http-equiv refresh stripped despite charset= ride-along', !/http-equiv|evil/i.test(html), html);
+  check('T14 pure charset meta survives', html.includes('<meta charset="utf-8">'), html);
+  check('T14 viewport meta survives', /name="viewport"/.test(html), html);
+}
+
 // ── Cleanup ────────────────────────────────────────────────────────────────
 await sql`DELETE FROM funnel_pages WHERE funnel_id = ${FID}`;
 await sql`DELETE FROM funnels WHERE id = ${FID}`;
+await sql`DELETE FROM funnel_pages WHERE funnel_id = ${FID2}`;
+await sql`DELETE FROM funnels WHERE id = ${FID2}`;
 server.close();
 await sql.end();
 console.log(`\n${pass} passed, ${fail} failed`);

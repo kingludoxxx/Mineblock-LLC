@@ -13,7 +13,7 @@
 // the public renderer will walk later.
 import { randomBytes } from 'crypto';
 import { Router } from 'express';
-import { pgQuery } from '../db/pg.js';
+import { client, pgQuery } from '../db/pg.js';
 import { authenticate } from '../middleware/auth.js';
 import { requirePermission } from '../middleware/rbac.js';
 import { ensureTables, validateBlocks } from './funnels.js';
@@ -67,6 +67,14 @@ function absolutize(value, base) {
   }
 }
 
+// The WHATWG serializer does NOT percent-encode a single quote (verified:
+// new URL('pic.png', "http://evil.com/a'onerror=x//") keeps the ' verbatim),
+// so a hostile original_url could close a single-quoted attribute early and
+// inject live markup. Every rewritten value gets BOTH quote characters
+// percent-encoded before it is re-inserted between quotes — %27/%22 are
+// valid URL bytes, so the link still resolves identically.
+const encodeAttrQuotes = (url) => url.replace(/"/g, '%22').replace(/'/g, '%27');
+
 // Rewrite relative src/href/srcset in-place against `base`. String-only.
 export function rewriteRelativeUrls(html, base) {
   const attrRe = new RegExp(
@@ -78,7 +86,7 @@ export function rewriteRelativeUrls(html, base) {
     const abs = absolutize(val, base);
     if (abs === val) return full;
     const quote = quoted[0];
-    return `${attr}=${quote}${abs}${quote}`;
+    return `${attr}=${quote}${encodeAttrQuotes(abs)}${quote}`;
   });
   // srcset is a comma-separated list of "url [descriptor]" pairs.
   const srcsetRe = /\b(srcset)\s*=\s*("([^"]*)"|'([^']*)')/gi;
@@ -91,7 +99,8 @@ export function rewriteRelativeUrls(html, base) {
         const t = entry.trim();
         if (!t) return t;
         const [url, ...desc] = t.split(/\s+/);
-        return [absolutize(url, base), ...desc].join(' ');
+        const abs = absolutize(url, base);
+        return [abs === url ? url : encodeAttrQuotes(abs), ...desc].join(' ');
       })
       .join(', ');
     return `${attr}=${quote}${rewritten}${quote}`;
@@ -152,9 +161,13 @@ export function cleanHtml(rawHtml) {
   });
 
   // 6. <meta> except charset/viewport (source meta is the cloner's junk).
-  html = html.replace(/<meta\b[^>]*>/gi, (m) =>
-    /charset\s*=|name\s*=\s*["']?viewport/i.test(m) ? m : ''
-  );
+  // ANY http-equiv meta is stripped FIRST, regardless of what else it
+  // carries — <meta charset=x http-equiv=refresh content="0;url=evil">
+  // must not ride the charset keep-list into the cloned page.
+  html = html.replace(/<meta\b[^>]*>/gi, (m) => {
+    if (/\bhttp-equiv\s*=/i.test(m)) return '';
+    return /charset\s*=|name\s*=\s*["']?viewport/i.test(m) ? m : '';
+  });
 
   // 7. <link rel=preconnect|dns-prefetch|preload> — origin-tuning for a page
   // we no longer serve from that origin. Stylesheets stay.
@@ -385,30 +398,41 @@ export async function createHandler(req, res) {
       [funnelId]
     );
     const taken = new Set(existing.map((r) => r.slug));
-    const isHome = existing.length === 0;
     let slug = `/${base}`;
     for (let n = 2; taken.has(slug); n += 1) slug = `/${base}-${n}`;
     if (!PAGE_SLUG_RE.test(slug)) {
       return res.status(400).json({ error: 'Could not derive a valid slug from that title' });
     }
 
-    const id = genId('fpg');
+    // is_home is decided by the DATABASE inside the insert itself — never by
+    // a prior SELECT (two concurrent first-page creates would both read
+    // "empty" and both insert is_home=TRUE). The conditional subquery alone
+    // is not enough under READ COMMITTED (both statements' snapshots predate
+    // each other's commit), so the transaction first takes a row lock on the
+    // parent funnel: concurrent creates for the SAME funnel serialize, and
+    // the second one's INSERT statement gets a fresh snapshot that sees the
+    // first page — its NOT EXISTS then correctly yields FALSE.
+    const INSERT_SQL = `
+      INSERT INTO funnel_pages (id, funnel_id, slug, type, title, status, is_home, blocks)
+      VALUES ($1, $2, $3, 'generic', $4, 'draft',
+        NOT EXISTS (SELECT 1 FROM funnel_pages
+                    WHERE funnel_id = $2 AND archived = FALSE AND is_home = TRUE),
+        $5)
+      RETURNING *`;
+    const insertLocked = (pageId, pageSlug) =>
+      client.begin(async (tx) => {
+        await tx`SELECT id FROM funnels WHERE id = ${funnelId} FOR UPDATE`;
+        return tx.unsafe(INSERT_SQL, [pageId, funnelId, pageSlug, title, blocks]);
+      });
+
     let rows;
     try {
-      rows = await pgQuery(
-        `INSERT INTO funnel_pages (id, funnel_id, slug, type, title, status, is_home, blocks)
-         VALUES ($1, $2, $3, 'generic', $4, 'draft', $5, $6) RETURNING *`,
-        [id, funnelId, slug, title, isHome, blocks]
-      );
+      rows = await insertLocked(genId('fpg'), slug);
     } catch (err) {
       if (err?.code !== UNIQUE_VIOLATION) throw err;
       // Raced another writer for the slug — retry once with a random suffix.
       const retrySlug = `/${base}-${randomBytes(2).toString('hex')}`.slice(0, 81);
-      rows = await pgQuery(
-        `INSERT INTO funnel_pages (id, funnel_id, slug, type, title, status, is_home, blocks)
-         VALUES ($1, $2, $3, 'generic', $4, 'draft', $5, $6) RETURNING *`,
-        [genId('fpg'), funnelId, retrySlug, title, isHome, blocks]
-      );
+      rows = await insertLocked(genId('fpg'), retrySlug);
     }
 
     return res.status(201).json({ success: true, data: rows[0] });
