@@ -22,6 +22,7 @@ import * as stripeGw from './gateways/stripe.js';
 // SPLIT-LANE HOOK: sweep-settled legs must credit identically to
 // webhook-settled ones, and parked pending credits get retried each tick.
 import { creditSessionConversions, retrySplitPendingCredits } from './splitCredits.js';
+import { createShopifyOrderForSession, shopifyOrderCreateEnabled } from './shopifyOrderCreate.js';
 
 // Env-tunable, but CLAMPED: a garbage or "0" value must never turn the sweep
 // into a tight loop hammering the DB and gateway APIs. posInt(v, default, min).
@@ -218,6 +219,38 @@ async function backfillMissingOrders(stats) {
   }
 }
 
+// 3b. Orders whose Shopify mirror never happened. The settle helper documents
+// that "a redelivery self-heals a create lost between the order write and the
+// store push" — that is NOT true on the assembled app: both webhook handlers
+// return `already` BEFORE settleSessionPaid runs, and backfillMissingOrders
+// skips the session because its co_orders row EXISTS. The result was a paid
+// order with no store record and nothing flagging it for a human. This pass is
+// the recovery path. createShopifyOrderForSession carries its own atomic claim,
+// so it stays exactly-once even if a webhook races this sweep.
+async function backfillMissingShopifyOrders(stats) {
+  if (!shopifyOrderCreateEnabled()) return; // opt-in gate; inert when off
+  const rows = await pgQuery(`
+    SELECT id, session_id, idempotency_key
+    FROM co_orders
+    WHERE shopify_order_id IS NULL
+      AND shopify_status IS NULL
+      AND created_at < NOW() - INTERVAL '5 minutes'
+    ORDER BY created_at ASC
+    LIMIT 25
+  `);
+  for (const o of rows) {
+    try {
+      const res = await createShopifyOrderForSession({
+        sessionId: o.session_id,
+        idempotencyKey: o.idempotency_key,
+      });
+      if (res.ok && res.created) stats.shopifyBackfilled = (stats.shopifyBackfilled || 0) + 1;
+    } catch (err) {
+      console.error(`[money-sweep] shopify mirror backfill ${o.id} error:`, err.message);
+    }
+  }
+}
+
 // 4. Base payments whose settlement webhook never arrived (misconfigured or
 // rotated webhook secret, an outage that outlasted the gateway's retries).
 // The money is captured at the gateway but the session sits at 'processing'
@@ -293,7 +326,7 @@ export async function runMoneySweepOnce() {
   if (sweepInFlight) return { skipped: 'in_flight' };
   sweepInFlight = true;
   const stats = {
-    settled: 0, failed: 0, parked: 0, ordersBackfilled: 0,
+    settled: 0, failed: 0, parked: 0, ordersBackfilled: 0, shopifyBackfilled: 0,
     strandedSettled: 0, unreachable: 0,
   };
   try {
@@ -302,6 +335,7 @@ export async function runMoneySweepOnce() {
     await parkStaleChargingClaims(stats);
     await reconcileStrandedSessions(stats);
     await backfillMissingOrders(stats);
+    await backfillMissingShopifyOrders(stats);
     // SPLIT-LANE HOOK: re-credit legs that settled before their exposure row
     // landed (parked as pending; exactly-once still held by the unique triple).
     try { await retrySplitPendingCredits(); } catch { /* fail-open: next tick */ }

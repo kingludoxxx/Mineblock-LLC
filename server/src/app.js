@@ -74,6 +74,18 @@ app.use('/api/v1/gateway-webhooks', gatewayWebhookRoutes);
 // like the other public mounts.
 app.use('/api/v1/track', trackingPublicRoutes);
 
+// Public checkout intake — unauthenticated by necessity (the buyer is not a
+// user), defended inside the router (per-IP limiter, origin allow-list,
+// server-side re-pricing). Mounted BEFORE the global 50mb parser so the
+// router's OWN 1mb cap applies; behind it a 2mb body was fully parsed and the
+// documented cap was a no-op (unauthenticated-surface DoS). Still before the
+// admin /api/v1/checkout mount so /checkout/public is not shadowed by it.
+app.use('/api/v1/checkout/public', checkoutPublicRoutes);
+
+// Public opt-in lead intake — same reasoning: its own 64kb cap only applies
+// ahead of the global parser.
+app.use('/api/v1/optin/public', optinPublicRoutes);
+
 // Body parsing
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
@@ -88,17 +100,8 @@ app.use('/api/v1/webhook', clickupWebhookRoutes);
 app.use('/api/v1/meta-webhook', metaWebhookRoutes);
 app.use('/api/v1/shopify-webhook', shopifyWebhookRoutes);
 
-// Public checkout intake — unauthenticated by necessity (the buyer is not a
-// user), defended inside the router (per-IP limiter, origin allow-list,
-// server-side re-pricing). After the global JSON parser; before the admin
-// /api/v1/checkout mount so /checkout/public is not shadowed by the authed router.
-app.use('/api/v1/checkout/public', checkoutPublicRoutes);
-
-// Public opt-in lead intake — unauthenticated by necessity (the visitor is not
-// a user), defended inside the router (per-IP limiter, origin allow-list,
-// honeypot, bounded fields). Mounted before the /api limiter, like the
-// checkout intake, so a burst of leads is throttled by the router's own rule.
-app.use('/api/v1/optin/public', optinPublicRoutes);
+// (public checkout + opt-in intakes are mounted above, ahead of the global
+// body parser, so their own body caps are not no-ops)
 
 // Custom-domain host routing — rewrites a CONNECTED custom host to its funnel's
 // /f/<slug> path so funnelPublic serves it unchanged (same publish gates).

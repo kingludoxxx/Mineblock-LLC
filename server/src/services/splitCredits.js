@@ -110,6 +110,17 @@ export async function creditConversion(
   const gid = tid(testId);
   const cid = tid(chargeId, 160);
   if (!sid || !gid || !cid) return 'refused';
+  // A non-finite/negative amount is a CALLER BUG, not a $0 sale. Coercing it
+  // (safeAmount) writes a valid-looking zero-revenue credit and corrupts the
+  // arm's revenue silently — the failure mode that hid a wrong SELECT at the
+  // webhook call site. Fail closed and make the caller visible instead.
+  if (!Number.isFinite(Number(value)) || Number(value) < 0) {
+    // eslint-disable-next-line no-console
+    console.error(
+      `[splitCredits] refused non-finite credit value session=${sid} test=${gid} charge=${cid} value=${String(value)}`
+    );
+    return 'refused';
+  }
   try {
     await ensureSplitTables(query);
     // ── The denominator must already exist (rule 3). Its arm + day are the

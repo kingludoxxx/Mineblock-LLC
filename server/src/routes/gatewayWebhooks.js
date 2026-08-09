@@ -189,12 +189,20 @@ router.post('/stripe', async (req, res) => {
     // verifies this event (per-funnel creds, env fallback). A refund's
     // charge object references the PI; sessions store that PI id.
     const sessionId = obj.metadata?.co_session_id || '';
+    // total + currency are REQUIRED here: the split-arm credit reads them at
+    // the post-settle hook. Omitting them made Number(undefined) -> NaN, which
+    // safeAmount() coerced to a valid $0.00 credit — every Stripe order
+    // credited zero revenue to its arm, silently. (Whop's SELECT already had
+    // them, which is why the asymmetry was invisible per-lane.)
     let sessions = sessionId
-      ? await pgQuery(`SELECT id, funnel_id, status FROM co_sessions WHERE id = $1`, [sessionId])
+      ? await pgQuery(
+        `SELECT id, funnel_id, status, total, currency FROM co_sessions WHERE id = $1`,
+        [sessionId]
+      )
       : [];
     if (!sessions.length && isRefund && obj.payment_intent) {
       sessions = await pgQuery(
-        `SELECT id, funnel_id, status FROM co_sessions WHERE gateway_session_id = $1`,
+        `SELECT id, funnel_id, status, total, currency FROM co_sessions WHERE gateway_session_id = $1`,
         [String(obj.payment_intent)]
       );
     }
@@ -265,6 +273,47 @@ router.post('/stripe', async (req, res) => {
         }).catch(() => {});
       }
       return res.json({ success: true, upsell: upRes.ok ? 'settled' : upRes.error });
+    }
+
+    // ── An UPSELL refund must never be booked against the BASE order. Stripe
+    // charges inherit the PI's metadata, so kind/charge_row are present here.
+    // Without this discrimination the refund appended to co_sessions.refunds
+    // (flipping the base order to 'refunded' once the upsell amount cleared the
+    // base total) and voided the BASE arm credit — erasing revenue that was
+    // never refunded, while the upsell leg stayed settled.
+    if (isRefund && ((obj.metadata?.kind || '') === 'upsell' || obj.metadata?.charge_row)) {
+      const upChargeRow = String(obj.metadata?.charge_row || '');
+      if (!upChargeRow) {
+        if (eventId) await markProcessed('stripe', eventId, 'upsell_refund_missing_charge_row');
+        return res.json({ success: true, ignored: 'missing_charge_row' });
+      }
+      const refundEntries = (obj.refunds?.data || []).map((r) => ({
+        ref: String(r.id),
+        amount: stripeGw.minorToAmount(r.amount, r.currency || obj.currency),
+      }));
+      const upEntries = refundEntries.length
+        ? refundEntries
+        : [{
+          ref: eventId || `chrf_${obj.id}`,
+          amount: stripeGw.minorToAmount(obj.amount_refunded ?? 0, obj.currency),
+        }];
+      let upApplied = 0;
+      for (const e of upEntries) {
+        if (!(e.amount > 0)) continue;
+        await pgQuery(
+          `UPDATE co_upsell_charges SET status = 'refunded', updated_at = NOW()
+           WHERE id = $1 AND session_id = $2 AND status = 'settled'`,
+          [upChargeRow, session.id]
+        );
+        // Net the OFFER-scope leg only; voidCredit caps at that leg's own room.
+        voidSessionRefund({
+          sessionId: session.id, chargeId: upChargeRow,
+          amount: e.amount, refundKey: e.ref,
+        }).catch(() => {});
+        upApplied++;
+      }
+      if (eventId) await markProcessed('stripe', eventId, `upsell_refund_applied_${upApplied}`);
+      return res.json({ success: true, refund: true, upsell: true, applied: upApplied });
     }
 
     if (isRefund) {
@@ -456,7 +505,7 @@ router.post('/whop', async (req, res) => {
       );
       if (!target && refPaymentId) {
         const bySession = await pgQuery(
-          `SELECT id, funnel_id, status FROM co_sessions WHERE gateway_session_id = $1 AND gateway = 'whop'`,
+          `SELECT id, funnel_id, status, total, currency FROM co_sessions WHERE gateway_session_id = $1 AND gateway = 'whop'`,
           [refPaymentId]
         );
         target = bySession[0] || null;
@@ -472,6 +521,33 @@ router.post('/whop', async (req, res) => {
         amount: isWhopDispute && amount === null ? 0 : amount, // a dispute parks even amount-less
         gateway: 'whop', isDispute: isWhopDispute,
       });
+      // SPLIT-LANE HOOK (parity with the Stripe branch — its absence here meant
+      // Whop refunds AND chargebacks never netted the arm credit, so arm revenue
+      // only ever went up). An upsell reversal nets its own leg; a base reversal
+      // nets the base leg. An amount-less dispute voids the full credit —
+      // voidCredit caps at the leg's remaining room, so over-voiding is impossible.
+      if (r.ok && !r.duplicate) {
+        const upRow = String(metadata.charge_row || '');
+        const isUpsellReversal = (String(metadata.kind || '').trim() === 'upsell') && upRow;
+        const voidAmount = amount === null || amount === undefined
+          ? Number(target.total || 0)
+          : Number(amount);
+        if (voidAmount > 0) {
+          voidSessionRefund({
+            sessionId: target.id,
+            chargeId: isUpsellReversal ? upRow : `base:${target.id}`,
+            amount: voidAmount,
+            refundKey: ref,
+          }).catch(() => {});
+        }
+        if (isUpsellReversal) {
+          await pgQuery(
+            `UPDATE co_upsell_charges SET status = 'refunded', updated_at = NOW()
+             WHERE id = $1 AND session_id = $2 AND status = 'settled'`,
+            [upRow, target.id]
+          );
+        }
+      }
       await markProcessed('whop', webhookId, isWhopDispute ? 'dispute_applied' : `refund_${r.ok ? 'applied' : r.error}`);
       return res.json({ success: true, reversal: true, dispute: isWhopDispute, applied: r.ok && !r.duplicate });
     }
