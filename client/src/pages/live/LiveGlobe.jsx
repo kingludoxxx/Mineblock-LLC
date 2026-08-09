@@ -29,27 +29,12 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { Globe2 } from 'lucide-react';
 import Card from '../../components/ui/Card';
 import LAND_RINGS from './worldLand.js';
-import { project, deriveGeoPoints, diffArrivals, fmtInt, countryLabel } from './livePresentation.js';
+import { deriveGeoPoints, diffArrivals, fmtInt, countryLabel } from './livePresentation.js';
+import drawGlobe from './globeRender.js';
 
 const ROTATION_DEG_PER_SEC = 4.5; // a full turn every 80s — ambient, not dizzying
 const TILT_DEG = 18;              // lean the north pole toward the viewer
-const RIPPLE_MS = 2600;           // how long an arrival ripple lives
 const MAX_RIPPLES = 24;
-
-// Palette pulled from the app's own tokens (client/src/index.css) so the globe
-// cannot drift from the dark theme. Kept as literals because a canvas cannot
-// read Tailwind classes.
-const C = {
-  sphereTop: 'rgba(34, 197, 94, 0.10)',   // success, very dilute
-  sphereBottom: 'rgba(9, 9, 11, 0.9)',    // bg-main
-  limb: 'rgba(255, 255, 255, 0.14)',      // border-strong
-  graticule: 'rgba(255, 255, 255, 0.045)',
-  land: 'rgba(255, 255, 255, 0.055)',
-  landStroke: 'rgba(255, 255, 255, 0.13)',
-  marker: '#22c55e',                      // success
-  markerCore: '#eafff1',
-  ripple: '#e8d5a3',                      // accent-text
-};
 
 function useReducedMotion() {
   const [reduced, setReduced] = useState(false);
@@ -142,120 +127,13 @@ export default function LiveGlobe({ geo, live = 0 }) {
       const scene = sceneRef.current;
       if (!scene.reduced) rotation = (rotation + ROTATION_DEG_PER_SEC * dt) % 360;
 
-      const r = (size / 2) * 0.86;
-      const cx = size / 2;
-      const cy = size / 2;
-
-      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-      ctx.clearRect(0, 0, size, size);
-
-      // ── the sphere
-      const grad = ctx.createLinearGradient(cx, cy - r, cx, cy + r);
-      grad.addColorStop(0, C.sphereTop);
-      grad.addColorStop(1, C.sphereBottom);
-      ctx.beginPath();
-      ctx.arc(cx, cy, r, 0, Math.PI * 2);
-      ctx.fillStyle = grad;
-      ctx.fill();
-
-      const opts = { rotation, tilt: TILT_DEG, radius: r, cx, cy };
-
-      // ── graticule (every 30°), front hemisphere only
-      ctx.strokeStyle = C.graticule;
-      ctx.lineWidth = 1;
-      for (let lat = -60; lat <= 60; lat += 30) {
-        ctx.beginPath();
-        let pen = false;
-        for (let lon = -180; lon <= 180; lon += 4) {
-          const p = project(lat, lon, opts);
-          if (!p.visible) { pen = false; continue; }
-          if (pen) ctx.lineTo(p.x, p.y); else { ctx.moveTo(p.x, p.y); pen = true; }
-        }
-        ctx.stroke();
-      }
-      for (let lon = -180; lon < 180; lon += 30) {
-        ctx.beginPath();
-        let pen = false;
-        for (let lat = -90; lat <= 90; lat += 4) {
-          const p = project(lat, lon, opts);
-          if (!p.visible) { pen = false; continue; }
-          if (pen) ctx.lineTo(p.x, p.y); else { ctx.moveTo(p.x, p.y); pen = true; }
-        }
-        ctx.stroke();
-      }
-
-      // ── land. A ring is broken wherever it crosses the limb, so the far side
-      // never bleeds through the front.
-      ctx.fillStyle = C.land;
-      ctx.strokeStyle = C.landStroke;
-      ctx.lineWidth = 0.7;
-      for (const ring of LAND_RINGS) {
-        ctx.beginPath();
-        let pen = false;
-        let drew = false;
-        for (let i = 0; i < ring.length; i += 2) {
-          const p = project(ring[i + 1], ring[i], opts);
-          if (!p.visible) { pen = false; continue; }
-          if (pen) { ctx.lineTo(p.x, p.y); } else { ctx.moveTo(p.x, p.y); pen = true; }
-          drew = true;
-        }
-        if (!drew) continue;
-        ctx.fill();
-        ctx.stroke();
-      }
-
-      // ── limb
-      ctx.beginPath();
-      ctx.arc(cx, cy, r, 0, Math.PI * 2);
-      ctx.strokeStyle = C.limb;
-      ctx.lineWidth = 1;
-      ctx.stroke();
-
-      // ── arrival ripples (drawn under the markers)
-      const ripples = scene.ripples;
-      for (let i = ripples.length - 1; i >= 0; i--) {
-        const age = now - ripples[i].at;
-        if (age > RIPPLE_MS) { ripples.splice(i, 1); continue; }
-        const p = project(ripples[i].lat, ripples[i].lon, opts);
-        if (!p.visible) continue;
-        const t = age / RIPPLE_MS;
-        ctx.beginPath();
-        ctx.arc(p.x, p.y, 3 + t * 22, 0, Math.PI * 2);
-        ctx.strokeStyle = C.ripple;
-        ctx.globalAlpha = (1 - t) * 0.55 * p.z; // fade toward the limb
-        ctx.lineWidth = 1.5;
-        ctx.stroke();
-        ctx.globalAlpha = 1;
-      }
-
-      // ── country markers. Area ∝ visitors (radius ∝ sqrt) — scaling the
-      // RADIUS by the count would make a 40-visitor country look 16x a
-      // 10-visitor one.
-      ctx.globalCompositeOperation = 'lighter';
-      for (const pt of scene.points) {
-        const p = project(pt.lat, pt.lon, opts);
-        if (!p.visible) continue;
-        const share = Math.sqrt(pt.visitors / scene.max);
-        const rad = 2 + share * 6;
-        const depth = 0.35 + 0.65 * p.z; // dim toward the limb, for roundness
-
-        const halo = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, rad * 3.4);
-        halo.addColorStop(0, C.marker);
-        halo.addColorStop(1, 'rgba(34, 197, 94, 0)');
-        ctx.globalAlpha = 0.42 * depth;
-        ctx.beginPath();
-        ctx.arc(p.x, p.y, rad * 3.4, 0, Math.PI * 2);
-        ctx.fillStyle = halo;
-        ctx.fill();
-
-        ctx.globalAlpha = 0.95 * depth;
-        ctx.beginPath();
-        ctx.arc(p.x, p.y, rad, 0, Math.PI * 2);
-        ctx.fillStyle = C.markerCore;
-        ctx.fill();
-      }
-      ctx.globalAlpha = 1;
-      ctx.globalCompositeOperation = 'source-over';
+      // The paint itself lives in globeRender.js so it can be executed by
+      // `node server/tests/live-view/globe-render.mjs` against a recording
+      // fake context — a canvas is the one part of this page a harness cannot
+      // otherwise reach.
+      drawGlobe(ctx, scene, {
+        size, dpr, rotation, tilt: TILT_DEG, now, landRings: LAND_RINGS,
+      });
 
       if (alive && tabVisible && onScreen) raf = requestAnimationFrame(draw);
       else raf = 0; // parked: `start` must be able to tell it is not running
