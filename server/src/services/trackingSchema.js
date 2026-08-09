@@ -89,6 +89,14 @@ async function createTables() {
   await pgQuery(`CREATE INDEX IF NOT EXISTS idx_lb_clicks_clickid ON lb_clicks (funnel_id, click_id)`);
   await pgQuery(`CREATE INDEX IF NOT EXISTS idx_lb_clicks_converted ON lb_clicks (funnel_id, converted, network)`);
   await pgQuery(`CREATE INDEX IF NOT EXISTS idx_lb_clicks_expires ON lb_clicks (expires_at)`);
+  // The attribution lane's last-touch LATERAL matches a paid session either by
+  // its STAMPED session_id or by vid; without this the session_id half is a
+  // sequential scan PER PAID SESSION. Measured on 100K clicks / 5K orders:
+  // 43,283ms (which the analytics pool's 8s statement_timeout turns into a 500)
+  // → 92ms. PARTIAL on session_id <> '' because the column defaults to '' and
+  // the overwhelming majority of clicks never convert — the index stays small
+  // and the write path is untouched.
+  await pgQuery(`CREATE INDEX IF NOT EXISTS idx_lb_clicks_session ON lb_clicks (session_id) WHERE session_id <> ''`);
 
   // ── lb_visitor_firstseen — permanent, write-once acquisition registry ──
   // NO expires_at, ON PURPOSE (DECISIONS #9). The vid IS the primary key.

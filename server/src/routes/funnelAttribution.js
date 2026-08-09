@@ -71,6 +71,13 @@ function send(res, result) {
  * money in here is the captured base only. Rows with `is_unattributed` are
  * 'direct / none' (nothing measured) or '(not set)' (visit seen, dimension not
  * tagged) — two different facts, label them differently, never as a blank bar.
+ * `attribution` (resolved|untagged|none) is the AUTHORITY on that, not the key
+ * text: a real campaign named "direct / none" gets its own row and a
+ * disambiguated `label`. Render `label`, filter on `key`.
+ *
+ * ⚠️ `revenue_basis` is 'order_window' here and 'click_cohort' on /roas. A page
+ * drawing both MUST print them — the two will not tie out for the same dates,
+ * by definition (see the service header).
  */
 router.get('/marketing', async (req, res, next) => {
   try {
@@ -93,7 +100,13 @@ router.get('/marketing', async (req, res, next) => {
  * null as an em dash — NEVER as $0.00 or 0.0x. `cost_source` says where the
  * number came from and `cost_unknown_reason` says why there isn't one; both
  * are for the operator, put them in the row or its tooltip.
- * `bot_clicks` is included in `clicks` and excluded from `conversions`.
+ * `bot_clicks` is included in `clicks` and excluded from `conversions`; their
+ * cpc IS counted as cost and `cost_note` says so.
+ *
+ * ⚠️ `totals` IS NOT THE SUM OF `rows` — it folds the window's platform spend
+ * once, including `untracked_campaigns` (spent money, zero clicks, no row).
+ * Never recompute the footer client-side from the rows.
+ * ⚠️ `revenue_basis` is 'click_cohort' here — see /marketing above.
  */
 router.get('/roas', async (req, res, next) => {
   try {
@@ -109,9 +122,11 @@ router.get('/roas', async (req, res, next) => {
 });
 
 /**
- * GET /clicks?funnel_id&limit&network — the raw click ledger.
+ * GET /clicks?funnel_id&limit&network&start&end — the raw click ledger.
  * Bot rows are present and flagged (`bot`, `velocity_flag`): this is where an
- * operator checks what a ROAS row excluded.
+ * operator checks what a ROAS row excluded. `start`/`end` are optional and
+ * bound `first_seen` on Madrid days, so a ROAS row can link straight to the
+ * clicks behind it; omit both for "most recent, unbounded".
  */
 router.get('/clicks', async (req, res, next) => {
   try {
@@ -119,6 +134,8 @@ router.get('/clicks', async (req, res, next) => {
       funnelId: req.query.funnel_id,
       limit: req.query.limit,
       network: req.query.network,
+      start: req.query.start,
+      end: req.query.end,
     }));
   } catch (err) {
     next(err);

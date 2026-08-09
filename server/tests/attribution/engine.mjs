@@ -5,29 +5,39 @@
 //   1. THE STITCH — the last touch BEFORE payment wins; a click after paid_at
 //      never re-attributes a closed order; a stamped click beats a later
 //      unstamped one; a bot click never attributes.
-//   2. 'direct / none' and '(not set)' are DIFFERENT rows (nothing measured vs
-//      visit seen but untagged).
-//   3. Every breakdown names its basis (captured_base) + basis_label.
-//   4. Totals fold EVERY bucket, not the returned page ("Top N of M · $total").
-//   5. COST — all four cost_source branches (meta_api / pin_manual / ledger /
-//      unknown), plus pin_ambiguous and api_by_campaign_only refusals.
-//      Unknown cost ⇒ cost/roas/cpa null. Never Infinity, never 0.
-//   6. Bot clicks are excluded from conversions and VISIBLE in the ledger.
-//   7. Cross-network revenue dedup: per-group full, window total counted once.
-//   8. TIMEZONE (operator decision, REPORT_TZ=Europe/Madrid): a 23:30Z
-//      conversion lands on the NEXT Madrid day and divides THAT day's spend.
-//   9. DST — the 25-hour day (2026-10-25) and the 23-hour day (2026-03-29)
-//      bucket correctly, with no hardcoded offset anywhere.
-//  10. Zero-click / zero-spend / empty window: no division by zero, no NaN,
+//   2. FUNNEL SCOPE (review F2) — a scoped question gets a scoped journey:
+//      an fA click behind an fB order reads as unattributed inside fB, resolves
+//      when unscoped, and /marketing and /roas AGREE either way.
+//   3. 'direct / none' and '(not set)' are different rows, and the attribution
+//      STATE (not the key text) decides — a real campaign named after a
+//      sentinel keeps its own money (review F3).
+//   4. Every breakdown names its basis (captured_base) + basis_label, and its
+//      revenue_basis (order_window vs click_cohort — review F6).
+//   5. Totals fold EVERY bucket, not the returned page.
+//   6. COST — meta_api / pin_manual / ledger / mixed / unknown, plus
+//      pin_ambiguous and api_by_campaign_only refusals; a KNOWN-PARTIAL never
+//      looks clean (review F4); bot cpc is counted and NAMED (review F11).
+//   7. The ROAS totals row folds the window's platform spend including
+//      zero-click ghost campaigns (review F5).
+//   8. Bot clicks excluded from conversions, VISIBLE in the ledger.
+//   9. Cross-network revenue dedup: per-group full, window total once.
+//  10. TIMEZONE (REPORT_TZ=Europe/Madrid): a 23:30Z conversion lands on the
+//      NEXT Madrid day and divides THAT day's spend; both DST transitions.
+//  11. SCALE (review F1) — 50,000 clicks / 2,500 paid sessions resolve inside
+//      the analytics pool's 8s budget, with EXPLAIN of the REAL query showing
+//      the BitmapOr over idx_lb_clicks_session + idx_lb_clicks_vid.
+//  12. Zero-click / zero-spend / empty window: no division by zero, no NaN,
 //      no Infinity; unknown spend is null, never 0.
-//  11. Malformed input is refused (dimension, limit, days, dates, window size).
-//  12. The REAL router mounts, 401s without a token and serves with one.
+//  13. Malformed input refused; every windowed endpoint capped at 180 days
+//      (review F8); /clicks accepts an optional window (review F9); the
+//      funnel fan-out is ordered and admits truncation (review F7).
+//  14. The REAL router mounts, 401s without a token and serves with one.
 //
 // Run:  node server/tests/attribution/engine.mjs
 import postgres from 'postgres';
 
 const DB = 'postgres://puure@127.0.0.1:5433/puure_attribution_engine';
-const PORT = 48931;
+const PORT = 0; // OS-assigned at listen time (see T14)
 
 let pass = 0, fail = 0;
 const ok = (c, m, x = '') => { if (c) { pass++; console.log('PASS ', m); } else { fail++; console.log('FAIL ', m, x); } };
@@ -50,12 +60,11 @@ Object.assign(process.env, {
 
 const sql = postgres(DB, { ssl: false, onnotice: () => {} });
 
-const svc = await import('../../src/services/funnelAttribution.js');
 const {
   getMarketing, getRoas, getClicks, getSpendDaily,
-  resolveKeys, resolveCost, resolveWindow, dayKeyInTz, shiftDay,
-  REPORT_TZ, DIRECT_KEY, NOT_SET_KEY, BASIS, MARKETING_DIMENSIONS,
-} = svc;
+  resolveKeys, resolveCost, resolveWindow, readAttributedSessions,
+  dayKeyInTz, shiftDay, REPORT_TZ, DIRECT_KEY, NOT_SET_KEY, BASIS, MARKETING_DIMENSIONS,
+} = await import('../../src/services/funnelAttribution.js');
 const { closeAnalyticsPool } = await import('../../src/services/analyticsDb.js');
 const { ensureCheckoutTables } = await import('../../src/services/checkoutSchema.js');
 const { ensureTrackingTables } = await import('../../src/services/trackingSchema.js');
@@ -68,14 +77,27 @@ await ensureFunnelTables();
 
 ok(REPORT_TZ === 'Europe/Madrid', 'setup REPORT_TZ defaults to Europe/Madrid', REPORT_TZ);
 
+// The one index this lane added to trackingSchema (review F1 BLOCKER).
+{
+  const idx = await sql`SELECT indexname FROM pg_indexes WHERE indexname = 'idx_lb_clicks_session'`;
+  ok(idx.length === 1, 'setup idx_lb_clicks_session exists after the REAL trackingSchema ensure',
+    JSON.stringify(idx));
+}
+
 // ── fixtures ───────────────────────────────────────────────────────────────
 const F1 = 'fnl_attr_alpha';
 const F2 = 'fnl_attr_beta';
 const FPIN = 'fnl_attr_pin';
 const FAMB = 'fnl_attr_amb';
+const FA = 'fnl_attr_xf_a';   // cross-funnel: the ad ran here
+const FB = 'fnl_attr_xf_b';   // cross-funnel: the order landed here
+const FSCALE = 'fnl_attr_scale';
+const FMIX = 'fnl_attr_mixed';
 await sql`INSERT INTO funnels (id, slug, name) VALUES
   (${F1},'attr-alpha','Attr Alpha'), (${F2},'attr-beta','Attr Beta'),
-  (${FPIN},'attr-pin','Attr Pin'), (${FAMB},'attr-amb','Attr Amb')`;
+  (${FPIN},'attr-pin','Attr Pin'), (${FAMB},'attr-amb','Attr Amb'),
+  (${FA},'attr-xf-a','Attr XF A'), (${FB},'attr-xf-b','Attr XF B'),
+  (${FSCALE},'attr-scale','Attr Scale'), (${FMIX},'attr-mixed','Attr Mixed')`;
 
 const session = (id, { funnel = F1, vid = null, paid, total = 100, status = 'paid' } = {}) =>
   sql.unsafe(
@@ -132,17 +154,19 @@ const pin = (cid, fid) => sql.unsafe(
 const finite = (v) => v === null || (Number.isFinite(v) && !Number.isNaN(v));
 const rowBy = (rows, key) => rows.find((r) => r.key === key) || null;
 
-// ═══ T0: PURE — resolveKeys branches, no database ══════════════════════════
+// ═══ T0: PURE — resolveKeys branches and STATES, no database ═══════════════
 {
   const none = resolveKeys({});
-  ok(none.campaign === DIRECT_KEY && none.source === DIRECT_KEY && none.referrer === DIRECT_KEY,
-    'T0 no click and no touch → every key is "direct / none"', JSON.stringify(none));
-  const seenUntagged = resolveKeys({ has_touch: true, touch_utm: {}, touch_url: 'https://s.test/lp' });
-  ok(seenUntagged.campaign === NOT_SET_KEY,
-    'T0 visit seen but untagged → "(not set)", NOT "direct / none"', seenUntagged.campaign);
-  ok(seenUntagged.landing_page === 's.test/lp',
-    'T0 landing page keys on host+path, query dropped', seenUntagged.landing_page);
-  ok(seenUntagged.referrer === DIRECT_KEY,
+  ok(none.keys.campaign === DIRECT_KEY && none.keys.referrer === DIRECT_KEY,
+    'T0 no click and no touch → every key is "direct / none"', JSON.stringify(none.keys));
+  ok(none.attribution.campaign === 'none' && none.attribution.source === 'none',
+    'T0 …and the STATE says none', JSON.stringify(none.attribution));
+  const seen = resolveKeys({ has_touch: true, touch_utm: {}, touch_url: 'https://s.test/lp?x=1' });
+  ok(seen.keys.campaign === NOT_SET_KEY && seen.attribution.campaign === 'untagged',
+    'T0 visit seen but untagged → "(not set)" / state untagged', JSON.stringify(seen.attribution));
+  ok(seen.keys.landing_page === 's.test/lp' && seen.attribution.landing_page === 'resolved',
+    'T0 landing page keys on host+path, query dropped, state resolved', seen.keys.landing_page);
+  ok(seen.keys.referrer === DIRECT_KEY && seen.attribution.referrer === 'none',
     'T0 blank referrer with a visit IS "direct / none" (nothing referred them)');
   const full = resolveKeys({
     has_click: true, network: 'meta',
@@ -151,12 +175,19 @@ const rowBy = (rows, key) => rows.find((r) => r.key === key) || null;
     landing_url: 'https://s.test/lp?fbclid=x',
     has_touch: true, referrer: 'https://news.test/article/9',
   });
-  ok(full.campaign === 'summer' && full.source === 'fb' && full.referrer === 'news.test'
-    && full.landing_page === 's.test/lp', 'T0 utm wins, referrer reduces to host, query stripped',
-  JSON.stringify(full));
+  ok(full.keys.campaign === 'summer' && full.keys.source === 'fb'
+    && full.keys.referrer === 'news.test' && full.keys.landing_page === 's.test/lp',
+  'T0 utm wins, referrer reduces to host, query stripped', JSON.stringify(full.keys));
+  ok(Object.values(full.attribution).every((s) => s === 'resolved'),
+    'T0 …every dimension resolved', JSON.stringify(full.attribution));
   const structOnly = resolveKeys({ has_click: true, network: 'meta', click_struct: { campaign_id: '99' } });
-  ok(structOnly.campaign === '99' && structOnly.source === 'meta',
+  ok(structOnly.keys.campaign === '99' && structOnly.keys.source === 'meta',
     'T0 no utm → struct.campaign_id, then the network names the source');
+  // F3: a REAL campaign named after a sentinel is state-resolved, not merged.
+  const impostor = resolveKeys({ has_click: true, click_utm: { utm_campaign: DIRECT_KEY } });
+  ok(impostor.keys.campaign === DIRECT_KEY && impostor.attribution.campaign === 'resolved',
+    'T0 a campaign literally named "direct / none" is RESOLVED, not unattributed',
+    JSON.stringify(impostor.attribution));
 }
 
 // ═══ T1: THE STITCH — last touch BEFORE payment ════════════════════════════
@@ -190,32 +221,84 @@ const rowBy = (rows, key) => rows.find((r) => r.key === key) || null;
     'T1 a BOT click never attributes; the touch behind it does', JSON.stringify(rb.rows));
 }
 
-// ═══ T2: 'direct / none' vs '(not set)' are different facts ════════════════
+// ═══ T1b: FUNNEL SCOPE — review F2 ═════════════════════════════════════════
+{
+  // The ad ran on funnel A; the same visitor bought on funnel B. No stamp — the
+  // vid branch is the live one, which is exactly what leaked before.
+  await session('s_xf', { funnel: FB, vid: 'v_xf', paid: '2026-06-15T12:00:00Z', total: 250 });
+  await click('c_xf', { funnel: FA, vid: 'v_xf', campaign: 'xf_camp', network: 'meta', ts: '2026-06-15T09:00:00Z' });
+  await touch('v_xf', { funnel: FA, utm: { utm_campaign: 'xf_camp' }, ts: '2026-06-15T09:00:00Z' });
+
+  const scoped = await getMarketing({ start: '2026-06-15', end: '2026-06-15', funnelId: FB, dimension: 'campaign' });
+  ok(scoped.rows.length === 1 && scoped.rows[0].key === DIRECT_KEY
+    && scoped.rows[0].attribution === 'none',
+  'T1b scoped to fB, an fA click behind the order is NOT this funnel\'s acquisition',
+  JSON.stringify(scoped.rows));
+  ok(scoped.funnel_scoped === true, 'T1b …and the response says it was scoped');
+
+  const unscoped = await getMarketing({ start: '2026-06-15', end: '2026-06-15', dimension: 'campaign' });
+  ok(rowBy(unscoped.rows, 'xf_camp')?.sales === 250,
+    'T1b unscoped, the resolver stays visitor-global and resolves the campaign',
+    JSON.stringify(unscoped.rows.map((x) => x.key)));
+  ok(unscoped.funnel_scoped === false, 'T1b …and says it was not scoped');
+
+  // THE AGREEMENT: /roas scoped to fB also sees no click, so the two cards on
+  // one page tell the same story.
+  const roasB = await getRoas({ funnelId: FB, days: 90, dimension: 'campaign' },
+    { now: Date.parse('2026-06-20T12:00:00Z') });
+  ok(roasB.rows.length === 0,
+    'T1b /roas scoped to fB has no click either — /marketing and /roas AGREE',
+    JSON.stringify(roasB.rows));
+  const roasA = await getRoas({ funnelId: FA, days: 90, dimension: 'campaign' },
+    { now: Date.parse('2026-06-20T12:00:00Z') });
+  ok(rowBy(roasA.rows, 'xf_camp')?.clicks === 1,
+    'T1b …and fA owns the click it paid for', JSON.stringify(roasA.rows));
+}
+
+// ═══ T2: attribution STATE, not key text (review F3) ═══════════════════════
 {
   await session('s_dark', { funnel: F2, vid: null, paid: '2026-06-13T12:00:00Z', total: 40 });
   await session('s_untagged', { funnel: F2, vid: 'v_untag', paid: '2026-06-13T13:00:00Z', total: 60 });
   await touch('v_untag', { funnel: F2, utm: {}, url: 'https://shop.test/offer', ts: '2026-06-13T12:30:00Z' });
+  // The impostor: a REAL campaign whose name collides with the sentinel.
+  await session('s_impostor', { funnel: F2, vid: 'v_imp', paid: '2026-06-13T14:00:00Z', total: 777 });
+  await click('c_impostor', {
+    funnel: F2, vid: 'v_imp', utm: { utm_campaign: DIRECT_KEY }, ts: '2026-06-13T13:30:00Z',
+  });
 
   const r = await getMarketing({ start: '2026-06-13', end: '2026-06-13', funnelId: F2, dimension: 'campaign' });
-  const direct = rowBy(r.rows, DIRECT_KEY);
-  const notSet = rowBy(r.rows, NOT_SET_KEY);
-  ok(direct && notSet, 'T2 nothing-measured and seen-but-untagged are SEPARATE rows',
-    JSON.stringify(r.rows.map((x) => x.key)));
-  ok(direct.sales === 40 && notSet.sales === 60, 'T2 …and each carries its own money');
-  ok(direct.is_unattributed === true && notSet.is_unattributed === true,
-    'T2 both are flagged is_unattributed so a card can label them honestly');
+  const unattributed = r.rows.filter((x) => x.is_unattributed);
+  const real = r.rows.find((x) => x.key === DIRECT_KEY && !x.is_unattributed);
+  ok(r.rows.filter((x) => x.key === DIRECT_KEY).length === 2,
+    'T2 the impostor campaign and the real sentinel are TWO rows, not one',
+    JSON.stringify(r.rows.map((x) => [x.key, x.attribution, x.sales])));
+  ok(real && real.sales === 777 && real.attribution === 'resolved',
+    'T2 the real campaign keeps its own $777 — it is not laundered into unattributed',
+    JSON.stringify(real));
+  ok(real.label === 'direct / none (campaign)',
+    'T2 …and its LABEL disambiguates it on screen while the key round-trips', real?.label);
+  ok(unattributed.length === 2 && unattributed.reduce((s, x) => s + x.sales, 0) === 100,
+    'T2 nothing-measured ($40) and seen-but-untagged ($60) stay separate and unattributed',
+    JSON.stringify(unattributed.map((x) => [x.key, x.attribution, x.sales])));
   const land = await getMarketing({ start: '2026-06-13', end: '2026-06-13', funnelId: F2, dimension: 'landing_page' });
   ok(rowBy(land.rows, 'shop.test/offer')?.sales === 60,
     'T2 landing_page keys off the touch url', JSON.stringify(land.rows.map((x) => x.key)));
 }
 
-// ═══ T3: every breakdown names its basis ═══════════════════════════════════
+// ═══ T3: basis + revenue_basis on every breakdown (review F6) ══════════════
 {
   for (const dim of MARKETING_DIMENSIONS) {
     const r = await getMarketing({ start: '2026-06-10', end: '2026-06-13', dimension: dim });
     ok(r.basis === BASIS && typeof r.basis_label === 'string' && r.basis_label.length > 20,
       `T3 ${dim} breakdown names its basis + basis_label`, `${r.basis} / ${r.basis_label}`);
+    ok(r.revenue_basis === 'order_window' && r.revenue_basis_label.includes('window'),
+      `T3 ${dim} names its REVENUE basis (order_window)`, r.revenue_basis);
   }
+  const roas = await getRoas({ days: 7, dimension: 'network' }, { now: Date.parse('2026-08-09T12:00:00Z') });
+  ok(roas.revenue_basis === 'click_cohort' && roas.revenue_basis_label.includes('after the window'),
+    'T3 /roas names the DIFFERENT basis it uses (click_cohort)', roas.revenue_basis);
+  const sd = await getSpendDaily({ start: '2026-06-10', end: '2026-06-13', funnelId: F1 });
+  ok(sd.revenue_basis === 'order_window', 'T3 /spend-daily names its revenue basis', sd.revenue_basis);
   const r = await getMarketing({ start: '2026-06-10', end: '2026-06-13', dimension: 'nope' });
   ok(r.error === 'invalid_dimension', 'T3 an unknown dimension is REFUSED before any query', JSON.stringify(r));
 }
@@ -291,8 +374,6 @@ const rowBy = (rows, key) => rows.find((r) => r.key === key) || null;
     'T6 the 23-HOUR day holds both of its instants', JSON.stringify(m29));
   ok(m30.sales === 44 && m28.sales === 0,
     'T6 …and the hour that does not exist locally shifts nothing else', JSON.stringify([m28, m30]));
-
-  // The window itself is DST-safe: a 3-day window is 3 day keys, not 2.96.
   ok(spring.series.length === 3 && fall.series.length === 3,
     'T6 a 3-day window is 3 calendar day keys across BOTH transitions',
     `${spring.series.length}/${fall.series.length}`);
@@ -302,7 +383,7 @@ const rowBy = (rows, key) => rows.find((r) => r.key === key) || null;
     'T6 dayKeyInTz agrees with Postgres on the same instant');
 }
 
-// ═══ T7: COST — all four branches, on real rows ════════════════════════════
+// ═══ T7: COST — every branch, on real rows ═════════════════════════════════
 const NOW = Date.parse('2026-08-09T12:00:00Z'); // Madrid day 2026-08-09
 const CDAY = '2026-08-05';
 const CTS = '2026-08-05T10:00:00Z';
@@ -353,8 +434,8 @@ const CTS = '2026-08-05T10:00:00Z';
     'T7d …and roas/cpa are withheld with it (never Infinity, never 0)', JSON.stringify(unk));
   ok(amb && amb.cost === null && amb.cost_unknown_reason === 'pin_ambiguous',
     'T7e two pinned campaigns and one manual number is REFUSED, not split', JSON.stringify(amb));
-  ok(new Set(r.rows.map((x) => x.cost_source)).size >= 3 && r.cost_sources.length === 4,
-    'T7 cost_source is a FIELD and the enum is published', JSON.stringify(r.cost_sources));
+  ok(r.cost_sources.length === 5 && r.cost_sources.includes('mixed'),
+    'T7 the cost_source enum is published and includes mixed', JSON.stringify(r.cost_sources));
 
   // The granularity rule: campaign-granular spend is NOT folded at sub-id level.
   await click('c_sub', { vid: 'v_sub', campaign: 'cmp_api', network: 'meta', subs: { sub1: 'widget_a' }, ts: CTS });
@@ -362,6 +443,62 @@ const CTS = '2026-08-05T10:00:00Z';
   const sub = rowBy(rs.rows, 'widget_a');
   ok(sub && sub.cost === null && sub.cost_unknown_reason === 'api_by_campaign_only',
     'T7f campaign-granular spend is never multiplied across sub-id groups', JSON.stringify(sub));
+}
+
+// ═══ T7g: KNOWN-PARTIAL never looks clean (review F4) ══════════════════════
+{
+  // One group ('mixnet'), two campaigns: one pin resolvable ($50), one pinned
+  // to a funnel with two pins (ambiguous), plus $1 of ledger cpc.
+  await click('c_mix1', { funnel: FMIX, vid: 'v_mix1', campaign: 'cmp_mix_ok', network: 'mixnet', cpc: 0.5, ts: CTS });
+  await click('c_mix2', { funnel: FMIX, vid: 'v_mix2', campaign: 'cmp_mix_amb', network: 'mixnet', cpc: 0.5, ts: CTS });
+  await pin('cmp_mix_ok', 'fnl_mix_solo');
+  await manualSpend('fnl_mix_solo', CDAY, 50);
+  await pin('cmp_mix_amb', 'fnl_mix_multi');
+  await pin('cmp_mix_amb2', 'fnl_mix_multi');
+  await manualSpend('fnl_mix_multi', CDAY, 400);
+
+  const r = await getRoas({ funnelId: FMIX, days: 7, dimension: 'network' }, { now: NOW });
+  const mix = rowBy(r.rows, 'mixnet');
+  ok(mix && mix.cost === 51, 'T7g the resolvable $50 pin + $1 ledger is REPORTED, not dropped',
+    JSON.stringify(mix));
+  ok(mix.cost_source === 'mixed',
+    'T7g …under "mixed", never under a clean source name that hides the gap', mix?.cost_source);
+  ok(/partial — 1 pinned campaign ambiguous and excluded/.test(mix.cost_note || ''),
+    'T7g …and cost_note names how much is missing and why', mix?.cost_note);
+  ok(mix.cost_unknown_reason === null && mix.roas !== null,
+    'T7g a known-partial still yields a roas (off an admittedly partial cost)', JSON.stringify(mix));
+}
+
+// ═══ T7h: bot cpc is cost, and it is NAMED (review F11) ════════════════════
+{
+  await click('c_botcost', { funnel: FMIX, vid: 'v_botcost', network: 'botnet2', cpc: 0.5, bot: true, ts: CTS });
+  const r = await getRoas({ funnelId: FMIX, days: 7, dimension: 'network' }, { now: NOW });
+  const bn = rowBy(r.rows, 'botnet2');
+  ok(bn && bn.cost === 0.5 && bn.cost_source === 'ledger',
+    'T7h bot clicks still COST — the network charged for them', JSON.stringify(bn));
+  ok(/1 bot click/.test(bn.cost_note || '') && /\$0\.50/.test(bn.cost_note || ''),
+    'T7h …and the row says so, with the amount and the count', bn?.cost_note);
+  ok(bn.conversions === 0 && bn.bot_clicks === 1,
+    'T7h …while contributing no conversions', JSON.stringify(bn));
+}
+
+// ═══ T7i: the GHOST campaign — totals ≠ sum of rows (review F5) ════════════
+{
+  await metaSpend('cmp_ghost', CDAY, 5000); // spent $5,000, got ZERO clicks
+  const r = await getRoas({ days: 7, dimension: 'campaign' }, { now: NOW });
+  ok(!rowBy(r.rows, 'cmp_ghost'), 'T7i a zero-click campaign has no row (it had no clicks)');
+  ok(r.totals.cost >= 5100,
+    'T7i …but the TOTALS row folds its $5,000 — the money did leave the bank account',
+    String(r.totals.cost));
+  ok(r.totals.untracked_campaigns >= 1 && r.untracked_campaigns >= 1,
+    'T7i untracked_campaigns counts the campaigns no row can show',
+    String(r.totals.untracked_campaigns));
+  ok(/no clicks in this window/.test(r.totals.cost_note || ''),
+    'T7i …and the totals row says so in plain words', r.totals.cost_note);
+  const rowSum = r.rows.reduce((s, x) => s + (x.cost || 0), 0);
+  ok(r.totals.cost > rowSum,
+    'T7i the footer is NOT recomputable from the rows, by design', `${r.totals.cost} vs ${rowSum}`);
+  ok(r.totals.cost_source === 'mixed', 'T7i …and it names itself mixed', r.totals.cost_source);
 }
 
 // ═══ T8: bots excluded from conversions, VISIBLE in the ledger ═════════════
@@ -392,6 +529,16 @@ const CTS = '2026-08-05T10:00:00Z';
   const capped = await getClicks({ funnelId: F1, limit: 2 });
   ok(capped.rows.length === 2 && capped.truncated === true,
     'T8 the ledger admits when it truncated', JSON.stringify({ n: capped.rows.length, t: capped.truncated }));
+
+  // review F9 — the optional window
+  const unwindowed = await getClicks({ funnelId: F1, limit: 500 });
+  const windowed = await getClicks({ funnelId: F1, limit: 500, start: CDAY, end: CDAY });
+  ok(windowed.window?.start === CDAY && windowed.window?.timezone === 'Europe/Madrid',
+    'T9F the ledger accepts a Madrid window and reports it', JSON.stringify(windowed.window));
+  ok(windowed.rows.length < unwindowed.rows.length && windowed.rows.every((x) => x.day === CDAY),
+    'T9F …and every row inside it is on that Madrid day',
+    `${windowed.rows.length}/${unwindowed.rows.length}`);
+  ok(unwindowed.window === null, 'T9F …while an unwindowed call says so explicitly');
 }
 
 // ═══ T9: cross-network dedup — per group full, window total once ═══════════
@@ -442,22 +589,22 @@ const CTS = '2026-08-05T10:00:00Z';
 
 // ═══ T11: TTL flag ═════════════════════════════════════════════════════════
 {
-  const old = await getMarketing({ start: shiftDay(dayKeyInTz(Date.now()), -120), end: dayKeyInTz(Date.now()), dimension: 'campaign' });
+  const today = dayKeyInTz(Date.now());
+  const old = await getMarketing({ start: shiftDay(today, -120), end: today, dimension: 'campaign' });
   ok(old.attribution_ttl_risk === true && old.warnings.length === 1,
     'T11 a window past the 90-day click/touch TTL is FLAGGED, with a named warning',
     JSON.stringify(old.warnings));
-  const recent = await getMarketing({ start: shiftDay(dayKeyInTz(Date.now()), -7), end: dayKeyInTz(Date.now()), dimension: 'campaign' });
+  const recent = await getMarketing({ start: shiftDay(today, -7), end: today, dimension: 'campaign' });
   ok(recent.attribution_ttl_risk === false && recent.warnings.length === 0,
     'T11 …and a recent window is not');
 }
 
-// ═══ T12: malformed input is refused ═══════════════════════════════════════
+// ═══ T12: malformed input refused; one 180-day ceiling (review F8) ═════════
 {
   const cases = [
     [await getMarketing({ start: 'yesterday', end: '2026-06-10' }), 'invalid_date_format', 'malformed day'],
     [await getMarketing({ start: '2026-02-31', end: '2026-03-01' }), 'invalid_date', 'a day that does not exist'],
     [await getMarketing({ start: '2026-06-10', end: '2026-06-01' }), 'to_before_from', 'to before from'],
-    [await getMarketing({ start: '2024-01-01', end: '2026-06-01' }), 'window_too_large', 'a 401+ day window'],
     [await getMarketing({ start: '2026-06-10', end: '2026-06-10', limit: 'lots' }), 'invalid_limit', 'a non-numeric limit'],
     [await getMarketing({ start: '2026-06-10', end: '2026-06-10', limit: 0 }), 'invalid_limit', 'limit 0'],
     [await getRoas({ days: 0 }), 'invalid_days', 'days 0'],
@@ -469,8 +616,17 @@ const CTS = '2026-08-05T10:00:00Z';
   for (const [res, expected, what] of cases) {
     ok(res.error === expected, `T12 ${what} → ${expected}`, JSON.stringify(res).slice(0, 120));
   }
+  // ONE ceiling, everywhere (review F8): 180 days is fine, 181 is not.
+  const at180 = { start: shiftDay('2026-06-01', -179), end: '2026-06-01' };
+  const at181 = { start: shiftDay('2026-06-01', -180), end: '2026-06-01' };
+  ok((await getMarketing(at180)).window.days === 180, 'T12 /marketing accepts exactly 180 days');
+  ok((await getMarketing(at181)).error === 'window_too_large', 'T12 /marketing refuses 181');
+  ok((await getSpendDaily({ ...at181, funnelId: F1 })).error === 'window_too_large',
+    'T12 /spend-daily refuses 181 — the SAME ceiling, not parseWindow\'s 400');
+  ok((await getClicks({ ...at181, funnelId: F1 })).error === 'window_too_large',
+    'T12 /clicks refuses 181 too');
   const clamped = await getRoas({ days: 9999, dimension: 'network' }, { now: NOW });
-  ok(clamped.window.days === 180, 'T12 days is CLAMPED to the 180-day ceiling, not refused', String(clamped.window.days));
+  ok(clamped.window.days === 180, 'T12 /roas days is CLAMPED to the same 180, not refused', String(clamped.window.days));
   const clampedLimit = await getClicks({ funnelId: F1, limit: 99999 });
   ok(clampedLimit.limit === 500, 'T12 the ledger limit is clamped to 500', String(clampedLimit.limit));
 }
@@ -481,6 +637,106 @@ const CTS = '2026-08-05T10:00:00Z';
   ok(w.to === '2026-08-10', 'T13 "today" with no params is the MADRID day, not the UTC day', w.to);
   ok(w.from === '2026-07-12' && w.days === 30, 'T13 the default window is 30 Madrid days', `${w.from}/${w.days}`);
   ok(w.tz === 'Europe/Madrid', 'T13 the window carries its timezone', w.tz);
+}
+
+// ═══ T15: SCALE — 50,000 clicks / 2,500 paid sessions (review F1) ══════════
+{
+  const SDAY = '2026-05-01';
+  await sql.unsafe(
+    `INSERT INTO co_sessions (id, funnel_id, vid, status, total, currency, paid_at, created_at)
+     SELECT 'ss_'||g, $1, 'v_s_'||g, 'paid', 25, 'USD',
+            TIMESTAMPTZ '2026-05-01 06:00:00+00' + (g || ' seconds')::interval,
+            TIMESTAMPTZ '2026-05-01 06:00:00+00'
+     FROM generate_series(1, 2500) g`, [FSCALE]
+  );
+  // 2,500 STAMPED clicks (the branch the new index serves) …
+  await sql.unsafe(
+    `INSERT INTO lb_clicks (id, funnel_id, vid, network, click_key, click_id, struct, subs, utm,
+                            cpc, country, device, bot, landing_url, first_seen, last_seen, ts,
+                            converted, session_id, expires_at)
+     SELECT 'ks_'||g, $1, 'v_s_'||g, 'meta', 'fbclid', 'cs_'||g,
+            jsonb_build_object('campaign_id', 'scale_'||(g % 10)), '{}'::jsonb, '{}'::jsonb,
+            NULL, '', '', FALSE, '',
+            TIMESTAMPTZ '2026-05-01 05:00:00+00', TIMESTAMPTZ '2026-05-01 05:00:00+00',
+            TIMESTAMPTZ '2026-05-01 05:00:00+00', TRUE, 'ss_'||g,
+            TIMESTAMPTZ '2026-08-01 05:00:00+00'
+     FROM generate_series(1, 2500) g`, [FSCALE]
+  );
+  // … and 47,500 unconverted ones, which is what makes a seq scan expensive.
+  await sql.unsafe(
+    `INSERT INTO lb_clicks (id, funnel_id, vid, network, click_key, click_id, struct, subs, utm,
+                            cpc, country, device, bot, landing_url, first_seen, last_seen, ts,
+                            converted, session_id, expires_at)
+     SELECT 'ku_'||g, $1, 'v_u_'||g, 'meta', 'fbclid', 'cu_'||g,
+            jsonb_build_object('campaign_id', 'scale_'||(g % 10)), '{}'::jsonb, '{}'::jsonb,
+            NULL, '', '', FALSE, '',
+            TIMESTAMPTZ '2026-05-01 05:00:00+00', TIMESTAMPTZ '2026-05-01 05:00:00+00',
+            TIMESTAMPTZ '2026-05-01 05:00:00+00', FALSE, '',
+            TIMESTAMPTZ '2026-08-01 05:00:00+00'
+     FROM generate_series(1, 47500) g`, [FSCALE]
+  );
+  await sql`ANALYZE lb_clicks`;
+  await sql`ANALYZE co_sessions`;
+  const [{ n: clickCount }] = await sql`SELECT COUNT(*)::int AS n FROM lb_clicks WHERE funnel_id = ${FSCALE}`;
+  const [{ n: sessCount }] = await sql`SELECT COUNT(*)::int AS n FROM co_sessions WHERE funnel_id = ${FSCALE}`;
+  ok(clickCount === 50000 && sessCount === 2500,
+    'T15 fixture is at the reviewer\'s scale (50,000 clicks / 2,500 paid sessions)',
+    `${clickCount}/${sessCount}`);
+
+  // EXPLAIN the REAL query FIRST — captured by injecting the query fn, so this
+  // is the exact SQL the service runs, not a hand-written lookalike. Doing it
+  // before the timed call means a regression prints its plan even if the timed
+  // call then blows the budget.
+  let capturedSql = null;
+  let capturedParams = null;
+  await readAttributedSessions(
+    { funnelId: FSCALE, w: { from: SDAY, to: SDAY, days: 1, tz: REPORT_TZ } },
+    { query: async (s, p) => { capturedSql = s; capturedParams = p; return []; } }
+  );
+  const planRows = await sql.unsafe(`EXPLAIN ${capturedSql}`, capturedParams);
+  const plan = planRows.map((x) => x['QUERY PLAN']).join('\n');
+  console.log(plan.split('\n').map((l) => `      | ${l}`).join('\n'));
+  ok(/BitmapOr/.test(plan), 'T15 EXPLAIN of the REAL query shows a BitmapOr over the two disjuncts', plan);
+  ok(/idx_lb_clicks_session/.test(plan),
+    'T15 …and it uses idx_lb_clicks_session (the index this lane added)', plan);
+  ok(/idx_lb_clicks_vid/.test(plan), 'T15 …alongside idx_lb_clicks_vid for the vid half', plan);
+  ok(!/Seq Scan on lb_clicks/.test(plan), 'T15 …and never a sequential scan of lb_clicks', plan);
+
+  const t = Date.now();
+  let r;
+  try {
+    r = await getMarketing({ start: SDAY, end: SDAY, funnelId: FSCALE, dimension: 'campaign', limit: 50 });
+  } catch (err) {
+    // A statement_timeout here IS the blocker regressing. Report it as a FAIL
+    // with its plan rather than crashing the run.
+    r = { error: String(err?.message || err), meta: { computed_ms: Date.now() - t } };
+  }
+  const wall = Date.now() - t;
+  ok(!r.error, 'T15 the scaled read COMPLETES — it does not hit the pool\'s 8s statement_timeout',
+    JSON.stringify(r.error));
+  ok(!r.error && r.totals.orders === 2500 && r.totals.rows_total === 10,
+    'T15 …and it is CORRECT at scale (2,500 orders across 10 campaigns)',
+    JSON.stringify(r.totals || r.error));
+  ok(!r.error && r.meta.computed_ms < 8000 && wall < 8000,
+    `T15 …inside the 8s analytics budget (computed_ms=${r.meta?.computed_ms}, wall=${wall}ms)`,
+    `${r.meta?.computed_ms}/${wall}`);
+  console.log(`      → scaled /marketing: computed_ms=${r.meta?.computed_ms}, wall=${wall}ms`);
+}
+
+// ═══ T16: funnel fan-out is ordered and admits truncation (review F7) ══════
+{
+  await sql.unsafe(
+    `INSERT INTO funnels (id, slug, name) SELECT 'fnl_bulk_'||lpad(g::text,4,'0'),
+      'bulk-'||g, 'Bulk '||g FROM generate_series(1, 505) g`
+  );
+  const sd = await getSpendDaily({ start: '2026-08-09', end: '2026-08-09' });
+  ok(sd.funnels_truncated === true,
+    'T16 a fan-out beyond the 500-funnel cap ADMITS it rather than silently under-reporting',
+    JSON.stringify({ n: sd.funnels.length, t: sd.funnels_truncated }));
+  ok(sd.funnels.length === 500, 'T16 …and takes exactly the cap', String(sd.funnels.length));
+  const again = await getSpendDaily({ start: '2026-08-09', end: '2026-08-09' });
+  ok(JSON.stringify(again.funnels) === JSON.stringify(sd.funnels),
+    'T16 the ORDER BY id makes two identical requests return the same 500 funnels');
 }
 
 // ═══ T14: the REAL router mounts, authenticates and serves ═════════════════
@@ -504,9 +760,13 @@ const CTS = '2026-08-05T10:00:00Z';
 
   const app = express();
   app.use('/api/v1/funnel-attribution', attributionRoutes); // same mount as routes/index.js
-  const server = app.listen(PORT);
-  await new Promise((r) => setTimeout(r, 150));
-  const base = `http://127.0.0.1:${PORT}/api/v1/funnel-attribution`;
+  // Port 0 = let the OS pick. A fixed port makes the harness fail with
+  // EADDRINUSE when a previous run died before its server.close() — a harness
+  // that cannot be re-run is not a harness.
+  const server = app.listen(0);
+  await new Promise((r) => server.once('listening', r));
+  const port = server.address().port;
+  const base = `http://127.0.0.1:${port}/api/v1/funnel-attribution`;
   const auth = { headers: { Authorization: `Bearer ${TOKEN}` } };
 
   const anon = await fetch(`${base}/marketing?start=2026-06-10&end=2026-06-10`);
@@ -514,24 +774,32 @@ const CTS = '2026-08-05T10:00:00Z';
 
   const mk = await fetch(`${base}/marketing?start=2026-06-10&end=2026-06-10&funnel_id=${F1}&dimension=campaign`, auth);
   const mkBody = await mk.json();
-  ok(mk.status === 200 && mkBody.rows[0].key === 'winner' && mkBody.basis === BASIS,
-    'T14 GET /marketing serves the same answer the engine computed', `${mk.status} ${JSON.stringify(mkBody.rows)}`);
+  ok(mk.status === 200 && mkBody.rows[0].key === 'winner' && mkBody.basis === BASIS
+    && mkBody.revenue_basis === 'order_window',
+  'T14 GET /marketing serves the same answer the engine computed', `${mk.status} ${JSON.stringify(mkBody.rows)}`);
 
   const bad = await fetch(`${base}/marketing?start=2026-06-10&end=2026-06-10&dimension=nope`, auth);
   ok(bad.status === 400 && (await bad.json()).error === 'invalid_dimension',
     'T14 an illegal dimension is a 400 from the route', String(bad.status));
+  const wide = await fetch(`${base}/marketing?start=2020-01-01&end=2026-06-01`, auth);
+  ok(wide.status === 400 && (await wide.json()).error === 'window_too_large',
+    'T14 an over-wide window is a 400 from the route', String(wide.status));
 
   const roas = await fetch(`${base}/roas?days=7&dimension=campaign`, auth);
-  ok(roas.status === 200 && Array.isArray((await roas.clone().json()).rows), 'T14 GET /roas serves', String(roas.status));
-  const clicks = await fetch(`${base}/clicks?limit=5`, auth);
-  ok(clicks.status === 200 && (await clicks.json()).rows.length === 5, 'T14 GET /clicks serves', String(clicks.status));
+  const roasBody = await roas.json();
+  ok(roas.status === 200 && roasBody.revenue_basis === 'click_cohort',
+    'T14 GET /roas serves and names its cohort basis', String(roas.status));
+  const clicks = await fetch(`${base}/clicks?limit=5&start=${CDAY}&end=${CDAY}`, auth);
+  const clicksBody = await clicks.json();
+  ok(clicks.status === 200 && clicksBody.rows.length === 5 && clicksBody.window.start === CDAY,
+    'T14 GET /clicks serves, honours the window and reports it', String(clicks.status));
   const spend = await fetch(`${base}/spend-daily?start=2026-08-09&end=2026-08-10&funnel_id=${FPIN}`, auth);
   const spendBody = await spend.json();
   ok(spend.status === 200 && spendBody.window.timezone === 'Europe/Madrid',
     'T14 GET /spend-daily serves and names its timezone', JSON.stringify(spendBody.window));
   const defs = await fetch(`${base}/definitions`, auth);
   const defsBody = await defs.json();
-  ok(defs.status === 200 && defsBody.timezone === 'Europe/Madrid' && defsBody.cost_sources.length === 4,
+  ok(defs.status === 200 && defsBody.timezone === 'Europe/Madrid' && defsBody.cost_sources.length === 5,
     'T14 GET /definitions publishes the vocabulary', String(defs.status));
 
   server.close();
@@ -539,8 +807,6 @@ const CTS = '2026-08-05T10:00:00Z';
 
 // ── teardown ───────────────────────────────────────────────────────────────
 await closeAnalyticsPool();
-const { closePool } = await import('../../src/db/pg.js').then((m) => ({ closePool: m.closePool || m.default?.closePool }));
-if (typeof closePool === 'function') await closePool();
 await sql.end();
 
 console.log(`\n${pass} passed, ${fail} failed`);
