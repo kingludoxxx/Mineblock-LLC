@@ -27,18 +27,53 @@ import {
 import { resolveArm } from '../services/splitResolver.js';
 import { recordExposure } from '../services/splitCredits.js';
 
-// Resolve the one live test for (funnel, scope), hash the visitor to an arm,
-// and write the exposure denominator. Every failure is swallowed: a split
-// outage must never block a mint or an upsell decision (fail-open serving).
-async function recordSplitExposure({ funnelId, sessionId, visitorId, scope }) {
+// Write the exposure denominator. Every failure is swallowed: a split outage
+// must never block a mint or an upsell decision (fail-open serving).
+//
+// PAGE scope — the DELIVERED VIEWS are the source of truth (review findings:
+// dark-arm re-picks and multi-test funnels made a hash-here diverge from what
+// was served). The exposure lands on exactly the tests whose handle this
+// visitor actually visited (their lb_split_views rows), under the arm they
+// were ACTUALLY SERVED. A visitor who never hit a handle belongs in no page
+// test's denominator — and an attacker must actually take delivery of a page
+// before their sessions can touch a denominator.
+//
+// OFFER scope — membership-gated: the exposure concerns the one live offer
+// test ONLY when the offer being shown/decided IS that test's target or one
+// of its arms' offers. Other offers on the funnel (a second upsell, a
+// downsell) stay out of the experiment. Arm = the same sticky hash the
+// display override uses, so exposure and display can never disagree.
+async function recordSplitExposure({ funnelId, sessionId, visitorId, scope, offerId }) {
   if (!funnelId || !sessionId || !visitorId) return;
+  if (scope === 'page') {
+    const views = await pgQuery(
+      `SELECT v.test_id, v.arm_key FROM lb_split_views v
+       JOIN lb_split_tests t ON t.id = v.test_id
+       WHERE t.funnel_id = $1 AND t.scope = 'page' AND t.enabled AND NOT t.archived
+         AND v.visitor_id = $2`,
+      [String(funnelId).slice(0, 64), String(visitorId).slice(0, 120)]
+    );
+    for (const v of views) {
+      await recordExposure({ sessionId, testId: v.test_id, armKey: v.arm_key });
+    }
+    return;
+  }
   const [test] = await pgQuery(
-    `SELECT id FROM lb_split_tests
-     WHERE funnel_id = $1 AND scope = $2 AND enabled AND NOT archived
+    `SELECT id, target_offer_id FROM lb_split_tests
+     WHERE funnel_id = $1 AND scope = 'offer' AND enabled AND NOT archived
      ORDER BY created_at ASC LIMIT 1`,
-    [String(funnelId).slice(0, 64), scope]
+    [String(funnelId).slice(0, 64)]
   );
   if (!test) return;
+  const oid = String(offerId || '');
+  if (!oid) return;
+  const arms = await pgQuery(
+    `SELECT offer_id FROM lb_split_arms WHERE test_id = $1 AND NOT archived`,
+    [test.id]
+  );
+  const member = oid === String(test.target_offer_id || '')
+    || arms.some((a) => String(a.offer_id || '') === oid);
+  if (!member) return;
   const { armKey } = await resolveArm({ visitorId, testId: test.id });
   if (!armKey) return;
   await recordExposure({ sessionId, testId: test.id, armKey });
@@ -51,16 +86,30 @@ async function recordSplitExposure({ funnelId, sessionId, visitorId, scope }) {
 // were not shown). Test selection is IDENTICAL to recordSplitExposure's
 // (first live offer-scope test on the funnel) so the displayed arm and the
 // recorded exposure can never disagree. Fail-open: null = keep the default.
-async function resolveOfferArmOverride({ funnelId, visitorId }) {
+async function resolveOfferArmOverride({ funnelId, visitorId, shownOfferId }) {
   try {
     if (!funnelId || !visitorId) return null;
     const [test] = await pgQuery(
-      `SELECT id FROM lb_split_tests
+      `SELECT id, target_offer_id FROM lb_split_tests
        WHERE funnel_id = $1 AND scope = 'offer' AND enabled AND NOT archived
        ORDER BY created_at ASC LIMIT 1`,
       [String(funnelId).slice(0, 64)]
     );
     if (!test) return null;
+    // SCOPE GUARD (review finding): the override applies ONLY when the offer
+    // being displayed is the one under test (the target) or already one of
+    // the arms' offers (a refresh posting the arm offer maps back to the
+    // same arm — the hash is deterministic). Every OTHER offer on the funnel
+    // — a second upsell, a downsell — is not part of the experiment and must
+    // never be hijacked.
+    const arms = await pgQuery(
+      `SELECT offer_id FROM lb_split_arms WHERE test_id = $1 AND NOT archived`,
+      [test.id]
+    );
+    const shown = String(shownOfferId || '');
+    const inScope = shown && (shown === String(test.target_offer_id || '')
+      || arms.some((a) => String(a.offer_id || '') === shown));
+    if (!inScope) return null;
     const { arm } = await resolveArm({ visitorId, testId: test.id });
     if (!arm || !arm.offer_id) return null;
     const [offer] = await pgQuery(
@@ -69,6 +118,16 @@ async function resolveOfferArmOverride({ funnelId, visitorId }) {
     );
     if (!offer || !offer.enabled) return null;
     if (offer.funnel_id && offer.funnel_id !== funnelId) return null;
+    // DISPLAYABILITY GUARD: an arm offer with no fixed price AND no variant
+    // cannot be priced for display — swapping it in would 422 a page the
+    // default offer renders fine. Keep the default instead.
+    if ((offer.price === null || offer.price === undefined) && !offer.variant_id) return null;
+    // First overridden display = the offer test's DELIVERY EPOCH (idempotent).
+    await pgQuery(
+      `UPDATE lb_split_tests SET delivery_epoch_at = NOW()
+       WHERE id = $1 AND delivery_epoch_at IS NULL`,
+      [test.id]
+    ).catch?.(() => {});
     return offer;
   } catch (err) {
     console.error('[checkout] offer-arm override failed (fail-open):', err.message);
@@ -640,6 +699,7 @@ router.post('/upsell/accept', async (req, res) => {
     recordSplitExposure({
       funnelId: session.funnel_id || '', sessionId: session.id,
       visitorId: String(req.cookies?._fos_vid || ''), scope: 'offer',
+      offerId: offer.id,
     }).catch(() => {});
 
     // variant_id '' on the offer = "charge whatever the on-page selection
@@ -863,6 +923,7 @@ router.post('/upsell/decline', async (req, res) => {
     recordSplitExposure({
       funnelId: session.funnel_id || '', sessionId: session.id,
       visitorId: String(req.cookies?._fos_vid || ''), scope: 'offer',
+      offerId: offer.id,
     }).catch(() => {});
     await pgQuery(
       `INSERT INTO co_upsell_charges
@@ -951,8 +1012,19 @@ router.get('/upsell/offer', async (req, res) => {
     const armOffer = await resolveOfferArmOverride({
       funnelId: session.funnel_id || '',
       visitorId: String(req.cookies?._fos_vid || ''),
+      shownOfferId: offer.id,
     });
     if (armOffer && armOffer.id !== offer.id) offer = armOffer;
+
+    // DISPLAY-time exposure (review finding): buyers who SEE the offer and
+    // close the tab must be in the denominator, or silent abandonment biases
+    // exactly the arm that causes it. Idempotent per (session, test); the
+    // accept/decline hooks below collide into no-ops. Fail-open.
+    recordSplitExposure({
+      funnelId: session.funnel_id || '', sessionId: session.id,
+      visitorId: String(req.cookies?._fos_vid || ''), scope: 'offer',
+      offerId: offer.id,
+    }).catch(() => {});
 
     const variantId = offer.variant_id || '';
     const hasFixedPrice = offer.price !== null && offer.price !== undefined;

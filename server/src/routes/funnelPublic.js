@@ -181,15 +181,22 @@ async function servePage(req, res, resolvePage) {
       if (split) {
         if (needsMint) {
           // Same cookie the client runtime mints (name/path/lifetime/SameSite;
-          // NOT HttpOnly — trackingRuntime reads it back for beacons).
+          // NOT HttpOnly — trackingRuntime reads it back for beacons). secure
+          // only in production, matching the checkout cookie's pattern — an
+          // unconditional flag makes plain-HTTP dev drop it, re-rolling the
+          // arm every request.
           res.cookie('_fos_vid', visitorId, {
-            maxAge: 365 * 864e5, path: '/', sameSite: 'lax', secure: true,
+            maxAge: 365 * 864e5, path: '/', sameSite: 'lax',
+            secure: process.env.NODE_ENV === 'production',
           });
         }
         // The delivered render is the visitor count (funnel-os counts the
         // impression on delivery). Fire-and-forget — never delays the page.
-        recordView({ testId: split.test.id, armKey: split.arm.arm_key, visitorId })
-          .catch(() => {});
+        // A PAUSED test serves unbranched: no view, no measurement.
+        if (!split.paused) {
+          recordView({ testId: split.test.id, armKey: split.arm.arm_key, visitorId })
+            .catch(() => {});
+        }
         page = split.page; // already published + not archived, by query
       }
     }

@@ -105,12 +105,13 @@ check('T0 SPLIT_DELIVERY_WIRED is true', SPLIT_DELIVERY_WIRED === true);
   check('T4 no entry flag → control arm', r2?.arm?.arm_key === 'a', JSON.stringify(r2?.arm));
 }
 
-// ── T5: disabled / archived test → null (serve falls through) ───────────────
+// ── T5: paused keeps the route (entry serve); only ARCHIVE releases it ──────
 {
   await reseed({ enabled: false });
-  check('T5 disabled test → null', (await resolvePageSplit({ funnelId: FID, relPath: '/lp1', visitorId: 'v_x' }, { query: q })) === null);
+  const rp = await resolvePageSplit({ funnelId: FID, relPath: '/lp1', visitorId: 'v_x' }, { query: q });
+  check('T5 paused test still serves (entry/control, paused flag)', rp !== null && rp.paused === true && rp.arm.arm_key === 'a', JSON.stringify(rp?.arm));
   await reseed({ archived: true });
-  check('T5 archived test → null', (await resolvePageSplit({ funnelId: FID, relPath: '/lp1', visitorId: 'v_x' }, { query: q })) === null);
+  check('T5 archived test → null (route released)', (await resolvePageSplit({ funnelId: FID, relPath: '/lp1', visitorId: 'v_x' }, { query: q })) === null);
 }
 
 // ── T6: path discipline ─────────────────────────────────────────────────────
@@ -142,12 +143,12 @@ check('T0 SPLIT_DELIVERY_WIRED is true', SPLIT_DELIVERY_WIRED === true);
   const { _splitInternals } = await import('../../src/routes/checkoutPublic.js');
   await q(`DELETE FROM lb_split_arms WHERE test_id = 'tst_off'`);
   await q(`DELETE FROM lb_split_tests WHERE id = 'tst_off'`);
-  await q(`DELETE FROM co_upsells WHERE id IN ('up_x', 'up_y', 'up_dis')`);
+  await q(`DELETE FROM co_upsells WHERE id IN ('up_x', 'up_y', 'up_dis', 'up_other')`);
   await q(`INSERT INTO co_upsells (id, funnel_id, variant_id, price, title, enabled) VALUES
     ('up_x', $1, '111', 19.00, 'Offer X', TRUE),
     ('up_y', $1, '222', 29.00, 'Offer Y', TRUE),
     ('up_dis', $1, '333', 39.00, 'Disabled', FALSE)`, [FID]);
-  await q(`INSERT INTO lb_split_tests (id, funnel_id, name, scope, enabled) VALUES ('tst_off', $1, 'offer test', 'offer', TRUE)`, [FID]);
+  await q(`INSERT INTO lb_split_tests (id, funnel_id, name, scope, target_offer_id, enabled) VALUES ('tst_off', $1, 'offer test', 'offer', 'up_x', TRUE)`, [FID]);
   await q(`INSERT INTO lb_split_arms (id, test_id, arm_key, weight, offer_id, is_control) VALUES
     ('armo_x', 'tst_off', 'a', 1, 'up_x', TRUE),
     ('armo_y', 'tst_off', 'b', 1, 'up_y', FALSE)`);
@@ -155,22 +156,40 @@ check('T0 SPLIT_DELIVERY_WIRED is true', SPLIT_DELIVERY_WIRED === true);
   // because this harness DB is the app DB for this process.
   const seen = new Set();
   for (let i = 0; i < 100; i++) {
-    const o = await _splitInternals.resolveOfferArmOverride({ funnelId: FID, visitorId: `v_off_${i}` });
+    const o = await _splitInternals.resolveOfferArmOverride({ funnelId: FID, visitorId: `v_off_${i}`, shownOfferId: 'up_x' });
     if (o) seen.add(o.id);
   }
   check('T8 both arm offers get shown across visitors', seen.has('up_x') && seen.has('up_y'), JSON.stringify([...seen]));
-  const o1 = await _splitInternals.resolveOfferArmOverride({ funnelId: FID, visitorId: 'v_off_sticky' });
-  const o2 = await _splitInternals.resolveOfferArmOverride({ funnelId: FID, visitorId: 'v_off_sticky' });
+  const o1 = await _splitInternals.resolveOfferArmOverride({ funnelId: FID, visitorId: 'v_off_sticky', shownOfferId: 'up_x' });
+  const o2 = await _splitInternals.resolveOfferArmOverride({ funnelId: FID, visitorId: 'v_off_sticky', shownOfferId: 'up_x' });
   check('T8 override is sticky per visitor', o1 && o2 && o1.id === o2.id, JSON.stringify({ o1: o1?.id, o2: o2?.id }));
-  check('T8 no visitor id → null (default offer stands)', (await _splitInternals.resolveOfferArmOverride({ funnelId: FID, visitorId: '' })) === null);
+  check('T8 no visitor id → null (default offer stands)', (await _splitInternals.resolveOfferArmOverride({ funnelId: FID, visitorId: '', shownOfferId: 'up_x' })) === null);
+  // SCOPE GUARD (review finding 4): an offer OUTSIDE the test — a second
+  // upsell, a downsell — must never be hijacked by the override.
+  await q(`DELETE FROM co_upsells WHERE id = 'up_other'`);
+  await q(`INSERT INTO co_upsells (id, funnel_id, variant_id, price, title, enabled) VALUES ('up_other', $1, '444', 59.00, 'Other step', TRUE)`, [FID]);
+  check('T8 out-of-scope offer NOT hijacked', (await _splitInternals.resolveOfferArmOverride({ funnelId: FID, visitorId: 'v_off_sticky', shownOfferId: 'up_other' })) === null);
+  // First in-scope override stamped the offer test's delivery epoch.
+  const [eo] = await q(`SELECT delivery_epoch_at FROM lb_split_tests WHERE id = 'tst_off'`);
+  check('T8 offer epoch stamped on first override', eo.delivery_epoch_at !== null);
   // Arm pointing at a DISABLED offer must not be swapped in.
   await q(`UPDATE lb_split_arms SET offer_id = 'up_dis' WHERE id = 'armo_y'`);
   let disabledServed = false;
   for (let i = 0; i < 60; i++) {
-    const o = await _splitInternals.resolveOfferArmOverride({ funnelId: FID, visitorId: `v_off2_${i}` });
+    const o = await _splitInternals.resolveOfferArmOverride({ funnelId: FID, visitorId: `v_off2_${i}`, shownOfferId: 'up_x' });
     if (o && o.id === 'up_dis') { disabledServed = true; break; }
   }
   check('T8 disabled arm offer never shown', !disabledServed);
+  // DISPLAYABILITY GUARD: an arm offer with no price and no variant is
+  // undisplayable — the default must stand rather than 422 the page.
+  await q(`UPDATE co_upsells SET price = NULL, variant_id = '' WHERE id = 'up_y'`);
+  await q(`UPDATE lb_split_arms SET offer_id = 'up_y' WHERE id = 'armo_y'`);
+  let undisplayableServed = false;
+  for (let i = 0; i < 60; i++) {
+    const o = await _splitInternals.resolveOfferArmOverride({ funnelId: FID, visitorId: `v_off3_${i}`, shownOfferId: 'up_x' });
+    if (o && o.id === 'up_y') { undisplayableServed = true; break; }
+  }
+  check('T8 undisplayable arm offer never swapped in', !undisplayableServed);
 }
 
 // ── T9: fail-open — a broken DB yields null, never a throw ──────────────────
@@ -194,12 +213,49 @@ check('T0 SPLIT_DELIVERY_WIRED is true', SPLIT_DELIVERY_WIRED === true);
   check('T10 3:1 weights ≈ 75% (65–85% tolerance)', frac > 0.65 && frac < 0.85, String(frac));
 }
 
+// ── T11 (review): first delivered view stamps the DELIVERY EPOCH once ──────
+{
+  await reseed();
+  const [before] = await q(`SELECT delivery_epoch_at FROM lb_split_tests WHERE id = 'tst_del'`);
+  await recordView({ testId: 'tst_del', armKey: 'a', visitorId: 'v_epoch1' }, { query: q });
+  const [after1] = await q(`SELECT delivery_epoch_at FROM lb_split_tests WHERE id = 'tst_del'`);
+  await new Promise((r) => setTimeout(r, 20));
+  await recordView({ testId: 'tst_del', armKey: 'b', visitorId: 'v_epoch2' }, { query: q });
+  const [after2] = await q(`SELECT delivery_epoch_at FROM lb_split_tests WHERE id = 'tst_del'`);
+  check('T11 epoch NULL before first view', before.delivery_epoch_at === null);
+  check('T11 epoch stamped by first view', after1.delivery_epoch_at !== null);
+  check('T11 epoch never re-stamped', String(after1.delivery_epoch_at) === String(after2.delivery_epoch_at));
+}
+
+// ── T12 (review): a PAUSED test keeps its route — entry arm, unbranched ─────
+{
+  await reseed({ enabled: false, entryArm: 'b' });
+  const results = new Set();
+  for (let i = 0; i < 20; i++) {
+    const r = await resolvePageSplit({ funnelId: FID, relPath: '/lp1', visitorId: `v_pause_${i}` }, { query: q });
+    if (r) { results.add(r.arm.arm_key); if (!r.paused) results.add('NOT_PAUSED'); }
+    else results.add('NULL');
+  }
+  check('T12 paused test serves ONLY the entry arm, flagged paused', results.size === 1 && results.has('b'), [...results].join(','));
+}
+
+// ── T13 (review): a null page_id arm is re-picked, not a bail ───────────────
+{
+  await reseed();
+  await q(`UPDATE lb_split_arms SET page_id = NULL WHERE id = 'arm_b'`);
+  let allA = true;
+  for (let i = 0; i < 40; i++) {
+    const r = await resolvePageSplit({ funnelId: FID, relPath: '/lp1', visitorId: `v_null_${i}` }, { query: q });
+    if (!r || r.page.id !== 'pg_a') { allA = false; break; }
+  }
+  check('T13 null page_id arm → re-picked to the live arm', allA);
+}
 // cleanup
 await q(`DELETE FROM lb_split_views WHERE test_id = 'tst_del'`);
 await q(`DELETE FROM lb_split_arms WHERE test_id IN ('tst_del', 'tst_off')`);
 await q(`DELETE FROM lb_split_tests WHERE id IN ('tst_del', 'tst_off')`);
 await q(`DELETE FROM funnel_pages WHERE funnel_id = $1`, [FID]);
-await q(`DELETE FROM co_upsells WHERE id IN ('up_x', 'up_y', 'up_dis')`);
+await q(`DELETE FROM co_upsells WHERE id IN ('up_x', 'up_y', 'up_dis', 'up_other')`);
 await sql.end();
 console.log(`\nRESULT: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

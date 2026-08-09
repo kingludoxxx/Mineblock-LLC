@@ -206,6 +206,12 @@ async function createTables(query) {
 //   point at the same arm — and do by default — but they are separate columns.
 async function addOperatorColumns(query) {
   await query(`ALTER TABLE lb_split_tests ADD COLUMN IF NOT EXISTS handle TEXT`);
+  // The instant real arm DELIVERY first happened for this test (first served
+  // view for page scope, first overridden display for offer scope). The
+  // verdict engine refuses/clamps windows before it: exposures recorded while
+  // every arm served identical content are noise and must never crown a
+  // winner. NULL = nothing delivered yet.
+  await query(`ALTER TABLE lb_split_tests ADD COLUMN IF NOT EXISTS delivery_epoch_at TIMESTAMPTZ`);
   await query(`ALTER TABLE lb_split_tests ADD COLUMN IF NOT EXISTS domain TEXT`);
   await query(`ALTER TABLE lb_split_arms ADD COLUMN IF NOT EXISTS sort_order INTEGER NOT NULL DEFAULT 0`);
   await query(`ALTER TABLE lb_split_arms ADD COLUMN IF NOT EXISTS is_entry BOOLEAN NOT NULL DEFAULT FALSE`);

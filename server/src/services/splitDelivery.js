@@ -30,9 +30,9 @@ import { pickArm } from './splitResolver.js';
  * among the remaining live arms (deterministically — the hash re-runs over the
  * smaller set), so a mid-test unpublish degrades the test, never the traffic.
  *
- * A visitor with no id gets the ENTRY arm (the operator's declared default for
- * the bare route), falling back to control — deterministic, no assignment
- * recorded.
+ * The ENTRY arm (falling back to control) serves two non-experiment cases
+ * deterministically: a request whose visitor id is genuinely empty, and a
+ * PAUSED test (which keeps owning its route — see below).
  *
  * @param {{funnelId:string, relPath:string, visitorId:string}} p
  *   relPath is mount-relative with a leading '/' (funnelPublic's convention).
@@ -52,10 +52,13 @@ export async function resolvePageSplit(
     if (!path || path.includes('/')) return null;
     await ensureSplitTables(query);
 
+    // NOT filtered on `enabled`: a PAUSED (disabled, non-archived) test still
+    // OWNS its route — live ads point at /<handle> and a pause must never 404
+    // the traffic. A paused test serves its entry/control arm unbranched (no
+    // view recorded, no experiment). Only archiving releases the route.
     const [test] = await query(
-      `SELECT id, funnel_id, handle FROM lb_split_tests
-       WHERE funnel_id = $1 AND scope = 'page' AND handle = $2
-         AND enabled AND NOT archived
+      `SELECT id, funnel_id, handle, enabled FROM lb_split_tests
+       WHERE funnel_id = $1 AND scope = 'page' AND handle = $2 AND NOT archived
        LIMIT 1`,
       [String(funnelId).slice(0, 64), path.slice(0, 120)]
     );
@@ -68,20 +71,27 @@ export async function resolvePageSplit(
     );
     if (!arms.length) return null;
 
+    // A paused test pins everyone to the entry/control arm — deterministic,
+    // unbranched serving that keeps the route alive with zero measurement.
+    const paused = !test.enabled;
+
     // Deterministic pick, then verify the arm's page is actually servable.
-    // Re-pick over the remaining arms when it is not — at most N iterations.
+    // An unservable arm — dark page, archived page, OR a null/dangling
+    // page_id — is filtered out and the pick re-runs over the remainder, so a
+    // misconfigured arm degrades the test, never the traffic.
     let candidates = arms;
     while (candidates.length) {
-      const arm = visitorId
+      const arm = (visitorId && !paused)
         ? pickArm(visitorId, test.id, candidates)
         : (candidates.find((a) => a.is_entry) || pickArm('', test.id, candidates));
-      if (!arm || !arm.page_id) return null;
+      if (!arm) return null;
+      if (!arm.page_id) { candidates = candidates.filter((a) => a !== arm); continue; }
       const [page] = await query(
         `SELECT * FROM funnel_pages
          WHERE id = $1 AND funnel_id = $2 AND NOT archived AND status = 'published'`,
         [String(arm.page_id), String(funnelId)]
       );
-      if (page) return { test, arm, page };
+      if (page) return { test, arm, page, paused };
       candidates = candidates.filter((a) => a !== arm);
     }
     return null;
@@ -117,6 +127,16 @@ export async function recordView(
        RETURNING test_id`,
       [tidV, vid, arm]
     );
+    // First delivered render = the test's DELIVERY EPOCH. Idempotent one-time
+    // stamp; the verdict engine refuses/clamps windows before this instant
+    // (exposures recorded while arms served identical content are noise).
+    if (rows.length) {
+      await query(
+        `UPDATE lb_split_tests SET delivery_epoch_at = NOW()
+         WHERE id = $1 AND delivery_epoch_at IS NULL`,
+        [tidV]
+      );
+    }
     return rows.length ? 'recorded' : 'duplicate';
   } catch (err) {
     // eslint-disable-next-line no-console
