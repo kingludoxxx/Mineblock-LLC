@@ -166,7 +166,63 @@ const req = async (method, path, body, headers = H) => {
   const r4 = await req('PUT', '/klaviyo', { api_key: 12345 });
   check('non-string api_key → 422', r4.status === 422, r4.text);
 
+  // review #10: strict input shapes
+  const rE = await req('PUT', '/klaviyo', { enabled: 'yes' });
+  check("enabled 'yes' → 400", rE.status === 400, rE.text);
+  const rL = await req('PUT', '/klaviyo', { list_id_default: 123 });
+  check('numeric list_id_default → 400', rL.status === 400, rL.text);
+  const rL2 = await req('PUT', '/klaviyo', { list_id_default: 'x'.repeat(65) });
+  check('65-char list_id_default → 400', rL2.status === 400, rL2.text);
+
   // restore for the rest of the run
+  await req('PUT', '/klaviyo', { api_key: GOOD_KEY, enabled: true, list_id_default: 'L1' });
+}
+
+// ── 2b. HIGH#1 race probes (reviewer's probe, ported) ──────────────────────
+// Pre-fix numbers: PUT‖PUT lost the key 143/200; writeLastTest‖Clear
+// resurrected it 85/200. With the SQL-side jsonb merge both must be 0/200.
+// NB: the probes drive the SERVICE functions directly (Promise.all over
+// patchKlaviyoConfig/writeLastTest) — over HTTP, local handler latency
+// serialized the writers and even the PRE-FIX code went 0/200 (verified: the
+// HTTP version of this probe passed green against 9a54fa5). Direct concurrent
+// calls interleave at every await, which is exactly the reviewer's setup —
+// and the pre-fix service fails THIS probe (negative control, see the
+// progress log for the numbers).
+{
+  const { patchKlaviyoConfig, writeLastTest } = await import(`${ROOT}/server/src/services/klaviyoService.js`);
+  // A) set-key ‖ set-enabled from a CLEARED row: the just-saved key must
+  // survive every time. The clear-first is load-bearing: with a key already
+  // stored, the pre-fix whole-object writer would carry the PREVIOUS
+  // ciphertext and mask the lost update from the api_key_set boolean.
+  let lostKey = 0;
+  for (let i = 0; i < 200; i++) {
+    await patchKlaviyoConfig({ api_key: null });
+    await Promise.all([
+      patchKlaviyoConfig({ api_key: GOOD_KEY }),
+      patchKlaviyoConfig({ enabled: (i % 2) === 0 }),
+    ]);
+    const g = await req('GET', '/klaviyo');
+    if (!g.j.data.klaviyo.api_key_set) lostKey++;
+  }
+  check('race A: 200× concurrent set-key‖set-enabled → ZERO lost keys', lostKey === 0, `lost=${lostKey}/200`);
+
+  // B) writeLastTest ‖ Clear: the cleared key must STAY cleared — a test
+  // result may land either side of the clear, but it can never resurrect
+  // the key (and the chip needs api_key_set too, so a stray last_test is
+  // cosmetically inert).
+  let resurrected = 0;
+  for (let i = 0; i < 200; i++) {
+    await patchKlaviyoConfig({ api_key: GOOD_KEY });
+    await Promise.all([
+      writeLastTest({ ok: true, account_name: 'Race Probe' }),
+      patchKlaviyoConfig({ api_key: null }),
+    ]);
+    const g = await req('GET', '/klaviyo');
+    if (g.j.data.klaviyo.api_key_set) resurrected++;
+  }
+  check('race B: 200× writeLastTest‖Clear → key NEVER resurrected', resurrected === 0, `resurrected=${resurrected}/200`);
+
+  // restore
   await req('PUT', '/klaviyo', { api_key: GOOD_KEY, enabled: true, list_id_default: 'L1' });
 }
 
@@ -229,10 +285,13 @@ await sql`INSERT INTO co_orders (id, session_id, idempotency_key, total, currenc
     && evCall.body.data.attributes.properties.order_id === 'ord_1', JSON.stringify(evCall.body).slice(0, 200));
 }
 
-// unpaid session refuses the money metric; lead fires instead
+// unpaid session refuses the money metric; lead fires instead — and the lead
+// path is PII-LEAN (review MED#3): the session carries full contact details,
+// but only the email may reach Klaviyo before payment.
 const SID2 = 'co_' + crypto.randomBytes(8).toString('hex');
 await sql`INSERT INTO co_sessions (id, funnel_id, page_id, status, line_items, subtotal, total, currency, customer)
-  VALUES (${SID2}, 'f_kl', 'p1', 'processing', ${sql.json([])}, 0, 19, 'USD', ${sql.json({ email: 'lead@x.test' })})`;
+  VALUES (${SID2}, 'f_kl', 'p1', 'processing', ${sql.json([{ variant_id: 'v9', quantity: 2, price: 9.5, title: 'Puure Drops' }])}, 0, 19, 'USD',
+          ${sql.json({ email: 'lead@x.test', first_name: 'Lea', last_name: 'Der', phone: '+15550002222', shipping: { city: 'Milan', country: 'IT' } })})`;
 {
   const blocked = await fireKlaviyoOrderEvent(SID2);
   check('order event refuses a not-paid session', blocked.ok === false && String(blocked.error).startsWith('not_paid'), JSON.stringify(blocked));
@@ -241,8 +300,41 @@ await sql`INSERT INTO co_sessions (id, funnel_id, page_id, status, line_items, s
   check('lead fires Started Checkout with kl_<sid>', lead.ok === true
     && evCall.body?.data?.attributes?.unique_id === 'kl_' + SID2
     && evCall.body.data.attributes.metric.data.attributes.name === 'Started Checkout', JSON.stringify(lead));
+  // MED#3 proof: the lead profile POST carried the email and NOTHING else.
+  const profCall = calls.filter((c) => c.method === 'POST' && c.path.startsWith('/api/profiles/')
+    && c.body?.data?.attributes?.email === 'lead@x.test').pop();
+  check('lead profile upsert is EMAIL-ONLY (no name/phone/address)',
+    profCall && Object.keys(profCall.body.data.attributes).sort().join(',') === 'email',
+    profCall ? Object.keys(profCall.body.data.attributes).join(',') : 'no profile call');
+  check('lead event properties stripped to {item_count, funnel_id}',
+    Object.keys(evCall.body.data.attributes.properties).sort().join(',') === 'funnel_id,item_count'
+    && evCall.body.data.attributes.properties.item_count === 2
+    && evCall.body.data.attributes.value === 19,
+    JSON.stringify(evCall.body.data.attributes.properties));
   const missing = await fireKlaviyoOrderEvent('co_does_not_exist');
   check('missing session → clean refusal, no throw', missing.ok === false && missing.error === 'session_not_found', JSON.stringify(missing));
+}
+
+// upsell leg (review #5): per-charge-row idempotency, paid-gated on parent
+{
+  const { fireKlaviyoUpsellEvent } = await import(`${ROOT}/server/src/services/klaviyoEvents.js`);
+  const before = calls.filter((c) => c.path.startsWith('/api/events/')).length;
+  const r1 = await fireKlaviyoUpsellEvent(SID, 'ch_1', 199);
+  const r2 = await fireKlaviyoUpsellEvent(SID, 'ch_1', 199);
+  const after = calls.filter((c) => c.path.startsWith('/api/events/')).length;
+  const evCall = calls.filter((c) => c.path.startsWith('/api/events/')).pop();
+  check('upsell fires Placed Upsell Order w/ ku_<sid>_<row> and the CHARGE amount',
+    r1.ok === true && !r1.deduped
+    && evCall.body?.data?.attributes?.unique_id === `ku_${SID}_ch_1`
+    && evCall.body.data.attributes.metric.data.attributes.name === 'Placed Upsell Order'
+    && evCall.body.data.attributes.value === 199
+    && evCall.body.data.attributes.properties.charge_row === 'ch_1', JSON.stringify(evCall.body).slice(0, 220));
+  check('replayed upsell settle dedups', r2.ok === true && r2.deduped === true, JSON.stringify(r2));
+  check('exactly ONE /events/ call for the upsell double fire', after - before === 1, `delta=${after - before}`);
+  const unpaid = await fireKlaviyoUpsellEvent(SID2, 'ch_2', 10);
+  check('upsell refuses a not-paid PARENT session', unpaid.ok === false && String(unpaid.error).startsWith('not_paid'), JSON.stringify(unpaid));
+  const norow = await fireKlaviyoUpsellEvent(SID, '', 10);
+  check('upsell without a charge row is refused', norow.ok === false && norow.error === 'charge_row_required', JSON.stringify(norow));
 }
 
 // ── 7. fail-closed: mock 500 + timeout never throw, claim released ─────────
@@ -271,6 +363,29 @@ await sql`INSERT INTO co_sessions (id, funnel_id, page_id, status, line_items, s
   check('after recovery the released claim re-sends exactly once', retry.ok === true && !retry.deduped, JSON.stringify(retry));
 }
 
+// ── 7a. MED#2 forced throw between claim and send → claim released ─────────
+// The reviewer's case: pre-fix, a throw in that window orphaned the claim and
+// every retry answered deduped:true while Klaviyo had received nothing.
+const SID5 = 'co_' + crypto.randomBytes(8).toString('hex');
+await sql`INSERT INTO co_sessions (id, funnel_id, page_id, status, line_items, subtotal, total, currency, customer, paid_at)
+  VALUES (${SID5}, 'f_kl', 'p1', 'paid', ${sql.json([])}, 29, 29, 'USD', ${sql.json({ email: 'throw@x.test' })}, NOW())`;
+{
+  const events = await import(`${ROOT}/server/src/services/klaviyoEvents.js`);
+  const origTrack = events._deps.trackEvent;
+  events._deps.trackEvent = () => { throw new Error('forced_review2'); };
+  const r = await events.fireKlaviyoOrderEvent(SID5).catch((e) => ({ threw: e.message }));
+  check('forced throw between claim and send → {ok:false}, NOT thrown',
+    r.threw === undefined && r.ok === false && String(r.error).startsWith('internal:'), JSON.stringify(r));
+  const claims = await sql`SELECT * FROM lb_integration_sends WHERE ref = ${'ko_' + SID5}`;
+  check('throw-path RELEASED the claim (no orphan)', claims.length === 0, `claims=${claims.length}`);
+  events._deps.trackEvent = origTrack;
+  const before = calls.filter((c) => c.path.startsWith('/api/events/')).length;
+  const retry = await events.fireKlaviyoOrderEvent(SID5);
+  const after = calls.filter((c) => c.path.startsWith('/api/events/')).length;
+  check('retry after the forced throw ACTUALLY DELIVERS (not deduped)',
+    retry.ok === true && !retry.deduped && after - before === 1, JSON.stringify(retry) + ` delta=${after - before}`);
+}
+
 // ── 7b. 429 → honors retry-after with a single retry ───────────────────────
 {
   const { getAccount } = await import(`${ROOT}/server/src/services/klaviyoService.js`);
@@ -280,6 +395,26 @@ await sql`INSERT INTO co_sessions (id, funnel_id, page_id, status, line_items, s
   const elapsed = Date.now() - t0;
   check('429 then 200: single retry succeeds after retry-after', r.ok === true && r.account.name === 'Mock Puure LLC' && elapsed >= 900, `elapsed=${elapsed}ms ${JSON.stringify(r).slice(0, 120)}`);
   mode = 'ok';
+}
+
+// ── 7c. review #10: /test single-flight guard ──────────────────────────────
+// Two concurrent tests: exactly one runs (slow, vendor hanging → ok:false
+// timeout) and the other is refused 429 test_in_progress immediately.
+{
+  mode = 'timeout';
+  const [a, b] = await Promise.all([
+    req('POST', '/klaviyo/test', {}),
+    new Promise((r) => setTimeout(r, 150)).then(() => req('POST', '/klaviyo/test', {})),
+  ]);
+  const ran = [a, b].filter((x) => x.status === 200);
+  const refused = [a, b].filter((x) => x.status === 429);
+  check('concurrent /test → exactly one runs, one 429 test_in_progress',
+    ran.length === 1 && refused.length === 1 && refused[0].j.error.code === 'test_in_progress'
+    && ran[0].j.data.ok === false,
+    JSON.stringify({ a: a.status, b: b.status }));
+  mode = 'ok';
+  const again = await req('POST', '/klaviyo/test', {});
+  check('guard clears after the test finishes (finally)', again.status === 200 && again.j.data.ok === true, again.text);
 }
 
 // ── 8. the key never leaks — every response body, every console line ───────
@@ -292,6 +427,11 @@ await sql`INSERT INTO co_sessions (id, funnel_id, page_id, status, line_items, s
   // headers to the vendor (proves the assertion isn't vacuous).
   check('positive control: key reached the vendor via header', calls.some((c) => c.auth === `Klaviyo-API-Key ${GOOD_KEY}`));
 }
+
+// Review #10: the harness asserts its own coverage — a silently skipped
+// section can't masquerade as green.
+const EXPECTED_CHECKS = 52;
+check(`coverage: exactly ${EXPECTED_CHECKS} checks ran before this one`, pass + fail === EXPECTED_CHECKS, `ran=${pass + fail}`);
 
 console.log(`\nRESULT: ${pass} passed, ${fail} failed`);
 await sql.end();

@@ -68,6 +68,10 @@ export async function getKlaviyoConfig() {
 // Masked view — the ONLY shape routes may return. The key never appears.
 export async function getKlaviyoPublicView() {
   const cfg = await loadRawConfig();
+  return publicViewOf(cfg);
+}
+
+function publicViewOf(cfg) {
   return {
     api_key_set: Boolean(cfg.api_key),
     enabled: Boolean(cfg.enabled),
@@ -90,43 +94,63 @@ export async function getKlaviyoPublicView() {
 // enabled: boolean if present. list_id_default: undefined → keep, ''/null →
 // clear, value → set. last_test is service-owned (writeLastTest), not
 // patchable from a request body.
+//
+// CONCURRENCY (review fix HIGH#1, same remedy as the lb_pixels SQL-side
+// merge): the previous read-merge-write with whole-object replace lost
+// updates under concurrency (PUT‖PUT dropped the just-saved key 143/200 in
+// the reviewer's probe; writeLastTest racing a Clear resurrected the cleared
+// key 85/200). Now the DATABASE merges: each writer sends only its own patch
+// keys + its own cleared keys and Postgres applies
+//   config = (COALESCE(stored,'{}') - cleared::text[]) || patch::jsonb
+// atomically per row — concurrent writers of DIFFERENT keys both land, and a
+// writer can never resurrect a key it didn't touch.
 export async function patchKlaviyoConfig(body = {}) {
-  const cfg = await loadRawConfig();
+  const patch = {};
+  const cleared = [];
   if (body.api_key === null) {
-    delete cfg.api_key;
-    delete cfg.last_test; // a test result for a removed key is a lie
+    cleared.push('api_key', 'last_test'); // a test result for a removed key is a lie
   } else if (typeof body.api_key === 'string' && body.api_key.trim() !== '') {
-    cfg.api_key = encryptSecret(body.api_key.trim());
-    delete cfg.last_test; // stale for the new key until re-tested
+    patch.api_key = encryptSecret(body.api_key.trim());
+    cleared.push('last_test'); // stale for the new key until re-tested
   }
-  if (body.enabled !== null && body.enabled !== undefined) cfg.enabled = Boolean(body.enabled);
+  if (body.enabled !== null && body.enabled !== undefined) patch.enabled = Boolean(body.enabled);
   if (body.list_id_default !== undefined) {
     const v = body.list_id_default === null ? '' : String(body.list_id_default).trim();
-    if (v) cfg.list_id_default = v.slice(0, 64);
-    else delete cfg.list_id_default;
+    if (v) patch.list_id_default = v.slice(0, 64);
+    else cleared.push('list_id_default');
   }
-  await saveConfig(cfg);
-  return getKlaviyoPublicView();
+  const cfg = await mergeConfig(patch, cleared);
+  return publicViewOf(cfg);
 }
 
+// Pure jsonb patch of ONLY the last_test key — by construction it cannot
+// resurrect (or drop) api_key/enabled/list_id_default, whatever it races.
 export async function writeLastTest(result) {
-  const cfg = await loadRawConfig();
-  cfg.last_test = {
-    ok: Boolean(result.ok),
-    account_name: s(result.account_name, 200),
-    error: s(result.error, 200),
-    at: new Date().toISOString(),
-  };
-  await saveConfig(cfg);
+  await mergeConfig({
+    last_test: {
+      ok: Boolean(result.ok),
+      account_name: s(result.account_name, 200),
+      error: s(result.error, 200),
+      at: new Date().toISOString(),
+    },
+  }, []);
 }
 
-async function saveConfig(cfg) {
+// The single write path: SQL-side merge, atomic per row.
+// NB: pass `patch` as the RAW OBJECT — pgQuery (postgres.js) serializes jsonb
+// params itself; pre-stringifying double-encodes into a jsonb STRING scalar
+// and `- text[]` then throws 'cannot delete from scalar'.
+async function mergeConfig(patch, cleared) {
   await ensureIntegrationTables();
-  await pgQuery(
-    `INSERT INTO lb_integrations (kind, config, updated_at) VALUES ($1, $2, NOW())
-     ON CONFLICT (kind) DO UPDATE SET config = EXCLUDED.config, updated_at = NOW()`,
-    [KIND, cfg]
+  const rows = await pgQuery(
+    `INSERT INTO lb_integrations (kind, config, updated_at) VALUES ($1, $2::jsonb, NOW())
+     ON CONFLICT (kind) DO UPDATE SET
+       config = (COALESCE(lb_integrations.config, '{}'::jsonb) - $3::text[]) || $2::jsonb,
+       updated_at = NOW()
+     RETURNING config`,
+    [KIND, patch, cleared]
   );
+  return rows[0]?.config || {};
 }
 
 // ── HTTP core ───────────────────────────────────────────────────────────────
@@ -310,5 +334,6 @@ export async function getLists(opts = {}) {
       } catch { /* malformed next link: stop paging */ }
     }
   }
+  if (path) console.warn('[klaviyo] lists pagination cap (5 pages) hit — picker list is truncated');
   return { ok: true, lists };
 }

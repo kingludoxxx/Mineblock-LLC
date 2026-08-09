@@ -8,18 +8,49 @@
 // Key semantics mirror the server (write-only): the password field left blank
 // KEEPS the stored key, "Clear key" sends null to remove it, a typed value
 // replaces it. The key itself never round-trips — reads carry api_key_set.
+// Saves send ONLY dirty fields (review #8) — with the server's SQL-side jsonb
+// merge, an untouched field can never clobber a concurrent writer's value.
+//
+// Status chip states (review #6): the chip never claims a definitive
+// NOT CONNECTED unless it KNOWS — while loading it says Checking…, a failed
+// config fetch says Unknown (with a retry), and a configured+enabled card
+// that has never been tested says "Enabled — not yet tested" (amber).
 import { useCallback, useEffect, useState } from 'react';
-import { Plug, CheckCircle2, XCircle, Loader2, Trash2 } from 'lucide-react';
+import { Plug, CheckCircle2, XCircle, CircleHelp, Clock, Loader2, Trash2 } from 'lucide-react';
 import api from '../../services/api';
 import Button from '../../components/ui/Button';
 import Input from '../../components/ui/Input';
 
-function StatusChip({ connected }) {
-  return connected ? (
-    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-semibold bg-success/15 text-success border border-success/30">
-      <CheckCircle2 size={12} /> CONNECTED
-    </span>
-  ) : (
+function StatusChip({ state }) {
+  if (state === 'checking') {
+    return (
+      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-semibold bg-bg-elevated text-text-muted border border-border-default">
+        <Loader2 size={12} className="animate-spin" /> Checking…
+      </span>
+    );
+  }
+  if (state === 'unknown') {
+    return (
+      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-semibold bg-bg-elevated text-text-muted border border-border-default">
+        <CircleHelp size={12} /> Unknown
+      </span>
+    );
+  }
+  if (state === 'connected') {
+    return (
+      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-semibold bg-success/15 text-success border border-success/30">
+        <CheckCircle2 size={12} /> CONNECTED
+      </span>
+    );
+  }
+  if (state === 'untested') {
+    return (
+      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-semibold bg-warning/15 text-warning border border-warning/30">
+        <Clock size={12} /> Enabled — not yet tested
+      </span>
+    );
+  }
+  return (
     <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-semibold bg-bg-elevated text-text-muted border border-border-default">
       <XCircle size={12} /> NOT CONNECTED
     </span>
@@ -35,27 +66,30 @@ function KlaviyoMark() {
 }
 
 function KlaviyoCard() {
+  // loadState: 'loading' | 'ok' | 'error' — drives the chip's honesty.
+  const [loadState, setLoadState] = useState('loading');
   const [view, setView] = useState(null); // { api_key_set, enabled, list_id_default, last_test }
   const [open, setOpen] = useState(false);
   const [keyInput, setKeyInput] = useState('');
   const [enabled, setEnabled] = useState(false);
   const [listId, setListId] = useState('');
-  const [lists, setLists] = useState(null); // null = not loaded
+  // lists: null = not loaded · { ok:true, lists } · { ok:false, error }
+  const [lists, setLists] = useState(null);
   const [busy, setBusy] = useState(false);
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState(null); // { ok, account?, error? }
   const [error, setError] = useState('');
 
   const load = useCallback(async () => {
+    setLoadState('loading');
     try {
       const res = await api.get('/integrations/klaviyo');
       const k = res.data?.data?.klaviyo || null;
       setView(k);
       if (k) { setEnabled(Boolean(k.enabled)); setListId(k.list_id_default || ''); }
-    } catch (err) {
-      setError(err.response?.data?.error?.code === 'internal_error'
-        ? 'The server could not read the Klaviyo settings.'
-        : 'Could not load the Klaviyo settings.');
+      setLoadState('ok');
+    } catch {
+      setLoadState('error');
     }
   }, []);
   useEffect(() => { load(); }, [load]);
@@ -64,9 +98,9 @@ function KlaviyoCard() {
     try {
       const res = await api.get('/integrations/klaviyo/lists');
       const d = res.data?.data;
-      if (d?.ok) setLists(d.lists || []);
-      else setLists([]);
-    } catch { setLists([]); }
+      if (d?.ok) setLists({ ok: true, lists: d.lists || [] });
+      else setLists({ ok: false, error: d?.error || 'unknown' });
+    } catch { setLists({ ok: false, error: 'request_failed' }); }
   }, []);
   useEffect(() => {
     if (open && view?.api_key_set && lists === null) loadLists();
@@ -76,19 +110,27 @@ function KlaviyoCard() {
     if (busy) return;
     setBusy(true); setError('');
     try {
-      const body = { enabled, list_id_default: listId };
+      // DIRTY FIELDS ONLY (review #8): an untouched toggle/list never rides
+      // along, so it can never overwrite a concurrent writer's value.
+      const body = {};
       if (clearKey) body.api_key = null;               // null = remove the key
       else if (keyInput.trim()) body.api_key = keyInput.trim(); // value = replace
-      // blank input → api_key omitted → server keeps the stored key
+      if (view && enabled !== Boolean(view.enabled)) body.enabled = enabled;
+      if (view && listId !== (view.list_id_default || '')) body.list_id_default = listId || null;
+      if (Object.keys(body).length === 0) { setBusy(false); return; }
       const res = await api.put('/integrations/klaviyo', body);
-      setView(res.data?.data?.klaviyo || null);
+      const k = res.data?.data?.klaviyo || null;
+      setView(k);
+      if (k) { setEnabled(Boolean(k.enabled)); setListId(k.list_id_default || ''); }
+      setLoadState('ok');
       setKeyInput('');
       setTestResult(null);
-      if (clearKey) setLists(null);
-      else if (body.api_key) { setLists(null); }
+      if (clearKey || body.api_key) setLists(null);
     } catch (err) {
-      setError(err.response?.data?.error?.code === 'invalid_api_key_type'
-        ? 'The API key must be plain text.'
+      const code = err.response?.data?.error?.code;
+      setError(code === 'invalid_api_key_type' ? 'The API key must be plain text.'
+        : code === 'invalid_enabled_type' ? 'Enabled must be on or off.'
+        : code === 'invalid_list_id' ? 'The list id must be a short text id.'
         : 'Saving the Klaviyo settings failed — nothing was changed.');
     } finally { setBusy(false); }
   };
@@ -101,17 +143,22 @@ function KlaviyoCard() {
       const d = res.data?.data || {};
       setTestResult(d);
       load(); // last_test is persisted server-side — refresh the chip inputs
-    } catch {
-      setTestResult({ ok: false, error: 'request_failed' });
+    } catch (err) {
+      setTestResult({ ok: false, error: err.response?.status === 429 ? 'test_in_progress' : 'request_failed' });
     } finally { setTesting(false); }
   };
 
-  const connected = Boolean(view?.api_key_set && view?.enabled && view?.last_test?.ok);
+  const chipState = loadState === 'loading' ? 'checking'
+    : loadState === 'error' ? 'unknown'
+    : view?.api_key_set && view?.enabled && view?.last_test?.ok ? 'connected'
+    : view?.api_key_set && view?.enabled && !view?.last_test ? 'untested'
+    : 'not_connected';
 
   const testErrorProse = (code) => {
     if (code === 'invalid_api_key') return 'Klaviyo rejected the stored key — paste a current private key (pk_…) and save.';
     if (code === 'not_configured') return 'No API key is stored yet — paste your Klaviyo private key and save first.';
     if (code === 'timeout') return 'Klaviyo did not answer within 15 seconds — try again in a moment.';
+    if (code === 'test_in_progress') return 'A connection test is already running — give it a few seconds.';
     return `The connection test failed (${code || 'unknown'}).`;
   };
 
@@ -125,8 +172,15 @@ function KlaviyoCard() {
             <p className="text-xs text-text-muted">Email marketing — profiles, events, lists</p>
           </div>
         </div>
-        <StatusChip connected={connected} />
+        <StatusChip state={chipState} />
       </div>
+
+      {loadState === 'error' && (
+        <p className="text-xs text-text-muted">
+          Couldn't reach the server to read the Klaviyo settings.{' '}
+          <button type="button" onClick={load} className="text-accent hover:underline cursor-pointer">Retry</button>
+        </p>
+      )}
 
       {view?.last_test?.ok && view.last_test.account_name && (
         <p className="text-xs text-text-muted">
@@ -135,12 +189,12 @@ function KlaviyoCard() {
       )}
 
       <div>
-        <Button variant="secondary" size="sm" onClick={() => setOpen((v) => !v)}>
+        <Button variant="secondary" size="sm" onClick={() => setOpen((v) => !v)} disabled={loadState === 'loading'}>
           {open ? 'Close' : 'Configure'}
         </Button>
       </div>
 
-      {open && (
+      {open && loadState === 'ok' && (
         <div className="border-t border-border-default pt-4 space-y-4">
           <div className="space-y-1.5">
             <Input
@@ -149,7 +203,7 @@ function KlaviyoCard() {
               placeholder={view?.api_key_set ? '••••••••••••' : 'pk_…'}
               value={keyInput}
               onChange={(e) => setKeyInput(e.target.value)}
-              autoComplete="off"
+              autoComplete="new-password"
             />
             {view?.api_key_set && (
               <button
@@ -181,15 +235,23 @@ function KlaviyoCard() {
               className="w-full px-3 py-2 text-sm bg-bg-elevated border border-border-default rounded-lg text-text-primary focus:outline-none focus:ring-2 focus:ring-accent/40 disabled:opacity-50"
             >
               <option value="">No default list</option>
-              {listId && !(lists || []).some((l) => l.id === listId) && (
+              {listId && !(lists?.ok ? lists.lists : []).some((l) => l.id === listId) && (
                 <option value={listId}>{listId} (saved)</option>
               )}
-              {(lists || []).map((l) => (
+              {(lists?.ok ? lists.lists : []).map((l) => (
                 <option key={l.id} value={l.id}>{l.name || l.id}</option>
               ))}
             </select>
-            {view?.api_key_set && lists !== null && lists.length === 0 && (
-              <p className="text-xs text-text-muted">No lists came back — check the key's scopes, then test the connection.</p>
+            {/* Review #8: an errored fetch is NOT an empty account — each gets
+                its own prose, and the error path gets a retry. */}
+            {view?.api_key_set && lists && !lists.ok && (
+              <p className="text-xs text-danger">
+                Couldn't load your Klaviyo lists ({lists.error}).{' '}
+                <button type="button" onClick={() => { setLists(null); loadLists(); }} className="text-accent hover:underline cursor-pointer">Retry</button>
+              </p>
+            )}
+            {view?.api_key_set && lists?.ok && lists.lists.length === 0 && (
+              <p className="text-xs text-text-muted">Klaviyo answered with zero lists — create one in Klaviyo or check the key's list scope.</p>
             )}
           </div>
 
@@ -228,7 +290,7 @@ function StubCard({ name, blurb, mark }) {
             <p className="text-xs text-text-muted">{blurb}</p>
           </div>
         </div>
-        <StatusChip connected={false} />
+        <StatusChip state="not_connected" />
       </div>
       <p className="text-xs text-text-faint">Coming soon.</p>
     </div>

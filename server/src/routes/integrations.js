@@ -14,8 +14,9 @@ import {
 const router = Router();
 router.use(authenticate, requirePermission('funnels', 'access'));
 
-// GET /klaviyo — masked config + last test result. `account` rides along
-// only when a test has already succeeded (no live API call on a plain read).
+// GET /klaviyo — masked config + the PERSISTED last test result (the account
+// name lives in last_test.account_name). A plain read NEVER calls Klaviyo —
+// live account info comes only from POST /klaviyo/test.
 router.get('/klaviyo', async (req, res) => {
   try {
     const view = await getKlaviyoPublicView();
@@ -34,6 +35,15 @@ router.put('/klaviyo', async (req, res) => {
     if (body.api_key !== undefined && body.api_key !== null && typeof body.api_key !== 'string') {
       return res.status(422).json({ success: false, error: { code: 'invalid_api_key_type' } });
     }
+    // Review #10: strict input shapes — enabled is true/false/undefined only;
+    // list_id_default is a string ≤64 chars, null (clear) or undefined (keep).
+    if (body.enabled !== undefined && typeof body.enabled !== 'boolean') {
+      return res.status(400).json({ success: false, error: { code: 'invalid_enabled_type' } });
+    }
+    if (body.list_id_default !== undefined && body.list_id_default !== null
+      && (typeof body.list_id_default !== 'string' || body.list_id_default.length > 64)) {
+      return res.status(400).json({ success: false, error: { code: 'invalid_list_id' } });
+    }
     const view = await patchKlaviyoConfig({
       api_key: body.api_key,
       enabled: body.enabled,
@@ -48,7 +58,17 @@ router.put('/klaviyo', async (req, res) => {
 
 // POST /klaviyo/test — live round-trip with the STORED key (GET /accounts/).
 // Persists the outcome so the card's status chip survives reloads.
+//
+// Review #10: in-memory guard — ONE test in flight at a time (the vendor
+// endpoint burst-throttles at ~1/s and a stuck button must not stack calls);
+// concurrent attempts get 429. The 60s stale-clear only matters if a test
+// somehow escapes its finally — belt and suspenders, not a rate limit.
+let testInFlightSince = 0;
 router.post('/klaviyo/test', async (req, res) => {
+  if (testInFlightSince && Date.now() - testInFlightSince < 60_000) {
+    return res.status(429).json({ success: false, error: { code: 'test_in_progress' } });
+  }
+  testInFlightSince = Date.now();
   try {
     const result = await getAccount();
     if (!result.ok) {
@@ -61,6 +81,8 @@ router.post('/klaviyo/test', async (req, res) => {
   } catch (err) {
     console.error('[integrations] klaviyo test failed:', err.message);
     return res.status(500).json({ success: false, error: { code: 'internal_error' } });
+  } finally {
+    testInFlightSince = 0;
   }
 });
 
