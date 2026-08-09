@@ -364,9 +364,14 @@ router.patch('/:id', async (req, res) => {
       i += 1;
     }
     if (body.status !== undefined) {
-      const status = String(body.status).trim();
-      if (!status || status.length > 64) {
-        return res.status(400).json({ error: 'Invalid status' });
+      // Canonicalize: the serve gate reads the exact string 'published', but
+      // the UI historically offered 'live' — which stored verbatim and then
+      // 404ed publicly while the status pill showed green. 'live' IS
+      // 'published'; anything outside the enum is refused, not stored.
+      const raw = String(body.status).trim().toLowerCase();
+      const status = raw === 'live' ? 'published' : raw;
+      if (!['draft', 'published'].includes(status)) {
+        return res.status(400).json({ error: "status must be 'draft' or 'published' ('live' is accepted as published)" });
       }
       sets.push(`status = $${i}`);
       params.push(status);
@@ -424,9 +429,11 @@ router.patch('/:id', async (req, res) => {
 router.post('/:id/publish', async (req, res) => {
   try {
     await ensureTables();
+    // Same posture as every other write in this file: no writes to a trashed
+    // funnel — publishing from the archive silently resurrects it publicly.
     const rows = await pgQuery(
       `UPDATE funnels SET status = 'published', updated_at = NOW()
-       WHERE id = $1 RETURNING *`,
+       WHERE id = $1 AND archived = FALSE RETURNING *`,
       [req.params.id]
     );
     if (!rows.length) return res.status(404).json({ error: 'Funnel not found' });
@@ -924,9 +931,14 @@ router.patch('/:id/pages/:pageId', async (req, res) => {
       i += 1;
     }
     if (body.status !== undefined) {
-      const status = String(body.status).trim();
-      if (!status || status.length > 64) {
-        return res.status(400).json({ error: 'Invalid status' });
+      // Canonicalize: the serve gate reads the exact string 'published', but
+      // the UI historically offered 'live' — which stored verbatim and then
+      // 404ed publicly while the status pill showed green. 'live' IS
+      // 'published'; anything outside the enum is refused, not stored.
+      const raw = String(body.status).trim().toLowerCase();
+      const status = raw === 'live' ? 'published' : raw;
+      if (!['draft', 'published'].includes(status)) {
+        return res.status(400).json({ error: "status must be 'draft' or 'published' ('live' is accepted as published)" });
       }
       sets.push(`status = $${i}`);
       params.push(status);
@@ -962,6 +974,12 @@ router.patch('/:id/pages/:pageId', async (req, res) => {
     }
     if (body.is_home !== undefined && typeof body.is_home !== 'boolean') {
       return res.status(400).json({ error: 'is_home must be a boolean' });
+    }
+    if (body.is_home === true && pageRows[0].archived) {
+      // The exactly-one-home flip below filters archived=FALSE: an archived
+      // target would clear every live sibling's flag while never gaining its
+      // own — leaving the funnel with no home page at all. Refuse instead.
+      return res.status(400).json({ error: 'Cannot set an archived page as home — restore it first' });
     }
     if (body.is_home === false) {
       sets.push(`is_home = FALSE`);
