@@ -10,18 +10,21 @@
  *   • clicks → GET /funnel-attribution/clicks (the raw ledger)
  * Both are PER-FUNNEL reports and say so when no funnel is scoped.
  *
- * WHAT THIS FILE IS AND IS NOT RESPONSIBLE FOR.
- *   Legality lives in ../reportConfig.js and is UX ONLY — an illegal chip is
- *   greyed with the reason on it so the operator never spends a round-trip
- *   discovering a 422. THE ENGINE REMAINS THE AUTHORITY; when it 422s anyway,
- *   its message is printed verbatim rather than replaced with a guess.
+ * WHAT IS AUTHORITATIVE, AND WHAT IS NOT.
+ *   • The LEGALITY MATRIX is the engine's. /funnel-metrics/vocabulary is
+ *     fetched on mount and installed into reportConfig, which then intersects
+ *     with its local fallback table. An illegal chip is greyed with the reason
+ *     on it; when the engine 422s anyway, its message is printed verbatim.
+ *   • The WINDOW and the TIMEZONE printed in the header are the SERVER's, read
+ *     off the response echo. The date picker is an INPUT — the roas/clicks
+ *     endpoints take `days` and answer a window ending today, which is not the
+ *     window the picker shows, so printing the picker there would date a
+ *     report wrongly.
+ *   • The BASIS is the server's `meta.basis_label` and nothing else.
  *
- *   Money truth rules the pixels: null renders as an em dash, NEVER as 0 (see
- *   ../format.js). Charts pass connectNulls={false}. A delta chip is drawn only
- *   when a real previous-window baseline came back — a compare with no
- *   `previous` block shows nothing, never "0%".
- *
- * TIMEZONE: v1 computes AND prints UTC. The header says so out loud.
+ * Money truth rules the pixels: null renders as an em dash, NEVER as 0 (see
+ * ../format.js). Charts pass connectNulls={false}. A delta chip is drawn only
+ * against a real previous-window baseline.
  *
  * Lane 3 lazy-imports this file's DEFAULT EXPORT from
  * client/src/pages/analytics/explorer/index.jsx. Every prop is optional so it
@@ -30,30 +33,34 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Download, Save } from 'lucide-react';
 import DateRangePicker from '../../../components/ui/DateRangePicker';
-import { EM_DASH, daysAgoIso, fmtInt, fmtMoney, todayIso } from '../format';
+import { EM_DASH, fmtInt } from '../format';
 import {
   CHARTS, DIMENSIONS, DIMENSION_KEYS, GATEWAYS, GRANULARITIES, GRANULARITY_KEYS,
-  MAX_METRICS, METRICS, METRIC_GROUPS, METRIC_KEYS, MODES, MODE_KEYS,
+  METRICS, METRIC_GROUPS, METRIC_KEYS, MODES, MODE_KEYS, REPORT_TZ_FALLBACK,
   ROAS_DIMENSIONS, buildQueryBody, chartBlockReason, csvFilename,
-  dimensionBlockReason, emptyState, fmtMultiple, formatterFor,
-  granularityBlockReason, labelFor, legalCharts, legalGranularities,
-  metricBlockReason, normalizeState, reportTitle, seedFromParams, seedFromQuery,
-  stateToParams, stateToSearch, windowDays,
+  daysAgoInZone, dimensionBlockReason, downloadCsv, emptyState,
+  formatterFor, granularityBlockReason, labelFor, legalCharts, legalGranularities,
+  maxMetrics,
+  mergeIntoSearch, metricBlockReason, normalizeState, reportTitle,
+  seedFromParams, seedFromQuery, setServerVocabulary, stateToParams, toCsv,
+  todayInZone, validateQueryState, windowDays, zoneLabel,
 } from '../reportConfig';
 import ExplorerChart from './ExplorerChart';
 import { colorForIndex } from './chartColors';
 import PresetGrid from './PresetGrid';
 import SavedReports from './SavedReports';
+import { BigNumbers, ClicksTable, QueryTable, RoasTable } from './ResultTables';
 import { addSavedReport } from './savedReportsStore';
 import {
-  explorerApiError, fetchClicks, fetchQueryCsvBlob, fetchRoas, readClicksResult,
-  readQueryResult, readRoasResult, runQuery,
+  explorerApiError, fetchClicks, fetchQueryCsvBlob, fetchRoas, fetchVocabulary,
+  readClicksResult, readQueryResult, readRoasResult, runQuery,
 } from './explorerApi';
 
 /** Chip-toggles must not burst the API; the work order pins this at 250ms. */
 const QUERY_DEBOUNCE_MS = 250;
 const LEDGER_DEBOUNCE_MS = 150;
 const CLICKS_LIMIT = 200;
+const DEFAULT_WINDOW_DAYS = 30;
 
 /* ── tiny presentational atoms (kept local: this is the only consumer) ──── */
 
@@ -90,23 +97,15 @@ function Notice({ children, testid, tone = 'muted' }) {
   );
 }
 
-const TH = ({ children, right }) => (
-  <th className={`px-3 py-2 text-[10px] font-semibold uppercase tracking-wider text-text-faint whitespace-nowrap ${right ? 'text-right' : 'text-left'}`}>
-    {children}
-  </th>
-);
-const TD = ({ children, right, className = '' }) => (
-  <td className={`px-3 py-2 text-xs whitespace-nowrap ${right ? 'text-right tabular-nums' : ''} ${className}`}>
-    {children}
-  </td>
-);
-
-/** UTC, printed as UTC — the only clock this surface speaks. */
-function fmtUtcMinute(ts) {
-  if (!ts) return EM_DASH;
-  const d = new Date(ts);
-  if (Number.isNaN(d.getTime())) return EM_DASH;
-  return `${d.toISOString().slice(0, 10)} ${d.toISOString().slice(11, 16)}`;
+/** A server warning is either a string or {source, reason, ...}. */
+function warningText(w) {
+  if (typeof w === 'string') return w;
+  if (w && typeof w === 'object') {
+    const src = typeof w.source === 'string' ? w.source : '';
+    const reason = typeof w.reason === 'string' ? w.reason : JSON.stringify(w);
+    return src ? `${src}: ${reason}` : reason;
+  }
+  return String(w);
 }
 
 /* ── the surface ───────────────────────────────────────────────────────── */
@@ -116,12 +115,22 @@ export default function AnalyticsExplorer({
   funnelName = '',
   seed = null,
   onSyncParams = null,
-  syncUrl = true,
+  syncUrl,
 }) {
+  // An owning page that handles params itself must not also have the URL
+  // rewritten underneath it — two writers on one address bar is a race.
+  const writeUrl = syncUrl === undefined ? !onSyncParams : !!syncUrl;
+
   // Seeded ONCE from the address bar so a deep link opens the view it names.
+  // The default window is derived in the REPORT zone, not in UTC and not in the
+  // browser's zone: at 01:00 Madrid on the 9th, "today" in UTC is still the
+  // 8th, and the default range would silently exclude the current day.
   const [state, setState] = useState(() => {
     const base = emptyState({
-      window: { start_day: daysAgoIso(29), end_day: todayIso() },
+      window: {
+        start_day: daysAgoInZone(DEFAULT_WINDOW_DAYS - 1, REPORT_TZ_FALLBACK),
+        end_day: todayInZone(REPORT_TZ_FALLBACK),
+      },
       filters: { funnel_id: funnelId },
     });
     const search = typeof window !== 'undefined' ? window.location.search : '';
@@ -135,19 +144,70 @@ export default function AnalyticsExplorer({
   const [saveName, setSaveName] = useState('');
   const [saveError, setSaveError] = useState('');
   const [savedRefresh, setSavedRefresh] = useState(0);
+  // Bumped when the engine's matrix lands, so every legality read re-runs.
+  const [vocabVersion, setVocabVersion] = useState(0);
+  const [vocabZone, setVocabZone] = useState('');
 
+  /**
+   * A mode change invalidates the result. Without this, loading a saved
+   * `clicks` report while a `query` result is on screen renders the clicks
+   * table against the query payload — `result.rows` are metric rows, and the
+   * first ROAS/clicks column read throws. `kind` gating below is the second
+   * guard; this is the first.
+   */
   const patch = useCallback((changes) => {
-    setState((cur) => normalizeState({
-      ...cur,
-      ...changes,
-      window: { ...cur.window, ...(changes.window || {}) },
-      filters: { ...cur.filters, ...(changes.filters || {}) },
-    }));
+    setState((cur) => {
+      const next = normalizeState({
+        ...cur,
+        ...changes,
+        window: { ...cur.window, ...(changes.window || {}) },
+        filters: { ...cur.filters, ...(changes.filters || {}) },
+      });
+      if (next.mode !== cur.mode) {
+        setResult(null);
+        setError('');
+      }
+      return next;
+    });
+  }, []);
+
+  /** Has the operator moved the date picker? An untouched default may be
+      re-derived once the engine names its reporting zone; a chosen range never is. */
+  const windowTouched = useRef(false);
+
+  /* ── the engine's legality matrix (authority) ── */
+  useEffect(() => {
+    const controller = new AbortController();
+    (async () => {
+      try {
+        const vocab = await fetchVocabulary({ signal: controller.signal });
+        if (controller.signal.aborted) return;
+        if (!setServerVocabulary(vocab)) return;
+        const zone = typeof vocab?.timezone === 'string' ? vocab.timezone : '';
+        if (zone) setVocabZone(zone);
+        setVocabVersion((v) => v + 1);
+        // Re-run the repair pass against the now-authoritative matrix, and
+        // re-derive an UNTOUCHED default window in the zone the engine named.
+        setState((cur) => {
+          const rederive = zone && zone !== REPORT_TZ_FALLBACK && !windowTouched.current;
+          return normalizeState(rederive ? {
+            ...cur,
+            window: {
+              start_day: daysAgoInZone(DEFAULT_WINDOW_DAYS - 1, zone),
+              end_day: todayInZone(zone),
+            },
+          } : cur);
+        });
+      } catch {
+        // Absent or unreachable: the local fallback table stays in charge and
+        // the engine still refuses anything it disagrees with.
+      }
+    })();
+    return () => controller.abort();
   }, []);
 
   /* An owning page (Lane 3) may scope the funnel from outside. Its value wins,
-     but only when it actually changes — otherwise it would fight the local
-     filter input on every render. */
+     but only when it actually CHANGES — otherwise it fights the local input. */
   const lastFunnelProp = useRef(funnelId);
   useEffect(() => {
     if (lastFunnelProp.current === funnelId) return;
@@ -155,49 +215,69 @@ export default function AnalyticsExplorer({
     patch({ filters: { funnel_id: funnelId } });
   }, [funnelId, patch]);
 
-  /* A preset / saved report handed down from outside; `seq` makes a repeat of
-     the same seed re-apply. */
+  /* A preset / saved report handed down from outside; `seq` re-applies. */
   const seedSeq = seed && seed.seq;
   const lastSeedSeq = useRef(null);
   useEffect(() => {
     if (!seed || !seedSeq || lastSeedSeq.current === seedSeq) return;
     lastSeedSeq.current = seedSeq;
-    setState((cur) => seedFromQuery(seed.query || seed, cur));
+    setState((cur) => {
+      const next = seedFromQuery(seed.query || seed, cur);
+      if (next.mode !== cur.mode) { setResult(null); setError(''); }
+      return next;
+    });
   }, [seed, seedSeq]);
 
   /* ── the ONE query body: run, CSV, save and deep link all read it ── */
   const scopedState = useMemo(
-    () => normalizeState({ ...state, filters: { ...state.filters, funnel_id: funnelId || state.filters.funnel_id } }),
-    [state, funnelId],
+    () => normalizeState({
+      // vocabVersion is a real input: the installed matrix decides what survives.
+      ...(void vocabVersion, state),
+      filters: { ...state.filters, funnel_id: funnelId || state.filters.funnel_id },
+    }),
+    [state, funnelId, vocabVersion],
   );
   const queryBody = useMemo(() => buildQueryBody(scopedState), [scopedState]);
   const bodyKey = useMemo(() => JSON.stringify(queryBody), [queryBody]);
+  const validation = useMemo(() => validateQueryState(scopedState), [scopedState]);
+  const validationKey = validation.valid ? '' : validation.errors.map((e) => `${e.field}:${e.message}`).join('|');
 
-  /* ── URL sync (router-agnostic: replaceState never needs a Router) ── */
+  /* ── URL sync ──────────────────────────────────────────────────────────
+     MERGED into whatever is already on the address bar. Rebuilding the query
+     string from scratch deleted every param this component does not own — a
+     host page's `tab=`, an inbound `utm_source=`, a session marker. */
   const paramsKey = useMemo(() => JSON.stringify(stateToParams(scopedState)), [scopedState]);
+  // Held in a ref so a parent that passes an inline arrow does not re-fire the
+  // effect (and re-write the URL) on every one of its own renders.
+  const syncRef = useRef(onSyncParams);
+  syncRef.current = onSyncParams;
   useEffect(() => {
-    onSyncParams?.(JSON.parse(paramsKey));
-    if (!syncUrl || typeof window === 'undefined' || !window.history?.replaceState) return;
-    const search = stateToSearch(JSON.parse(paramsKey));
+    syncRef.current?.(JSON.parse(paramsKey));
+    if (!writeUrl || typeof window === 'undefined' || !window.history?.replaceState) return;
+    const search = mergeIntoSearch(JSON.parse(paramsKey), window.location.search);
     window.history.replaceState(window.history.state, '',
       `${window.location.pathname}${search ? `?${search}` : ''}${window.location.hash}`);
-  }, [paramsKey, onSyncParams, syncUrl]);
+  }, [paramsKey, writeUrl]);
 
-  /* ── run: query mode (debounced) ── */
   const mode = scopedState.mode;
   const scopedFunnelId = scopedState.filters.funnel_id;
   const { roas_dimension: roasDimension, clicks_network: clicksNetwork } = scopedState;
   const spanDays = windowDays(scopedState.window.start_day, scopedState.window.end_day);
 
+  /* ── run: query mode (debounced, and GATED ON VALIDATION) ── */
   useEffect(() => {
     if (mode !== 'query') return undefined;
+    // An invalid state must not reach the network. It used to: the only gate
+    // was `metrics.length`, so an over-long window burned a round-trip to be
+    // told what the client already knew.
+    if (validationKey) { setLoading(false); return undefined; }
     const controller = new AbortController();
     const timer = setTimeout(async () => {
       setLoading(true);
       setError('');
       try {
         const data = await runQuery(JSON.parse(bodyKey), { signal: controller.signal });
-        setResult({ kind: 'query', ...readQueryResult(data) });
+        setResult(readQueryResult(data));
       } catch (e) {
         if (controller.signal.aborted) return;
         setResult(null);
@@ -207,12 +287,20 @@ export default function AnalyticsExplorer({
       }
     }, QUERY_DEBOUNCE_MS);
     return () => { clearTimeout(timer); controller.abort(); };
-  }, [mode, bodyKey]);
+  }, [mode, bodyKey, validationKey]);
 
   /* ── run: roas / clicks modes ── */
   useEffect(() => {
     if (mode === 'query') return undefined;
-    if (!scopedFunnelId) { setResult(null); setError(''); return undefined; }
+    if (!scopedFunnelId) {
+      // Clearing `loading` here matters: arriving from a mode whose fetch was
+      // in flight otherwise left the spinner up forever with nothing running.
+      setResult(null);
+      setError('');
+      setLoading(false);
+      return undefined;
+    }
+    if (validationKey) { setLoading(false); return undefined; }
     const controller = new AbortController();
     const timer = setTimeout(async () => {
       setLoading(true);
@@ -223,13 +311,13 @@ export default function AnalyticsExplorer({
             { funnelId: scopedFunnelId, dimension: roasDimension, days: spanDays || 30 },
             { signal: controller.signal },
           );
-          setResult({ kind: 'roas', ...readRoasResult(data) });
+          setResult(readRoasResult(data));
         } else {
           const data = await fetchClicks(
             { funnelId: scopedFunnelId, network: clicksNetwork, limit: CLICKS_LIMIT },
             { signal: controller.signal },
           );
-          setResult({ kind: 'clicks', ...readClicksResult(data) });
+          setResult(readClicksResult(data));
         }
       } catch (e) {
         if (controller.signal.aborted) return;
@@ -240,11 +328,21 @@ export default function AnalyticsExplorer({
       }
     }, LEDGER_DEBOUNCE_MS);
     return () => { clearTimeout(timer); controller.abort(); };
-  }, [mode, scopedFunnelId, roasDimension, clicksNetwork, spanDays]);
+  }, [mode, scopedFunnelId, roasDimension, clicksNetwork, spanDays, validationKey]);
+
+  /**
+   * THE SECOND GUARD. A result is only ever rendered by the mode that produced
+   * it, so nothing downstream can read a clicks field off a query payload even
+   * if a race lands one after a mode switch.
+   */
+  const active = result && result.kind === mode ? result : null;
 
   /* ── derived legality for the controls ── */
   const { metrics, dimension, granularity, viz, compare } = scopedState;
+  const metricCap = maxMetrics();
+
   const grainOptions = useMemo(() => {
+    void vocabVersion; // the matrix decides which granularities exist
     const legal = legalGranularities(scopedState.window.start_day, scopedState.window.end_day);
     return GRANULARITY_KEYS.map((g) => ({
       key: g,
@@ -252,7 +350,7 @@ export default function AnalyticsExplorer({
       disabled: !legal.includes(g),
       reason: granularityBlockReason(g, scopedState.window.start_day, scopedState.window.end_day),
     }));
-  }, [scopedState.window.start_day, scopedState.window.end_day]);
+  }, [scopedState.window.start_day, scopedState.window.end_day, vocabVersion]);
 
   const vizOptions = useMemo(() => {
     const legal = legalCharts(dimension, metrics);
@@ -264,7 +362,7 @@ export default function AnalyticsExplorer({
     }));
   }, [dimension, metrics]);
 
-  const metricChips = useMemo(() => METRIC_KEYS.map((m) => {
+  const metricChips = useMemo(() => (void vocabVersion, METRIC_KEYS).map((m) => {
     const reason = metricBlockReason(m, { dimension, granularity });
     const on = metrics.includes(m);
     return {
@@ -272,14 +370,14 @@ export default function AnalyticsExplorer({
       label: METRICS[m].label,
       group: METRICS[m].group,
       on,
-      // A selected metric is never disabled — it must always be removable, or
-      // an illegal combination arrived at by changing the group-by would trap
-      // the operator with no way back.
-      disabled: !on && (!!reason || metrics.length >= MAX_METRICS),
-      reason: reason || (metrics.length >= MAX_METRICS && !on
-        ? `The engine takes at most ${MAX_METRICS} metrics.` : ''),
+      // A SELECTED metric is never disabled — it must always be removable, or
+      // an illegal combination reached by changing the group-by would trap the
+      // operator with no way back.
+      disabled: !on && (!!reason || metrics.length >= metricCap),
+      reason: reason || (metrics.length >= metricCap && !on
+        ? `The engine takes at most ${metricCap} metrics.` : ''),
     };
-  }), [metrics, dimension, granularity]);
+  }), [metrics, dimension, granularity, metricCap, vocabVersion]);
 
   const toggleMetric = (key) => {
     patch({
@@ -287,20 +385,55 @@ export default function AnalyticsExplorer({
     });
   };
 
+  /* ── the zone + window actually printed ── */
+  const zone = (active && active.timezone) || vocabZone || REPORT_TZ_FALLBACK;
+  const zoneText = zoneLabel(zone);
+  // The server's echo when there is one; the picker only until then. For
+  // roas/clicks the difference is REAL — those endpoints take `days` and answer
+  // a window ending today.
+  const shownWindow = active && active.window && active.window.from_server
+    ? active.window
+    : { start_day: scopedState.window.start_day, end_day: scopedState.window.end_day, from_server: false };
+
   /* ── CSV ── */
+  const csvColumns = mode === 'roas'
+    ? [
+      { key: 'key', label: 'key' }, { key: 'clicks', label: 'clicks' },
+      { key: 'bot_clicks', label: 'bot_clicks' }, { key: 'conversions', label: 'conversions' },
+      { key: 'revenue', label: 'revenue' }, { key: 'cost', label: 'cost' },
+      { key: 'cpa', label: 'cpa' }, { key: 'roas', label: 'roas' },
+      { key: 'cost_source', label: 'cost_source' },
+      { key: 'cost_unknown_reason', label: 'cost_unknown_reason' },
+      { key: 'cost_note', label: 'cost_note' },
+    ]
+    : [
+      { key: 'time', label: 'time' }, { key: 'day', label: 'day' },
+      { key: 'network', label: 'network' }, { key: 'click_id', label: 'click_id' },
+      { key: 'campaign', label: 'campaign' }, { key: 'country', label: 'country' },
+      { key: 'device', label: 'device' }, { key: 'cpc', label: 'cpc' },
+      { key: 'bot', label: 'bot' }, { key: 'velocity_flag', label: 'velocity_flag' },
+      { key: 'converted', label: 'converted' },
+    ];
+
   const exportCsv = async () => {
     setExporting(true);
     setError('');
     try {
-      const blob = await fetchQueryCsvBlob(queryBody);
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = csvFilename(scopedState);
-      a.click();
-      URL.revokeObjectURL(url);
+      if (mode === 'query') {
+        const blob = await fetchQueryCsvBlob(queryBody);
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = csvFilename(scopedState);
+        a.click();
+        URL.revokeObjectURL(url);
+      } else {
+        // These two endpoints have no .csv twin, so the export is folded from
+        // the SAME rows on screen — through the same injection-guarded writer.
+        downloadCsv(csvFilename(scopedState), toCsv({ columns: csvColumns, rows: active.rows }));
+      }
     } catch (e) {
-      // Never a silent failure — a swallowed 422 here reads as "nothing to export".
+      // Never a silent failure — a swallowed 422 reads as "nothing to export".
       setError(explorerApiError(e, 'CSV export failed — try again.'));
     } finally {
       setExporting(false);
@@ -311,8 +444,10 @@ export default function AnalyticsExplorer({
   const saveCurrent = () => {
     const name = saveName.trim();
     if (!name) return;
-    const entry = addSavedReport(name, scopedState);
-    if (!entry) { setSaveError('Could not save — browser storage is unavailable or full.'); return; }
+    if (!addSavedReport(name, scopedState)) {
+      setSaveError('Could not save — browser storage is unavailable or full.');
+      return;
+    }
     setSaveError('');
     setSaveName('');
     setSavedRefresh((n) => n + 1);
@@ -320,23 +455,25 @@ export default function AnalyticsExplorer({
 
   /* ── render helpers ── */
   const formatters = useMemo(
-    () => Object.fromEntries(metrics.map((m) => [m, formatterFor(m)])), [metrics]);
+    () => Object.fromEntries(metrics.map((m) => [m, formatterFor(m)])),
+    [metrics],
+  );
   const labels = useMemo(
     () => Object.fromEntries(metrics.map((m) => [m, labelFor(m)])), [metrics]);
 
-  const q = result && result.kind === 'query' ? result : null;
-  const tableRows = q ? (dimension ? q.rows : q.series) : [];
-  const meta = (result && result.meta) || {};
-  const warnings = Array.isArray(meta.warnings) ? meta.warnings : [];
+  const chartRows = active && mode === 'query' ? (dimension ? active.rows : active.series) : [];
+  const warnings = active ? active.warnings : [];
 
   const hasData = mode === 'query'
-    ? (viz === 'big-number' ? !!q && Object.keys(q.totals).length > 0 : tableRows.length > 0)
-    : mode === 'roas' ? !!result && result.rows.length > 0
-      : !!result && result.clicks.length > 0;
+    ? (viz === 'big-number'
+      ? !!active && Object.keys(active.totals).length > 0
+      : chartRows.length > 0)
+    : !!active && active.rows.length > 0;
 
-  const prevLabelText = compare && q && q.hasPrevious
-    ? 'vs previous period (dashed)'
-    : compare ? 'no previous window returned — no baseline to compare against' : '';
+  const prevLabelText = compare && active && mode === 'query'
+    ? (active.hasPrevious ? 'vs previous period (dashed)'
+      : 'no previous window came back — nothing to compare against')
+    : '';
 
   return (
     <div className="space-y-3" data-testid="analytics-explorer">
@@ -344,32 +481,43 @@ export default function AnalyticsExplorer({
       <div className="flex items-end justify-between gap-3 flex-wrap">
         <div>
           <h2 className="text-lg font-semibold text-text-primary">Explore</h2>
-          <p className="text-xs text-text-muted">
+          <p className="text-xs text-text-muted" data-testid="ax-header-line">
             {reportTitle(scopedState)}
             {' · '}
-            {scopedState.window.start_day || EM_DASH} → {scopedState.window.end_day || EM_DASH}
-            {' · UTC'}
+            {shownWindow.start_day || EM_DASH} → {shownWindow.end_day || EM_DASH}
+            {zoneText ? ` · ${zoneText}` : ''}
+            {shownWindow.from_server ? '' : ' · window not yet confirmed by the server'}
             {funnelName ? ` · ${funnelName}` : ''}
-            {meta.computed_ms != null ? ` · ${fmtInt(meta.computed_ms)} ms` : ''}
+            {active && active.meta && active.meta.computed_ms != null
+              ? ` · ${fmtInt(active.meta.computed_ms)} ms` : ''}
           </p>
         </div>
         <DateRangePicker
-          startDate={scopedState.window.start_day || daysAgoIso(29)}
-          endDate={scopedState.window.end_day || todayIso()}
-          onChange={({ startDate, endDate }) => patch({ window: { start_day: startDate, end_day: endDate } })}
+          startDate={scopedState.window.start_day || daysAgoInZone(DEFAULT_WINDOW_DAYS - 1, zone)}
+          endDate={scopedState.window.end_day || todayInZone(zone)}
+          onChange={({ startDate, endDate }) => {
+            windowTouched.current = true;
+            patch({ window: { start_day: startDate, end_day: endDate } });
+          }}
         />
       </div>
 
       <SavedReports
         key={savedRefresh}
-        onLoad={(entry) => setState(normalizeState(entry.state || entry.query))}
+        onLoad={(entry) => setState((cur) => {
+          const next = normalizeState(entry.state || entry.query);
+          if (next.mode !== cur.mode) { setResult(null); setError(''); }
+          return next;
+        })}
       />
 
       <PresetGrid
         activeId={scopedState.report}
-        onPick={(p) => setState((cur) => seedFromQuery(
-          { ...(p.query || {}), mode: p.mode, report: p.id }, cur,
-        ))}
+        onPick={(p) => setState((cur) => {
+          const next = seedFromQuery({ ...(p.query || {}), mode: p.mode, report: p.id }, cur);
+          if (next.mode !== cur.mode) { setResult(null); setError(''); }
+          return next;
+        })}
       />
 
       {/* Controls */}
@@ -379,7 +527,7 @@ export default function AnalyticsExplorer({
             testPrefix="ax-mode"
             options={MODE_KEYS.map((m) => ({ key: m, label: MODES[m].label }))}
             value={mode}
-            onChange={(m) => { setResult(null); setError(''); patch({ mode: m }); }}
+            onChange={(m) => patch({ mode: m })}
           />
           <div className="flex items-center gap-2 flex-wrap">
             {mode === 'query' && (
@@ -393,18 +541,16 @@ export default function AnalyticsExplorer({
                 Compare: {compare ? 'on' : 'off'}
               </button>
             )}
-            {mode === 'query' && (
-              <button
-                type="button"
-                onClick={exportCsv}
-                disabled={exporting || !hasData}
-                className="h-8 px-3 text-xs font-medium rounded-lg border border-border-default text-text-muted hover:bg-bg-hover disabled:opacity-50 disabled:cursor-not-allowed inline-flex items-center gap-1.5 enabled:cursor-pointer"
-                data-testid="ax-export"
-              >
-                <Download className="h-3 w-3" />
-                {exporting ? 'Exporting…' : 'Export CSV'}
-              </button>
-            )}
+            <button
+              type="button"
+              onClick={exportCsv}
+              disabled={exporting || !hasData}
+              className="h-8 px-3 text-xs font-medium rounded-lg border border-border-default text-text-muted hover:bg-bg-hover disabled:opacity-50 disabled:cursor-not-allowed inline-flex items-center gap-1.5 enabled:cursor-pointer"
+              data-testid="ax-export"
+            >
+              <Download className="h-3 w-3" />
+              {exporting ? 'Exporting…' : 'Export CSV'}
+            </button>
           </div>
         </div>
 
@@ -460,11 +606,8 @@ export default function AnalyticsExplorer({
               )}
               <Seg testPrefix="ax-viz" options={vizOptions} value={viz}
                 onChange={(v) => patch({ viz: v })} />
-              {dimension && DIMENSIONS[dimension].basis && (
-                <span className="text-[10px] text-text-faint">
-                  {`basis: ${DIMENSIONS[dimension].basis}`}
-                </span>
-              )}
+              {/* NO client-side basis here. The basis is whatever the response
+                  says it is, and it is printed under the result. */}
             </div>
 
             {/* Filters + save */}
@@ -480,6 +623,7 @@ export default function AnalyticsExplorer({
                 <input
                   value={scopedState.filters.funnel_id}
                   placeholder="Funnel id"
+                  maxLength={64}
                   onChange={(e) => patch({ filters: { funnel_id: e.target.value } })}
                   className="h-7 w-40 rounded-full border border-border-default bg-bg-elevated px-2.5 text-xs text-text-primary placeholder:text-text-faint outline-none"
                   data-testid="ax-filter-funnel"
@@ -505,6 +649,7 @@ export default function AnalyticsExplorer({
               <input
                 value={scopedState.filters.source}
                 placeholder="Source (utm)"
+                maxLength={120}
                 onChange={(e) => patch({ filters: { source: e.target.value } })}
                 className="h-7 w-32 rounded-full border border-border-default bg-bg-elevated px-2.5 text-xs text-text-primary placeholder:text-text-faint outline-none"
                 data-testid="ax-filter-source"
@@ -536,6 +681,7 @@ export default function AnalyticsExplorer({
               <input
                 value={scopedState.filters.funnel_id}
                 placeholder="Funnel id"
+                maxLength={64}
                 onChange={(e) => patch({ filters: { funnel_id: e.target.value } })}
                 className="h-8 w-40 rounded-lg border border-border-default bg-bg-elevated px-2.5 text-xs text-text-primary placeholder:text-text-faint outline-none"
                 data-testid="ax-ledger-funnel"
@@ -551,7 +697,7 @@ export default function AnalyticsExplorer({
                 {ROAS_DIMENSIONS.map((d) => <option key={d} value={d}>{`By ${d}`}</option>)}
               </select>
             )}
-            {mode === 'clicks' && result && result.kind === 'clicks' && Object.keys(result.byNetwork).length > 0 && (
+            {mode === 'clicks' && active && Object.keys(active.byNetwork).length > 0 && (
               <select
                 value={clicksNetwork}
                 onChange={(e) => patch({ clicks_network: e.target.value })}
@@ -559,12 +705,17 @@ export default function AnalyticsExplorer({
                 data-testid="ax-clicks-network"
               >
                 <option value="">All networks</option>
-                {Object.keys(result.byNetwork).map((n) => <option key={n} value={n}>{n}</option>)}
+                {Object.keys(active.byNetwork).map((net) => <option key={net} value={net}>{net}</option>)}
               </select>
             )}
             <span className="text-xs text-text-muted">
               {scopedFunnelId
-                ? `Scoped to ${funnelName || scopedFunnelId}${mode === 'roas' ? ` · ${spanDays ?? EM_DASH} days` : ` · latest ${CLICKS_LIMIT} clicks`}`
+                ? (mode === 'roas'
+                  // The picker supplies a LENGTH here, not a range: the endpoint
+                  // takes `days` and answers a window ending today. Saying so
+                  // stops the header and the picker reading as a contradiction.
+                  ? `Scoped to ${funnelName || scopedFunnelId} · last ${spanDays ?? EM_DASH} days (the picker sets the LENGTH; this report always ends today)`
+                  : `Scoped to ${funnelName || scopedFunnelId} · newest ${CLICKS_LIMIT} clicks`)
                 : 'This is a per-funnel report — scope a funnel to run it.'}
             </span>
           </div>
@@ -575,33 +726,52 @@ export default function AnalyticsExplorer({
       {warnings.length > 0 && (
         <div className="rounded-xl border border-amber-500/30 bg-amber-500/5 px-4 py-2.5 space-y-1" data-testid="ax-warnings">
           {warnings.map((w, i) => (
-            <p key={i} className="text-xs text-amber-300">{typeof w === 'string' ? w : (w?.message ?? JSON.stringify(w))}</p>
+            <p key={i} className="text-xs text-amber-300">{warningText(w)}</p>
           ))}
         </div>
       )}
 
       {/* Result */}
-      {error ? (
+      {/* "No funnel scoped" is a MISSING INPUT, not an invalid one, and it is
+          checked first so it keeps its own plain-language notice instead of
+          being listed as a validation failure. */}
+      {mode !== 'query' && !scopedFunnelId ? (
+        <Notice testid="ax-need-funnel">
+          Scope a funnel to run this report — it is a per-funnel report.
+        </Notice>
+      ) : !validation.valid ? (
+        <Notice testid="ax-invalid" tone="warn">
+          <ul className="space-y-0.5">
+            {validation.errors.map((e, i) => <li key={i}>{e.message}</li>)}
+          </ul>
+        </Notice>
+      ) : error ? (
         <Notice testid="ax-error" tone="warn">{error}</Notice>
-      ) : loading && !result ? (
+      ) : loading && !active ? (
         <Notice testid="ax-loading">Crunching the numbers…</Notice>
-      ) : mode === 'query' && !metrics.length ? (
-        <Notice testid="ax-no-metrics">Pick at least one metric to explore.</Notice>
-      ) : mode !== 'query' && !scopedFunnelId ? (
-        <Notice testid="ax-need-funnel">Scope a funnel to run this report.</Notice>
       ) : !hasData ? (
         <Notice testid="ax-empty">No rows in this window.</Notice>
       ) : mode === 'roas' ? (
-        <RoasTable result={result} dimension={roasDimension} />
+        <RoasTable result={active} dimension={roasDimension} />
       ) : mode === 'clicks' ? (
-        <ClicksTable result={result} />
+        <ClicksTable result={active} timezone={zone} />
       ) : viz === 'big-number' ? (
-        <BigNumbers metrics={metrics} q={q} compare={compare} />
+        <BigNumbers
+          metrics={metrics}
+          totals={active.totals}
+          prevTotals={active.prevTotals}
+          hasPrevious={active.hasPrevious}
+          compare={compare}
+        />
       ) : viz === 'table' ? (
         <QueryTable
-          rows={tableRows} metrics={metrics}
+          rows={chartRows}
+          metrics={metrics}
           headLabel={dimension ? DIMENSIONS[dimension].label : GRANULARITIES[granularity].label}
-          totals={q.totals} meta={meta}
+          totals={active.totals}
+          basisLabel={active.basisLabel}
+          limit={scopedState.limit}
+          grouped={!!dimension}
         />
       ) : (
         <div className="rounded-xl border border-border-default bg-bg-card p-4" data-testid="ax-chartcard">
@@ -619,207 +789,17 @@ export default function AnalyticsExplorer({
           </div>
           <ExplorerChart
             viz={viz === 'line' ? 'line' : 'bar'}
-            data={tableRows}
-            prevData={compare ? q.prevSeries : []}
+            data={chartRows}
+            prevData={compare ? (dimension ? active.prevRows : active.prevSeries) : []}
             metricKeys={metrics}
             labels={labels}
             formatters={formatters}
           />
-          <MetaFootnote meta={meta} />
+          <p className="mt-2 text-[10px] text-text-faint" data-testid="ax-basis">
+            {active.basisLabel || ''}
+          </p>
         </div>
       )}
-    </div>
-  );
-}
-
-/* ── result sub-surfaces ───────────────────────────────────────────────── */
-
-function MetaFootnote({ meta }) {
-  const basisLabel = meta && typeof meta.basis_label === 'string' ? meta.basis_label : '';
-  const basis = meta && typeof meta.basis === 'string' ? meta.basis : '';
-  if (!basisLabel && !basis) return null;
-  return (
-    <p className="mt-2 text-[10px] text-text-faint" data-testid="ax-basis">
-      {basisLabel || `basis: ${basis}`}
-    </p>
-  );
-}
-
-function BigNumbers({ metrics, q, compare }) {
-  return (
-    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3" data-testid="ax-bignumbers">
-      {metrics.map((m) => {
-        const fmt = formatterFor(m);
-        const cur = q.totals[m];
-        const prev = q.hasPrevious ? q.prevTotals[m] : null;
-        // NO DELTA WITHOUT A BASELINE. A missing or zero previous value has no
-        // percentage — printing 0% or +100% there would be a fabricated fact.
-        const canDelta = compare && q.hasPrevious
-          && typeof prev === 'number' && Number.isFinite(prev) && prev !== 0
-          && typeof cur === 'number' && Number.isFinite(cur);
-        const delta = canDelta ? ((cur - prev) / Math.abs(prev)) * 100 : null;
-        return (
-          <div key={m} className="rounded-xl border border-border-default bg-bg-card p-4" data-testid={`ax-big-${m}`}>
-            <p className="text-[10px] uppercase tracking-wider text-text-faint font-semibold">{labelFor(m)}</p>
-            <p className="text-2xl font-medium tracking-tight mt-1 text-text-primary tabular-nums">{fmt(cur)}</p>
-            {compare && (
-              delta === null ? (
-                <p className="text-[10px] text-text-faint mt-0.5">no baseline</p>
-              ) : (
-                <p className={`text-xs mt-0.5 tabular-nums ${delta >= 0 ? 'text-emerald-400' : 'text-danger'}`}>
-                  {`${delta >= 0 ? '↗' : '↘'} ${Math.abs(delta).toFixed(1)}% vs previous`}
-                </p>
-              )
-            )}
-          </div>
-        );
-      })}
-    </div>
-  );
-}
-
-function QueryTable({ rows, metrics, headLabel, totals, meta }) {
-  const hasTotals = totals && Object.keys(totals).length > 0;
-  return (
-    <div className="rounded-xl border border-border-default bg-bg-card p-4" data-testid="ax-table">
-      <div className="overflow-x-auto">
-        <table className="w-full min-w-[560px]">
-          <thead>
-            <tr className="border-b border-border-subtle">
-              <TH>{headLabel}</TH>
-              {metrics.map((m) => <TH key={m} right>{labelFor(m)}</TH>)}
-            </tr>
-          </thead>
-          <tbody>
-            {rows.map((r, i) => (
-              <tr key={r.key ?? i} className="border-b border-border-subtle last:border-b-0" data-testid={`ax-row-${i}`}>
-                <TD className="font-medium text-text-primary max-w-[280px] truncate">
-                  {r.label ?? r.key ?? EM_DASH}
-                </TD>
-                {metrics.map((m) => (
-                  <TD key={m} right className="text-text-primary">{formatterFor(m)(r[m])}</TD>
-                ))}
-              </tr>
-            ))}
-          </tbody>
-          {hasTotals && (
-            <tfoot>
-              <tr className="border-t border-border-default">
-                <TD className="font-semibold text-text-primary">Total</TD>
-                {metrics.map((m) => (
-                  <TD key={m} right className="font-semibold text-text-primary">{formatterFor(m)(totals[m])}</TD>
-                ))}
-              </tr>
-            </tfoot>
-          )}
-        </table>
-      </div>
-      <MetaFootnote meta={meta} />
-    </div>
-  );
-}
-
-function RoasTable({ result, dimension }) {
-  const { rows, totals } = result;
-  return (
-    <div className="rounded-xl border border-border-default bg-bg-card p-4" data-testid="ax-roas-table">
-      <p className="text-sm font-semibold text-text-primary mb-2">{`ROAS by ${result.dimension || dimension}`}</p>
-      <div className="overflow-x-auto">
-        <table className="w-full min-w-[760px]">
-          <thead>
-            <tr className="border-b border-border-subtle">
-              <TH>{result.dimension || dimension}</TH>
-              <TH right>Clicks</TH>
-              <TH right>Conversions</TH>
-              <TH right>Revenue</TH>
-              <TH right>Cost</TH>
-              <TH right>CPA</TH>
-              <TH right>ROAS</TH>
-              <TH right>Cost source</TH>
-            </tr>
-          </thead>
-          <tbody>
-            {rows.map((r, i) => (
-              <tr key={r.key ?? i} className="border-b border-border-subtle last:border-b-0" data-testid={`ax-roas-row-${i}`}>
-                <TD className="font-medium text-text-primary max-w-[260px] truncate">{r.key || '(none)'}</TD>
-                <TD right className="text-text-primary">{fmtInt(r.clicks)}</TD>
-                <TD right className="text-text-primary">{fmtInt(r.conversions)}</TD>
-                <TD right className="text-text-primary">{fmtMoney(r.revenue)}</TD>
-                <TD right className="text-text-primary">{fmtMoney(r.cost)}</TD>
-                <TD right className="text-text-primary">{fmtMoney(r.cpa)}</TD>
-                <TD right className="text-text-primary">{fmtMultiple(r.roas)}</TD>
-                {/* cost_source is a FIELD, not a footnote: an unknown cost is
-                    why the two columns to its left are dashes. */}
-                <TD right className="text-text-muted">{r.cost_source || EM_DASH}</TD>
-              </tr>
-            ))}
-          </tbody>
-          {totals && (
-            <tfoot>
-              <tr className="border-t border-border-default">
-                <TD className="font-semibold text-text-primary">Total</TD>
-                <TD right className="font-semibold text-text-primary">{fmtInt(totals.clicks)}</TD>
-                <TD right className="font-semibold text-text-primary">{fmtInt(totals.conversions)}</TD>
-                <TD right className="font-semibold text-text-primary">{fmtMoney(totals.revenue)}</TD>
-                <TD right className="font-semibold text-text-primary">{fmtMoney(totals.cost)}</TD>
-                <TD right className="font-semibold text-text-primary">{fmtMoney(totals.cpa)}</TD>
-                <TD right className="font-semibold text-text-primary">{fmtMultiple(totals.roas)}</TD>
-                <TD />
-              </tr>
-            </tfoot>
-          )}
-        </table>
-      </div>
-    </div>
-  );
-}
-
-function ClicksTable({ result }) {
-  const { clicks, byNetwork } = result;
-  return (
-    <div className="rounded-xl border border-border-default bg-bg-card p-4" data-testid="ax-clicks-table">
-      <div className="flex items-center gap-2 flex-wrap mb-2">
-        <p className="text-sm font-semibold text-text-primary">Click ledger</p>
-        {Object.entries(byNetwork).map(([n, s]) => (
-          <span key={n} className="rounded-full bg-bg-elevated border border-border-default px-2 py-0.5 text-[10px] text-text-muted tabular-nums">
-            {`${n}: ${fmtInt(s?.clicks)} clicks · ${fmtInt(s?.converted)} conv`}
-          </span>
-        ))}
-      </div>
-      <div className="overflow-x-auto">
-        <table className="w-full min-w-[860px]">
-          <thead>
-            <tr className="border-b border-border-subtle">
-              <TH>Time (UTC)</TH>
-              <TH>Network</TH>
-              <TH>Click ID</TH>
-              <TH>Campaign</TH>
-              <TH right>Country</TH>
-              <TH right>Device</TH>
-              <TH right>CPC</TH>
-              <TH right>Converted</TH>
-            </tr>
-          </thead>
-          <tbody>
-            {clicks.map((r, i) => (
-              <tr key={r.id ?? i} className="border-b border-border-subtle last:border-b-0" data-testid={`ax-click-row-${i}`}>
-                <TD className="text-text-primary tabular-nums">{fmtUtcMinute(r.ts)}</TD>
-                <TD className="text-text-primary">{r.network || EM_DASH}</TD>
-                <TD className="text-text-muted max-w-[180px] truncate" title={r.click_id}>{r.click_id || EM_DASH}</TD>
-                <TD className="text-text-primary max-w-[160px] truncate">{r.campaign || r.struct?.campaign_id || EM_DASH}</TD>
-                <TD right className="text-text-primary">{r.country || EM_DASH}</TD>
-                <TD right className="text-text-primary">{r.device || EM_DASH}</TD>
-                <TD right className="text-text-primary">{fmtMoney(r.cpc)}</TD>
-                <TD right>
-                  <span className={`rounded-full px-2 py-0.5 text-[10px] font-medium ${r.converted ? 'bg-emerald-500/10 text-emerald-400' : 'bg-bg-elevated text-text-muted'}`}>
-                    {r.converted ? 'yes' : 'no'}
-                  </span>
-                </TD>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
     </div>
   );
 }

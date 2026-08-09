@@ -1,14 +1,14 @@
 /**
- * savedReports — named explorer views persisted client-side.
+ * savedReportsStore — named explorer views persisted client-side.
  *
  * Storage: localStorage["puure.analytics.savedReports"] = JSON array of
  *   {id, name, state, saved_at}   where `state` is the explorer state blob, so
  *   loading one reproduces the view verbatim (mode, viz and filters included).
  *
- * EVERY read and write is guarded. A corrupt blob, a full quota or private
- * mode must read as "no saved reports" — never as a crashed analytics tab.
- * The store is kept out of the component so the harness can exercise it and so
- * a save from the controls row and the chip row agree on one shape.
+ * EVERY read and write is guarded, and EVERY write reports whether it landed.
+ * A corrupt blob, a full quota or private mode must read as "no saved reports"
+ * — never as a crashed analytics tab, and never as a chip that looks saved and
+ * is gone on reload.
  */
 export const SAVED_REPORTS_KEY = 'puure.analytics.savedReports';
 
@@ -40,15 +40,21 @@ export function loadSavedReports() {
   }
 }
 
+/**
+ * Write the list, KEEPING THE NEWEST when it overflows.
+ *
+ * `slice(0, MAX)` kept the OLDEST and silently discarded the report the
+ * operator had just saved — the save appeared to succeed and the chip was
+ * missing on reload. Newest-wins is the only cap that matches what a save
+ * means.
+ */
 function persist(list) {
   const ls = storage();
   if (!ls) return false;
   try {
-    ls.setItem(SAVED_REPORTS_KEY, JSON.stringify(list.slice(0, MAX_SAVED_REPORTS)));
+    ls.setItem(SAVED_REPORTS_KEY, JSON.stringify(list.slice(-MAX_SAVED_REPORTS)));
     return true;
   } catch {
-    // Quota exceeded / private mode — saving is best-effort, and the caller
-    // is told so it can say so rather than showing a phantom chip.
     return false;
   }
 }
@@ -64,20 +70,26 @@ export function addSavedReport(name, state) {
     state,
     saved_at: new Date().toISOString(),
   };
-  const next = [...loadSavedReports(), entry];
-  return persist(next) ? entry : null;
+  return persist([...loadSavedReports(), entry]) ? entry : null;
 }
 
+/**
+ * @returns {{reports: object[], ok: boolean}} — `ok:false` means the list on
+ * screen is NOT what is on disk, and the caller must say so.
+ */
 export function renameSavedReport(id, name) {
   const clean = String(name || '').trim().slice(0, MAX_NAME);
-  if (!clean) return loadSavedReports();
-  const next = loadSavedReports().map((r) => (r.id === id ? { ...r, name: clean } : r));
-  persist(next);
-  return next;
+  const current = loadSavedReports();
+  if (!clean) return { reports: current, ok: true };
+  const next = current.map((r) => (r.id === id ? { ...r, name: clean } : r));
+  const ok = persist(next);
+  return { reports: ok ? next : current, ok };
 }
 
+/** @returns {{reports: object[], ok: boolean}} — same contract as rename. */
 export function removeSavedReport(id) {
-  const next = loadSavedReports().filter((r) => r.id !== id);
-  persist(next);
-  return next;
+  const current = loadSavedReports();
+  const next = current.filter((r) => r.id !== id);
+  const ok = persist(next);
+  return { reports: ok ? next : current, ok };
 }
