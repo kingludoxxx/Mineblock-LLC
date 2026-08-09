@@ -2556,3 +2556,54 @@ key on a NEW block would put a value behind the headline field that the
 operator cannot see in the inspector (DECISION MADE).
 STATUS: COMPLETE
 ---
+
+---
+TIMESTAMP: 2026-08-09 22:20
+TASK: Funnel builder adversarial-review fixes (blockers 1-2, majors 3-10,
+minors 11-14, stale copy from finding 20, plus operator addenda A/B and the
+AI-panel left dock) — branch fix/builder-bughunt
+BUILT: Save engine reworked so writeOnce returns its own settle outcome
+({ok,error}) instead of callers inferring one from dirtyRef.size; AI batches
+now ride the normal debounced autosave (were dirty-but-untimed, so the chip
+lied and navigation lost them) with a beforeunload guard and an in-app exit
+confirm; a refused PATCH re-dirties every field EXCEPT the one the refusal
+names (refusedSaveField/retryFieldsAfterRefusal), so a slug collision stops
+poisoning later saves; Preview, Publish and Restore all flush first and
+surface a failed flush instead of proceeding; Publish flips the visible
+status only after the write settles. A docEpoch bumped by restore and by AI
+batches feeds CodeTab, which rebuilds a clean document and HARD-BLOCKS Save
+on a dirty one (codeDocEpochAction, pure); switching away from a dirty Code
+tab now confirms. replace_props gained a WIRING_KEYS floor carried forward
+from previous props, mirrored in server/src/routes/aiDeveloper.js and
+declared to the model in the tool description + system prompt. Canvas
+quick-insert stops propagation, block previews are pointer-events:none so
+selection always wins, useHistory's canUndo/canRedo moved to state,
+JsonField commits on blur, useAsset renamed applyAsset, Versions and AI
+Developer made mutually exclusive, AI panel docked LEFT in place of the
+outline rail, and "Edit page" (Pages tab + node toolbar + node double-click)
+now opens the visual builder with the JSON form kept as a labelled secondary
+action. Three stale renderer claims in operator-facing copy corrected.
+TESTED: vite build exit 0 (run 4x across the work). Every harness under
+server/tests: 40 of 42 green including builder-model 154/154 (was 114),
+code-doc 107/107 (was 101) and a new ai-ops-wiring 31/31. eslint on all 11
+touched files: 0 errors, 2 pre-existing warnings. Layout verified by
+MEASUREMENT, not arithmetic: the built CSS loaded in a browser at 1280px
+(body 1060px after the 220px sidebar) gives canvas 392px with the AI panel
+open; the old both-drawers-open case measured canvas 0px, confirming the
+finding-10 defect empirically. Edge cases exercised in the harnesses: null/
+undefined/array/string prop bags, explicit null and empty-string wiring
+clears, refusals naming no field, empty and non-array dirty sets, and an
+epoch that moves several times mid-typing.
+OUTPUT: 4 commits on fix/builder-bughunt (d9e541c, 810a773, 5abd985,
+c8d09d1). Not merged, not pushed.
+DECISIONS: (1) AI batches were deliberately draft-only before; the review
+asked for them to behave like any other edit, so the rollback story is now
+the pre-batch version snapshot plus undo rather than a save the editor never
+takes (DECISION MADE). (2) On a failed blur-commit, JsonField KEEPS the
+operator's invalid text instead of reverting it as the old code did —
+discarding input is a data-loss path (DECISION MADE). (3) The AI panel
+replaces the Elements/Outline rail rather than sitting beside it; three
+fixed rails plus the inspector is 908px of chrome in a 1060px body
+(DECISION MADE).
+STATUS: COMPLETE
+---
