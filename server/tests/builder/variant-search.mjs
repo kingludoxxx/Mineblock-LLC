@@ -255,9 +255,9 @@ const get = async (path) => {
 {
   fetchImpl = async () => jsonResponse({
     data: { products: { edges: [
-      { node: { id: 'gid://shopify/ProductVariant/1', title: 'A', price: '9', availableForSale: true, product: { title: 'Live', status: 'ACTIVE' } } },
-      { node: { id: 'gid://shopify/ProductVariant/2', title: 'B', price: '9', availableForSale: true, product: { title: 'Hidden', status: 'DRAFT' } } },
-      { node: { id: 'gid://shopify/ProductVariant/3', title: 'C', price: '9', availableForSale: false, product: { title: 'Gone', status: 'ARCHIVED' } } },
+      { node: { id: 'gid://shopify/Product/1', title: 'Live', status: 'ACTIVE', variants: { edges: [ { node: { id: 'gid://shopify/ProductVariant/1', title: 'A', price: '9', availableForSale: true } } ] } } },
+      { node: { id: 'gid://shopify/Product/2', title: 'Hidden', status: 'DRAFT', variants: { edges: [ { node: { id: 'gid://shopify/ProductVariant/2', title: 'B', price: '9', availableForSale: true } } ] } } },
+      { node: { id: 'gid://shopify/Product/3', title: 'Gone', status: 'ARCHIVED', variants: { edges: [ { node: { id: 'gid://shopify/ProductVariant/3', title: 'C', price: '9', availableForSale: false } } ] } } },
     ] } },
   });
   const r = await get('/stub/search?q=any');
