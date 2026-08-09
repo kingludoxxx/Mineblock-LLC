@@ -964,20 +964,21 @@ function prefillKey(){var b=billing();return emailValue()+'|'+b.name+'|'+b.line1
    as /^[^@s]+.../ and rejected every address containing the letter s,
    which is why the first live order never mounted a payment form.
    Plain string checks cannot be mangled by an escaping layer. */function valid(v){if(!v||v.indexOf(' ')!==-1)return false;var at=v.indexOf('@');if(at<1||at!==v.lastIndexOf('@'))return false;var dot=v.lastIndexOf('.');return dot>at+1&&dot<v.length-1;}
-/* IMMEDIATE mount, the loader-native way (decoded from Whop's index.js): at
-   startup index.js SCANS the document for [data-whop-checkout-session] nodes,
-   mounts each, and registers it in identifiedFrames under the node's id —
-   then starts its observer. So a node that is FULLY CONFIGURED before the
-   loader script is injected gets mounted AND registered with zero
-   re-insertion, and the card fields are visible the moment the iframe loads —
-   no waiting for the buyer's email. The email/address still ride the iframe
-   URL: remount() below re-creates the frame with the real values once typed
-   (the earlier eager attempt failed because it re-inserted the node BEFORE
-   index.js loaded AND its deep clone carried the mounted marker — both fixed:
-   no insertion here, and activate() now strips the markers). */
-function doMount(){if(mounted){return;}mounted=true;
-  applyPrefill(billing(),emailValue());
+/* GATED single mount — the exact flow that has charged real money. The frame
+   is created ONCE, by the loader's startup scan, only after the buyer has a
+   valid email + complete address: those values ride the iframe URL at
+   creation and this is the only frame the buyer's card ever touches (the
+   card-safe guard in remount() means address edits never rebuild it; only an
+   email change does). An eager empty-email frame was tried twice — the card
+   fields showed immediately, but submits produced ZERO payment attempts at
+   Whop (verified against their payments API) — so visibility loses to a
+   charge that actually completes. The placeholder explains what unlocks the
+   form; the delivery fields sit directly above it. */
+function doMount(){var v=emailValue();if(mounted||!valid(v)||!billingReady()){return;}mounted=true;
+  applyPrefill(billing(),v);
   mount.setAttribute('data-fos-prefill-key',prefillKey());
+  mount.setAttribute('data-fos-baked-complete','1');
+  mount.setAttribute('data-fos-baked-email',v);
   mount.setAttribute('data-whop-checkout-session',embed.whop_session_id);
   /* Belt + braces with the plan's server-side redirect_url: also tell the
      EMBED where to send the buyer, so Whop's own default post-purchase
