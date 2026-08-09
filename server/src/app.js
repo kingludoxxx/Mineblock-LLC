@@ -28,6 +28,7 @@ import gatewayWebhookRoutes from './routes/gatewayWebhooks.js';
 import checkoutPublicRoutes from './routes/checkoutPublic.js';
 import optinPublicRoutes from './routes/optinPublic.js';
 import mediaRoutes from './routes/media.js';
+import trackingPostbackPublicRoutes from './routes/trackingPostbackPublic.js';
 import { customDomainMiddleware } from './services/domainHub/hostRouting.js';
 import trackingPublicRoutes from './routes/trackingPublic.js';
 
@@ -94,6 +95,14 @@ app.use('/api/v1/optin/public', optinPublicRoutes);
 // Media library — parses its OWN body (7mb cap) so uploads can't buffer 50mb
 // through the global parser; must sit ahead of it like the intakes above.
 app.use('/api/v1/media', mediaRoutes);
+
+// Inbound ad-network postbacks — PUBLIC at the root because the URL is
+// hand-pasted into ad networks' postback fields. Must sit ahead of the global
+// parser so the router's own 32kb cap is real (proven executable by
+// tracking/s2s-integrations-e2e E11b — behind the 50mb parser the cap goes
+// inert). The token in the path is the only credential; anti-probing answers
+// one byte-identical {"ok":true} for every outcome.
+app.use('/pb', trackingPostbackPublicRoutes);
 
 // Body parsing
 app.use(express.json({ limit: '50mb' }));
