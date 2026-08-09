@@ -31,6 +31,7 @@
 // Authorization: Bearer header, NEVER in the URL query string, and never
 // logged — a token in a URL lands in access logs and error messages.
 import { pgQuery } from '../db/pg.js';
+import { reportDayKey } from './reportTz.js';
 import { ensureFunnelCostsTables } from './funnelCostsSchema.js';
 // lb_clicks belongs to the tracking lane; its exported ensure is the
 // supported way to guarantee the table exists before the binding join reads
@@ -56,10 +57,9 @@ export const SPEND_CATCHUP_MAX_DAYS = 90;
 // Chunk size for the session_id ANY() join on lb_clicks.
 const CLICK_CHUNK = 500;
 
-const dayKeyUtc = (value = null) => {
-  const d = value == null ? new Date() : new Date(value);
-  return (Number.isNaN(d.getTime()) ? new Date() : d).toISOString().slice(0, 10);
-};
+// Report-tz day keys (Europe/Madrid — matches the Meta ad account, whose
+// insights rows are ALREADY account-tz days; see reportTz.js).
+const dayKeyUtc = (value = null) => reportDayKey(value);
 const round2 = (v) => Math.round((Number(v) + Number.EPSILON) * 100) / 100;
 const DAY_RE = /^\d{4}-\d{2}-\d{2}$/;
 

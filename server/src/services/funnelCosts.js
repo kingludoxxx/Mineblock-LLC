@@ -27,6 +27,7 @@
 // CostError (the route maps it to a 4xx with .code); an infra failure
 // propagates to the route's 500 boundary.
 import { pgQuery } from '../db/pg.js';
+import { reportDayKey, reportDayStartIso, reportDaysAgo } from './reportTz.js';
 import { ensureFunnelCostsTables } from './funnelCostsSchema.js';
 import { funnelSpendByDay, deriveCampaignBindings } from './funnelSpend.js';
 
@@ -72,13 +73,14 @@ export class CostError extends Error {
 export const round2 = (v) => Math.round((Number(v) + Number.EPSILON) * 100) / 100;
 const round4 = (v) => Math.round((Number(v) + Number.EPSILON) * 10000) / 10000;
 
-// UTC 'YYYY-MM-DD' for a Date / ISO string / day key. Every date in this
-// lane is a UTC day key compared as a string — no timezone re-parse.
+// REPORT-TZ 'YYYY-MM-DD' (Europe/Madrid — operator decision, see reportTz.js)
+// for a Date / ISO string / day key. Day keys compare as strings; storage
+// stays UTC — only report bucketing lives in the report timezone.
 export function dayKey(value = null) {
   if (typeof value === 'string' && DAY_RE.test(value)) return value;
   const d = value == null ? new Date() : new Date(value);
-  if (Number.isNaN(d.getTime())) return new Date().toISOString().slice(0, 10);
-  return d.toISOString().slice(0, 10);
+  if (Number.isNaN(d.getTime())) return reportDayKey();
+  return reportDayKey(d);
 }
 
 export function daysAgo(n, now = null) {
@@ -1293,7 +1295,9 @@ function validateDay(v, name) {
   return d;
 }
 
-const nextDayIso = (day) => `${daysAgo(-1, `${day}T00:00:00Z`)}T00:00:00Z`;
+// Window bounds are REPORT-TZ midnights converted to UTC instants.
+const dayStartIso = (day) => reportDayStartIso(day);
+const nextDayIso = (day) => reportDayStartIso(reportDaysAgo(-1, day));
 
 // m2 — a /pnl/* window wider than the data could ever honestly answer is a
 // caller bug (and an unbounded on-read fold). 400-day cap, matching detect.
@@ -1319,7 +1323,7 @@ function validateWindow(start, end) {
 // the settle day; on this 1-click flow created_at (the claim instant) is
 // seconds before capture. Per-leg COST day unchanged (invariant 4).
 async function loadMoneyWindow(start, end, fid = null) {
-  const params = [`${start}T00:00:00Z`, nextDayIso(end)];
+  const params = [dayStartIso(start), nextDayIso(end)];
   let fidSql = '';
   if (fid) {
     params.push(fid);
