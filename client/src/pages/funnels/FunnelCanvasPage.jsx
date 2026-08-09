@@ -62,6 +62,7 @@ import {
   fetchFunnelSplitTests, fetchSplitMetrics, fetchLifetimeResults,
   armLetter, utcDay,
 } from '../../components/funnels/split/splitApi';
+import { ledgerCvr } from '../../components/funnels/split/splitUiCopy';
 
 const nodeTypes = { page: PageNode, splitGroup: SplitGroupNode };
 
@@ -231,23 +232,36 @@ function CanvasInner() {
         if (overlay.available) {
           // normalizeMetrics has already converted `cvr` from a fraction to a
           // percent exactly once — it must NOT be scaled again here.
+          //
+          // `source` rides along because the two feeds COUNT DIFFERENT THINGS
+          // and the tooltip has to say which: the overlay's per-arm `visitors`
+          // is a checkout-mint count ("an exposure IS a checkout mint here",
+          // funnelAnalytics), i.e. visitors who reached checkout, while the
+          // ledger's is everyone the splitter assigned. One tooltip explaining
+          // both would be wrong under one of them.
           return [t.id, Object.fromEntries((overlay.data.arms || []).map((a) => [a.arm_key, {
+            source: 'overlay',
             visitors: a.visitors,
             orders: a.orders,
-            ctr: undefined, // see the CTR note above — unmeasurable, not omitted
+            ctr: undefined, // see the CTR note above — a product call, not a gap
             cvr: a.cvr,
+            cvr_withheld: Boolean(a.cvr_withheld),
           }]))];
         }
         try {
           const life = await fetchLifetimeResults(t.id);
           return [t.id, Object.fromEntries((life?.arms || []).map((a) => {
-            const exp = Number(a.exposures) || 0;
-            const conv = Number(a.conversions) || 0;
+            // The ledger fallback is held to the SAME floor and clamp the
+            // service applies in overlay mode (ledgerCvr) — otherwise the same
+            // arm reports a rate under one source that the other refuses to
+            // state, and a 3-visitor arm paints a confident "33.3".
+            const rate = ledgerCvr({ exposures: a.exposures, conversions: a.conversions });
             return [a.arm_key, {
-              visitors: exp,
-              orders: conv,
+              source: 'ledger',
+              visitors: Number(a.exposures) || 0,
+              orders: Number(a.conversions) || 0,
               ctr: undefined,
-              cvr: exp > 0 ? (conv / exp) * 100 : undefined,
+              ...rate,
             }];
           }))];
         } catch {
@@ -388,10 +402,13 @@ function CanvasInner() {
                 page_id: a.page_id || null,
                 funnel_id: p ? id : null,
                 page_updated_at: p?.updated_at,
+                source: m.source,
                 visitors: m.visitors,
                 orders: m.orders,
                 ctr: m.ctr,
                 cvr: m.cvr,
+                cvr_withheld: m.cvr_withheld,
+                cvr_clamped: m.cvr_clamped,
               };
             }),
             onResults: () => setSplitResultsId(t.id),

@@ -20,7 +20,8 @@ import {
   fetchEligiblePages, armLetter, weightSum, fmtDate, handlePath, num, armLiveUrl,
 } from './splitApi';
 import {
-  pageOptionText, partitionArmPages, ineligibleCountsPhrase, nextSplitLetter,
+  pageOptionText, sameTestOptionText, partitionArmPages, ineligibleCountsPhrase,
+  nextSplitLetter, nextArmKey as computeNextArmKey, canChoosePage, repointConfirmText,
 } from './splitUiCopy';
 
 // One select skin, shared by the import column and the per-arm page pickers.
@@ -42,9 +43,24 @@ const ERROR_COPY = {
   last_live_arm: 'This is the last live arm — archiving it would leave the split route with nothing behind it.',
   arm_archived: 'That arm is archived — restore it before making it the entry.',
   not_found: 'That test or arm no longer exists — reloading.',
+  // The arm-page assignment refusals. The SERVER sends prose for these (it is
+  // the only side that knows which rule fired and about which page), so these
+  // are the fallback for an older deploy that answers with the code alone.
+  page_not_found: 'That page is not on this funnel, or it has been archived.',
+  arm_page_not_published: 'That page is a draft — publish it first, or the arm holds weight and never serves.',
+  page_is_funnel_default: 'The funnel default page is reached without passing the splitter, so it can never be measured as an arm.',
+  page_post_purchase: 'That is a post-purchase page — it sits behind the checkout and is routed by the funnel, never by the splitter.',
+  page_in_other_test: 'That page is already an arm of another live split on this funnel.',
+  page_already_an_arm: 'That page is already an arm of this test — a split cannot measure a page against itself.',
 };
-const errText = (err, fallback) =>
-  ERROR_COPY[err?.response?.data?.error?.code] || err?.response?.data?.error?.code || fallback;
+// PREFER THE SERVER'S SENTENCE. The refusal codes above are a map this file
+// owns, but the server now sends prose for the page refusals; using it means a
+// new refusal reaches the operator as a sentence on the day it ships, instead
+// of as a raw code until this map catches up.
+const errText = (err, fallback) => {
+  const e = err?.response?.data?.error;
+  return (typeof e?.message === 'string' && e.message) || ERROR_COPY[e?.code] || e?.code || fallback;
+};
 
 export default function SplitSetupModal({ open, onClose, funnel, testId, onTestChanged }) {
   const navigate = useNavigate();
@@ -58,6 +74,8 @@ export default function SplitSetupModal({ open, onClose, funnel, testId, onTestC
   // are reconciled from the server response, never from the optimistic value.
   const [handleDraft, setHandleDraft] = useState('');
   const [weightDrafts, setWeightDrafts] = useState({});
+  // The import column's PENDING pick. Local until the operator confirms it.
+  const [importPick, setImportPick] = useState('');
   // Per-PAGE inline refusals (slug collision etc.) — prose that stays on the
   // card until the next commit, never a toast that vanishes.
   const [pageErrors, setPageErrors] = useState({});
@@ -272,14 +290,11 @@ export default function SplitSetupModal({ open, onClose, funnel, testId, onTestC
 
   // ADD ARM — duplicate the entry arm's page, or import an existing eligible
   // page. Both end in one POST to /arms; neither writes a ledger row.
-  const nextArmKey = useCallback(() => {
-    const used = new Set(liveArms.map((a) => String(a.arm_key)));
-    for (let i = 0; i < 26 * 27; i++) {
-      const k = armLetter(i).toLowerCase();
-      if (!used.has(k)) return k;
-    }
-    return `arm${Date.now()}`;
-  }, [liveArms]);
+  // FIRST UNUSED key, not the next index — and the "+ Add Split X" header is
+  // derived from this SAME function (nextSplitLetter wraps it). They used to be
+  // two implementations: with a mid-sequence archived arm the header promised
+  // "Add Split C" while the POST minted arm 'b'.
+  const nextArmKey = useCallback(() => computeNextArmKey(liveArms), [liveArms]);
 
   const addFromPage = useCallback(async (pageId) => {
     setBusy(true); setError(null);
@@ -339,7 +354,7 @@ export default function SplitSetupModal({ open, onClose, funnel, testId, onTestC
 
   if (!open) return null;
 
-  const { importable, ineligible } = partitionArmPages({ pages: eligible.pages, liveArms });
+  const { importable, sameTest, ineligible } = partitionArmPages({ pages: eligible.pages, liveArms });
   const counts = eligible.counts || {};
   const livePath = handlePath(handle);
 
@@ -523,8 +538,9 @@ export default function SplitSetupModal({ open, onClose, funnel, testId, onTestC
                       onEdit={() => editArm(arm)}
                       onPagePatch={patchPage}
                       pageError={arm.page_id ? pageErrors[arm.page_id] : null}
-                      // Arm A is the original page — no picker (see setArmPage).
-                      canChoosePage={i > 0}
+                      // Keyed on the CONTROL arm, not on position — see
+                      // splitUiCopy.canChoosePage.
+                      canChoosePage={canChoosePage(arm)}
                       pageChoices={partitionArmPages({
                         pages: eligible.pages,
                         liveArms,
@@ -548,7 +564,7 @@ export default function SplitSetupModal({ open, onClose, funnel, testId, onTestC
                       not assumed. */}
                   <div className="w-56 shrink-0 rounded-xl border border-dashed border-border-default bg-bg-elevated/30 p-3 flex flex-col gap-2">
                     <div className="text-sm font-medium text-text-primary">
-                      + Add Split {nextSplitLetter(liveArms.length)}
+                      + Add Split {nextSplitLetter(liveArms)}
                     </div>
                     <button
                       type="button"
@@ -569,30 +585,61 @@ export default function SplitSetupModal({ open, onClose, funnel, testId, onTestC
                       <span className="h-px flex-1 bg-border-subtle" />
                     </div>
 
+                    {/* PICK, THEN CONFIRM. A commit-on-change select fires a
+                        mutation for every keyboard arrow — on a native select
+                        an operator moving from A to D would have added B and C
+                        on the way. The pick is local; only the button writes. */}
                     <div className="space-y-1">
                       <label htmlFor="split-import-page" className="block text-[11px] font-medium text-text-muted">
                         Import existing page
                       </label>
                       <select
                         id="split-import-page"
-                        value=""
-                        onChange={(e) => { if (e.target.value) addFromPage(e.target.value); }}
+                        value={importPick}
+                        onChange={(e) => setImportPick(e.target.value)}
                         disabled={busy}
                         className={`${selectCls} ${!importable.length ? 'opacity-60' : ''}`}
                       >
-                        {/* Ineligible pages stay LISTED and disabled, with the
-                            reason — an option that silently vanishes is an
-                            option the operator cannot ask about. */}
+                        {/* Pages that cannot be an arm stay LISTED and disabled,
+                            with the reason — an option that silently vanishes is
+                            an option the operator cannot ask about. Same-test
+                            siblings get their own reason (they are eligible
+                            server-side; they are just already arms here). */}
                         <option value="">
                           {importable.length ? 'Choose a page…' : 'No page to import'}
                         </option>
                         {importable.map((p) => (
                           <option key={p.id} value={p.id}>{pageOptionText(p)}</option>
                         ))}
+                        {sameTest.map((p) => (
+                          <option key={p.id} value="" disabled>{sameTestOptionText(p)}</option>
+                        ))}
                         {ineligible.map((p) => (
                           <option key={p.id} value="" disabled>{pageOptionText(p)}</option>
                         ))}
                       </select>
+                      {importPick && (
+                        <div className="flex items-center gap-1.5 pt-0.5">
+                          <button
+                            type="button"
+                            onClick={() => { const id = importPick; setImportPick(''); addFromPage(id); }}
+                            disabled={busy}
+                            className="px-2 py-1 rounded-md bg-emerald-600 hover:bg-emerald-500 text-[11px] font-medium text-white
+                              transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+                          >
+                            Add as split {nextSplitLetter(liveArms)}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setImportPick('')}
+                            disabled={busy}
+                            className="px-2 py-1 rounded-md border border-border-default text-[11px] text-text-muted
+                              hover:text-text-primary hover:bg-bg-hover transition-colors cursor-pointer disabled:opacity-40"
+                          >
+                            Cancel
+                          </button>
+                        </div>
+                      )}
                     </div>
 
                     {ineligible.length > 0 && (
@@ -697,6 +744,11 @@ function ArmCard({
     setNameDraft(page?.title || '');
     setSlugDraft((page?.slug || '').replace(/^\//, ''));
   }
+
+  // The PENDING page pick. Local until the operator confirms it — a native
+  // select fires onChange for every keyboard arrow, so committing on change
+  // would re-point the arm once per key on the way to the intended option.
+  const [pagePick, setPagePick] = useState('');
 
   // "Use name as title" — the page's DOCUMENT title. renderPageHtml resolves
   // it as seo.title || site title || page.title, so ticked = no seo.title (the
@@ -889,9 +941,16 @@ function ArmCard({
         </div>
       )}
 
-      {/* "Choose / import page" — every arm after the first. Rendered whether
-          or not the arm HAS a page: an arm with none is exactly the case this
-          picker exists for. */}
+      {/* "Choose / import page" — every arm that is not the CONTROL. Rendered
+          whether or not the arm HAS a page: an arm with none is exactly the
+          case this picker exists for.
+
+          PICK, THEN CONFIRM, and the confirm names what changes. Re-pointing a
+          live arm is the same class of write as /promote — it changes what a
+          visitor already assigned to this arm will see — so it gets the same
+          posture: an explicit second action, and a sentence saying which page
+          replaces which and what survives it. (The published check is the
+          server's: PATCH refuses a draft with arm_page_not_published.) */}
       {canChoosePage && (
         <div className="space-y-1">
           <label htmlFor={`arm-page-${arm.id}`} className="block text-[11px] font-medium text-text-muted">
@@ -899,21 +958,62 @@ function ArmCard({
           </label>
           <select
             id={`arm-page-${arm.id}`}
-            value={arm.page_id || ''}
-            onChange={(e) => onChoosePage?.(e.target.value)}
+            value={pagePick || arm.page_id || ''}
+            onChange={(e) => setPagePick(e.target.value)}
             disabled={disabled}
             className={selectCls}
           >
             <option value="">
               {(pageChoices?.importable || []).length ? 'Choose a page…' : 'No page to choose'}
             </option>
+            {/* The arm's CURRENT page, when the eligibility feed does not offer
+                it (archived, or claimed elsewhere): rendered disabled and
+                selected rather than leaving the select blank, which read as
+                "this arm has no page". */}
+            {page && !(pageChoices?.importable || []).some((p) => p.id === page.id) && (
+              <option value={page.id} disabled>{pageOptionText(page)}</option>
+            )}
             {(pageChoices?.importable || []).map((p) => (
               <option key={p.id} value={p.id}>{pageOptionText(p)}</option>
+            ))}
+            {(pageChoices?.sameTest || []).map((p) => (
+              <option key={p.id} value="" disabled>{sameTestOptionText(p)}</option>
             ))}
             {(pageChoices?.ineligible || []).map((p) => (
               <option key={p.id} value="" disabled>{pageOptionText(p)}</option>
             ))}
           </select>
+          {pagePick && pagePick !== arm.page_id && (
+            <div className="rounded-lg border border-amber-500/20 bg-amber-500/10 px-2 py-1.5 space-y-1.5">
+              <p className="text-[11px] text-amber-300 leading-snug">
+                {repointConfirmText({
+                  letter,
+                  fromPage: page,
+                  toPage: (pageChoices?.importable || []).find((p) => p.id === pagePick),
+                })}
+              </p>
+              <div className="flex items-center gap-1.5">
+                <button
+                  type="button"
+                  onClick={() => { const id = pagePick; setPagePick(''); onChoosePage?.(id); }}
+                  disabled={disabled}
+                  className="px-2 py-1 rounded-md bg-emerald-600 hover:bg-emerald-500 text-[11px] font-medium text-white
+                    transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+                >
+                  Repoint arm {letter}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setPagePick('')}
+                  disabled={disabled}
+                  className="px-2 py-1 rounded-md border border-border-default text-[11px] text-text-muted
+                    hover:text-text-primary hover:bg-bg-hover transition-colors cursor-pointer disabled:opacity-40"
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          )}
         </div>
       )}
 

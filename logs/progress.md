@@ -3417,3 +3417,73 @@ is the split's original page, and swapping it silently would change what "the
 control" means without changing a single number (DECISION MADE).
 STATUS: COMPLETE
 ---
+
+---
+TIMESTAMP: 2026-08-10 01:12
+TASK: Split-test UI parity — FIX-FIRST review round (1 blocker, 5 medium, 6 minor)
+BUILT: B1 (BLOCKER): PATCH /:id/arms/:armId { page_id } had ZERO server-side
+validation while every other money-meaning write in routes/splitTests.js was
+guarded — a page id was taken on trust, truncated and written. Added
+assertArmPageAssignable + ARM_PAGE_REFUSALS in that route: the page must exist,
+belong to THIS funnel, not be archived, be published (arm_page_not_published,
+mirroring /promote, with FOR SHARE so a concurrent un-publish cannot race the
+commit), not be the funnel default, not be post-purchase, not be an arm of
+another live test, and NOT already be an arm of THIS test. Every refusal is a
+named code plus prose; the arm's existence is now checked before the page rules
+so a bad arm id answers not_found rather than a page refusal. The client's
+errText now PREFERS the server's sentence over its own code map.
+M1: both selects were commit-on-change — one mutation per keyboard arrow, so
+arrowing from A to D added B and C on the way. Both are now pick-then-confirm
+(local pending state + an explicit button); the per-arm one shows the confirm
+sentence. M2/M5: canChoosePage is keyed on is_control, not on index (the
+control is not necessarily first — POST .../control moves it — and sort_order
+is operator-reorderable), and re-pointing any live arm now requires an explicit
+confirm naming both pages and what survives. M5 also fixed real header drift:
+the "+ Add Split X" header was count-based while the POST minted the first
+UNUSED arm_key, so with a mid-sequence archived arm the header promised C and
+the server minted b. One function (nextArmKey) now answers both. M3: the canvas
+Visitors tooltip is source-aware — overlay mode says "reached checkout" (the
+results modal's own wording for that number, which is a checkout-mint count),
+ledger mode says "assigned to this arm". M4: the parity guard could not fail —
+it grepped raw source, so a needle was satisfied by the COMMENT describing the
+copy. It now strips comments and title= tooltips first, splits needles into
+COPY vs BINDING, and carries mutation checks. Minors: m1 same-test siblings
+render disabled with "already an arm of this test" instead of vanishing; m2 one
+eligibility predicate (isIneligible, explicit === false); m3 an unofferable
+current page renders as a disabled selected option instead of a blank select;
+m5 the ledger-fallback CVR now obeys the same floor and clamp as overlay mode;
+m6 the CTR rationale softened; NIT "1 arms" → armCountLabel. m7 left alone (out
+of lane).
+TESTED: NEW route-level harness server/tests/money-path/split-arm-page-guard.mjs
+drives the REAL router over embedded PG (real authenticate + requirePermission +
+the transaction): all 8 refusals with code + prose + a no-write assertion, the
+happy path, re-assigning an arm to its own page (must NOT self-refuse), clearing
+page_id, an archived arm not blocking its page, an archived test not blocking
+its pages, unknown arm/test → 404, a SQL-ish page id, a 5000-char page id, no
+token → 401, and the untouched weight/control paths. verifySplitUiGuards grew
+from 97 to 168 assertions. Regressions: split-delivery and verifySplitTesting.
+OUTPUT: split-arm-page-guard 42/42; verifySplitUiGuards 168/168; split-delivery
+33/33; verifySplitTesting 48/48; vite build exit 0; eslint 0 on all five changed
+client files; node --check on routes/splitTests.js OK. M4 was verified BY LIVE
+MUTATION, not by assertion alone: with "Split Name (handle)" replaced by "Split
+handle" in the real file the harness reported "FAIL parity copy:
+split/SplitSetupModal.jsx renders \"Split Name (handle)\" — 167 passed, 1
+failed"; the file was restored and it returned to 168/168.
+DECISIONS: (1) CORRECTION TO THE PREVIOUS ENTRY. That entry's DECISION (1) said
+"neither source can produce" a CTR. That was too strong and I am retracting it:
+funnelAnalytics DOES publish a per-PAGE ctr. What does not exist is a per-ARM
+click — the ledger has never carried one and per-arm submit_rate is a constant.
+Borrowing the page-level proxy would answer a different question over a
+different window under a caption that says "lifetime", so the dash is a PRODUCT
+CALL, not a data limit. The comment and the tooltip now say that (DECISION
+MADE). (2) Clearing an arm's page (page_id: null) is deliberately NOT guarded —
+the resolver treats a page-less arm as dark and re-picks around it
+(split-delivery T13), so it is a retreat to a safe state (DECISION MADE).
+(3) The eligibility predicate treats only an EXPLICIT eligible:false as
+ineligible; an unstated page is offered, because the server guard is now the
+authority and hiding an option the operator can see is worse than a named
+refusal (DECISION MADE). (4) splitPages.js was NOT modified — only its exported
+POST_PURCHASE_TYPES is imported — to keep the change inside the route file the
+coordinator named (DECISION MADE).
+STATUS: COMPLETE
+---

@@ -21,17 +21,21 @@
 //     30 days. The tiles carry no significance test; the verdict lives in the
 //     results modal, and the caption says so.
 //
-//  CTR % IS A DELIBERATE EM-DASH, NOT A MISSING FEATURE. The reference tool
-//  feeds its CTR from page-level lifetime click counters. This platform has
-//  none per arm: the split ledger has never recorded a click, and the analytics
-//  service's per-arm `submit_rate` is literally `visitors > 0 ? 1 : null`
-//  (funnelAnalytics.js) — a constant that would paint a permanent "100.0" on
-//  every arm forever. The tile therefore renders DASH until a real per-arm
-//  click source exists. A dash is a true statement; 100.0 is not.
+//  CTR % IS A PRODUCT CALL, and the honest version of it is narrower than
+//  "we cannot measure this". A per-PAGE `ctr` does exist — funnelAnalytics
+//  publishes one, explicitly labelled a proxy (`ctr_is_proxy`, with `ctr_basis`
+//  naming which proxy won) over the default 30-day window. What does not exist
+//  is a per-ARM click: the split ledger has never carried one, and the per-arm
+//  `submit_rate` is `visitors > 0 ? 1 : null`, a constant. Borrowing the
+//  page-level proxy would answer a different question, over a different window,
+//  under a caption that says "lifetime". So the tile is left blank. That is a
+//  choice about what to claim, not a limit of the data.
+//
+//  THE THREE TILES ARE DATA, NOT JSX (splitUiCopy.CANVAS_TILES) so the harness
+//  can assert the rendered labels and tooltips without a renderer.
 import { memo } from 'react';
 import { BarChart3, Settings, SlidersHorizontal, Shuffle, Eye } from 'lucide-react';
-import { DASH } from './splitApi';
-import { splitNodeTitle, armLettersChip, fmtCount, fmtRate1 } from './splitUiCopy';
+import { splitNodeTitle, armLettersChip, armCountLabel, CANVAS_TILES, DASH } from './splitUiCopy';
 import usePageThumbnail from '../usePageThumbnail';
 
 const ACCENT = '#22c55e';
@@ -83,7 +87,7 @@ function SplitGroupNodeInner({ data, selected }) {
         >
           {splitNodeTitle(handle)}
         </span>
-        <span className="ml-auto text-[10px] text-text-faint">{arms.length} arms</span>
+        <span className="ml-auto text-[10px] text-text-faint">{armCountLabel(arms.length)}</span>
       </div>
 
       {/* Arms */}
@@ -117,7 +121,7 @@ function SplitGroupNodeInner({ data, selected }) {
         <span
           className="px-1 py-0.5 rounded text-[8px] font-mono font-bold uppercase tracking-wide
             bg-bg-elevated border border-border-default text-text-muted whitespace-nowrap"
-          title={`${arms.length} ${arms.length === 1 ? 'arm' : 'arms'}`}
+          title={armCountLabel(arms.length)}
         >
           {armLettersChip(arms)}
         </span>
@@ -168,36 +172,16 @@ function ArmTile({ arm }) {
       </div>
 
       {/* Footer metrics — the label carries the unit, so the VALUE never
-          repeats it (reference formatting: "12.3" under "CTR %"). */}
+          repeats it (reference formatting: "12.3" under "CTR %"). Rendered
+          from CANVAS_TILES: one list, asserted by the harness. */}
       <div className="mt-1.5 grid grid-cols-3 border-t border-border-subtle divide-x divide-[rgba(255,255,255,0.06)]">
-        <Tile
-          label="Visitors"
-          value={fmtCount(arm.visitors)}
-          title="Exposures assigned to this arm over the test's lifetime. Bot-inclusive; blank means nothing was recorded, not zero."
-        />
-        <Tile
-          label="CTR %"
-          value={fmtRate1(arm.ctr)}
-          title="No per-arm click is recorded anywhere on this platform — the split ledger has never seen one, and the analytics service's per-arm submit_rate is a constant. This stays blank rather than showing an invented rate."
-        />
-        <Tile
-          label="CVR %"
-          value={fmtRate1(arm.cvr)}
-          // Orders is the numerator and a real measurement in both sources; it
-          // lost its own tile to the reference's three-tile layout, so it is
-          // kept here rather than dropped.
-          title={`Conversions ÷ exposures over the test's lifetime. Orders: ${fmtCount(arm.orders)}. Blank means the source withheld it (too small a sample) or recorded nothing — never zero.`}
-        />
+        {CANVAS_TILES.map((t) => (
+          <div key={t.key} className="px-1 py-1 text-center" title={t.title(arm)}>
+            <div className="text-[10px] tabular-nums text-text-primary truncate">{t.value(arm)}</div>
+            <div className="text-[8px] uppercase tracking-wide text-text-faint">{t.label}</div>
+          </div>
+        ))}
       </div>
-    </div>
-  );
-}
-
-function Tile({ label, value, title }) {
-  return (
-    <div className="px-1 py-1 text-center" title={title}>
-      <div className="text-[10px] tabular-nums text-text-primary truncate">{value ?? DASH}</div>
-      <div className="text-[8px] uppercase tracking-wide text-text-faint">{label}</div>
     </div>
   );
 }
