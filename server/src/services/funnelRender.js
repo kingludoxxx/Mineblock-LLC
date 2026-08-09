@@ -914,7 +914,11 @@ if(!mount.id){mount.id='puure-checkout';}
 var placeholder=root.querySelector('[data-fos-whop-wait]');
 var mounted=false;
 function emailValue(){var el=document.querySelector('input[name="email"]');return el?String(el.value||'').trim():'';}
-function valid(v){return /^[^@\s]+@[^@\s.]+\.[^@\s]+$/.test(v);}
+/* No regex here on purpose: this runtime is emitted through a template
+   literal, which eats the backslashes — /^[^@\\s]+.../ reached the browser
+   as /^[^@s]+.../ and rejected every address containing the letter s,
+   which is why the first live order never mounted a payment form.
+   Plain string checks cannot be mangled by an escaping layer. */function valid(v){if(!v||v.indexOf(' ')!==-1)return false;var at=v.indexOf('@');if(at<1||at!==v.lastIndexOf('@'))return false;var dot=v.lastIndexOf('.');return dot>at+1&&dot<v.length-1;}
 function doMount(){var v=emailValue();if(mounted||!valid(v)){return;}mounted=true;
   mount.setAttribute('data-whop-checkout-prefill-email',v);
   mount.setAttribute('data-whop-checkout-session',embed.whop_session_id);
@@ -1361,7 +1365,9 @@ const CKT_TEMPLATE_JS = `(function(){
          address into the iframe URL). Without one there is nothing to submit,
          so say so instead of spinning a button that can never succeed — the
          exact failure that silently swallowed the first live order. */
-      if(!/^[^@\s]+@[^@\s.]+\.[^@\s]+$/.test(emv)){
+      var _at=emv.indexOf('@'),_dot=emv.lastIndexOf('.');
+      var _okEmail=emv&&emv.indexOf(' ')===-1&&_at>0&&_at===emv.lastIndexOf('@')&&_dot>_at+1&&_dot<emv.length-1;
+      if(!_okEmail){
         if(em){em.focus();em.scrollIntoView({behavior:'smooth',block:'center'});}
         return;
       }
