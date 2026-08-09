@@ -6,9 +6,23 @@
 //
 // ─────────────────────────────────────────────────────────────────────────────
 // MOUNT (integrator-owned, server/src/app.js). This file MUST NOT be mounted
-// from routes/index.js: that router sits behind the global 50mb express.json
-// parser and behind `app.use('/api', apiLimiter)`, either of which would
-// defeat this route's own 32kb cap and its own per-IP limiter.
+// from routes/index.js, for two SEPARATE reasons that are worth keeping apart:
+//
+//   • THE BODY PARSER — the binding one, and it applies wherever this router
+//     is mounted. Behind the global `express.json({limit:'50mb'})` the router's
+//     own 32kb parser is skipped entirely (the global one already set
+//     req._body), so the documented cap becomes a NO-OP and an 80kb postback is
+//     fully parsed on an unauthenticated path. This is not a comment you have
+//     to take on trust: server/tests/tracking/s2s-integrations-e2e.mjs E11b
+//     stands both orderings up side by side and asserts the cap goes inert in
+//     the wrong one and fires in the right one.
+//
+//   • THE `/api` LIMITER — narrower than it first looks. `app.use('/api',
+//     apiLimiter)` is PATH-PREFIXED, so a root-level `/pb` mount never passes
+//     through it whatever the order. It matters only because routes/index.js
+//     mounts everything under `/api/v1/...`: putting this router there would
+//     put it behind that limiter, whose budget and 429 shape are tuned for
+//     authed API traffic, not for a partner network's postback pinger.
 //
 // Add the import beside the other public routers (near line 32):
 //
@@ -27,7 +41,14 @@
 //
 // DEFENCES, in the order a request meets them:
 //   1. per-IP rate limit (checkRateLimit — Redis with in-memory fallback)
-//   2. constant-time token compare (trackingInbound.resolveToken)
+//   2. token compare with a CONSTANT-WORK FLOOR (trackingInbound.resolveToken):
+//      the token BYTES are compared with crypto.timingSafeEqual, and every
+//      request — malformed token, unknown token, disabled endpoint, valid
+//      token — performs the same shaped lookup and at least one full-length
+//      comparison. That removes the structural oracle (an early return that
+//      skipped the query and answered visibly faster). It is NOT an end-to-end
+//      constant-time guarantee and is not claimed as one: index state, pool
+//      scheduling and the event loop are not ours to control.
 //   3. ANTI-PROBING: the response body is byte-identical on EVERY path —
 //      unknown token, disabled endpoint, valid token that ingested, valid
 //      token that deduped, malformed payload. See ANSWER below.

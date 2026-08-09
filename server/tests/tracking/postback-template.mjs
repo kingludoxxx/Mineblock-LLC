@@ -294,5 +294,77 @@ const ok = (name, cond, extra = '') => {
   ok('T8 every context key is advertised', undeclared.length === 0, undeclared.join());
 }
 
+// ── T9. PERSISTED-ERROR SANITIZATION (review M1) ────────────────────────────
+// Postback trackers echo the request URL in their error bodies, and an
+// operator's template carries their credential — in the query OR in a path
+// segment. errOf is the single chokepoint into lb_tracking_events.error and
+// lb_postback_queue.last_error, so the proof lives on it.
+{
+  const { errOf, stripUrls, sanitizeForPersist, redactTokens } =
+    await import('../../src/services/trackingDelivery.js');
+
+  // 9a. THE REVIEWER'S REPRO: a partner 400 that quotes the credentialed URL.
+  const echoed = 'Bad Request: could not process https://tracker.example.com/pb?api_key=SK_LIVE_9f3a2b&cid=abc — invalid click id';
+  const persisted = errOf({ ok: false, status: 400, body: { raw: echoed } });
+  ok('T9a the credential does NOT survive into the persisted error',
+    !persisted.includes('SK_LIVE_9f3a2b'), persisted);
+  ok('T9a no URL survives into the persisted error',
+    !persisted.includes('://') && persisted.includes('[url-redacted]'), persisted);
+  ok('T9a the status still survives', persisted.startsWith('http_400'), persisted);
+  // POSITIVE CONTROL — the diagnostic prose must NOT be collateral damage.
+  ok('T9a the partner’s actual diagnostic survives', persisted.includes('invalid click id'), persisted);
+
+  // 9b. PATH-SEGMENT credential (the MGID preset shape). No `key=` to anchor
+  // on — only wholesale URL stripping catches this.
+  const mgid = errOf({ ok: false, status: 500, body: { raw: 'upstream error for https://a.mgid.com/postback/PB_SECRET_77/?c=x' } });
+  ok('T9b a PATH-segment credential does not survive', !mgid.includes('PB_SECRET_77'), mgid);
+
+  // 9c. A credential OUTSIDE a URL (a JSON error body) still needs key
+  // redaction — URL stripping alone would miss it.
+  const jsonBody = errOf({ ok: false, status: 401, body: { error: 'unauthorized', api_key: 'AK_abc123', token: 'TK_zzz' } });
+  ok('T9c a JSON-body api_key is redacted', !jsonBody.includes('AK_abc123'), jsonBody);
+  ok('T9c a JSON-body token is redacted', !jsonBody.includes('TK_zzz'), jsonBody);
+  ok('T9c the non-secret field survives', jsonBody.includes('unauthorized'), jsonBody);
+
+  // 9d. The generic key list catches the names an operator's partner uses,
+  // including prefixed forms a `\b`-anchored bare word cannot reach.
+  for (const [k, v] of [['api_key', 'V1'], ['apikey', 'V2'], ['access_key', 'V3'],
+    ['x-api-key', 'V4'], ['partner_token', 'V5'], ['secret', 'V6'],
+    ['password', 'V7'], ['sig', 'V8']]) {
+    const s = sanitizeForPersist(`upstream said ${k}=${v}_LEAK is bad`);
+    ok(`T9d generic redaction covers ${k}=`, !s.includes(`${v}_LEAK`), s);
+  }
+
+  // 9e. The transport-error branch is sanitized too — an undici message can
+  // quote the request target.
+  const netErr = errOf({ ok: false, error: 'network:connect ECONNREFUSED for https://t.example/pb?key=NOPE123' });
+  ok('T9e the transport-error branch strips the URL', !netErr.includes('NOPE123') && !netErr.includes('://'), netErr);
+  ok('T9e it keeps the error CLASS so retryable() can still classify it',
+    netErr.startsWith('network:'), netErr);
+
+  // 9f. The classifier still sees the exact strings it branches on. If
+  // sanitization mangled these, hard errors would start retrying forever.
+  for (const e of ['not_configured', 'no_identity', 'kind_not_wired', 'pixel_gone',
+    'unsafe_url:blocked_host', 'unsafe_url:dns_resolution_failed',
+    'token_decrypt_failed', 'template_decrypt_failed']) {
+    ok(`T9f sentinel survives sanitization: ${e}`, errOf({ ok: false, error: e }) === e, errOf({ ok: false, error: e }));
+  }
+
+  // 9g. Bounds + idempotency.
+  const long = errOf({ ok: false, status: 500, body: { raw: 'x'.repeat(5000) } });
+  ok('T9g the excerpt is capped at 200 chars', long.length <= 'http_500: '.length + 200, String(long.length));
+  ok('T9g sanitizeForPersist is idempotent',
+    sanitizeForPersist(sanitizeForPersist(echoed)) === sanitizeForPersist(echoed), '');
+  ok('T9g stripUrls leaves non-URL text alone',
+    stripUrls('plain diagnostic, no links') === 'plain diagnostic, no links', '');
+
+  // 9h. redactTokens ITSELF must still return a usable URL — the
+  // google-adapter/delivery-patches regressions depend on it, so the URL
+  // stripping deliberately lives in errOf and NOT in redactTokens.
+  const rt = redactTokens('https://x/y?refresh_token=RF_AAA&z=1');
+  ok('T9h redactTokens still masks in place and keeps the URL',
+    rt.includes('https://x/y') && !rt.includes('RF_AAA') && rt.includes('z=1'), rt);
+}
+
 console.log(`\nRESULT: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

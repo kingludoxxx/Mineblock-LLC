@@ -163,8 +163,10 @@ router.get('/:funnelId/custom-networks', authed, async (req, res) => {
 //
 // The counters read lb_tracking_events where platform = 'custom' — which is
 // exactly what trackingCustomNetworks.asPixel makes the delivery layer write
-// (kind 'custom', pixel_id = the network key). queued_now is the LIVE queue
-// depth, not a ledger count, so a drained retry stops reading as queued.
+// (kind 'custom', pixel_id = the IMMUTABLE lbcn_ ROW ID, review M3). Keying on
+// the row id rather than the label slug is also what keeps these counters
+// attached to a network across a RENAME. queued_now is the LIVE queue depth,
+// not a ledger count, so a drained retry stops reading as queued.
 //
 // NB this route is declared BEFORE '/:funnelId/custom-networks/:id' on
 // purpose: Express matches in declaration order and 'health' would otherwise
@@ -176,7 +178,7 @@ router.get('/:funnelId/custom-networks/health', authed, async (req, res) => {
     await ensureIntegrationsTables();
     const [counts, queued, breakers, nets] = await Promise.all([
       pgQuery(
-        `SELECT pixel_id AS key,
+        `SELECT pixel_id AS row_id,
                 COUNT(*) FILTER (WHERE status = 'sent')::int    AS sent_24h,
                 COUNT(*) FILTER (WHERE status IN ('skipped','error'))::int AS failed_24h,
                 COUNT(*) FILTER (WHERE status = 'deduped')::int AS deduped_24h
@@ -196,14 +198,14 @@ router.get('/:funnelId/custom-networks/health', authed, async (req, res) => {
       ),
       listNetworks(funnelId),
     ]);
-    const byKey = new Map(counts.map((c) => [c.key, c]));
+    const byRowId = new Map(counts.map((c) => [c.row_id, c]));
     const queuedByRow = new Map(queued.map((q) => [q.pixel_row_id, q.n]));
     const now = Date.now();
     return res.json({
       success: true,
       data: {
         health: nets.map((n) => {
-          const c = byKey.get(n.key) || {};
+          const c = byRowId.get(n.id) || {};
           // The breaker scope is `${funnelId}:${rowId}` (trackingDelivery).
           const b = breakers.find((x) => x.scope_id === `${funnelId}:${n.id}`);
           const open = Boolean(b && b.open_until && new Date(b.open_until).getTime() > now);
@@ -237,7 +239,7 @@ router.get('/:funnelId/custom-networks/:id', authed, async (req, res) => {
     if (!id) return bad(res, 'invalid_id');
     const row = await getNetwork(funnelId, id);
     if (!row) return bad(res, 'not_found', 404);
-    return res.json({ success: true, data: { network: networkView(row) } });
+    return res.json({ success: true, data: { network: networkView(row, { reveal: true }) } });
   } catch (err) {
     return oops(res, 'custom-network read', err);
   }
@@ -261,7 +263,7 @@ router.post('/:funnelId/custom-networks', authed, async (req, res) => {
     if (!row) return bad(res, 'duplicate_label', 409);
     return res.status(201).json({
       success: true,
-      data: { network: networkView(row), warning: guard.warning || null },
+      data: { network: networkView(row, { reveal: true }), warning: guard.warning || null },
     });
   } catch (err) {
     return oops(res, 'custom-network create', err);
@@ -289,7 +291,7 @@ router.post('/:funnelId/custom-networks/preset/:key', authed, async (req, res) =
     return res.status(201).json({
       success: true,
       data: {
-        network: networkView(row),
+        network: networkView(row, { reveal: true }),
         credential_note: (net && net.preset && net.preset.credential_note) || '',
         warning: guard.warning || null,
       },
@@ -315,7 +317,7 @@ router.put('/:funnelId/custom-networks/:id', authed, async (req, res) => {
     }
     const row = await updateNetwork(funnelId, id, check.fields);
     if (!row) return bad(res, 'not_found', 404);
-    return res.json({ success: true, data: { network: networkView(row), warning } });
+    return res.json({ success: true, data: { network: networkView(row, { reveal: true }), warning } });
   } catch (err) {
     // A rename can collide with an existing (funnel_id, key).
     if (String(err.message || '').includes('uq_lb_custom_networks_funnel_key')) {

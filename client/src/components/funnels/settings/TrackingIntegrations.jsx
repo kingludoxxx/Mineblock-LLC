@@ -109,12 +109,19 @@ function NetworkEditor({ funnel, initial, macros, events, onDone, onCancel }) {
       title={isNew ? 'New custom network' : `Edit — ${initial.label}`}
       description="A postback template with {macro} placeholders. It fires through the same delivery rails as every other network: one idempotency claim per conversion, a circuit breaker, and a retry queue."
     >
+      {/* The old help here said a rename started a fresh dedupe space. That
+          was true when the label slug was the ledger identity, and it is the
+          exact behaviour review M3 removed — the identity is now the immutable
+          row id, so a rename is purely cosmetic. */}
       <Field label="Name" value={form.label} onChange={(v) => set('label', v)}
         placeholder="Partner Network" mono={false}
-        help="Used as this network's identity in the delivery ledger. Renaming it starts a fresh dedupe space." />
+        help="A display name. Renaming is safe — this network's delivery history and its dedupe identity are keyed to the row, not the name." />
 
       <div className="space-y-1">
-        <label className="block text-xs font-medium text-text-muted">Postback URL template</label>
+        <label className="block text-xs font-medium text-text-muted">
+          Postback URL template
+          <span className="ml-2 font-normal text-text-faint">encrypted at rest · shown only here</span>
+        </label>
         <textarea
           value={form.url_template}
           onChange={(e) => set('url_template', e.target.value)}
@@ -222,6 +229,20 @@ export function CustomNetworksDetail({ funnel, macros, events, focusId, onBack, 
   const [editing, setEditing] = useState(null); // null | {} (new) | row
   const [busyId, setBusyId] = useState('');
 
+  // Opening the editor needs the FULL template, which the list deliberately
+  // does not carry (review M2 — templates are encrypted at rest and only the
+  // single-row GET reveals one). One extra fetch, and only when an operator
+  // actually asks to edit.
+  const openEditor = useCallback(async (row) => {
+    setBusyId(row.id);
+    try {
+      const res = await api.get(`${base(funnel.id)}/custom-networks/${encodeURIComponent(row.id)}`);
+      setEditing(res.data?.data?.network || row);
+    } catch (e) {
+      setLoadErr(errOf(e, 'Could not open this network for editing'));
+    } finally { setBusyId(''); }
+  }, [funnel.id]);
+
   const load = useCallback(async () => {
     try {
       const [l, h] = await Promise.all([
@@ -245,9 +266,11 @@ export function CustomNetworksDetail({ funnel, macros, events, focusId, onBack, 
   useEffect(() => {
     if (focusId && Array.isArray(rows)) {
       const hit = rows.find((r) => r.id === focusId);
-      if (hit) setEditing(hit);
+      // Same rule as the Edit button: the list row has no template, so the
+      // deep link must fetch the revealed row before the editor seeds.
+      if (hit) openEditor(hit);
     }
-  }, [focusId, rows]);
+  }, [focusId, rows, openEditor]);
 
   const remove = async (row) => {
     setBusyId(row.id);
@@ -333,7 +356,7 @@ export function CustomNetworksDetail({ funnel, macros, events, focusId, onBack, 
                     <CheckboxRow label="" checked={row.enabled} disabled={busyId === row.id}
                       onChange={(v) => toggle(row, v)} />
                     <button
-                      onClick={() => setEditing(row)}
+                      onClick={() => openEditor(row)}
                       className="px-2.5 py-1.5 text-xs rounded-lg border border-border-default bg-bg-elevated text-text-primary hover:bg-bg-hover cursor-pointer"
                     >
                       Edit
@@ -348,9 +371,22 @@ export function CustomNetworksDetail({ funnel, macros, events, focusId, onBack, 
                     </button>
                   </div>
                 </div>
-                <code className="block px-3 py-2 text-[11px] bg-bg-elevated border border-border-default rounded-lg text-text-muted font-mono break-all">
-                  {row.url_template}
-                </code>
+                {/* SUMMARY ONLY (review M2). A LIST endpoint that hands back N
+                    postback templates hands back N credentials — the path and
+                    query are where a partner's key lives. Host + macro names
+                    are enough to recognise the network and see it is wired;
+                    the full template is fetched only when the editor opens. */}
+                <div className="px-3 py-2 text-[11px] bg-bg-elevated border border-border-default rounded-lg text-text-muted font-mono break-all">
+                  {row.url_host || '—'}
+                  {(row.url_macros || []).length ? ` · ${row.url_macros.map((m) => `{${m}}`).join(' ')}` : ''}
+                  {row.url_template_encrypted ? ' · encrypted at rest' : ''}
+                </div>
+                {row.url_template_unreadable && (
+                  <p className="text-xs text-red-400">
+                    This template could not be decrypted — the credentials key has changed or the
+                    stored value is corrupt. Deliveries retry rather than dead-letter.
+                  </p>
+                )}
               </div>
             );
           })}

@@ -15,14 +15,31 @@
 //               never open Meta's breaker.
 //   kind      → 'custom'. lb_tracking_events.platform is kind minus '_pixel',
 //               so every custom delivery is logged under platform 'custom'.
-//   pixel_id  → the network KEY (the label slug), NOT the row id. This is the
-//               lb_tracking_sent claim key together with event_id, so renaming
-//               a network re-opens its claim space; that is deliberate and
-//               documented in the admin surface (a rename is a new identity).
+//   pixel_id  → the IMMUTABLE lbcn_ ROW ID. Review M3 (gating) — this was the
+//               operator's label slug, and that was wrong in three ways at
+//               once, because pixel_id is half of the lb_tracking_sent
+//               (pixel_id, event_id) claim key and that ledger is GLOBAL, not
+//               per-funnel:
+//                 1. CROSS-FUNNEL SUPPRESSION. Two funnels both with a network
+//                    labelled "Partner Alpha" share the slug 'partner-alpha'.
+//                    A deterministic event id that collides across them (an
+//                    inbound `inb_<order_id>`, a re-used order number) means
+//                    funnel B's conversion is silently deduped away by funnel
+//                    A's claim. Row ids are unique across the whole table, so
+//                    that failure mode does not exist.
+//                 2. A RENAME MINTED A NEW IDENTITY, re-opening the claim space
+//                    and letting every already-delivered event fire a second
+//                    time. Row ids never change.
+//                 3. A slug could in principle collide with a real lb_pixels
+//                    pixel_id (a Meta pixel id is digits, but nothing enforced
+//                    that). The `lbcn_` namespace makes collision impossible.
+//               The operator-facing NAME still travels — the label is on every
+//               admin surface — it is just not the machine identity.
 import crypto from 'crypto';
 import { pgQuery } from '../db/pg.js';
 import { ensureIntegrationsTables } from './trackingIntegrationsSchema.js';
-import { validateTemplateShape } from './trackingPostbackTemplate.js';
+import { validateTemplateShape, MACRO_NAMES } from './trackingPostbackTemplate.js';
+import { encryptSecret, decryptSecret } from './gatewayConfigs.js';
 
 // The event vocabulary a custom network may be toggled on for. Deliberately a
 // SUPERSET of trackingService.ALLOWED_CLIENT_EVENTS (which gates what a
@@ -133,24 +150,76 @@ export function validateNetworkBody(body, { isCreate = false } = {}) {
   return { ok: true, fields };
 }
 
-// The operator-facing view of one row. The url_template IS returned — it is
-// the operator's own text and they cannot edit what they cannot see. It must
-// never travel anywhere else (no logs, no error columns, no event feed).
-export function networkView(row) {
+// ── url_template AT REST (review M2) ────────────────────────────────────────
+// The file header calls the rendered URL a credential; a template that carries
+// `?api_key=…` or MGID's `/postback/<id>` IS one at rest too, so it is
+// encrypted with the same AES-256-GCM mechanism the gateway and pixel
+// credentials use (gatewayConfigs.encryptSecret, 'gcm1:' prefix).
+//
+// LEGACY PASSTHROUGH, deliberately: a value that does NOT start with 'gcm1:'
+// is read back unchanged. Nothing has shipped yet so no such rows exist in
+// practice, but the same rule already governs lb_pixels secrets
+// (trackingDelivery.resolveSecret) and a hand-inserted row must not 500 the
+// admin surface.
+//
+// decryptSecret THROWS on a wrong/rotated CHECKOUT_CREDS_KEY. That throw is
+// surfaced as a distinct, RETRYABLE condition rather than swallowed to '' —
+// an empty template would read as 'not_configured', which tells the operator
+// to go re-type a template that is in fact perfectly fine.
+export function readTemplate(raw) {
+  const s = String(raw || '');
+  if (!s) return '';
+  return s.startsWith('gcm1:') ? decryptSecret(s) : s;
+}
+const writeTemplate = (plain) => encryptSecret(String(plain));
+
+// What a LIST response and the card grid may show: the host the postbacks go
+// to, and WHICH macros the template uses — never the path, query or fragment,
+// which is exactly where a credential sits. Enough to recognise a network at a
+// glance and to see that it is wired; not enough to lift a key off a screen
+// share or a browser cache.
+export function templateSummary(plain) {
+  const s = String(plain || '');
+  let host = '';
+  try { host = new URL(s).host; } catch { host = ''; }
+  const macros = [];
+  for (const m of s.matchAll(/\{([a-z0-9_]{1,24})\}/g)) {
+    if (MACRO_NAMES.includes(m[1]) && !macros.includes(m[1])) macros.push(m[1]);
+  }
+  return { url_host: host, url_macros: macros };
+}
+
+// The operator-facing view of one row.
+//
+// `reveal` is FALSE by default and every LIST goes through the default. The
+// full template is returned ONLY by the single-row GET that backs the edit
+// form — an operator cannot edit what they cannot see, but nothing else needs
+// it, and a list endpoint that hands back N credentials at once is the shape
+// that ends up in a browser cache or a support screenshot.
+export function networkView(row, { reveal = false } = {}) {
   if (!row) return null;
-  return {
+  let plain = '';
+  let decryptFailed = false;
+  try { plain = readTemplate(row.url_template); } catch { decryptFailed = true; }
+  const out = {
     id: row.id,
     funnel_id: row.funnel_id,
     key: row.key,
     label: row.label || '',
     click_id_param: row.click_id_param || '',
-    url_template: row.url_template || '',
     method: row.method || 'GET',
     event_names: readEventNames(row.event_names),
     enabled: Boolean(row.enabled),
+    ...templateSummary(plain),
+    // Encrypted at rest, and the operator is told so — a stored secret they
+    // do not know is stored is a secret they cannot reason about.
+    url_template_encrypted: String(row.url_template || '').startsWith('gcm1:'),
+    ...(decryptFailed ? { url_template_unreadable: true } : {}),
     created_at: row.created_at,
     updated_at: row.updated_at,
   };
+  if (reveal) out.url_template = decryptFailed ? '' : plain;
+  return out;
 }
 
 const SELECT_COLS = `id, funnel_id, key, label, click_id_param, url_template,
@@ -186,7 +255,7 @@ export async function createNetwork(funnelId, fields) {
      ON CONFLICT (funnel_id, key) DO NOTHING
      RETURNING ${SELECT_COLS}`,
     [id, String(funnelId), fields.key, fields.label, fields.click_id_param || '',
-      fields.url_template, fields.method || 'GET', fields.event_names || [],
+      writeTemplate(fields.url_template), fields.method || 'GET', fields.event_names || [],
       fields.enabled !== false]
   );
   return rows.length ? rows[0] : null; // null = the (funnel, key) already exists
@@ -204,7 +273,7 @@ export async function updateNetwork(funnelId, id, fields) {
   };
   if (fields.label !== undefined) { put('label', fields.label); put('key', fields.key); }
   if (fields.click_id_param !== undefined) put('click_id_param', fields.click_id_param);
-  if (fields.url_template !== undefined) put('url_template', fields.url_template);
+  if (fields.url_template !== undefined) put('url_template', writeTemplate(fields.url_template));
   if (fields.method !== undefined) put('method', fields.method);
   if (fields.event_names !== undefined) put('event_names', fields.event_names, '::jsonb');
   if (fields.enabled !== undefined) put('enabled', fields.enabled);
@@ -231,15 +300,31 @@ export async function deleteNetwork(funnelId, id) {
 // layer consumes. See the header for what each field means downstream.
 export function asPixel(row) {
   if (!row) return null;
+  let template = '';
+  let decryptFailed = false;
+  try {
+    template = readTemplate(row.url_template);
+  } catch {
+    // Wrong/rotated CHECKOUT_CREDS_KEY or corrupt ciphertext. NOT collapsed to
+    // '' — that reads as 'not_configured', a HARD error that dead-letters the
+    // conversion and tells the operator to re-type a template that is fine.
+    // The sender turns this flag into a RETRYABLE 'template_decrypt_failed',
+    // so fixing the key heals the queued backlog (queue rows re-read the row
+    // at send time). The ciphertext is never logged in any branch.
+    decryptFailed = true;
+  }
   return {
     id: row.id,
     funnel_id: row.funnel_id,
     kind: 'custom',
-    pixel_id: row.key,
+    // The IMMUTABLE row id — see the header. Half of the lb_tracking_sent
+    // claim key, and that ledger is global, so this must not be the label.
+    pixel_id: row.id,
     mode: 's2s',                 // a postback template has no browser channel
     enabled: Boolean(row.enabled),
     config: {
-      url_template: row.url_template || '',
+      url_template: template,
+      template_decrypt_failed: decryptFailed,
       method: row.method || 'GET',
       click_id_param: row.click_id_param || '',
       label: row.label || '',
@@ -281,4 +366,5 @@ export default {
   CUSTOM_EVENT_NAMES, CUSTOM_METHODS, slugOf, parseJsonColumn, readEventNames,
   validateNetworkBody, networkView, listNetworks, getNetwork, createNetwork,
   updateNetwork, deleteNetwork, asPixel, customNetworksFor, customNetworkPixelById,
+  readTemplate, templateSummary,
 };

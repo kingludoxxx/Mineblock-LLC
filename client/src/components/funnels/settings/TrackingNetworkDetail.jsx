@@ -100,9 +100,11 @@ export default function TrackingNetworkDetail({
 
   // ── delivery feed ─────────────────────────────────────────────────────────
   // lb_tracking_events.platform is the kind minus '_pixel' for a named network,
-  // and literally 'custom' for a custom S2S network keyed by pixel_id.
+  // and literally 'custom' for a custom S2S network. For a custom row the
+  // ledger's pixel_id is the IMMUTABLE lbcn_ ROW ID (review M3), not the label
+  // slug — so the feed filter keys on the id and survives a rename.
   const platform = isPreset ? 'custom' : kind.replace(/_pixel$/, '');
-  const customKey = customNetwork?.key || '';
+  const customKey = customNetwork?.id || '';
   const [events, setEvents] = useState(null); // null=first load, 'error', or []
   const [eventsLoading, setEventsLoading] = useState(false);
   const [eventsErr, setEventsErr] = useState('');
@@ -286,7 +288,7 @@ export default function TrackingNetworkDetail({
       {isPreset && (
         <Panel
           title="Server channel — postback template"
-          description="This network's server channel is a plain click-id postback, so it runs through the custom S2S engine rather than a bespoke adapter. The preset fills in the network's documented postback URL; you can edit it, and you can test-fire it before any money rides on it."
+          description="This network's server channel is a plain click-id postback, so it runs through the custom S2S engine rather than a bespoke adapter. The preset fills in the network's documented postback URL; you can edit it, and you can test-fire it before any money rides on it. Templates are encrypted at rest — the full URL is shown only in the editor."
         >
           {customNetwork ? (
             <>
@@ -296,9 +298,25 @@ export default function TrackingNetworkDetail({
               <StatRow label="Enabled" tone={customNetwork.enabled ? 'text-emerald-400' : 'text-amber-400'}>
                 {customNetwork.enabled ? 'yes' : 'no — not firing'}
               </StatRow>
-              <code className="block px-3 py-2 text-xs bg-bg-elevated border border-border-default rounded-lg text-text-primary font-mono break-all select-all">
-                {customNetwork.url_template}
-              </code>
+              {/* SUMMARY ONLY (review M2): host + which macros the template
+                  uses. The path and query are exactly where a partner's
+                  credential sits, and this page is reachable from a card grid
+                  — the full template lives behind the edit form. */}
+              <StatRow label="Posts to">
+                <span className="font-mono text-xs">{customNetwork.url_host || '—'}</span>
+              </StatRow>
+              <StatRow label="Macros used">
+                <span className="font-mono text-xs">
+                  {(customNetwork.url_macros || []).map((m) => `{${m}}`).join(' ') || '—'}
+                </span>
+              </StatRow>
+              {customNetwork.url_template_unreadable && (
+                <p className="text-xs text-red-400">
+                  This template could not be decrypted — the credentials key has changed or the
+                  stored value is corrupt. Deliveries retry rather than dead-letter, so fixing the
+                  key restores them.
+                </p>
+              )}
               <button
                 onClick={() => onOpenCustom?.(customNetwork.id)}
                 className="flex items-center gap-1 text-sm text-accent-text hover:underline cursor-pointer"

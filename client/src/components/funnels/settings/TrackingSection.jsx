@@ -261,8 +261,16 @@ export default function TrackingSection({ funnel, onFunnelUpdated }) {
     if (card.wired === 'preset') {
       if (customs === null) return 'checking';
       if (customs === 'error') return 'unknown';
-      const c = customOf(card);
-      return c && c.enabled ? 'connected' : 'not_connected';
+      // Review m5: the grid and the detail page must answer the same question.
+      // The detail page reads server_channel_ready off the custom-network
+      // health surface; the card used to read `enabled` instead, so a network
+      // that was enabled but had every event toggled OFF (or an unreadable
+      // template) showed CONNECTED on the grid and NOT CONNECTED one click in.
+      // Both now key on server_channel_ready.
+      const h = customHealthOf(card);
+      if (h === undefined) return 'not_connected'; // no row exists — genuinely not connected
+      if (h === null) return 'unknown';            // the health read failed
+      return h.server_channel_ready ? 'connected' : 'not_connected';
     }
     return 'not_connected';
   };

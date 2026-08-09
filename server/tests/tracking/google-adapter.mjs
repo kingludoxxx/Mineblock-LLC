@@ -343,7 +343,24 @@ const seedPaid = async (suffix, funnelId, total = 49.5) => {
   const evErr = ev.map((x) => x.error || '').join('|');
   const qErr = qrows.map((x) => x.last_error || '').join('|');
   check('G5 lb_tracking_events.error contains NO api_secret', evErr.length > 0 && !evErr.includes(SECRET), evErr.slice(0, 200));
-  check('G5 the error is redacted, not just truncated', evErr.includes('api_secret=[REDACTED]'), evErr.slice(0, 200));
+  // The INTENT here is unchanged: prove the secret was REMOVED by redaction,
+  // not merely cut off by the 200-char excerpt bound. What changed is the
+  // mechanism that removes it.
+  //
+  // This used to require the literal marker `api_secret=[REDACTED]`, i.e. the
+  // key was masked IN PLACE inside a URL that was itself persisted. The s2s
+  // integrations lane made errOf strip any URL WHOLESALE before persisting
+  // (review M1), because key-anchored masking cannot reach a credential that
+  // lives in a PATH SEGMENT — the shape an operator's own postback template
+  // routinely has (e.g. `/postback/<secret>?c=…`). So the echoed URL now
+  // persists as `[url-redacted]` and the key marker never appears.
+  //
+  // That is strictly stronger, so the assertion accepts EITHER mechanism and
+  // still fails on a bare truncation: something must have been actively
+  // replaced, and no URL may survive.
+  check('G5 the error is redacted, not just truncated',
+    (evErr.includes('api_secret=[REDACTED]') || evErr.includes('[url-redacted]')) && !evErr.includes('://'),
+    evErr.slice(0, 200));
   check('G5 lb_postback_queue.last_error contains NO api_secret', qErr.length > 0 && !qErr.includes(SECRET), qErr.slice(0, 200));
 
   // Full-table sweep: the secret must exist NOWHERE outside lb_pixels.config.

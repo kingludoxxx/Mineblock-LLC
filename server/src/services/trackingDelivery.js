@@ -105,7 +105,21 @@ const SECRET_KEYS = [
   'access_token', 'api_secret', 'capi_token',
   'developer_token', 'refresh_token', 'client_secret',
 ];
-const SECRET_KEYS_RE = SECRET_KEYS.join('|');
+// Review M1: the named list above is an ALLOW-LIST of credentials THIS system
+// mints, and it was never going to cover an operator-authored postback
+// template. A custom S2S URL carries whatever the partner network calls its
+// credential — `api_key`, `apikey`, `x-api-key`, `partner_token`, `sig`. So a
+// second, GENERIC pass matches credential-shaped parameter names with an
+// optional prefix run (`[\w-]*[_-]`), which is what catches `access_key` and
+// `x-api-key` where a `\b`-anchored bare `key` cannot (an underscore is a word
+// character, so `\bkey` never matches inside `access_key`).
+//
+// OVER-REDACTION IS THE CORRECT FAILURE MODE HERE. Everything this touches is
+// already an error string bound for an admin-readable column; losing a
+// diagnostic parameter name costs a little context, leaking a live key costs
+// the account.
+const GENERIC_SECRET_RE_SRC = '(?:[\\w-]*[_-])?(?:api_?key|key|token|secret|password|passwd|auth|signature|sig)';
+const SECRET_KEYS_RE = `${SECRET_KEYS.join('|')}|${GENERIC_SECRET_RE_SRC}`;
 // Pass 1 = URL/query form (`key=VALUE`, value runs to a query/JSON delimiter).
 // Pass 2 = JSON/quoted form (`"key":"VALUE"`, `key: VALUE`).
 // Two passes rather than one union because the two forms terminate on
@@ -124,14 +138,49 @@ export function redactTokens(s) {
     .replace(REDACT_JSON_RE, '$1[REDACTED]');
 }
 
+// Review M1 (GATING): STRIP ANY URL WHOLESALE before a string is persisted.
+//
+// Key-anchored redaction is necessary but NOT sufficient for an operator's own
+// postback URL, and the counter-example is the MGID preset shape:
+//   https://a.mgid.com/postback/<POSTBACK_ID>?c=…
+// The credential is a PATH SEGMENT. There is no `key=` to anchor on, so every
+// key-based rule in this file walks straight past it. And postback trackers
+// routinely ECHO THE REQUEST URL in their error bodies ("bad request: <url>"),
+// which is how that path segment reaches lb_tracking_events.error.
+//
+// The only rule that holds for a URL an operator authored — whose credential
+// can be in the path, the query, the fragment or the userinfo — is to persist
+// no URL at all. A URL is never the diagnostic anyway: the operator already
+// knows what they typed, and the test-fire surface hands it back to them
+// verbatim. What they need out of an error is the STATUS and the partner's
+// PROSE, both of which survive this.
+//
+// Applied to the persisted string only — NOT inside redactTokens(), which is
+// separately exercised on real URLs by the google-adapter/delivery-patches
+// regressions and must keep returning a URL with its secrets masked.
+const URL_LIKE_RE = /[a-z][a-z0-9+.-]*:\/\/[^\s"'<>)\]}]*/gi;
+export function stripUrls(s) {
+  return String(s).replace(URL_LIKE_RE, '[url-redacted]');
+}
+
+// The single chokepoint every persisted delivery error passes through
+// (lb_tracking_events.error, lb_postback_queue.last_error). Order matters:
+// strip URLs FIRST — a credential inside one is gone before any key rule has
+// to be clever about it — then key-redact what is left (a JSON body can carry
+// `"api_key":"…"` outside a URL), then bound the excerpt at 200 chars.
+const ERROR_EXCERPT_MAX = 200;
+export function sanitizeForPersist(s) {
+  return redactTokens(stripUrls(String(s))).slice(0, ERROR_EXCERPT_MAX);
+}
+
 export function errOf(res) {
   const r = res || {};
   // Redact the error STRING too, not just the body: a transport error message
   // is the other path a URL (and therefore a query secret) could ride out on.
-  if (r.error) return redactTokens(String(r.error));
+  if (r.error) return sanitizeForPersist(r.error);
   const bodyStr = r.body == null ? '' : (typeof r.body === 'string' ? r.body : (() => { try { return JSON.stringify(r.body); } catch { return String(r.body); } })());
-  const safeBody = bodyStr ? redactTokens(bodyStr) : '';
-  if (Number.isInteger(r.status)) return `http_${r.status}${safeBody ? `: ${safeBody.slice(0, 200)}` : ''}`;
+  const safeBody = bodyStr ? sanitizeForPersist(bodyStr) : '';
+  if (Number.isInteger(r.status)) return `http_${r.status}${safeBody ? `: ${safeBody}` : ''}`;
   return safeBody || 'unknown_error';
 }
 
@@ -686,6 +735,11 @@ export function customPostbackContext(pixel, envelope) {
 
 async function sendCustomNetwork(pixel, envelope) {
   const cfg = (pixel || {}).config || {};
+  // A template we could not DECRYPT is not a template we do not HAVE. This is
+  // deliberately retryable (not in HARD_ERRORS): the operator fixing
+  // CHECKOUT_CREDS_KEY heals the whole queued backlog, because queue rows
+  // re-read the row at send time.
+  if (cfg.template_decrypt_failed) return { ok: false, error: 'template_decrypt_failed' };
   const template = String(cfg.url_template || '');
   if (!template) return { ok: false, error: 'not_configured' };
   const url = renderPostback(template, customPostbackContext(pixel, envelope));
@@ -706,6 +760,7 @@ async function sendCustomNetwork(pixel, envelope) {
 // single function in the delivery layer that ever returns a rendered url.
 export async function testFireCustomNetwork(pixel, envelope) {
   const cfg = (pixel || {}).config || {};
+  if (cfg.template_decrypt_failed) return { ok: false, error: 'template_decrypt_failed', rendered_url: '' };
   const template = String(cfg.url_template || '');
   if (!template) return { ok: false, error: 'not_configured', rendered_url: '' };
   const url = renderPostback(template, customPostbackContext(pixel, envelope));

@@ -2,8 +2,17 @@
 // partner funnels call back INTO us. Port of funnel-os lb_inbound_service.py,
 // with the token compare hardened and the anti-probing rule made absolute.
 //
-// SCOPE, DELIBERATELY NARROW (DECISION): an ingest writes lb_inbound_events
-// and NOTHING ELSE. It does not touch lb_clicks / lb_touches /
+// SCOPE, DELIBERATELY NARROW (DECISION). An ingest performs exactly three
+// writes, and no others (review m3 — the earlier "writes lb_inbound_events and
+// NOTHING ELSE" was false in two ways and this list is the correction):
+//   1. INSERT … lb_inbound_events        the conversion row (ON CONFLICT DO NOTHING)
+//   2. UPDATE lb_inbound_endpoints       hits + last_hit_at on the endpoint
+//   3. DELETE … lb_inbound_events        the per-endpoint row cap, amortized
+//                                        (see ENDPOINT_ROW_CAP below)
+// It also runs the integrations ensure() on the way in, which issues that
+// schema's CREATE TABLE / CREATE INDEX DDL on a cold process.
+//
+// What it does NOT do: it does not touch lb_clicks / lb_touches /
 // lb_visitor_firstseen, does not call stampConversion, and does not relay the
 // conversion back out. The reference relays inbound events straight into the
 // outbound dispatcher; doing that here would mean an unauthenticated caller
@@ -36,17 +45,24 @@ export const TOKEN_PREFIX_LEN = 8;
 
 export const mintToken = () => crypto.randomBytes(TOKEN_BYTES).toString('hex');
 
-// Constant-time token comparison.
+// Compare two token strings without a data-dependent early exit.
 //
-// WHY NOT `WHERE token = $1`: the database's byte compare short-circuits on
-// the first differing byte, and Postgres will also happily tell you, by
-// timing, roughly how far your guess got. The lookup is therefore done on an
-// indexed 8-char PREFIX (not a secret on its own — 32 bits of a 128-bit
-// token) and the full value is compared in Node with timingSafeEqual.
+// WHAT THIS IS: crypto.timingSafeEqual over the token BYTES, so the comparison
+// itself does not leak how many leading characters a guess got right.
 //
-// timingSafeEqual THROWS on a length mismatch, which would itself be an
-// oracle, so the length is checked first against the fixed TOKEN_LEN and a
-// wrong-length candidate never reaches the database at all.
+// WHAT THIS IS NOT (review m1 — the earlier wording overclaimed): the
+// END-TO-END request is not constant-time and cannot be made so from here.
+// Postgres index lookups, page-cache state, connection-pool scheduling and the
+// event loop are all outside our control. What resolveToken() does provide is a
+// CONSTANT-WORK FLOOR: every request performs the same shaped database lookup
+// and at least one full-length byte comparison, whether the token is malformed,
+// unknown, disabled or valid. That removes the cheap structural oracle (an
+// early `return null` that skipped the query entirely and answered visibly
+// faster); it is a best-effort floor, not a formal guarantee.
+//
+// timingSafeEqual THROWS on a length mismatch, which would itself be an oracle,
+// so lengths are checked first and a wrong-length candidate is padded to the
+// canonical length by the caller rather than short-circuiting.
 export function tokensEqual(candidate, stored) {
   const a = Buffer.from(String(candidate || ''), 'utf8');
   const b = Buffer.from(String(stored || ''), 'utf8');
@@ -56,12 +72,22 @@ export function tokensEqual(candidate, stored) {
 
 export const isWellFormedToken = (t) => /^[0-9a-f]{32}$/.test(String(t || ''));
 
+// A fixed, never-issued token used to burn the same comparison work when there
+// is nothing real to compare against. Derived, not literal, so it cannot
+// collide with a minted token by accident.
+const DECOY_TOKEN = crypto.createHash('sha256').update('lb_inbound_decoy').digest('hex').slice(0, TOKEN_LEN);
+
 // Resolve a token to its endpoint row, or null. Returns null for a malformed
 // token, an unknown token, and a DISABLED endpoint alike — the caller must not
-// be able to tell those three apart.
+// be able to tell those three apart, by body OR by how long the answer took.
 export async function resolveToken(token) {
-  const t = String(token || '');
-  if (!isWellFormedToken(t)) return null;
+  const raw = String(token || '');
+  const wellFormed = isWellFormedToken(raw);
+  // A malformed token is compared against the decoy instead of returning
+  // early, so it costs the same query + compare a well-formed one does. The
+  // decoy prefix matches no row, so the query is the same shape and returns
+  // nothing — it is real work, not a sleep.
+  const t = wellFormed ? raw : DECOY_TOKEN;
   await ensureIntegrationsTables();
   const rows = await pgQuery(
     `SELECT id, funnel_id, purpose, label, token, enabled
@@ -69,12 +95,22 @@ export async function resolveToken(token) {
     [t.slice(0, TOKEN_PREFIX_LEN)]
   );
   // Compare EVERY candidate (a prefix collision is possible, if unlikely) and
-  // do not break early — the loop's cost must not depend on which row matched.
+  // do NOT break early — the loop's cost must not depend on which row matched.
   let hit = null;
   for (const row of rows) {
     if (tokensEqual(t, row.token)) hit = row;
   }
-  if (!hit || !hit.enabled) return null;
+  // The floor: when nothing matched (no rows, or none equal), still perform one
+  // full-length comparison so the zero-row path is not measurably cheaper than
+  // the one-row path.
+  if (!hit) {
+    tokensEqual(t, DECOY_TOKEN);
+    return null;
+  }
+  if (!wellFormed || !hit.enabled) {
+    tokensEqual(t, DECOY_TOKEN);
+    return null;
+  }
   return hit;
 }
 
@@ -91,20 +127,35 @@ const str = (v, max) => {
 // Flatten one request's query/body into a string map. Only scalars survive:
 // a nested object or an array would otherwise land in the ledger as
 // '[object Object]' or a comma-joined blob.
+//
+// BOUNDED WITHIN EACH SOURCE (review m2). The cap used to be checked only
+// AFTER a whole source had been walked, so a single 5,000-key query string was
+// fully iterated, fully lower-cased and fully sliced before anything noticed —
+// the comment claimed a bound the code did not enforce. The check now sits in
+// the inner loop, so the work stops at the cap no matter which source carries
+// the flood.
+//
+// Keys past the cap are DROPPED, not an error: a postback with 100 useful
+// parameters does not exist, and the fields that matter (event, order id,
+// click id, payout) are the ones a real network sends first. Refusing the whole
+// call would turn a partner's over-eager tracker into a lost conversion.
+export const MAX_PARAMS = 100;
 export function flattenParams(...sources) {
   const out = Object.create(null);
+  let n = 0;
   for (const src of sources) {
     if (!src || typeof src !== 'object' || Array.isArray(src)) continue;
     for (const [k, v] of Object.entries(src)) {
+      if (n >= MAX_PARAMS) return out;   // bounded WITHIN the source, not after it
       const key = String(k).slice(0, 64).toLowerCase();
       if (!key || Object.prototype.hasOwnProperty.call(out, key)) continue; // first source wins
       if (v == null) continue;
       const t = typeof v;
       if (t === 'string' || t === 'number' || t === 'boolean') {
         out[key] = String(v).slice(0, 500);
+        n += 1;
       }
     }
-    if (Object.keys(out).length > 100) break; // bounded — a 5k-key body is not a postback
   }
   return out;
 }
@@ -167,6 +218,65 @@ export function deriveEventId({ event, orderId, click, payout, params }) {
   return `inb_${crypto.createHash('sha256').update(basis).digest('hex').slice(0, 24)}`;
 }
 
+// ── per-endpoint row cap (review m4) ────────────────────────────────────────
+// The 180-day sweep bounds the table over TIME. It does not bound one endpoint
+// over a WEEKEND: a partner with a retry loop, or a leaked token, can write
+// millions of rows long before any prune is due. So each endpoint also carries
+// a hard row ceiling.
+//
+// DECISION — OLDEST-OUT, NOT REFUSE. Refusing at the ceiling would mean a
+// flood of junk permanently blocks the real conversions behind it, and the
+// public endpoint cannot tell the operator that it happened (it answers the
+// same body either way, by design). Trimming the oldest keeps the ceiling AND
+// keeps the most recent — which is the half an operator is ever looking at —
+// and the aged rows would have been pruned anyway.
+//
+// AMORTIZED, NOT PER-INSERT. Counting rows on every call would put a scan on
+// an unauthenticated path. The endpoint's own `hits` counter is already being
+// incremented and returned, so the trim runs once every CAP_CHECK_EVERY hits:
+// zero extra queries in the common case, and the overshoot is bounded by
+// CAP_CHECK_EVERY rows.
+// Both knobs are read at CALL time, not module load (the same idiom as
+// trackingRuntime.defaultConsent — rollback is unsetting the var). An operator
+// dealing with one abusive partner can tighten the ceiling without a deploy,
+// and the verification harness can drive the trim with small values without
+// distorting every other test in the file.
+export const ENDPOINT_ROW_CAP = 50_000;
+const CAP_CHECK_EVERY = 500;
+const envInt = (name, fallback) => {
+  const n = Number(process.env[name]);
+  return Number.isInteger(n) && n > 0 ? n : fallback;
+};
+export const rowCap = () => envInt('INBOUND_ENDPOINT_ROW_CAP', ENDPOINT_ROW_CAP);
+export const capCheckEvery = () => envInt('INBOUND_CAP_CHECK_EVERY', CAP_CHECK_EVERY);
+
+export async function enforceRowCap(endpointId, hits) {
+  if (!hits || hits % capCheckEvery() !== 0) return 0;
+  const cap = rowCap();
+  try {
+    // Keep the newest ENDPOINT_ROW_CAP rows for this endpoint; delete the rest.
+    // Rides idx_lb_inbound_events_endpoint (endpoint_id, ts DESC), so both the
+    // OFFSET walk and the delete are index work, not a table scan.
+    const gone = await pgQuery(
+      `DELETE FROM lb_inbound_events
+       WHERE id IN (
+         SELECT id FROM lb_inbound_events
+         WHERE endpoint_id = $1
+         ORDER BY ts DESC
+         OFFSET ${cap}
+       )`,
+      [endpointId]
+    );
+    const n = gone.count ?? 0;
+    if (n) console.warn(`[inbound] endpoint ${endpointId} row cap enforced — ${n} oldest row(s) trimmed`);
+    return n;
+  } catch (err) {
+    // Non-fatal: a cap failure must never cost the conversion that triggered it.
+    console.error('[inbound] row cap enforcement failed (non-fatal):', err.message);
+    return 0;
+  }
+}
+
 // Ingest ONE inbound postback. Returns a RESULT OBJECT for the admin ledger's
 // benefit — the public route discards it and always answers the same body.
 // Never throws: every failure mode returns a reason.
@@ -220,10 +330,12 @@ export async function ingest(endpoint, params, { ipHash = '' } = {}) {
     // hits/last_hit_at count every ACCEPTED call, including a deduped replay:
     // "this endpoint is being called" is the operator's health signal, and a
     // silent duplicate is still traffic.
-    await pgQuery(
-      `UPDATE lb_inbound_endpoints SET hits = hits + 1, last_hit_at = NOW() WHERE id = $1`,
+    const bumped = await pgQuery(
+      `UPDATE lb_inbound_endpoints SET hits = hits + 1, last_hit_at = NOW()
+       WHERE id = $1 RETURNING hits`,
       [endpoint.id]
     );
+    await enforceRowCap(endpoint.id, Number(bumped[0]?.hits || 0));
 
     return rows.length
       ? { ok: true, event_id: eventId, id: rows[0].id }
@@ -323,4 +435,5 @@ export default {
   isWellFormedToken, resolveToken, flattenParams, parsePayout, extractClick,
   deriveEventId, ingest, listEndpoints, createEndpoint, updateEndpoint,
   rotateEndpointToken, deleteEndpoint, listEvents, ENDPOINT_LIMIT,
+  ENDPOINT_ROW_CAP, MAX_PARAMS, rowCap, capCheckEvery, enforceRowCap,
 };
