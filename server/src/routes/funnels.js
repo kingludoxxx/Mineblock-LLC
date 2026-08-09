@@ -7,7 +7,16 @@ import { Router } from 'express';
 import { pgQuery } from '../db/pg.js';
 import { authenticate } from '../middleware/auth.js';
 import { requirePermission } from '../middleware/rbac.js';
-import { checkoutPageTemplate, upsellPageTemplate } from '../services/funnelRender.js';
+import {
+  checkoutPageTemplate,
+  upsellPageTemplate,
+  thankYouPageTemplate,
+  downsellPageTemplate,
+  optinPageTemplate,
+  storefrontPageTemplate,
+  quizPageTemplate,
+  advertorialPageTemplate,
+} from '../services/funnelRender.js';
 
 const router = Router();
 
@@ -115,7 +124,23 @@ const PAGE_TYPES = [
   'downsell',
   'thankyou',
   'generic',
+  'optin',
+  'storefront',
 ];
+
+// PAGE-TYPES slice: page type → default seed template (funnelRender.js).
+// Types absent here (generic, listicle) create an empty canvas, as before.
+// 'lead' seeds the advertorial preset (the palette's Lead/Advertorial page).
+const PAGE_SEED_TEMPLATES = {
+  checkout: checkoutPageTemplate,
+  upsell: upsellPageTemplate,
+  downsell: downsellPageTemplate,
+  thankyou: thankYouPageTemplate,
+  optin: optinPageTemplate,
+  storefront: storefrontPageTemplate,
+  quiz: quizPageTemplate,
+  lead: advertorialPageTemplate,
+};
 const FUNNEL_SLUG_RE = /^[a-z0-9-]+$/;
 const PAGE_SLUG_RE = /^\/$|^\/[a-z0-9-]+$/;
 const ESCAPE_HATCH_FIELDS = ['custom_html', 'custom_css', 'custom_js', 'head_html', 'body_end_html'];
@@ -792,9 +817,10 @@ router.post('/:id/pages', async (req, res) => {
     // if the seed cannot be built or does not validate, the page is created
     // empty exactly as before — template trouble must never block page create.
     let seed = null;
-    if (type === 'checkout' || type === 'upsell') {
+    const seedTemplate = PAGE_SEED_TEMPLATES[type];
+    if (seedTemplate) {
       try {
-        const tpl = type === 'upsell' ? upsellPageTemplate() : checkoutPageTemplate();
+        const tpl = seedTemplate();
         const seedErr = validateBlocks(tpl.blocks);
         if (seedErr) {
           console.error(`[funnels] ${type} template seed invalid (fail-open):`, seedErr);

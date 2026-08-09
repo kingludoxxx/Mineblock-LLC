@@ -25,7 +25,13 @@
 import { pgQuery } from '../db/pg.js';
 import { ensureCheckoutTables } from './checkoutSchema.js';
 
-const CREATE_TIMEOUT_MS = 15_000;
+// Bounded so the webhook ACK stays inside EVERY gateway's budget: this create
+// is awaited on the settle path, on top of the authoritative PI re-fetch (20s).
+// At 15s a slow Shopify pushed the ACK past Stripe's ~20s window, the gateway
+// redelivered, and each redelivery re-entered the same slow path — an
+// amplification loop under exactly the condition that caused it. A create that
+// outruns this parks needs_review and the sweep drains it (see backfill).
+const CREATE_TIMEOUT_MS = 5_000;
 // A 'creating' claim older than this is treated as a died-mid-flight attempt
 // and may be reclaimed. It MUST exceed CREATE_TIMEOUT_MS so a merely-slow
 // in-flight create is never double-fired by a concurrent settler.

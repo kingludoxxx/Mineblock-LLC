@@ -486,6 +486,119 @@ function renderBlockInner(block) {
         .join('');
       return `<table class='lb-table'><tbody>${body}</tbody></table>`;
     }
+    // ── PAGE-TYPES slice: new block renderers (additive — see the template
+    //    sections at the bottom of this file for the runtimes that drive them).
+    case 'order_confirmation': {
+      // Thank-you page order recap. Emits ONLY structure — line items and
+      // totals are filled at runtime by thankYouRuntimeScript() from the
+      // EXISTING public GET /session/:id snapshot (routes/checkoutPublic.js,
+      // hand-picked safe fields; NO new money endpoints). All server data is
+      // written with textContent so a hostile product title is inert.
+      const title = esc(String(p.title || 'Order summary'));
+      const note = esc(
+        String(p.note || 'A confirmation email is on its way to your inbox.')
+      );
+      return (
+        `<section class='lb-orderconf' data-fos-orderconf>` +
+        `<h3 class='lb-orderconf-title' data-fos-thankyou-title>${title}</h3>` +
+        `<div class='fos-order-summary' data-fos-order-summary>` +
+        `<div class='fos-os-empty'>Your order details will appear here.</div></div>` +
+        `<p class='lb-orderconf-note' data-fos-thankyou-note>${note}</p>` +
+        `</section>`
+      );
+    }
+    case 'optin_form': {
+      // Lead capture (opt-in page). Posts via optinRuntimeScript() to the
+      // opt-in public intake (routes/optinPublic.js) — never to a money
+      // endpoint. The `website` field is a honeypot: visually hidden (CSS),
+      // real buyers leave it empty, bots fill it and the server silently
+      // drops the lead. On success the runtime advances via the compiled flow.
+      const headline = p.headline != null ? esc(String(p.headline)) : '';
+      const btn = esc(String(p.button_text || 'Continue'));
+      const emailPh = esc(String(p.email_placeholder || 'Email address'));
+      const namePh = esc(String(p.name_placeholder || 'First name (optional)'));
+      const showName = p.name_enabled !== false;
+      const success = esc(String(p.success_text || 'You are in! Check your inbox.'));
+      return (
+        `<form class='lb-optin' data-fos-optin novalidate>` +
+        (headline ? `<div class='lb-optin-headline'>${headline}</div>` : '') +
+        (showName
+          ? `<div class='lb-optin-field'><input class='lb-optin-input' type='text' name='name' placeholder='${namePh}' autocomplete='given-name' maxlength='120'/></div>`
+          : '') +
+        `<div class='lb-optin-field'><input class='lb-optin-input' type='email' name='email' placeholder='${emailPh}' autocomplete='email' required maxlength='254'/></div>` +
+        `<div class='lb-optin-hp'><input type='text' name='website' tabindex='-1' autocomplete='off' aria-hidden='true'/></div>` +
+        `<div class='lb-optin-error' data-fos-optin-error hidden></div>` +
+        `<div class='lb-optin-success' data-fos-optin-success hidden>${success}</div>` +
+        `<button type='submit' class='lb-optin-submit' data-fos-optin-submit>${btn}</button>` +
+        `</form>`
+      );
+    }
+    case 'storefront_grid': {
+      // Operator-configured product cards (no live Shopify fetch in v1).
+      // `price` is a DISPLAY STRING (e.g. "$49.99") — no money math happens
+      // here; real pricing stays server-side on whatever page the card links
+      // into (funnel path or safeHref external URL).
+      const items = (Array.isArray(p.items) ? p.items : []).filter(isPlainObject);
+      if (!items.length) return `<!-- storefront_grid: no items configured -->`;
+      const cards = items
+        .map((it) => {
+          const img = it.image
+            ? `<img class='lb-sf-img' src='${safeHref(it.image)}' alt='' loading='lazy'/>`
+            : `<div class='lb-sf-img lb-sf-noimg'></div>`;
+          const price =
+            it.price != null && String(it.price).trim()
+              ? `<div class='lb-sf-price'>${esc(String(it.price))}</div>`
+              : '';
+          return (
+            `<a class='lb-sf-card' href='${safeHref(it.href || '#')}'>` +
+            img +
+            `<div class='lb-sf-title'>${esc(String(it.title || ''))}</div>` +
+            price +
+            `<span class='lb-btn lb-sf-cta'>${esc(String(it.cta || 'Shop now'))}</span>` +
+            `</a>`
+          );
+        })
+        .join('');
+      return `<section class='lb-storefront'><div class='lb-sf-grid'>${cards}</div></section>`;
+    }
+    case 'quiz_steps': {
+      // Multi-step quiz. Questions are server-rendered (escaped); the runtime
+      // (quizRuntimeScript) only toggles step visibility, records answers to
+      // sessionStorage — NEVER the URL (no PII in query strings) — and
+      // advances via the compiled flow when done.
+      const questions = (Array.isArray(p.questions) ? p.questions : []).filter(
+        isPlainObject
+      );
+      if (!questions.length) return `<!-- quiz_steps: no questions configured -->`;
+      const steps = questions
+        .map((qz, i) => {
+          const opts = (Array.isArray(qz.options) ? qz.options : [])
+            .map(
+              (o) =>
+                `<button type='button' class='lb-quiz-opt' data-fos-quiz-opt>${esc(String(o))}</button>`
+            )
+            .join('');
+          return (
+            `<div class='lb-quiz-step' data-fos-quiz-step='${i}'${i ? ' hidden' : ''}>` +
+            `<div class='lb-quiz-q'>${esc(String(qz.question || ''))}</div>` +
+            `<div class='lb-quiz-opts'>${opts}</div>` +
+            `</div>`
+          );
+        })
+        .join('');
+      const finish = esc(String(p.finish_text || 'See my results'));
+      const done = esc(String(p.done_text || 'All done! Your results are ready.'));
+      return (
+        `<section class='lb-quiz' data-fos-quiz data-fos-quiz-count='${questions.length}'>` +
+        `<div class='lb-quiz-progress'><div class='lb-quiz-bar' data-fos-quiz-bar style='width:0%'></div></div>` +
+        steps +
+        `<div class='lb-quiz-done' data-fos-quiz-done hidden>` +
+        `<div class='lb-quiz-q'>${done}</div>` +
+        `<button type='button' class='lb-btn lb-quiz-finish' data-fos-quiz-finish>${finish}</button>` +
+        `</div>` +
+        `</section>`
+      );
+    }
     default:
       return `<!-- unknown block type: ${esc(String(t))} -->`;
   }
@@ -980,6 +1093,11 @@ export function renderPageHtml(page, funnel, pagesById) {
       })
     : '';
 
+  // PAGE-TYPES slice: thank-you / opt-in / quiz / countdown runtimes — each
+  // emitted ONLY when its block type is present (same posture as checkout/
+  // upsell above); pages without them stay byte-identical.
+  const pageTypeScripts = pageTypeRuntimeScripts(blocks, funnel, page);
+
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -1007,6 +1125,7 @@ ${blocksHtml}
 </main>
 ${checkoutScript}
 ${upsellScript}
+${pageTypeScripts}
 ${pageJs ? `<script>${pageJs}</script>` : ''}
 ${bodyEndHtml}
 </body>
@@ -1410,6 +1529,557 @@ export function upsellPageTemplate() {
   return { blocks, custom_css: UPSELL_TEMPLATE_CSS, custom_js: '' };
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// PAGE-TYPES slice (feat/page-types) — everything below is ADDITIVE.
+// New page types: thankyou · downsell · optin · storefront · quiz · lead
+// (advertorial preset). Each gets a seed template (funnels.js branches on
+// page type at create) and, where interactive, a per-block-type runtime
+// emitted by pageTypeRuntimeScripts() only when the block is present.
+// NO new money code: the downsell reuses the upsell_offer block + runtime +
+// /upsell/* endpoints untouched; the thank-you page reads the EXISTING
+// GET /session/:id snapshot; the opt-in posts to routes/optinPublic.js
+// (leads only, never money).
+// ═══════════════════════════════════════════════════════════════════════════
+
+// ---------------------------------------------------------------------------
+// THANK-YOU runtime — fills [data-fos-order-summary] on the confirmation page
+// from the EXISTING public session snapshot (GET /session/:id — hand-picked
+// safe fields, already rate-limited server-side). Session id is carried into
+// this page by the upsell runtime's go() as ?s= (with the same storage
+// fallbacks). Fail-soft: no id / 404 / network error leaves the seeded empty
+// state; nothing throws. All server text lands via textContent (XSS-inert).
+// ---------------------------------------------------------------------------
+function thankYouRuntimeScript(ctx) {
+  const json = jsonForScript({
+    funnel_id: ctx.funnel_id != null ? String(ctx.funnel_id) : null,
+    page_id: ctx.page_id != null ? String(ctx.page_id) : null,
+    api_base: '/api/v1/checkout/public',
+  });
+  const body = `(function(){
+var CTX=window.__fos_thankyou;var API=(CTX&&CTX.api_base)||'/api/v1/checkout/public';
+function ready(fn){if(document.readyState!=='loading'){fn();}else{document.addEventListener('DOMContentLoaded',fn);}}
+function money(n,c){try{return new Intl.NumberFormat(undefined,{style:'currency',currency:(c||'USD')}).format(Number(n));}catch(e){return (c||'')+' '+Number(n||0).toFixed(2);}}
+function sid(){try{var u=new URL(window.location.href);var q=u.searchParams.get('s')||u.searchParams.get('session')||u.searchParams.get('session_id');if(q)return q;}catch(e){}try{var s=window.sessionStorage.getItem('__fos_session');if(s)return s;}catch(e){}try{var l=window.localStorage.getItem('__fos_session');if(l)return l;}catch(e){}return '';}
+function row(label,value,cls){var d=document.createElement('div');d.className='fos-os-row'+(cls?(' '+cls):'');var a=document.createElement('span');a.className='fos-os-name';a.textContent=label;var b=document.createElement('span');b.className='fos-os-price';b.textContent=value;d.appendChild(a);d.appendChild(b);return d;}
+function fill(session){try{var nodes=document.querySelectorAll('[data-fos-order-summary]');Array.prototype.forEach.call(nodes,function(node){try{node.innerHTML='';var cur=session.currency;(session.line_items||[]).forEach(function(li){var qn=Number(li.quantity||1);var name=(li.product_title||li.title||'Item')+((qn>1)?(' \\u00d7 '+qn):'');var lt=Number(li.price||0)*qn;node.appendChild(row(name,money(lt,cur)));});var t=(session.totals||{});if(t.subtotal!=null){node.appendChild(row('Subtotal',money(t.subtotal,cur)));}if(t.shipping!=null&&Number(t.shipping)>0){node.appendChild(row('Shipping',money(t.shipping,cur)));}node.appendChild(row('Total',money(t.total!=null?t.total:0,cur),'fos-os-total'));}catch(e){}});}catch(e){}}
+/* Buyer-safe pending state: rewrite the confirmation copy and clear any
+   summary node so an unsettled session never reads as "order confirmed". */
+function pending(st){try{var h=document.querySelector('[data-fos-thankyou-title]')||document.querySelector('h1');if(h){h.textContent='Your payment is still processing';}
+var n=document.querySelector('[data-fos-thankyou-note]');if(n){n.textContent='We have not received confirmation for this order yet. This page will show your receipt once the payment settles. No further action is needed.';}
+Array.prototype.forEach.call(document.querySelectorAll('[data-fos-order-summary]'),function(node){node.innerHTML='';});}catch(e){}}
+ready(function(){try{
+var SID=sid();if(!SID){return;}
+fetch(API+'/session/'+encodeURIComponent(SID),{credentials:'same-origin'}).then(function(r){return r.json().catch(function(){return {};}).then(function(j){return {status:r.status,json:j};});}).then(function(res){if(res.status!==200||!res.json||!res.json.success||!res.json.data){return;}var d=res.json.data;
+/* processing !== paid: a session that has not settled must NEVER render as a
+   confirmed order on a buyer surface. Show a pending state instead. */
+if(d.status!=='paid'&&d.status!=='deposit_paid'){pending(d.status);return;}
+fill(d);}).catch(function(){});
+}catch(e){}});
+})();`;
+  return `<script>window.__fos_thankyou=Object.assign(window.__fos_thankyou||{},${json});${body}</script>`;
+}
+
+// ---------------------------------------------------------------------------
+// OPT-IN runtime — drives every [data-fos-optin] form: client-side email
+// check, POST to the opt-in public intake (routes/optinPublic.js — leads
+// table only, never money), honeypot passthrough, then advance via the
+// compiled flow next_path (carrying ?s= like the upsell runtime so a mid-
+// funnel opt-in never drops the session). Fail-visible on errors; the buyer
+// is never stuck (no next_path ⇒ the success message simply stays).
+// ---------------------------------------------------------------------------
+function optinRuntimeScript(ctx) {
+  const json = jsonForScript({
+    funnel_id: ctx.funnel_id != null ? String(ctx.funnel_id) : null,
+    page_id: ctx.page_id != null ? String(ctx.page_id) : null,
+    api_base: '/api/v1/optin/public',
+  });
+  const body = `(function(){
+var CTX=window.__fos_optin;var API=(CTX&&CTX.api_base)||'/api/v1/optin/public';
+function ready(fn){if(document.readyState!=='loading'){fn();}else{document.addEventListener('DOMContentLoaded',fn);}}
+function sid(){try{var u=new URL(window.location.href);var q=u.searchParams.get('s');if(q)return q;}catch(e){}try{var s=window.sessionStorage.getItem('__fos_session');if(s)return s;}catch(e){}return '';}
+function go(path){if(!path)return false;try{var u=new URL(path,window.location.origin);var S=sid();if(S&&!u.searchParams.get('s'))u.searchParams.set('s',S);window.location.assign(u.pathname+u.search+u.hash);}catch(e){try{window.location.assign(path);}catch(e2){}}return true;}
+function showErr(root,msg){var e=root.querySelector('[data-fos-optin-error]');if(e){e.hidden=false;e.textContent=msg;}}
+function hideErr(root){var e=root.querySelector('[data-fos-optin-error]');if(e){e.hidden=true;}}
+function submitErr(code){if(code==='invalid_email')return 'Please enter a valid email address.';if(code==='rate_limited')return 'Too many attempts. Please wait a moment and try again.';return 'Something went wrong. Please try again.';}
+function initForm(root){root.addEventListener('submit',function(ev){ev.preventDefault();try{
+hideErr(root);
+var emailEl=root.querySelector('input[name=email]');var nameEl=root.querySelector('input[name=name]');var hpEl=root.querySelector('input[name=website]');var btn=root.querySelector('[data-fos-optin-submit]');
+var email=(emailEl&&emailEl.value||'').trim();
+if(!email||email.indexOf('@')<1||email.indexOf('.')<0){showErr(root,'Please enter a valid email address.');return;}
+if(btn){btn.disabled=true;}
+fetch(API+'/submit',{method:'POST',headers:{'Content-Type':'application/json'},credentials:'same-origin',body:JSON.stringify({funnel_id:CTX&&CTX.funnel_id,page_id:CTX&&CTX.page_id,email:email,name:(nameEl&&nameEl.value||'').trim(),website:(hpEl&&hpEl.value||'')})}).then(function(r){return r.json().catch(function(){return {};}).then(function(j){return {status:r.status,json:j};});}).then(function(res){
+if((res.status===200||res.status===201)&&res.json&&res.json.success){var ok=root.querySelector('[data-fos-optin-success]');if(ok){ok.hidden=false;}var F=window.__fos_flow||{};setTimeout(function(){go(F.next_path);},600);return;}
+if(btn){btn.disabled=false;}
+showErr(root,submitErr((res.json&&res.json.error&&res.json.error.code)||('http_'+res.status)));
+}).catch(function(){if(btn){btn.disabled=false;}showErr(root,'Network error. Please try again.');});
+}catch(e){}});}
+ready(function(){try{var forms=document.querySelectorAll('[data-fos-optin]');Array.prototype.forEach.call(forms,function(f){try{initForm(f);}catch(e){}});}catch(e){}});
+})();`;
+  return `<script>window.__fos_optin=Object.assign(window.__fos_optin||{},${json});${body}</script>`;
+}
+
+// ---------------------------------------------------------------------------
+// QUIZ runtime — step visibility + progress bar for [data-fos-quiz]. Answers
+// go to sessionStorage ('__fos_quiz_answers') ONLY — never the URL (no PII in
+// query strings; the flow advance carries just the opaque ?s= session id like
+// every other step). Finish → flow next_path. Fully guarded.
+// ---------------------------------------------------------------------------
+function quizRuntimeScript() {
+  const body = `(function(){
+function ready(fn){if(document.readyState!=='loading'){fn();}else{document.addEventListener('DOMContentLoaded',fn);}}
+function sid(){try{var u=new URL(window.location.href);var q=u.searchParams.get('s');if(q)return q;}catch(e){}try{var s=window.sessionStorage.getItem('__fos_session');if(s)return s;}catch(e){}return '';}
+function go(path){if(!path)return;try{var u=new URL(path,window.location.origin);var S=sid();if(S&&!u.searchParams.get('s'))u.searchParams.set('s',S);window.location.assign(u.pathname+u.search+u.hash);}catch(e){try{window.location.assign(path);}catch(e2){}}}
+function save(answers){try{window.sessionStorage.setItem('__fos_quiz_answers',JSON.stringify(answers));}catch(e){}}
+function initQuiz(root){try{
+var steps=root.querySelectorAll('[data-fos-quiz-step]');var total=steps.length;if(!total)return;
+var bar=root.querySelector('[data-fos-quiz-bar]');var done=root.querySelector('[data-fos-quiz-done]');
+var answers={};var idx=0;
+function setBar(){if(bar){bar.style.width=Math.round((Math.min(idx,total)/total)*100)+'%';}}
+function show(i){Array.prototype.forEach.call(steps,function(s,k){s.hidden=(k!==i);});if(done)done.hidden=(i<total);if(i>=total){Array.prototype.forEach.call(steps,function(s){s.hidden=true;});if(done)done.hidden=false;}setBar();}
+Array.prototype.forEach.call(steps,function(step,k){
+var opts=step.querySelectorAll('[data-fos-quiz-opt]');
+Array.prototype.forEach.call(opts,function(btn){btn.addEventListener('click',function(){try{
+answers['q'+k]=btn.textContent||'';save(answers);idx=k+1;show(idx);
+}catch(e){}});});});
+var fin=root.querySelector('[data-fos-quiz-finish]');
+if(fin){fin.addEventListener('click',function(){try{save(answers);var F=window.__fos_flow||{};go(F.next_path);}catch(e){}});}
+show(0);
+}catch(e){}}
+ready(function(){try{var qs=document.querySelectorAll('[data-fos-quiz]');Array.prototype.forEach.call(qs,function(q){try{initQuiz(q);}catch(e){}});}catch(e){}});
+})();`;
+  return `<script>${body}</script>`;
+}
+
+// ---------------------------------------------------------------------------
+// COUNTDOWN runtime — makes the (pre-existing, previously static) countdown
+// block tick. Reads data-deadline (any Date-parseable string); an invalid or
+// absent deadline leaves the static placeholder untouched. When expired it
+// shows the block's optional data-expired attribute text, else a default.
+// Additive: emitted only when a countdown block is on the page.
+// ---------------------------------------------------------------------------
+function countdownRuntimeScript() {
+  const body = `(function(){
+function ready(fn){if(document.readyState!=='loading'){fn();}else{document.addEventListener('DOMContentLoaded',fn);}}
+function pad(n){return (n<10?'0':'')+n;}
+ready(function(){try{
+var nodes=document.querySelectorAll('.lb-countdown[data-deadline]');if(!nodes.length)return;
+function tick(){Array.prototype.forEach.call(nodes,function(node){try{
+var raw=node.getAttribute('data-deadline');if(!raw)return;
+var end=Date.parse(raw);if(!isFinite(end))return;
+var clock=node.querySelector('[data-el=clock]');if(!clock)return;
+var ms=end-Date.now();
+if(ms<=0){clock.textContent=node.getAttribute('data-expired')||'Offer expired';return;}
+var s=Math.floor(ms/1000);var d=Math.floor(s/86400);var h=Math.floor((s%86400)/3600);var m=Math.floor((s%3600)/60);var ss=s%60;
+clock.textContent=(d>0?(d+'d '):'')+pad(h)+':'+pad(m)+':'+pad(ss);
+}catch(e){}});}
+tick();setInterval(tick,1000);
+}catch(e){}});
+})();`;
+  return `<script>${body}</script>`;
+}
+
+// Block-type → runtime map for the new page types. Called from renderPageHtml;
+// returns '' for pages carrying none of these blocks (byte-identical output).
+function pageTypeRuntimeScripts(blocks, funnel, page) {
+  try {
+    const list = Array.isArray(blocks) ? blocks : [];
+    const has = (t) => list.some((b) => isPlainObject(b) && b.type === t);
+    const ctx = {
+      funnel_id: (funnel || {}).id ?? null,
+      page_id: (page || {}).id ?? null,
+    };
+    let out = '';
+    if (has('order_confirmation')) out += thankYouRuntimeScript(ctx);
+    if (has('optin_form')) out += optinRuntimeScript(ctx);
+    if (has('quiz_steps')) out += quizRuntimeScript();
+    if (has('countdown')) out += countdownRuntimeScript();
+    return out;
+  } catch {
+    return '';
+  }
+}
+
+// ---------------------------------------------------------------------------
+// THANK-YOU PAGE TEMPLATE — type='thankyou'. The funnel END NODE: no forward
+// flow required. Light buyer theme consistent with checkout/upsell. The order
+// recap is the order_confirmation block (existing GET /session/:id, above).
+// ---------------------------------------------------------------------------
+const TKY_TEMPLATE_CSS = `/* Thank-you template (seeded) — buyer-facing LIGHT theme */
+body{background:#f6f7f9;color:#111827;}
+main{max-width:640px;margin:0 auto;padding:40px 20px 64px;}
+main>.lb-blk{margin:0 0 20px;}
+.tky-hero{text-align:center;padding:8px 0 4px;}
+.tky-check{width:64px;height:64px;border-radius:999px;background:#dcfce7;display:inline-flex;align-items:center;justify-content:center;margin-bottom:16px;}
+.tky-check svg{display:block;}
+.tky-h1{font-size:1.8rem;font-weight:800;color:#0f172a;margin:0 0 8px;line-height:1.2;}
+.tky-sub{color:#6b7280;margin:0;font-size:1.02rem;}
+.lb-orderconf{background:#fff;border:1px solid #e5e7eb;border-radius:16px;padding:24px;box-shadow:0 10px 30px rgba(17,24,39,.05);}
+.lb-orderconf-title{font-size:1.1rem;margin:0 0 10px;}
+.lb-orderconf-note{color:#9ca3af;font-size:.85rem;margin:14px 0 0;}
+.tky-card{background:#fff;border:1px solid #e5e7eb;border-radius:16px;padding:24px;}
+.tky-card h3{font-size:1.1rem;margin:0 0 14px;}
+.tky-steps{list-style:none;counter-reset:tky;margin:0;padding:0;}
+.tky-steps li{counter-increment:tky;display:flex;gap:14px;align-items:flex-start;padding:10px 0;}
+.tky-steps li::before{content:counter(tky);flex:0 0 28px;height:28px;border-radius:999px;background:#eff3fe;color:#2563eb;font-weight:700;display:inline-flex;align-items:center;justify-content:center;font-size:.9rem;}
+.tky-step-title{font-weight:600;color:#0f172a;}
+.tky-step-sub{color:#6b7280;font-size:.9rem;}
+.tky-support{text-align:center;color:#6b7280;font-size:.95rem;}
+.tky-support a{color:#2563eb;font-weight:600;}
+.tky-continue-wrap{text-align:center;}
+.tky-continue{padding:14px 34px;font-weight:700;}
+@media (max-width:520px){.tky-h1{font-size:1.45rem;}}`;
+
+// Returns { blocks, custom_css, custom_js } for a fresh 'thankyou' page.
+// Fresh objects per call so one page's canvas edits never alias another's seed.
+export function thankYouPageTemplate() {
+  const html = (id, name, markup) => ({
+    id,
+    type: 'html',
+    props: { block_name: name, html: markup },
+  });
+  const blocks = [
+    html('tky_hero', 'thankyou-hero',
+      `<header class='tky-hero'>` +
+      `<span class='tky-check'><svg width='30' height='30' viewBox='0 0 24 24' fill='none' stroke='#16a34a' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round' aria-hidden='true'><path d='M20 6 9 17l-5-5'/></svg></span>` +
+      `<h1 class='tky-h1'>Thank you! Your order is confirmed.</h1>` +
+      `<p class='tky-sub'>We are getting it ready to ship. You will receive a confirmation email shortly.</p>` +
+      `</header>`),
+    {
+      id: 'tky_summary',
+      type: 'order_confirmation',
+      props: {
+        block_name: 'thankyou-order-summary',
+        title: 'Order summary',
+        note: 'A confirmation email with your receipt is on its way to your inbox.',
+      },
+    },
+    html('tky_next', 'thankyou-next-steps',
+      `<section class='tky-card'><h3>What happens next</h3><ol class='tky-steps'>` +
+      `<li><span><span class='tky-step-title'>Confirmation email</span><br/><span class='tky-step-sub'>Your receipt and order details arrive in your inbox within a few minutes.</span></span></li>` +
+      `<li><span><span class='tky-step-title'>We pack your order</span><br/><span class='tky-step-sub'>Your order is prepared and handed to the carrier within 1 business day.</span></span></li>` +
+      `<li><span><span class='tky-step-title'>Tracking on the way</span><br/><span class='tky-step-sub'>As soon as it ships, your tracking number lands in your inbox.</span></span></li>` +
+      `</ol></section>`),
+    html('tky_support', 'thankyou-support',
+      `<p class='tky-support'>Questions about your order? Email <a href='mailto:support@trypuure.co'>support@trypuure.co</a> and we will be happy to help.</p>`),
+    html('tky_continue', 'thankyou-continue',
+      `<div class='tky-continue-wrap'><a class='lb-btn tky-continue' href='https://trypuure.co'>Back to the store</a></div>`),
+  ];
+  return { blocks, custom_css: TKY_TEMPLATE_CSS, custom_js: '' };
+}
+
+// ---------------------------------------------------------------------------
+// DOWNSELL PAGE TEMPLATE — type='downsell'. STRUCTURALLY the upsell page: the
+// same LIVE upsell_offer block + upsellRuntimeScript + EXISTING /upsell/offer,
+// /upsell/accept, /upsell/decline endpoints, untouched (a downsell IS an
+// upsell offer shown after a decline, typically smaller). Only the seeded
+// copy differs. ZERO new charging code. The operator binds a cheaper offer to
+// THIS page (co_upsells.page_id) so /upsell/offer resolves the downsell offer.
+// ---------------------------------------------------------------------------
+const DOWNSELL_EXTRA_CSS = `
+/* Downsell variant */
+/* The base upsell CSS sets display:flex on the status row, which overrides
+   the [hidden] attribute's UA display:none — restore it so the Processing
+   spinner only shows while a click is in flight. */
+.lb-upsell-status[hidden]{display:none;}
+.lb-dsl-banner{color:#b45309;}
+.lb-upsell-accept{background:#2563eb;box-shadow:0 6px 16px rgba(37,99,235,.28);}
+.lb-upsell-accept:hover:not(:disabled){background:#1d4ed8;}
+.lb-upsell-accept:disabled{background:#a5bdf3;}
+.lb-upsell-spinner{border-top-color:#2563eb;}`;
+
+// Returns { blocks, custom_css, custom_js } for a fresh 'downsell' page.
+export function downsellPageTemplate() {
+  const html = (id, name, markup) => ({
+    id,
+    type: 'html',
+    props: { block_name: name, html: markup },
+  });
+  const blocks = [
+    html('dsl_banner', 'downsell-banner',
+      `<div class='lb-upsell-progress lb-dsl-banner'>` +
+      `<svg width='18' height='18' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round' aria-hidden='true'><circle cx='12' cy='12' r='10'/><path d='M12 6v6l4 2'/></svg>` +
+      `Hold on, we saved one smaller deal for you</div>`),
+    {
+      id: 'dsl_offer',
+      type: 'upsell_offer',
+      props: {
+        block_name: 'downsell-offer',
+        headline: 'Wait! Grab this lighter option before you finish',
+        subheadline:
+          'Not ready for the full upgrade? Add this smaller option to your order with one click. ' +
+          'No need to re-enter your payment or shipping details.',
+        accept_text: 'Yes, add this smaller deal',
+        decline_text: 'No thanks, complete my order',
+        fine_print:
+          'This is a one-time charge to the payment method from your original order, not a subscription. ' +
+          'By clicking, you authorize the charge shown above.',
+      },
+    },
+  ];
+  return {
+    blocks,
+    custom_css: UPSELL_TEMPLATE_CSS + DOWNSELL_EXTRA_CSS,
+    custom_js: '',
+  };
+}
+
+// ---------------------------------------------------------------------------
+// OPT-IN PAGE TEMPLATE — type='optin'. Blank light page: headline, supporting
+// text, the optin_form block (posts to routes/optinPublic.js), fine print.
+// After submit the runtime advances via flow next_path.
+// ---------------------------------------------------------------------------
+const OPT_TEMPLATE_CSS = `/* Opt-in template (seeded) — buyer-facing LIGHT theme */
+body{background:#f6f7f9;color:#111827;}
+main{max-width:520px;margin:0 auto;padding:56px 20px 64px;}
+main>.lb-blk{margin:0 0 18px;}
+.opt-head{text-align:center;}
+.opt-h1{font-size:1.9rem;font-weight:800;color:#0f172a;margin:0 0 10px;line-height:1.2;}
+.opt-sub{color:#6b7280;margin:0;font-size:1.02rem;}
+.lb-optin{background:#fff;border:1px solid #e5e7eb;border-radius:16px;padding:26px;box-shadow:0 10px 30px rgba(17,24,39,.06);}
+.lb-optin-headline{font-weight:700;font-size:1.05rem;color:#0f172a;margin-bottom:14px;text-align:center;}
+.lb-optin-field{margin-bottom:12px;}
+.lb-optin-input{width:100%;box-sizing:border-box;border:1.5px solid #cfcfcf;border-radius:10px;padding:15px 14px;font:400 16px/1.3 Inter,system-ui,sans-serif;color:#111;background:#fff;}
+.lb-optin-input:focus{outline:2px solid rgba(37,99,235,.2);border-color:#2563eb;}
+.lb-optin-hp{position:absolute;left:-9999px;top:-9999px;height:0;width:0;overflow:hidden;}
+.lb-optin-error{color:#b91c1c;background:#fef2f2;border:1px solid #fecaca;border-radius:10px;padding:10px 12px;margin-bottom:12px;font-size:.92rem;}
+.lb-optin-success{color:#166534;background:#dcfce7;border:1px solid #bbf7d0;border-radius:10px;padding:10px 12px;margin-bottom:12px;font-size:.95rem;font-weight:600;text-align:center;}
+.lb-optin-submit{display:block;width:100%;background:#2563eb;color:#fff;border:0;border-radius:12px;padding:16px;font:800 1.05rem/1.2 Inter,system-ui,sans-serif;cursor:pointer;}
+.lb-optin-submit:hover:not(:disabled){background:#1d4ed8;}
+.lb-optin-submit:disabled{background:#a5bdf3;cursor:not-allowed;}
+.opt-fine{text-align:center;color:#9ca3af;font-size:.82rem;}
+@media (max-width:520px){.opt-h1{font-size:1.5rem;}}`;
+
+// Returns { blocks, custom_css, custom_js } for a fresh 'optin' page.
+export function optinPageTemplate() {
+  const html = (id, name, markup) => ({
+    id,
+    type: 'html',
+    props: { block_name: name, html: markup },
+  });
+  const blocks = [
+    html('opt_head', 'optin-headline',
+      `<header class='opt-head'><h1 class='opt-h1'>Unlock 10% off your first order</h1>` +
+      `<p class='opt-sub'>Join the Puure list and we will send your discount code right away.</p></header>`),
+    {
+      id: 'opt_form',
+      type: 'optin_form',
+      props: {
+        block_name: 'optin-form',
+        button_text: 'Get my code',
+        success_text: 'You are in! Check your inbox for your code.',
+      },
+    },
+    html('opt_fine', 'optin-fine-print',
+      `<p class='opt-fine'>No spam, ever. Unsubscribe anytime with one click.</p>`),
+  ];
+  return { blocks, custom_css: OPT_TEMPLATE_CSS, custom_js: '' };
+}
+
+// ---------------------------------------------------------------------------
+// STOREFRONT PAGE TEMPLATE — type='storefront'. Grid of operator-configured
+// product cards (storefront_grid block: image/title/price display string/
+// href per card). Server-rendered, XSS-safe; no live Shopify fetch in v1.
+// ---------------------------------------------------------------------------
+const SFR_TEMPLATE_CSS = `/* Storefront template (seeded) — buyer-facing LIGHT theme */
+body{background:#fff;color:#111827;}
+main{max-width:1100px;margin:0 auto;padding:40px 20px 64px;}
+main>.lb-blk{margin:0 0 24px;}
+.sfr-head{text-align:center;padding:8px 0 4px;}
+.sfr-h1{font-size:2rem;font-weight:800;color:#0f172a;margin:0 0 8px;}
+.sfr-sub{color:#6b7280;margin:0;}
+.lb-sf-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:20px;}
+.lb-sf-card{display:flex;flex-direction:column;gap:10px;background:#fff;border:1px solid #e5e7eb;border-radius:14px;padding:16px;color:inherit;text-align:center;transition:box-shadow .15s;}
+.lb-sf-card:hover{box-shadow:0 10px 30px rgba(17,24,39,.08);}
+.lb-sf-img{width:100%;aspect-ratio:1;object-fit:cover;border-radius:10px;background:#f3f4f6;display:block;}
+.lb-sf-noimg{border:1px dashed #d1d5db;}
+.lb-sf-title{font-weight:700;color:#0f172a;line-height:1.3;}
+.lb-sf-price{font-weight:800;color:#111827;font-size:1.1rem;}
+.lb-sf-cta{margin-top:auto;}`;
+
+// Returns { blocks, custom_css, custom_js } for a fresh 'storefront' page.
+export function storefrontPageTemplate() {
+  const html = (id, name, markup) => ({
+    id,
+    type: 'html',
+    props: { block_name: name, html: markup },
+  });
+  const card = (n) => ({
+    title: `Product ${n}`,
+    price: '$0.00',
+    image: '',
+    href: '#',
+    cta: 'Shop now',
+  });
+  const blocks = [
+    html('sfr_head', 'storefront-heading',
+      `<header class='sfr-head'><h1 class='sfr-h1'>Shop Puure</h1>` +
+      `<p class='sfr-sub'>Choose the option that fits you best.</p></header>`),
+    {
+      id: 'sfr_grid',
+      type: 'storefront_grid',
+      props: {
+        block_name: 'storefront-grid',
+        items: [card(1), card(2), card(3)],
+      },
+    },
+  ];
+  return { blocks, custom_css: SFR_TEMPLATE_CSS, custom_js: '' };
+}
+
+// ---------------------------------------------------------------------------
+// QUIZ PAGE TEMPLATE — type='quiz'. Multi-step questions (quiz_steps block),
+// progress bar, answers in sessionStorage (never the URL), final step
+// advances via flow next_path.
+// ---------------------------------------------------------------------------
+const QZ_TEMPLATE_CSS = `/* Quiz template (seeded) — buyer-facing LIGHT theme */
+body{background:#f6f7f9;color:#111827;}
+main{max-width:560px;margin:0 auto;padding:48px 20px 64px;}
+main>.lb-blk{margin:0 0 18px;}
+.qz-head{text-align:center;}
+.qz-h1{font-size:1.7rem;font-weight:800;color:#0f172a;margin:0 0 8px;line-height:1.2;}
+.qz-sub{color:#6b7280;margin:0;}
+.lb-quiz{background:#fff;border:1px solid #e5e7eb;border-radius:16px;padding:26px;box-shadow:0 10px 30px rgba(17,24,39,.06);}
+.lb-quiz-progress{height:8px;border-radius:999px;background:#eef0f3;overflow:hidden;margin-bottom:22px;}
+.lb-quiz-bar{height:100%;background:#2563eb;border-radius:999px;transition:width .25s;}
+.lb-quiz-q{font-weight:700;font-size:1.15rem;color:#0f172a;margin-bottom:16px;text-align:center;}
+.lb-quiz-opts{display:flex;flex-direction:column;gap:10px;}
+.lb-quiz-opt{display:block;width:100%;text-align:left;background:#fff;border:1.5px solid #d7dbe2;border-radius:12px;padding:15px 16px;font:600 1rem/1.3 Inter,system-ui,sans-serif;color:#111827;cursor:pointer;transition:border-color .12s,background .12s;}
+.lb-quiz-opt:hover{border-color:#2563eb;background:#eff3fe;}
+.lb-quiz-done{text-align:center;}
+.lb-quiz-finish{display:inline-block;padding:15px 34px;font-weight:800;cursor:pointer;border:0;font-size:1.02rem;}
+@media (max-width:520px){.qz-h1{font-size:1.4rem;}}`;
+
+// Returns { blocks, custom_css, custom_js } for a fresh 'quiz' page.
+export function quizPageTemplate() {
+  const html = (id, name, markup) => ({
+    id,
+    type: 'html',
+    props: { block_name: name, html: markup },
+  });
+  const blocks = [
+    html('qz_head', 'quiz-heading',
+      `<header class='qz-head'><h1 class='qz-h1'>Find your perfect match</h1>` +
+      `<p class='qz-sub'>Answer 3 quick questions and we will point you to the right option.</p></header>`),
+    {
+      id: 'qz_steps',
+      type: 'quiz_steps',
+      props: {
+        block_name: 'quiz-questions',
+        questions: [
+          {
+            question: 'What is your main goal?',
+            options: ['A firmer, lifted look', 'Daily comfort and support', 'Overall wellness'],
+          },
+          {
+            question: 'How often would you use it?',
+            options: ['Every day', 'A few times a week', 'Not sure yet'],
+          },
+          {
+            question: 'Have you tried anything similar before?',
+            options: ['Yes', 'No, this would be my first'],
+          },
+        ],
+        done_text: 'All done! Your personalized pick is ready.',
+        finish_text: 'See my recommendation',
+      },
+    },
+  ];
+  return { blocks, custom_css: QZ_TEMPLATE_CSS, custom_js: '' };
+}
+
+// ---------------------------------------------------------------------------
+// ADVERTORIAL PAGE TEMPLATE — seeded for type='lead' (the palette's Lead /
+// Advertorial page). Long-form article built almost entirely from EXISTING
+// generic blocks (heading/text/image/checklist/testimonial/button) — a
+// seeded-blocks preset, minimal new code. CTA advances via #fos-next.
+// ---------------------------------------------------------------------------
+const ADV_TEMPLATE_CSS = `/* Advertorial template (seeded) — buyer-facing LIGHT theme */
+body{background:#fff;color:#374151;}
+main{max-width:720px;margin:0 auto;padding:40px 22px 64px;}
+main>.lb-blk{margin:0 0 22px;}
+.adv-kicker{text-transform:uppercase;letter-spacing:.08em;font-size:.78rem;font-weight:700;color:#2563eb;text-align:center;}
+.lb-heading{text-align:center;}
+.adv-byline{text-align:center;color:#9ca3af;font-size:.85rem;}
+.lb-text p{font-size:1.05rem;line-height:1.75;}
+.lb-image img{border-radius:14px;}
+.adv-cta-wrap{text-align:center;padding:8px 0;}
+.adv-cta{padding:16px 38px;font-weight:800;font-size:1.05rem;}
+@media (max-width:520px){h1.lb-heading{font-size:1.6rem;}}`;
+
+// Returns { blocks, custom_css, custom_js } for a fresh 'lead' (advertorial)
+// page.
+export function advertorialPageTemplate() {
+  const html = (id, name, markup) => ({
+    id,
+    type: 'html',
+    props: { block_name: name, html: markup },
+  });
+  const blocks = [
+    html('adv_kicker', 'advertorial-kicker',
+      `<div class='adv-kicker'>Health and Beauty</div>`),
+    {
+      id: 'adv_headline',
+      type: 'heading',
+      props: {
+        block_name: 'advertorial-headline',
+        level: 1,
+        text: 'Why thousands of women are switching to this simple at-home routine',
+      },
+    },
+    html('adv_byline', 'advertorial-byline',
+      `<div class='adv-byline'>By the Puure editorial team</div>`),
+    {
+      id: 'adv_intro',
+      type: 'text',
+      props: {
+        block_name: 'advertorial-intro',
+        html:
+          `<p>Most of us have tried the creams, the workouts and the endless tips that promise results and never quite deliver. ` +
+          `So when a simple routine started winning over thousands of loyal fans, we had to take a closer look.</p>` +
+          `<p>Here is what we found, and why it might be the easiest change you make this year.</p>`,
+      },
+    },
+    {
+      id: 'adv_image',
+      type: 'image',
+      props: { block_name: 'advertorial-image', src: '', alt: '' },
+    },
+    {
+      id: 'adv_points',
+      type: 'checklist',
+      props: {
+        block_name: 'advertorial-points',
+        items: [
+          'Takes minutes a day, at home',
+          'No harsh ingredients or complicated steps',
+          'Loved by thousands of happy customers',
+        ],
+      },
+    },
+    // NOTE: deliberately NOT the native testimonial block — its renderer
+    // hardcodes an em-dash before the author, and the em-dash ban covers
+    // Puure buyer-facing copy. Same visual via the lb-quote class.
+    html('adv_quote', 'advertorial-quote',
+      `<blockquote class='lb-quote'>` +
+      `<p>I noticed a difference within weeks. It is now part of my morning routine and I would not go back.</p>` +
+      `<footer>Verified customer</footer>` +
+      `</blockquote>`),
+    {
+      id: 'adv_more',
+      type: 'text',
+      props: {
+        block_name: 'advertorial-body',
+        html:
+          `<p>The best part? You can try it today and see for yourself. ` +
+          `Availability is limited, so if you have been waiting for a sign, this is it.</p>`,
+      },
+    },
+    html('adv_cta', 'advertorial-cta',
+      `<div class='adv-cta-wrap'><a class='lb-btn adv-cta' href='#fos-next'>See if it is right for you</a></div>`),
+  ];
+  return { blocks, custom_css: ADV_TEMPLATE_CSS, custom_js: '' };
+}
+
 export default {
   renderPageHtml,
   renderBlock,
@@ -1417,4 +2087,10 @@ export default {
   compileFlow,
   checkoutPageTemplate,
   upsellPageTemplate,
+  thankYouPageTemplate,
+  downsellPageTemplate,
+  optinPageTemplate,
+  storefrontPageTemplate,
+  quizPageTemplate,
+  advertorialPageTemplate,
 };
