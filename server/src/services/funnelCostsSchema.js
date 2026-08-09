@@ -140,10 +140,38 @@ async function createTables() {
   // name in the rate drawer, and two "Breast Lift bottle"s is a coin flip
   // over which cost applies. Archived rows are excluded so a retired name can
   // be reused.
-  await pgQuery(`
-    CREATE UNIQUE INDEX IF NOT EXISTS uq_lb_cost_items_name_live
-    ON lb_cost_items (lower(name)) WHERE archived = FALSE
-  `);
+  //
+  // THE ONE STATEMENT HERE THAT CAN FAIL ON REAL DATA, so it is the one that
+  // is caught. Every other statement in this file is CREATE ... IF NOT EXISTS
+  // and is inert on a second run; this one reads existing ROWS and throws
+  // 23505 if a database already holds duplicate live names. Letting that
+  // propagate would fail ensureFunnelCostsTables, which every costs and P&L
+  // endpoint awaits — turning a cosmetic name clash into a dead money
+  // surface. An absent index means duplicate names stay possible (createGroup
+  // still refuses them on the read path); a dead lane means no cost data at
+  // all. The offending names are logged so an operator can rename them, and
+  // the next boot retries the index.
+  try {
+    await pgQuery(`
+      CREATE UNIQUE INDEX IF NOT EXISTS uq_lb_cost_items_name_live
+      ON lb_cost_items (lower(name)) WHERE archived = FALSE
+    `);
+  } catch (err) {
+    if (err && err.code === '23505') {
+      const dupes = await pgQuery(`
+        SELECT lower(name) AS name, COUNT(*)::int AS n
+        FROM lb_cost_items WHERE archived = FALSE
+        GROUP BY lower(name) HAVING COUNT(*) > 1 ORDER BY n DESC LIMIT 20
+      `).catch(() => []);
+      console.error(
+        '[funnelCostsSchema] uq_lb_cost_items_name_live NOT created — duplicate live cost-group names exist. '
+        + 'The costs lane is booting WITHOUT the uniqueness guarantee; rename these and restart to install it: '
+        + dupes.map((d) => `"${d.name}" ×${d.n}`).join(', ')
+      );
+    } else {
+      throw err;
+    }
+  }
   // Membership lookups ("who is in this group") hit this column on every
   // group read; without it each one is a seq scan of the whole catalog.
   await pgQuery(`

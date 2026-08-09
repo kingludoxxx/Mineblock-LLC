@@ -109,6 +109,21 @@ const parseJson = (v, fallback) => {
   return v;
 };
 
+/**
+ * A limit is either absent (use the default) or a real positive integer.
+ * `parseInt(x, 10) || fallback` silently turns 0, '', 'abc' and NaN into the
+ * default — so `?limit=0` quietly returns a full page, which is the opposite
+ * of what it asked for.
+ */
+export function validateLimit(raw, fallback, max) {
+  if (raw === null || raw === undefined || raw === '') return fallback;
+  const n = typeof raw === 'string' ? (/^[0-9]{1,6}$/.test(raw.trim()) ? Number(raw.trim()) : NaN) : Number(raw);
+  if (Number.isNaN(n) || !Number.isFinite(n) || !Number.isInteger(n) || n < 1) {
+    throw new CostError('bad_limit', 'limit must be a whole number of 1 or more');
+  }
+  return Math.min(n, max);
+}
+
 function cleanName(raw, { required = false } = {}) {
   const name = String(raw ?? '').trim().slice(0, MAX_NAME);
   if (!name && required) throw new CostError('name_required', 'a cost group needs a name');
@@ -272,6 +287,10 @@ async function hydrate(groupRows, { rateIndex = null } = {}) {
       // A group everything was unbound out of still holds a rate that now
       // reaches nobody. Say so rather than rendering an ordinary empty row.
       is_empty: rows.length === 0,
+      // …and one member short of being a group at all. Its rate still prices
+      // that member, so this is not broken — but a "group" of one is almost
+      // always the residue of a steal, and it should be visible as such.
+      is_understaffed: !g.archived && rows.length < MIN_MEMBERS,
       members: rows,
       rate: rate
         ? {
@@ -301,7 +320,10 @@ async function hydrate(groupRows, { rateIndex = null } = {}) {
 
 export async function listGroups({ includeArchived = false, limit = 100, offset = 0 } = {}) {
   await ensureFunnelCostsTables();
-  const lim = Math.max(1, Math.min(parseInt(limit, 10) || 100, 200));
+  // `limit=0` means "none" to whoever typed it and meant it. Coercing it to
+  // the default 100 answers a question nobody asked; it is refused instead,
+  // so a paging bug surfaces as an error rather than as a full page.
+  const lim = validateLimit(limit, 100, 200);
   const off = Math.max(0, parseInt(offset, 10) || 0);
   const [{ n }] = await pgQuery(
     `SELECT COUNT(*)::int AS n FROM lb_cost_items ${includeArchived ? '' : 'WHERE archived = FALSE'}`
@@ -332,7 +354,7 @@ export async function getGroup(costItemId) {
 export async function groupRateHistory(costItemId, limit = 200) {
   await ensureFunnelCostsTables();
   const id = cleanItemId(costItemId);
-  const lim = Math.max(1, Math.min(parseInt(limit, 10) || 200, 200));
+  const lim = validateLimit(limit, 200, 200);
   const items = await pgQuery(
     `SELECT id, scope, variant_id, cost_item_id,
             to_char(effective_from, 'YYYY-MM-DD') AS effective_from,
@@ -350,7 +372,7 @@ export async function groupRateHistory(costItemId, limit = 200) {
 export async function groupMemberHistory(costItemId, limit = 200) {
   await ensureFunnelCostsTables();
   const id = cleanItemId(costItemId);
-  const lim = Math.max(1, Math.min(parseInt(limit, 10) || 200, 200));
+  const lim = validateLimit(limit, 200, 200);
   const items = await pgQuery(
     `SELECT m.id, m.variant_id, m.cost_item_id, m.units_per,
             to_char(m.effective_from, 'YYYY-MM-DD') AS effective_from,
@@ -454,7 +476,34 @@ async function bindMembers(q, costItemId, members, { steal = false, actor = '', 
       [rows.map((r) => r.variant_id), costItemId, rows.map((r) => r.units_per)]
     );
   }
-  return { bound, moved, missing };
+
+  // A steal has TWO sides. Taking a variant can strand the group it came
+  // from below the two members a group needs to mean anything — and that
+  // group may still carry a rate, now pricing one variant or none. The
+  // caller is told which groups it just hollowed out, by name, rather than
+  // discovering it on a later screen.
+  let sourceUnderstaffed = [];
+  if (moved.length) {
+    const sources = [...new Set(moved.map((m) => m.from))];
+    sourceUnderstaffed = await q(
+      `SELECT i.cost_item_id, i.name,
+              (SELECT COUNT(*)::int FROM lb_variant_costs v WHERE v.cost_item_id = i.cost_item_id) AS member_count
+       FROM lb_cost_items i
+       WHERE i.cost_item_id = ANY($1) AND i.archived = FALSE
+         AND (SELECT COUNT(*) FROM lb_variant_costs v WHERE v.cost_item_id = i.cost_item_id) < $2`,
+      [sources, MIN_MEMBERS]
+    );
+  }
+  return {
+    bound,
+    moved,
+    missing,
+    source_understaffed: sourceUnderstaffed.map((r) => ({
+      cost_item_id: String(r.cost_item_id),
+      name: r.name || '',
+      member_count: Number(r.member_count),
+    })),
+  };
 }
 
 // Unbind, inside an EXISTING transaction. The variant keeps every rate it
@@ -540,7 +589,19 @@ export async function createGroupInTx(q, {
 
 export async function createGroup(opts = {}) {
   await ensureFunnelCostsTables();
-  const res = await withTx((q) => createGroupInTx(q, opts));
+  let res;
+  try {
+    res = await withTx((q) => createGroupInTx(q, opts));
+  } catch (err) {
+    // assertNameFree is a READ, so two creates racing on the same name both
+    // pass it and one hits the unique index instead. That is the constraint
+    // doing its job — it must surface as the same 409 the pre-check gives,
+    // not as an opaque 500 with a Postgres string in it.
+    if (err && err.code === '23505' && String(err.constraint_name || err.constraint || '').includes('lb_cost_items_name')) {
+      throw new CostError('name_taken', 'another live cost group already has that name');
+    }
+    throw err;
+  }
   // Binding can change a variant's resolved cost the instant it lands (the
   // group may already carry a rate), so coverage is recomputed from the
   // ledger — not guessed, and not left for the next sweep.

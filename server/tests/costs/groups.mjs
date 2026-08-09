@@ -197,12 +197,45 @@ console.log('\n── G3 Stage-C cross-checks ──');
   ok(nounCheck && !nounCheck.ok, 'G3 C4 "1 Test Kit" vs "3 Testers" FAILS (kit ≠ tester)', nounCheck && nounCheck.detail);
   ok(noun.confidence === 'review', 'G3 a failed check downgrades the proposal to review');
   ok(noun.members.length === 2, 'G3 a failed check NEVER drops a member');
-  // Generic packaging words say nothing → no contradiction.
+  // NEW-2 — THE GENERIC-NOUN BLANK. "1 Kit Box" and "3 Tester Units" both
+  // END on a packaging word. Reading only the last token blanked both, C4 saw
+  // fewer than two nouns and PASSED, and a kit merged with a tester at 'high'
+  // — one click from sharing a cost.
+  const blanked = run([
+    mk({ vid: '100000000001', vt: '1 Kit Box', price: 30, pid: 'P1' }),
+    mk({ vid: '100000000003', vt: '3 Tester Units', price: 30, pid: 'P2' }),
+  ]);
+  const blankedCheck = blanked.checks.find((c) => c.code === 'trailing_noun');
+  ok(blankedCheck && !blankedCheck.ok,
+    `G3 NEW-2 "1 Kit Box" vs "3 Tester Units" FAILS — the walk-back finds kit/tester (${blankedCheck && blankedCheck.detail})`);
+  ok(blanked.confidence === 'review', `G3 NEW-2 …so it is NOT one-clickable (${blanked.confidence})`);
+  ok(detect.nounOf('1 Kit Box', 'leading-int') === 'kit', 'G3 NEW-2 nounOf walks back past "Box" → kit');
+  ok(detect.nounOf('3 Tester Units', 'leading-int') === 'tester', 'G3 NEW-2 nounOf walks back past "Units" → tester');
+  // The original catch still holds.
+  ok(!run([
+    mk({ vid: '100000000001', vt: '1 Test Kit', price: 30, pid: 'P1' }),
+    mk({ vid: '100000000003', vt: '3 Testers', price: 30, pid: 'P2' }),
+  ]).checks.find((c) => c.code === 'trailing_noun').ok, 'G3 NEW-2 the original kit-vs-tester catch still fires');
+
+  // A LEGIT ladder whose titles are packaging-only must STILL merge: same
+  // good, two tiers, identical wording.
+  const packLadder = run([
+    mk({ vid: '100000000001', vt: '3-Pack Box', price: 30, pid: 'P1' }),
+    mk({ vid: '100000000003', vt: '6-Pack Box', price: 54, pid: 'P2' }),
+  ]);
+  ok(packLadder.checks.find((c) => c.code === 'trailing_noun').ok,
+    `G3 NEW-2 "3-Pack Box" vs "6-Pack Box" still merges — identical packaging wording (${packLadder.checks.find((c) => c.code === 'trailing_noun').detail})`);
+  ok(packLadder.members.every((m) => m.units_per !== null && m.units_per_conf === 'exact'),
+    `G3 NEW-2 …and a hyphenated "3-Pack" parses as a real count (${JSON.stringify(packLadder.members.map((m) => m.units_per))})`);
+
+  // …but packaging-only titles that reach for DIFFERENT words are not
+  // evidence of sameness.
   const generic = run([
     mk({ vid: '100000000001', vt: '1 Pack', price: 10, pid: 'P1' }),
     mk({ vid: '100000000003', vt: '3 Boxes', price: 30, pid: 'P2' }),
   ]);
-  ok(generic.checks.find((c) => c.code === 'trailing_noun').ok, 'G3 C4 generic nouns (pack/box) do not contradict');
+  ok(!generic.checks.find((c) => c.code === 'trailing_noun').ok,
+    'G3 NEW-2 blank-vs-blank with different packaging words no longer passes unchallenged');
 
   // C1 blocks the one-click when a size is unreadable.
   const unreadable = run([
@@ -552,6 +585,43 @@ console.log('\n── G4b membership lifecycle ──');
     'NIT units_per beyond the hard cap is refused');
   await groups.addMembers(GID, [{ variant_id: VA, units_per: 1 }]); // restore
 
+  // NEW-3 — a steal has TWO sides. Taking a variant can strand the group it
+  // came from below two members, with a rate that now prices almost nothing.
+  {
+    const S1 = '950000000001';
+    const S2 = '950000000002';
+    for (const vid of [S1, S2]) {
+      await sql`INSERT INTO lb_variant_costs (variant_id, product_title, variant_title, price, first_sold, coverage)
+                VALUES (${vid}, 'Source Widget', '1 Bottle', 50, ${DAY}, 'needs_cost')`;
+    }
+    const src = await groups.createGroup({
+      name: 'Source group', members: [{ variant_id: S1 }, { variant_id: S2 }], createdBy: 'h',
+    });
+    const thief = await groups.addMembers(GID, [{ variant_id: S1 }], { steal: true, actor: 'h' });
+    ok(thief.source_understaffed.length === 1,
+      `NEW-3 the steal reports the group it hollowed out (${JSON.stringify(thief.source_understaffed)})`);
+    ok(thief.source_understaffed[0].cost_item_id === src.group.cost_item_id
+      && thief.source_understaffed[0].member_count === 1,
+    'NEW-3 …naming it and how many members it has left');
+    const after = await groups.getGroup(src.group.cost_item_id);
+    ok(after.is_understaffed === true && after.is_empty === false,
+      'NEW-3 the source group is flagged understaffed in the read surface');
+    // Taking the last one empties it outright.
+    const thief2 = await groups.addMembers(GID, [{ variant_id: S2 }], { steal: true, actor: 'h' });
+    ok(thief2.source_understaffed[0].member_count === 0, 'NEW-3 …and 0 once the last member goes');
+    const empty = await groups.getGroup(src.group.cost_item_id);
+    ok(empty.is_empty === true && empty.is_understaffed === true, 'NEW-3 an emptied source is both empty and understaffed');
+    await groups.removeMembers(GID, [S1, S2]);
+  }
+
+  // NIT — limit=0 asked for nothing; answering with a full page is the
+  // opposite of the question.
+  ok(await guard(() => groups.listGroups({ limit: 0 })) === 'bad_limit', 'NIT limit=0 is refused, not silently 100');
+  ok(await guard(() => groups.listGroups({ limit: -5 })) === 'bad_limit', 'NIT a negative limit is refused');
+  ok(await guard(() => groups.listGroups({ limit: 'abc' })) === 'bad_limit', 'NIT a non-numeric limit is refused');
+  ok((await groups.listGroups({ limit: 1 })).items.length === 1, 'NIT limit=1 is honoured');
+  ok((await groups.listGroups({})).limit === 100, 'NIT an absent limit still defaults');
+
   // The group read surface labels a shadowed member rather than hiding it.
   const g = await groups.getGroup(GID);
   const mA = g.members.find((m) => m.variant_id === VA);
@@ -741,6 +811,87 @@ console.log('\n── G10 membership is EFFECTIVE-DATED (closed periods cannot b
     `G10 B1 the P&L prices that closed day through membership history too (cogs ${rOld && rOld.cogs})`);
 }
 
+console.log('\n── G12 the METRICS surface prices a closed day like the P&L ──');
+{
+  // NEW-1: funnelMetrics built its rate index from the rates alone, so it
+  // resolved membership "as of now". After a units_per edit the two surfaces
+  // disagreed about the SAME closed day — the P&L honoured the membership in
+  // force then, the metrics path applied today's multiplier to history.
+  const MV = '940000000001';
+  const MV2 = '940000000002';
+  const OLD = RDAY(45);
+  const FIRST = RDAY(80);
+  for (const [vid, title] of [[MV, '2 Bottles'], [MV2, '1 Bottle']]) {
+    await sql`INSERT INTO lb_variant_costs (variant_id, product_title, variant_title, price, first_sold, coverage)
+              VALUES (${vid}, 'Cross Widget', ${title}, 120, ${FIRST}, 'needs_cost')`;
+  }
+  await sql`INSERT INTO co_sessions (id, funnel_id, status, gateway, line_items, total, refunds, paid_at, created_at)
+    VALUES ('s_cross', 'f_cross', 'paid', 'whop',
+      ${sql.json([{ variant_id: MV, quantity: 1, price: 120, product_title: 'Cross Widget', variant_title: '2 Bottles' }])},
+      120, ${sql.json([])}, ${onDay(OLD)}, ${onDay(OLD)})`;
+
+  const cg = await groups.createGroup({
+    name: 'Cross Widget bottle',
+    members: [{ variant_id: MV, units_per: 2 }, { variant_id: MV2, units_per: 1 }],
+    createdBy: 'harness',
+  });
+  await costs.appendRate({
+    scope: 'item', refId: cg.group.cost_item_id, unitCogs: 10, ship: { default: 0 },
+    effectiveFrom: FIRST, source: 'manual', createdBy: 'harness',
+  });
+
+  // Drive the REAL metrics API — runQuery, the same entry the HTTP route
+  // uses — through an injected handle standing in for the isolated analytics
+  // pool. No test-only hook: if this agrees, the shipped endpoint agrees.
+  const metrics = await import('../../src/services/funnelMetrics.js');
+  const handle = (text, params = []) => sql.unsafe(text, params);
+  const metricsCogsOn = async (day) => {
+    metrics.resetCostReferenceCache();
+    const res = await metrics.runQuery(
+      {
+        metrics: ['cogs'],
+        window: { start_day: day, end_day: day },
+        granularity: 'day',
+        // Scoped to the same funnel the P&L row is read for, so the two
+        // numbers are the same question asked twice.
+        filters: { funnel_id: 'f_cross' },
+      },
+      { query: handle }
+    );
+    return costs.round2(Number(res?.totals?.cogs ?? 0));
+  };
+  const metricsCogs = () => metricsCogsOn(OLD);
+  const pnlCogs = async () => {
+    const ov = await costs.pnlOverview(OLD, OLD);
+    const r = ov.rows.find((x) => x.fid === 'f_cross');
+    return r ? r.cogs : null;
+  };
+
+  const p1 = await pnlCogs();
+  const m1 = await metricsCogs();
+  ok(p1 === 20, `G12 the P&L prices the closed day at 10 × 2 = 20 (${p1})`);
+  ok(m1 === p1, `G12 the metrics path agrees BEFORE any edit (${m1} vs ${p1})`);
+
+  // ── THE EDIT that used to split them ─────────────────────────────────────
+  await groups.addMembers(cg.group.cost_item_id, [{ variant_id: MV, units_per: 5 }], { actor: 'harness' });
+  const p2 = await pnlCogs();
+  const m2 = await metricsCogs();
+  ok(p2 === 20, `G12 NEW-1 after a units_per 2→5 edit the P&L STILL prices that closed day at 20 (${p2})`);
+  ok(m2 === 20, `G12 NEW-1 …and so does the metrics path — no restatement (${m2})`);
+  ok(m2 === p2, `G12 NEW-1 THE TWO SURFACES AGREE for the same day (${m2} vs ${p2})`);
+
+  // …and both move together for TODAY, where the new multiplier is in force.
+  await sql`INSERT INTO co_sessions (id, funnel_id, status, gateway, line_items, total, refunds, paid_at, created_at)
+    VALUES ('s_cross_now', 'f_cross', 'paid', 'whop',
+      ${sql.json([{ variant_id: MV, quantity: 1, price: 120, product_title: 'Cross Widget', variant_title: '2 Bottles' }])},
+      120, ${sql.json([])}, ${onDay(RDAY(0))}, ${onDay(RDAY(0))})`;
+  const mNowCogs = await metricsCogsOn(RDAY(0));
+  const ovNow = await costs.pnlOverview(RDAY(0), RDAY(0));
+  const pNowCogs = ovNow.rows.find((x) => x.fid === 'f_cross').cogs;
+  ok(mNowCogs === 50 && pNowCogs === 50,
+    `G12 NEW-1 TODAY prices at 10 × 5 = 50 on BOTH surfaces (metrics ${mNowCogs}, pnl ${pNowCogs})`);
+}
+
 console.log('\n── G11 accept is ATOMIC under concurrency ──');
 {
   // Seed a fresh grouping and detect it.
@@ -794,6 +945,68 @@ console.log('\n── G11 accept is ATOMIC under concurrency ──');
   } else {
     ok(true, 'G11 B3 (no second bindable proposal to test the rollback with — skipped)');
   }
+}
+
+console.log('\n── G13 boot resilience + concurrent name collision ──');
+{
+  // NEW-5 — assertNameFree is a READ, so two creates racing on one name both
+  // pass it and one hits the unique index. That must surface as the SAME
+  // 409 the pre-check gives, never as a raw Postgres error.
+  const N1 = '960000000001';
+  const N2 = '960000000002';
+  const N3 = '960000000003';
+  const N4 = '960000000004';
+  for (const vid of [N1, N2, N3, N4]) {
+    await sql`INSERT INTO lb_variant_costs (variant_id, product_title, variant_title, price, first_sold, coverage)
+              VALUES (${vid}, 'Race Name Widget', '1 Bottle', 20, ${DAY}, 'needs_cost')`;
+  }
+  const both = await Promise.allSettled([
+    groups.createGroup({ name: 'Contended name', members: [{ variant_id: N1 }, { variant_id: N2 }], createdBy: 'a' }),
+    groups.createGroup({ name: 'Contended name', members: [{ variant_id: N3 }, { variant_id: N4 }], createdBy: 'b' }),
+  ]);
+  const okd = both.filter((r) => r.status === 'fulfilled');
+  const bad = both.filter((r) => r.status === 'rejected');
+  ok(okd.length === 1, `NEW-5 exactly one of two same-name creates wins (${okd.length})`);
+  ok(bad.every((r) => r.reason && r.reason.code === 'name_taken'),
+    `NEW-5 the loser is name_taken, not a raw 23505 (${bad.map((r) => r.reason && r.reason.code).join(',')})`);
+  const live = await sql`SELECT COUNT(*)::int AS n FROM lb_cost_items
+                         WHERE archived = FALSE AND lower(name) = 'contended name'`;
+  ok(live[0].n === 1, `NEW-5 exactly one live group carries the name (${live[0].n})`);
+
+  // NEW-4 — an unbootable costs lane is worse than a duplicate name. With
+  // duplicates already in the table the unique index CANNOT be created; the
+  // ensure must log loudly and still complete, or every costs and P&L
+  // endpoint (which all await it) goes dark.
+  await sql`DROP INDEX IF EXISTS uq_lb_cost_items_name_live`;
+  await sql`INSERT INTO lb_cost_items (cost_item_id, name) VALUES ('ci_dupe_a', 'Duplicated Name')`;
+  await sql`INSERT INTO lb_cost_items (cost_item_id, name) VALUES ('ci_dupe_b', 'duplicated name')`;
+  // A cache-busted import gets a module whose ensure promise is unset, so the
+  // DDL really re-runs against the duplicates.
+  let booted = null;
+  try {
+    const fresh = await import('../../src/services/funnelCostsSchema.js?newfour=1');
+    await fresh.ensureFunnelCostsTables();
+    booted = true;
+  } catch (e) {
+    booted = e;
+  }
+  ok(booted === true, `NEW-4 the ensure COMPLETES despite duplicate live names (${booted === true ? 'booted' : booted && booted.message})`);
+  const idx = await sql`SELECT indexname FROM pg_indexes WHERE indexname = 'uq_lb_cost_items_name_live'`;
+  ok(idx.length === 0, 'NEW-4 …with the index absent, as the log said');
+  // The read-path guard still refuses a duplicate even without the index.
+  let stillGuarded = null;
+  try {
+    await groups.createGroup({ name: 'Duplicated Name', members: [{ variant_id: N1 }, { variant_id: N2 }], steal: true });
+  } catch (e) { stillGuarded = e; }
+  ok(stillGuarded && stillGuarded.code === 'name_taken',
+    'NEW-4 createGroup still refuses the duplicate on the read path with no index');
+  // …and once the operator renames, the next boot installs it.
+  await sql`DELETE FROM lb_cost_items WHERE cost_item_id = 'ci_dupe_b'`;
+  const fresh2 = await import('../../src/services/funnelCostsSchema.js?newfour=2');
+  await fresh2.ensureFunnelCostsTables();
+  const idx2 = await sql`SELECT indexname FROM pg_indexes WHERE indexname = 'uq_lb_cost_items_name_live'`;
+  ok(idx2.length === 1, 'NEW-4 the next boot installs the index once the names are unique');
+  await sql`DELETE FROM lb_cost_items WHERE cost_item_id = 'ci_dupe_a'`;
 }
 
 console.log('\n── G9 route surface (real router, real auth) ──');

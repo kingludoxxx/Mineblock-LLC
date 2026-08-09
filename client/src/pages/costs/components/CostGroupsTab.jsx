@@ -496,6 +496,14 @@ function GroupCard({ group, rows, canEdit, busy, onAddMember, onRemoveMember, on
                   empty — rate reaches nobody
                 </Chip>
               )}
+              {/* One member short of being a group — almost always what a
+                  steal leaves behind. Its rate still prices that member, so
+                  this is a smell, not a fault. */}
+              {g.is_understaffed && !g.is_empty && (
+                <Chip tone="warn" title="A group needs two variants to be worth having — this one has been reduced to one, probably by a move">
+                  only 1 member
+                </Chip>
+              )}
               {shadowed > 0 && (
                 <Chip
                   tone="warn"
@@ -715,8 +723,12 @@ export default function CostGroupsTab({ rows = [], canEdit = false, notify, onCh
         [{ variant_id: variantId, units_per: Number(unitsPer) || 1 }],
         steal,
       );
-      // A move is never silent — it changes which rate answers that variant.
-      if (res?.moved?.length) {
+      // A move is never silent — it changes which rate answers that variant,
+      // AND it can strand the group it came from below two members.
+      if (res?.source_understaffed?.length) {
+        const names = res.source_understaffed.map((s) => `"${s.name}" (${s.member_count} left)`).join(', ');
+        notify?.(`Moved the variant here — but this left ${names} below two members. Its rate now prices almost nothing.`, true);
+      } else if (res?.moved?.length) {
         notify?.(`Moved ${res.moved.length} variant(s) out of another cost group.`);
       } else if (res?.missing?.length) {
         notify?.('That variant has no catalog row yet — run detection first.', true);

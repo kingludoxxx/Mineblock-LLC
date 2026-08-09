@@ -154,7 +154,10 @@ const BOGO_RE = /buy\s*(\d{1,3})\s*\D{0,8}?\s*get\s*(\d{1,3})\s*free\s*\(\s*(\d{
 const DIGITAL_RE = /digital\s+download/i;
 const SERVICE_TITLE_RE = /^(default title|this order)$/i;
 const SERVICE_PRODUCT_RE = /expedited shipping|porch pirate protection/i;
-const LEADING_INT_RE = /^(\d{1,4})\s*([A-Za-z]+)?/;
+// "3 Pack", "3-Pack", "3x Pack" — the separator between the count and the
+// word it counts is cosmetic, and treating a hyphen as "no word followed"
+// dropped every hyphenated pack title into the unproven tier.
+const LEADING_INT_RE = /^(\d{1,4})\s*[-–—x×]?\s*([A-Za-z]+)?/;
 const WORD_NUMBERS = {
   single: 1, one: 1, two: 2, three: 3, four: 4, five: 5,
   six: 6, seven: 7, eight: 8, nine: 9, ten: 10,
@@ -318,16 +321,26 @@ export function singular(word) {
   return w;
 }
 
-// The noun a counting variant title ends on: "3 Testers" → tester. Blank when
-// the title is not a counting one, or ends on a generic packaging word that
-// says nothing about the good.
+// The noun a counting variant title names: "3 Testers" → tester.
+//
+// WALKS BACK PAST PACKAGING WORDS. Stopping at the last token and blanking on
+// a generic one ("pack", "box", "units") made C4 blind in exactly the case it
+// exists for: "1 Kit Box" and "3 Tester Units" both ended on a generic word,
+// both returned '', the check saw fewer than two distinct nouns and PASSED —
+// so a kit and a tester merged at 'high' confidence, one click away from
+// sharing a cost. The good is named by the last token that is NOT packaging,
+// so that is the token to compare.
 export function nounOf(variantTitle, rule) {
   if (rule && NON_COUNTING_RULES.has(rule)) return '';
-  const tokens = sanitizeText(variantTitle, MAX_TITLE).match(/[A-Za-z]+/g);
+  const tokens = sanitizeFull(variantTitle).match(/[A-Za-z]+/g);
   if (!tokens || !tokens.length) return '';
-  const n = singular(tokens[tokens.length - 1]);
-  if (!n || GENERIC_NOUNS.has(n)) return '';
-  return n;
+  for (let i = tokens.length - 1; i >= 0; i -= 1) {
+    const n = singular(tokens[i]);
+    // Number words are quantities, not goods ("Three Bottles" → bottle).
+    if (!n || GENERIC_NOUNS.has(n) || WORD_NUMBERS[n] !== undefined) continue;
+    return n;
+  }
+  return '';
 }
 
 // product_type is a NEGATIVE signal only: channel plumbing words are not
@@ -426,10 +439,32 @@ function checkGoodsType(members) {
 // ladder can look fine — but a kit and a tester are different goods.
 function checkTrailingNoun(members) {
   const nouns = new Set(members.map((m) => nounOf(m.variant_title, m.units_per_rule)).filter(Boolean));
-  if (nouns.size < 2) {
-    return { code: 'trailing_noun', ok: true, detail: nouns.size === 1 ? `all members name a ${[...nouns][0]}` : 'no countable noun to contradict' };
+  if (nouns.size >= 2) {
+    return { code: 'trailing_noun', ok: false, detail: `members name different things: ${[...nouns].sort().join(' / ')}` };
   }
-  return { code: 'trailing_noun', ok: false, detail: `members name different things: ${[...nouns].sort().join(' / ')}` };
+  if (nouns.size === 1) {
+    return { code: 'trailing_noun', ok: true, detail: `all members name a ${[...nouns][0]}` };
+  }
+  // NOBODY NAMED A GOOD. Every title is packaging words only ("3-Pack Box",
+  // "2 Units"). Passing outright here is what let a blank-vs-blank pair merge
+  // unchallenged, so the packaging LANGUAGE is compared instead: variants of
+  // one good describe their packaging the same way, and titles that reach for
+  // different words ("Pack" vs "Box") are not evidence of sameness.
+  //
+  // This is deliberately not a blanket refusal — "3-Pack Box" and "6-Pack Box"
+  // are the same good at two tiers and must still merge.
+  const shapes = new Set(members.map((m) => {
+    const toks = sanitizeFull(m.variant_title).toLowerCase().match(/[a-z]+/g) || [];
+    return toks.map(singular).filter((t) => GENERIC_NOUNS.has(t)).join(' ');
+  }));
+  if (shapes.size <= 1) {
+    return { code: 'trailing_noun', ok: true, detail: 'no member names a good; packaging wording is identical' };
+  }
+  return {
+    code: 'trailing_noun',
+    ok: false,
+    detail: `no member names a good, and packaging wording differs: ${[...shapes].map((s) => s || '(none)').sort().join(' / ')}`,
+  };
 }
 
 // ── Union-find (deterministic: the lowest root id always wins) ─────────────
@@ -956,6 +991,7 @@ export async function acceptProposal(proposalId, { name = '', note = '', members
     bound: out.bound,
     moved: out.moved,
     missing: out.missing,
+    source_understaffed: out.source_understaffed,
   };
 }
 
