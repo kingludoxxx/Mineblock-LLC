@@ -46,8 +46,22 @@ import { StatusPill } from './FunnelsPage';
 import PageNode from '../../components/funnels/PageNode';
 import { PALETTE, DEVICE_WIDTHS } from '../../components/funnels/pageTypes';
 import FunnelSettingsModal from '../../components/funnels/settings/FunnelSettingsModal';
+import SplitGroupNode from '../../components/funnels/split/SplitGroupNode';
+import SplitSetupModal from '../../components/funnels/split/SplitSetupModal';
+import SplitResultsModal from '../../components/funnels/split/SplitResultsModal';
+import {
+  fetchFunnelSplitTests, fetchSplitMetrics, fetchLifetimeResults,
+  armLetter, fmtInt, fmtPct,
+} from '../../components/funnels/split/splitApi';
 
-const nodeTypes = { page: PageNode };
+const nodeTypes = { page: PageNode, splitGroup: SplitGroupNode };
+
+// Canvas-only node id for a split group. It is NEVER persisted: the funnel's
+// flow_layout is validated server-side against this funnel's PAGE ids, so a
+// split id in the payload would 400 the autosave and take the whole layout
+// with it. buildPayload/snapshot both filter on this prefix.
+const SPLIT_NODE_PREFIX = 'split:';
+const isSplitNode = (n) => String(n?.id || '').startsWith(SPLIT_NODE_PREFIX);
 
 const randSuffix = () => Math.random().toString(16).slice(2, 6);
 
@@ -94,6 +108,11 @@ function CanvasInner() {
   const [renaming, setRenaming] = useState(false);
   const [nameDraft, setNameDraft] = useState('');
   const [creating, setCreating] = useState(false);
+  // ---- Split tests (A/B groups on this funnel) ----
+  const [splits, setSplits] = useState([]);
+  const [splitTiles, setSplitTiles] = useState({}); // testId -> { armKey: {visitors, ctr, cvr} }
+  const [splitSetupId, setSplitSetupId] = useState(null);
+  const [splitResultsId, setSplitResultsId] = useState(null);
 
   const [nodes, setNodes, onNodesChange] = useNodesState([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState([]);
@@ -149,19 +168,137 @@ function CanvasInner() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id]);
 
+  // ---- Split tests + their canvas tiles -----------------------------------
+  // The tiles PREFER the analytics overlay (windowed, with a CTR) and fall
+  // back to the split ledger's own lifetime figures. The fallback deliberately
+  // leaves CTR blank rather than substituting a different rate: the ledger
+  // records exposures and credited conversions, it has never seen a click, and
+  // a CVR wearing a CTR label is worse than an empty tile.
+  const loadSplits = useCallback(async () => {
+    let tests = [];
+    try {
+      tests = await fetchFunnelSplitTests(id);
+    } catch {
+      // Splits are additive to the canvas. If the endpoint is unreachable the
+      // canvas must still render every page — so this swallows and stops.
+      setSplits([]);
+      return;
+    }
+    setSplits(tests);
+    const entries = await Promise.all(
+      tests.map(async (t) => {
+        const overlay = await fetchSplitMetrics(t.id);
+        if (overlay.available) {
+          return [t.id, Object.fromEntries((overlay.data.arms || []).map((a) => [a.arm_key, {
+            visitors: a.visitors === undefined ? undefined : fmtInt(a.visitors),
+            ctr: a.submit_rate === undefined ? undefined : fmtPct(a.submit_rate, { digits: 1 }),
+            cvr: a.conv_rate === undefined ? undefined : fmtPct(a.conv_rate, { digits: 1 }),
+          }]))];
+        }
+        try {
+          const life = await fetchLifetimeResults(t.id);
+          return [t.id, Object.fromEntries((life?.arms || []).map((a) => {
+            const exp = Number(a.exposures) || 0;
+            const conv = Number(a.conversions) || 0;
+            return [a.arm_key, {
+              visitors: fmtInt(exp),
+              ctr: undefined, // the ledger has no click event — see above
+              cvr: exp > 0 ? fmtPct((conv / exp) * 100, { digits: 1 }) : undefined,
+            }];
+          }))];
+        } catch {
+          return [t.id, {}];
+        }
+      })
+    );
+    setSplitTiles(Object.fromEntries(entries));
+  }, [id]);
+
+  useEffect(() => { loadSplits(); }, [loadSplits]);
+
   // Keep deviceSize live on every node (cosmetic width toggle).
   useEffect(() => {
     setNodes((nds) => nds.map((n) => ({ ...n, data: { ...n.data, deviceSize } })));
   }, [deviceSize, setNodes]);
 
+  // ---- Compose the A/B group nodes ----------------------------------------
+  // A page that is a live arm is HIDDEN rather than removed: React Flow keeps
+  // hidden nodes in getNodes(), so their saved positions still round-trip
+  // through the layout autosave and their edges are preserved untouched. The
+  // group node itself is anchored on the entry arm's page position, so it
+  // lands where the operator already put that page.
+  useEffect(() => {
+    const pageById = new Map(pages.map((p) => [p.id, p]));
+    setNodes((nds) => {
+      const posById = new Map(nds.filter((n) => !isSplitNode(n)).map((n) => [n.id, n.position]));
+      const armPageIds = new Set();
+      const splitNodes = [];
+
+      for (const t of splits) {
+        if (t.archived) continue;
+        const live = (t.arms || []).filter((a) => !a.archived);
+        if (!live.length) continue;
+        const anchorArm = live.find((a) => a.is_entry) || live[0];
+        for (const a of live) if (a.page_id) armPageIds.add(a.page_id);
+        const tiles = splitTiles[t.id] || {};
+        // Anchor on the entry arm's page. A test whose arms have no page yet
+        // has nothing to anchor on, so it falls back to a staircase keyed by
+        // its index — two page-less splits must not land on the same pixel and
+        // hide each other.
+        const anchorPos = (anchorArm.page_id && posById.get(anchorArm.page_id))
+          || { x: 80 + splitNodes.length * 60, y: 80 + splitNodes.length * 60 };
+        splitNodes.push({
+          id: `${SPLIT_NODE_PREFIX}${t.id}`,
+          type: 'splitGroup',
+          position: anchorPos,
+          // Never selectable as a delete target: Backspace on the canvas must
+          // not appear to "delete" a split (it would only remove the node from
+          // the view while the test kept running).
+          deletable: false,
+          data: {
+            testId: t.id,
+            handle: t.handle,
+            arms: live.map((a, i) => {
+              const p = a.page_id ? pageById.get(a.page_id) : null;
+              const m = tiles[a.arm_key] || {};
+              return {
+                id: a.id,
+                letter: armLetter(i),
+                is_entry: Boolean(a.is_entry),
+                title: p?.title,
+                slug: p?.slug,
+                visitors: m.visitors,
+                ctr: m.ctr,
+                cvr: m.cvr,
+              };
+            }),
+            onResults: () => setSplitResultsId(t.id),
+            onSetup: () => setSplitSetupId(t.id),
+            onWeights: () => setSplitSetupId(t.id),
+          },
+        });
+      }
+
+      const pageNodes = nds
+        .filter((n) => !isSplitNode(n))
+        .map((n) => (armPageIds.has(n.id) === Boolean(n.hidden) ? n : { ...n, hidden: armPageIds.has(n.id) }));
+      return [...pageNodes, ...splitNodes];
+    });
+  }, [splits, splitTiles, pages, setNodes]);
+
   // ---- Persist flow (debounced) ----
   const buildPayload = useCallback(() => {
-    const ns = rf.getNodes().map((n) => ({
-      id: n.id,
-      x: Math.round(n.position.x),
-      y: Math.round(n.position.y),
-    }));
-    const es = rf.getEdges().map(toAppEdge);
+    // Split group nodes are canvas-only — see SPLIT_NODE_PREFIX. Hidden arm
+    // page nodes ARE included: getNodes() returns them and their positions
+    // must survive, otherwise unhiding an arm would drop it at the origin.
+    const ns = rf.getNodes()
+      .filter((n) => !isSplitNode(n))
+      .map((n) => ({
+        id: n.id,
+        x: Math.round(n.position.x),
+        y: Math.round(n.position.y),
+      }));
+    const es = rf.getEdges().filter((e) => !isSplitNode({ id: e.source }) && !isSplitNode({ id: e.target })).map(toAppEdge);
     return { nodes: ns, edges: es };
   }, [rf]);
 
@@ -188,8 +325,8 @@ function CanvasInner() {
   // ---- Undo / redo (snapshots of positions + edges) ----
   const snapshot = useCallback(
     () => ({
-      nodes: rf.getNodes().map((n) => ({ id: n.id, x: n.position.x, y: n.position.y })),
-      edges: rf.getEdges().map(toAppEdge),
+      nodes: rf.getNodes().filter((n) => !isSplitNode(n)).map((n) => ({ id: n.id, x: n.position.x, y: n.position.y })),
+      edges: rf.getEdges().filter((e) => !isSplitNode({ id: e.source }) && !isSplitNode({ id: e.target })).map(toAppEdge),
     }),
     [rf]
   );
@@ -386,7 +523,11 @@ function CanvasInner() {
     onDelete: deletePage,
   };
   useEffect(() => {
-    setNodes((nds) => nds.map((n) => ({ ...n, data: { ...n.data, ...actionsRef.current } })));
+    // Page actions belong to page nodes only — a split group node carries its
+    // OWN handlers (onSetup/onResults) and must not have them shadowed.
+    setNodes((nds) =>
+      nds.map((n) => (isSplitNode(n) ? n : { ...n, data: { ...n.data, ...actionsRef.current } }))
+    );
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [editPage, previewPage, duplicatePage, deletePage, setNodes, funnel?.slug]);
 
@@ -744,6 +885,20 @@ function CanvasInner() {
         funnel={funnel}
         initialSection="payments"
         onFunnelUpdated={(f) => { if (f) setFunnel((prev) => ({ ...prev, ...f })); }}
+      />
+
+      <SplitSetupModal
+        open={Boolean(splitSetupId)}
+        onClose={() => setSplitSetupId(null)}
+        funnel={funnel}
+        testId={splitSetupId}
+        onTestChanged={loadSplits}
+      />
+
+      <SplitResultsModal
+        open={Boolean(splitResultsId)}
+        onClose={() => setSplitResultsId(null)}
+        test={splits.find((t) => t.id === splitResultsId) || null}
       />
     </div>
   );
