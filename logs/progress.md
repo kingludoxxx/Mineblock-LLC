@@ -2508,3 +2508,64 @@ a sum of the visible rows (which are ranked and may be truncated), and says so
 underneath (DECISION MADE).
 STATUS: COMPLETE
 ---
+
+---
+TIMESTAMP: 2026-08-09 23:40
+TASK: ANALYTICS LANE 3 — adversarial-review fix cycle
+BUILT: Reworked the lane against Lane 1's SHIPPED shapes (metrics@3e42a8e) and
+Lane 2's (attribution@14ce8f9), read out of their services rather than the work
+order's prose. Readers: rowMoney/moneyMetricOf (breakdowns fold net_sales, not
+gross_sales — cards now caption which); breakdownOf reads the scalar
+total/total_metric/basis_metric/rows_total and REFUSES a money total when the
+declared metric is a count; warningsOf normalises {source, reason} objects (the
+string-only reader was silently discarding every warning); sessionsUnknownOf
+reads meta.sessions_unknown, then an lb_touches/sessions warning, then the
+documented sessions-null-beside-real-orders fallback; marketingOf carries
+revenue_basis_label, currency/mixed_currency, attribution_ttl_risk and counts
+the two unattributed states separately; bandOf keeps in_window tri-state;
+seriesCol is type-guarded. Cards: a fifth state (WITHHELD) distinct from EMPTY,
+and `failed` never renders an empty state anywhere; Donut/HBar take the wire
+total + rows_total and never claim "All N" without it; non-positive donut rows
+fold into the tail instead of being dropped. KpiRow: DeltaChip branches on the
+unrounded pct (Math.round(-0.4) === -0 rendered a green "↗ 0%" for a metric that
+fell) and returning-rate requires BOTH counts finite. Funnel table: threads
+state, hides columns no row carries and NAMES them, guards the '(none)' bucket.
+Hook: heartbeat now targets Lane 1's new GET /band at 15s, splices the block
+(preserving in_window), never stacks, and tags the marketing payload with its
+window. Window seed is the REPORT-ZONE day via Intl; the server's window echo is
+adopted once in the RESPONSE CALLBACK. Fixtures are no longer authored:
+captureSeed.mjs runs Lane 1's own engine harness, calls runDashboard/runBand/
+getMarketing against real Postgres and writes seed.generated.json.
+TESTED: formatterContract.mjs grown to 228 assertions incl. a new section H that
+drives the readers against the CAPTURED payloads; run under TZ=UTC,
+Europe/Madrid, Pacific/Auckland, twice each. screenshot.mjs grown to 103
+assertions over 8 render states, incl. a new end-to-end state that mounts the
+REAL route (index.jsx + the hook + axios) with the captured payloads served by
+playwright route interception. vite build ×2 from clean; eslint before/after.
+Screenshots opened and inspected.
+OUTPUT: formatterContract 228 passed / 0 failed in all three zones, both runs;
+UTC vs Auckland output byte-identical apart from the TZ banner. screenshot 103
+passed / 0 failed, both runs; em-dash census pinned at measured=15 ttl=32
+withheld=62 failed=25. vite build exit 0 twice. eslint 156/19 before AND after —
+delta 0/0, zero problems in any Lane 3 file. Capture reports funnels rows_total=8
+total_metric=net_sales, marketing totals {orders:16661, sales:833665,
+rows_total:28}, dashboard_ttl.meta.sessions_unknown=true.
+FOUR REAL DEFECTS FOUND BY RUNNING AGAINST CAPTURED OUTPUT, not by review:
+(1) a fully-withheld series rendered "No data for this date range" — the
+forbidden claim, in a card the earlier suite passed; (2) referencing
+onServerWindow before its const (TDZ) would have crashed the real page, and
+nothing in the suite mounted index.jsx until the new end-to-end state; (3) a
+measured-zero refund rendered "−$0.00"; (4) "1 orders".
+DECISIONS: (a) the reader branch for the reference key `kpis.sessions_known` was
+REMOVED, not kept — neither lane emits it, and a tolerance that can never be
+exercised hides the day the real signal changes (DECISION MADE). (b) Lane 1's
+`upsell_take_pct` (legs ÷ upsell views) returns 104125 on the real fixture; the
+card prints it AND marks it "over 100%, so the view denominator is incomplete;
+shown as reported, not corrected" — not hidden, not clamped (DECISION MADE,
+flagged to the coordinator). (c) the funnel table COLLAPSES the 14 columns Lane
+1's 3-metric funnel fold does not carry and names them underneath, rather than
+drawing 14 columns of em dashes that would claim we measured and refuse to say
+(DECISION MADE). (d) the window echo is adopted in the fetch callback, not an
+effect, to satisfy react-hooks/set-state-in-effect (DECISION MADE).
+STATUS: COMPLETE
+---

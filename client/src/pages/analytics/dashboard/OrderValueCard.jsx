@@ -27,13 +27,27 @@
 // that second thing, and gets the dash plus the reason.
 import { BreakdownListCard } from './cardKit.jsx';
 import {
-  EM_DASH, fmtInt, fmtMoney, fmtPctPlain, hasKey, present,
+  EM_DASH, fmtDeduction, fmtInt, fmtMoney, fmtPctPlain, hasKey, present,
 } from './dashFormat.js';
 
 /** A number the server sent, or null. Never a default. */
 const val = (src, k) => (src && present(src[k]) ? src[k] : null);
 
-export default function OrderValueCard({ kpis, upsellLines, loading, testid = 'an-card-order-value' }) {
+/**
+ * WHERE THE ABANDON AND ORDER COUNTS ACTUALLY LIVE.
+ *
+ * Lane 1 folds `orders` and `abandoned` onto `kpis.upsell_lines` (they come out
+ * of the same upsell-metric pass), NOT onto the top-level KPI block. Reading
+ * only the top level found nothing and rendered nothing — which, because the
+ * line is gated on key presence, silently deleted the whole "N abandoned"
+ * footnote instead of dashing it. Both locations are read, upsell_lines first.
+ */
+const fromEither = (a, b, k) => (hasKey(a, k) ? val(a, k) : hasKey(b, k) ? val(b, k) : null);
+const hasEither = (a, b, k) => hasKey(a, k) || hasKey(b, k);
+
+export default function OrderValueCard({
+  kpis, upsellLines, state, reason, testid = 'an-card-order-value',
+}) {
   const up = upsellLines || null;
 
   // AOV, both bases. `aov_post` is the upsell-inclusive figure the KPI strip
@@ -43,15 +57,18 @@ export default function OrderValueCard({ kpis, upsellLines, loading, testid = 'a
   const upsellRevenue = val(up, 'upsell_revenue') ?? val(kpis, 'upsell_revenue');
   const upsellRefunds = val(up, 'upsell_refunds');
   const takeRate = val(up, 'take_rate') ?? val(kpis, 'upsell_take_pct');
-  const orders = val(kpis, 'orders');
-  const abandoned = val(kpis, 'abandoned');
-  const abandonedRate = val(kpis, 'abandoned_rate');
+  const orders = fromEither(up, kpis, 'orders');
+  const abandoned = fromEither(up, kpis, 'abandoned');
+  const abandonedRate = fromEither(up, kpis, 'abandoned_rate');
 
   // ABSENT = not reported by this build. Only rendered when the key exists on
-  // one of the two payloads we were given.
-  const hasItemsSold = hasKey(kpis, 'items_sold');
-  const itemsSold = hasItemsSold ? val(kpis, 'items_sold') : null;
-  const hasAbandoned = hasKey(kpis, 'abandoned');
+  // one of the two payloads we were given. `items_sold` is not in Lane 1's
+  // dashboard fold at all today, so this line correctly renders NOTHING rather
+  // than an em dash — "we did not measure this" and "this build does not report
+  // it" are different sentences and only one of them is true.
+  const hasItemsSold = hasEither(up, kpis, 'items_sold');
+  const itemsSold = hasItemsSold ? fromEither(up, kpis, 'items_sold') : null;
+  const hasAbandoned = hasEither(up, kpis, 'abandoned');
 
   const rows = [
     {
@@ -76,7 +93,7 @@ export default function OrderValueCard({ kpis, upsellLines, loading, testid = 'a
       hint: 'Refunded upsell money. It never enters the session refund ledger, so it is deducted from the upsell line itself — once, not twice and not never.',
       kind: 'negative',
       value: upsellRefunds,
-      fmt: (v) => `−${fmtMoney(v)}`,
+      fmt: fmtDeduction,
     }] : []),
     {
       label: 'Orders',
@@ -87,6 +104,23 @@ export default function OrderValueCard({ kpis, upsellLines, loading, testid = 'a
     },
   ];
 
+  /**
+   * A TAKE RATE IS A PROPORTION, AND A PROPORTION OVER 100% IS A BROKEN
+   * DENOMINATOR — say so instead of printing it straight.
+   *
+   * Caught by capturing real output: Lane 1 computes `upsell_take_pct` as
+   * legs ÷ upsell VIEWS, and against a fixture with settled upsell legs but
+   * few recorded view touches it returned 104125. Printing "104125.0% take
+   * rate" is not a small formatting wart — it is a number that cannot be true,
+   * rendered with the same confidence as the money beside it, and it makes an
+   * operator distrust the figures that ARE right.
+   *
+   * The value is NOT hidden and NOT clamped: hiding it buries a real signal
+   * that the view counter is under-recording, and clamping to 100% would
+   * invent a plausible figure out of an implausible one — the exact move this
+   * whole workspace refuses. It is printed, and it is marked.
+   */
+  const takeRateImplausible = present(takeRate) && Number(takeRate) > 100;
   const takeRateLine = present(takeRate)
     ? `${fmtPctPlain(takeRate, 1)} take rate${
       present(upsellRefunds) && Number(upsellRefunds) > 0
@@ -103,8 +137,19 @@ export default function OrderValueCard({ kpis, upsellLines, loading, testid = 'a
         blend subtracted server-side, never a second query over a different order set.
       </p>
       {takeRateLine && (
-        <p className="text-[10.5px] text-text-muted tabular-nums" data-testid={`${testid}-take-rate`}>
+        <p
+          className={`text-[10.5px] tabular-nums ${takeRateImplausible ? 'text-warning' : 'text-text-muted'}`}
+          data-testid={`${testid}-take-rate`}
+          title={takeRateImplausible
+            ? 'A take rate is upsell legs ÷ upsell views. Above 100% the denominator is incomplete — more legs settled than views were recorded — so this figure is not a proportion. It is shown as reported, not corrected.'
+            : 'Upsell legs ÷ upsell views.'}
+        >
           {takeRateLine}
+          {takeRateImplausible && (
+            <span data-testid={`${testid}-take-rate-implausible`}>
+              {' — over 100%, so the view denominator is incomplete; shown as reported, not corrected.'}
+            </span>
+          )}
         </p>
       )}
       <p className="text-[10.5px] text-text-faint">
@@ -129,7 +174,8 @@ export default function OrderValueCard({ kpis, upsellLines, loading, testid = 'a
     <BreakdownListCard
       title="Order value & upsells"
       rows={rows}
-      loading={loading}
+      state={state}
+      reason={reason}
       testid={testid}
       footer={footer}
     />

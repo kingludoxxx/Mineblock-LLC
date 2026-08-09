@@ -10,7 +10,7 @@
 // quoting a number can send the link and land on the same figures. The picker's
 // day strings are passed through UNCHANGED — they are reporting-zone calendar
 // days and the server interprets them in REPORT_TZ.
-import { useCallback, useState } from 'react';
+import { useCallback, useRef, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import DashboardView from './DashboardView.jsx';
 import useDashboardData from './useDashboardData.js';
@@ -25,7 +25,41 @@ export default function AnalyticsDashboardPage() {
   const [funnelId, setFunnelId] = useState(params.get('funnel') || '');
   const [collapsed, setCollapsed] = useState(false);
 
-  const { data, marketing, loadState, error, refresh } = useDashboardData({ start, end, funnelId });
+  /**
+   * ADOPT THE SERVER'S WINDOW ECHO — ONCE, and only if the operator has not
+   * touched the picker.
+   *
+   * The seed above is computed from a hardcoded REPORT_TZ guess; the server
+   * cuts its days on the real one and echoes what it actually used
+   * (`meta.window`). Where the two disagree — a zone change, a DST edge, a
+   * clamped range — the page would otherwise keep printing the dates it ASKED
+   * for above figures computed for different ones, which is the worst kind of
+   * quiet wrong: every number is right and the label above them is not.
+   *
+   * ⚠️ THIS RUNS IN THE RESPONSE CALLBACK, NOT IN AN EFFECT. Adopting from an
+   * effect body is a synchronous setState during commit — cascading renders,
+   * and exactly what react-hooks/set-state-in-effect refuses. As a callback it
+   * is what it actually is: an event that carried new information.
+   *
+   * ONCE, because after that the picker is the operator's instrument and a
+   * server echo overriding a deliberate selection would fight them. The ref is
+   * set even when nothing changes, so a later response cannot re-arm it.
+   */
+  const adopted = useRef(false);
+  const onServerWindow = useCallback((echo) => {
+    if (adopted.current) return;
+    adopted.current = true;
+    if (echo.start === start && echo.end === end) return;
+    setStart(echo.start);
+    setEnd(echo.end);
+    const q = { start: echo.start, end: echo.end };
+    if (funnelId) q.funnel = funnelId;
+    setParams(q, { replace: true });
+  }, [start, end, funnelId, setParams]);
+
+  const {
+    data, marketing, marketingError, loadState, error, refresh,
+  } = useDashboardData({ start, end, funnelId, onServerWindow });
 
   const syncParams = useCallback((next) => {
     const q = { start: next.start, end: next.end };
@@ -61,6 +95,7 @@ export default function AnalyticsDashboardPage() {
     <DashboardView
       data={data}
       marketing={marketing}
+      marketingError={marketingError}
       loadState={loadState}
       error={error}
       start={start}

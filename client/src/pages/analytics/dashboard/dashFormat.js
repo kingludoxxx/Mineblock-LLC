@@ -91,6 +91,27 @@ export const fmtX = (v, dp = 2) => {
   return n === null ? EM_DASH : `${n.toFixed(dp)}x`;
 };
 
+/**
+ * A DEDUCTION line: "−$3,365.00", but "$0.00" for a measured zero.
+ *
+ * Blindly prefixing the minus rendered "−$0.00" on a window with no refunds —
+ * a negative zero, which reads as a rounding artefact and makes an operator
+ * wonder what was subtracted. Zero refunded is zero, with no sign on it. A
+ * withheld value still dashes.
+ */
+export const fmtDeduction = (v) => {
+  const n = finite(v);
+  if (n === null) return EM_DASH;
+  return n === 0 ? fmtMoney(0) : `−${fmtMoney(Math.abs(n))}`;
+};
+
+/** "1 order" / "2 orders" — a count and its noun, agreeing. */
+export const plural = (n, one, many) => {
+  const v = finite(n);
+  if (v === null) return `${EM_DASH} ${many}`;
+  return `${fmtInt(v)} ${Math.abs(v) === 1 ? one : many}`;
+};
+
 /** Money with no cents — table totals and axis labels. */
 export const fmtMoney0 = (v) => {
   const n = finite(v);
@@ -215,20 +236,41 @@ export const tzLabel = (zone) => {
 /* ── window helpers ──────────────────────────────────────────────────────── */
 
 /**
- * The default window's day keys, in the BROWSER'S OWN CALENDAR DAY.
+ * THE INITIAL WINDOW GUESS, in the REPORTING ZONE — and it is only a guess.
  *
- * Deliberately NOT ../format.js#todayIso, which is `toISOString().slice(0,10)`
- * — that is the UTC day, and the reporting zone is Europe/Madrid (UTC+1/+2).
- * Between Madrid midnight and Madrid 01:00/02:00 the UTC day is still
- * YESTERDAY, so a "Today" default seeded from it would open the page on the
- * wrong day for the operator, every night, silently.
+ * Three different "today"s are in play and they are not the same day:
+ *   · the UTC day     — what ../format.js#todayIso returns
+ *                       (`toISOString().slice(0,10)`)
+ *   · the browser day — wherever the operator's laptop happens to be
+ *   · the REPORT day  — Europe/Madrid, which is what every figure is cut on
  *
- * The local calendar day is the closest thing this component can compute
- * without the payload (which is what names the zone), and it is the same
- * vocabulary components/ui/DateRangePicker already uses for its presets — so
- * the seed and the picker can never disagree. Day strings are then passed to
- * the server AS-IS and interpreted there in REPORT_TZ.
+ * Madrid is UTC+1/+2, so between Madrid midnight and 01:00/02:00 the UTC day is
+ * still YESTERDAY. Seeding "Today" from it opens the page on the wrong day,
+ * every night, silently — and seeding from the browser day does the same thing
+ * for anyone travelling.
+ *
+ * `Intl.DateTimeFormat('en-CA', {timeZone})` yields `YYYY-MM-DD` directly, so
+ * the seed is the reporting zone's calendar day with no arithmetic.
+ *
+ * ⚠️ THIS CONSTANT IS NOT THE ZONE LABEL. `tzLabel` above stays SERVER-NAMED —
+ * it renders `window.timezone`, whatever the server says that is. This one only
+ * has to be right enough to open the page before any payload exists; the moment
+ * the first response lands, the page ADOPTS the server's own window echo (see
+ * ./index.jsx). If the two ever disagree, the server wins, visibly, on the
+ * provenance line.
  */
+export const REPORT_TZ_GUESS = 'Europe/Madrid';
+
+const zoneDayFmt = (() => {
+  try {
+    return new Intl.DateTimeFormat('en-CA', {
+      timeZone: REPORT_TZ_GUESS, year: 'numeric', month: '2-digit', day: '2-digit',
+    });
+  } catch {
+    return null; // an engine without the zone data — fall back below
+  }
+})();
+
 const localDayIso = (d) => {
   const y = d.getFullYear();
   const m = String(d.getMonth() + 1).padStart(2, '0');
@@ -236,14 +278,24 @@ const localDayIso = (d) => {
   return `${y}-${m}-${day}`;
 };
 
+/** The reporting zone's calendar day for an instant, browser day as fallback. */
+export const reportDayIso = (d = new Date()) => {
+  if (!zoneDayFmt) return localDayIso(d);
+  const s = zoneDayFmt.format(d);
+  return DAY_RE.test(s) ? s : localDayIso(d);
+};
+
 export function todayIso() {
-  return localDayIso(new Date());
+  return reportDayIso(new Date());
 }
 
+/**
+ * `n` days before today IN THE REPORTING ZONE. The subtraction is done on the
+ * INSTANT and re-formatted in the zone, so a DST change inside the window
+ * cannot shift the day key by one (adding 24h × n to a wall clock can).
+ */
 export function daysAgoIso(n) {
-  const d = new Date();
-  d.setDate(d.getDate() - n);
-  return localDayIso(d);
+  return reportDayIso(new Date(Date.now() - n * 86_400_000));
 }
 
 /** "Aug 1 – Aug 9, 2026", or just the day when the window is one day long. */

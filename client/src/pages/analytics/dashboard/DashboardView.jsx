@@ -4,24 +4,33 @@
 // PURE ON PURPOSE. This component fetches nothing: it takes the two payloads
 // (Lane 1's composite, Lane 2's marketing rows) and renders every surface off
 // them. That is what lets ./__checks__/renderHarness.jsx mount the real page
-// against seeded data — including the withheld-everything payload — and screenshot
-// it, without a server, a login, or a mocked axios.
+// against CAPTURED payloads — including the withheld-everything one — and
+// screenshot it, without a server, a login, or a mocked axios.
 //
 // LAYOUT, in reading order:
-//   header · warnings · live band · KPI strip
+//   header · error · warnings · live band · KPI strip
 //   hero row (2/3 sales over time + 1/3 sales breakdown)
 //   FUNNEL PERFORMANCE (full width — the table this page exists for)
 //   masonry: order value & upsells · sales by funnel · marketing · UTM source ·
-//            conversion over time · sales by country · the two NOT-COLLECTED cards
+//            conversion over time · sessions over time · sales by country ·
+//            the two NOT-COLLECTED cards
 //
 // The masonry is CSS columns (columns-1 lg:columns-2 xl:columns-3), not grid:
 // grid would stretch every card in a row to the tallest one and leave ragged
 // holes between cards of different heights.
+//
+// ── TWO INDEPENDENT LOAD STATES, and they must not be merged ────────────────
+// The composite and the attribution call fail separately. A dead attribution
+// endpoint must not blank the page, and — the part that matters — the marketing
+// card must not print "No attributed sales in this date range" because a
+// request never came back. Every card takes its own `state`, and only a
+// SUCCEEDED request may reach an empty state.
 import { useMemo } from 'react';
 import { AlertTriangle, Radio } from 'lucide-react';
 import {
-  bucketKeyOf, breakdownOf, hasKey, kpisOf, marketingOf, present, seriesOf,
-  sessionsUnknownOf, warningsOf, windowOf,
+  MONEY_METRIC_LABELS, bandOf, breakdownOf, bucketKeyOf, hasKey, kpisOf,
+  marketingOf, present, rowMoney, seriesCol, seriesOf, sessionsUnknownOf,
+  warningsOf, windowOf,
 } from '../metricsApi.js';
 import {
   BreakdownListCard, DonutCard, HBarCard, LineCard, NotCollectedCard,
@@ -31,30 +40,37 @@ import FunnelPerformanceTable from './FunnelPerformanceTable.jsx';
 import KpiRow from './KpiRow.jsx';
 import OrderValueCard from './OrderValueCard.jsx';
 import {
-  EM_DASH, fmtCountShort, fmtInt, fmtMoney, fmtMoneyShort, fmtPctPlain,
-  countryLabel, prettyRange, spanDays,
+  EM_DASH, countryLabel, fmtCountShort, fmtDeduction, fmtInt, fmtMoney,
+  fmtMoneyShort, fmtPctPlain, plural, prettyRange,
 } from './dashFormat.js';
 
-/** A breakdown row's money field, under either of the two spellings. */
-const rowSales = (r) => (present(r.gross_sales) ? r.gross_sales : r.sales);
-/** A breakdown row's display name, under any of the spellings a lane may use. */
+/** A breakdown row's display name, under any spelling a lane may use. */
 const rowLabel = (r) => r.label ?? r.name ?? r.key ?? r.id ?? null;
 
 /**
- * A bucket with no campaign/source on the click is a REAL bucket and has to be
- * labelled as what it is. Printing "—" for it would make it look like a
- * rendering failure; dropping it would move its money off the card and quietly
- * shrink the total the footer prints.
+ * LANE 1 BREAKDOWNS ONLY — never Lane 2's rows.
+ *
+ * Lane 1's breakdown rows are keyed on the raw dimension value, so a bucket
+ * with nothing on the click arrives as '(none)' and has to be named. Printing
+ * "—" for it would make a real bucket look like a rendering failure; dropping
+ * it would move its money off the card and quietly shrink the total.
+ *
+ * ⚠️ Lane 2's rows are EXEMPT. Its contract says render `label` and filter on
+ * `key`, because it has already disambiguated them server-side — a real
+ * campaign literally named "direct / none" comes through as
+ * "direct / none (campaign)". Re-deriving a label here would merge that row
+ * with the unattributed bucket on screen while the server kept them apart.
  */
 const honestKeyLabel = (r, blankLabel) => {
   const l = rowLabel(r);
   const s = l === null || l === undefined ? '' : String(l).trim();
-  return s === '' || s === '(none)' || s === 'null' ? blankLabel : s;
+  return s === '' || s === '(none)' || s === 'none' || s === 'null' ? blankLabel : s;
 };
 
 export default function DashboardView({
   data,
   marketing,
+  marketingError,
   loadState,
   error,
   start,
@@ -69,33 +85,42 @@ export default function DashboardView({
   onOpenLive,
   onDrillMetric,
 }) {
-  const loading = loadState === 'loading' && !data;
-  const tileState = loading ? 'loading' : (loadState === 'failed' && !data ? 'failed' : undefined);
+  // The composite's state, threaded into every card that reads it. `failed`
+  // only when there is nothing on screen: a failed REFRESH over a good payload
+  // keeps the figures and says so in the banner instead.
+  const cardState = loadState === 'loading' && !data ? 'loading'
+    : loadState === 'failed' && !data ? 'failed'
+      : 'ready';
+  const loading = cardState === 'loading';
 
   const win = windowOf(data);
   const warnings = warningsOf(data);
   const { cur: kpis, prev: prevKpis, upsell } = kpisOf(data);
   const sessionsUnknown = sessionsUnknownOf(data);
+  const band = bandOf(data);
 
   const series = useMemo(() => seriesOf(data, 'series'), [data]);
   const prevSeries = useMemo(() => seriesOf(data, 'prev_series'), [data]);
   const labels = useMemo(() => series.map(bucketKeyOf), [series]);
   const prevLabels = useMemo(() => prevSeries.map(bucketKeyOf), [prevSeries]);
-  /** A metric column out of the server's own series. Nulls stay null (holes). */
-  const col = (rows, key) => rows.map((p) => (p && key in p ? p[key] : null));
-  const spark = (metric) => col(series, metric);
+  const spark = (metric) => seriesCol(series, metric);
 
   const funnels = breakdownOf(data, 'funnels');
   const sources = breakdownOf(data, 'sources');
   const countries = breakdownOf(data, 'countries');
   const mk = marketingOf(marketing);
 
+  // ATTRIBUTION HAS ITS OWN STATE. It is 'failed' when the call rejected —
+  // never 'ready with no rows', which is what would print the empty state.
+  const mkState = loading ? 'loading' : marketingError ? 'failed' : 'ready';
+
   // The scope selector is built from the composite's OWN funnel breakdown, so
-  // this page still makes exactly two requests.
+  // this page still makes exactly two requests. Non-funnel catch-all buckets
+  // are not selectable — there is nothing to scope to.
   const funnelOptions = useMemo(
     () => funnels.rows
-      .map((r) => ({ value: String(r.id ?? r.key ?? ''), label: String(rowLabel(r) ?? r.id ?? '') }))
-      .filter((o) => o.value),
+      .map((r) => ({ value: String(r.key ?? r.id ?? ''), label: String(rowLabel(r) ?? '') }))
+      .filter((o) => o.value && o.value !== '(none)' && o.value !== 'none'),
     [funnels.rows],
   );
   const scopeLabel = funnelId
@@ -108,13 +133,10 @@ export default function DashboardView({
     ? (funnels.rows_total !== null ? funnels.rows_total : funnels.rows.length)
     : null;
 
-  const days = spanDays(win.start || start, win.end || end);
+  const days = win.days;
   const comparisonLabel = win.prev_start && win.prev_end
     ? `vs ${prettyRange(win.prev_start, win.prev_end)}`
     : 'vs previous period';
-
-  const band = data && data.band && typeof data.band === 'object' ? data.band : null;
-  const today = band && band.today && typeof band.today === 'object' ? band.today : null;
 
   /**
    * A card headline, or NOTHING while the first fetch is in flight.
@@ -129,13 +151,45 @@ export default function DashboardView({
     return present(v) ? fn(v) : EM_DASH;
   };
 
-  /* THE CAPTURED-BASE DISCLAIMER HAS TO BE TRUE. It is printed only when the
-     lane actually declared a basis label; a breakdown without one gets no
-     claim rather than a guess. */
-  const basisSub = (b, prefix) => {
-    const parts = [prefix, b.basis_label].filter(Boolean);
+  /**
+   * WHICH MONEY, AND WHICH FOLD — two different claims, both printed.
+   *
+   * The metric label says whether refunds are already off (Net sales vs Gross
+   * sales); the basis label says whether upsell money is inside the fold at all
+   * ("captured base only — upsell money has no UTM"). Lane 1's breakdowns are
+   * folded on `net_sales`, so a card captioned only "Sales" would be
+   * understating by exactly the refund total with nothing on screen saying so.
+   * Each clause is omitted when the server did not declare it — an interpolated
+   * `undefined` is a worse caption than no caption.
+   */
+  const moneySub = (b, prefix) => {
+    const metric = b.metric ? MONEY_METRIC_LABELS[b.metric] : '';
+    const parts = [prefix, metric, b.basis_label].filter(Boolean);
     return parts.length ? parts.join(' · ') : undefined;
   };
+
+  /**
+   * Lane 2's own disclosures, as ONE per-card notice above the bars.
+   *
+   * THE TWO UNATTRIBUTED FACTS ARE NAMED SEPARATELY. 'none' means nothing was
+   * measured for those orders at all; 'untagged' means the visit WAS seen and
+   * the dimension simply was not tagged. They look identical on a bar chart and
+   * they have opposite fixes — one is a tracking problem, the other is an ad
+   * setup problem — so collapsing them into "no campaign" destroys the only
+   * information that says which.
+   */
+  const marketingNotice = [
+    mk.mixedCurrency
+      ? 'This window mixes currencies. The money column is a raw sum across more than one of them and is not directly comparable — the $ in front of it is the shape of the number, not its unit.'
+      : '',
+    mk.ttlRisk
+      ? 'The click ledger does not reach back far enough to stitch this whole window, so the unattributed bucket is inflated with traffic whose campaign has expired. This is a gap in the record, not a collapse in attribution.'
+      : '',
+    mk.unattributed.none && mk.unattributed.untagged
+      ? 'Two different unattributed buckets are on this card: “nothing measured” (no visit on record for the order) and “visit seen, not tagged” (the click was recorded, the campaign was not). They are not the same problem.'
+      : '',
+    ...mk.warnings.map((w) => w.text),
+  ].filter(Boolean).join(' ') || undefined;
 
   return (
     <div className="p-6 space-y-4 max-w-[1800px]" data-testid="an-dashboard-page">
@@ -174,13 +228,36 @@ export default function DashboardView({
         </div>
       ) : null}
 
+      {/* THE ATTRIBUTION FAILURE, SAID OUT LOUD AT PAGE LEVEL. The card below
+          also shows it, but a single dead card in a masonry is easy to miss and
+          its absence changes what the rest of the page appears to say. */}
+      {marketingError && !loading ? (
+        <div
+          className="rounded-lg border border-warning/30 bg-warning/5 px-3 py-2.5 flex items-start gap-2.5 text-xs text-warning/90"
+          role="status"
+          data-testid="an-dash-marketing-error"
+        >
+          <AlertTriangle className="w-4 h-4 shrink-0 mt-px" />
+          <span>
+            <span className="font-medium">Marketing attribution did not load.</span>{' '}
+            {String(marketingError)}{' '}
+            Sales figures on this page are unaffected — none of them are attributed.
+          </span>
+        </div>
+      ) : null}
+
       {warnings.length > 0 && (
         <div
           className="rounded-lg border border-warning/30 bg-warning/5 px-3 py-2.5 text-[11px] text-warning/90 space-y-0.5"
           role="status"
           data-testid="an-dash-warnings"
         >
-          {warnings.map((w) => <p key={w}>{w}</p>)}
+          {warnings.map((w, i) => (
+            <p key={`${w.source}-${i}`}>
+              {w.source ? <span className="font-medium">{w.source}: </span> : null}
+              {w.text}
+            </p>
+          ))}
         </div>
       )}
 
@@ -200,11 +277,27 @@ export default function DashboardView({
                 live now
               </span>
               <BandStat label="Unique today" value={present(band.unique_today) ? fmtInt(band.unique_today) : EM_DASH} />
-              <BandStat label="Orders today" value={today && present(today.orders) ? fmtInt(today.orders) : EM_DASH} />
-              <BandStat label="Revenue today" value={today && present(today.revenue) ? fmtMoney(today.revenue) : EM_DASH} />
-              <BandStat label="Spend today" value={today && present(today.spend) ? fmtMoney(today.spend) : EM_DASH} />
-              <BandStat label="Net today" value={today && present(today.net) ? fmtMoney(today.net) : EM_DASH} />
-              <span className="text-[10px] text-text-faint ml-auto">refreshes every 15s while this tab is open</span>
+              <BandStat label="Orders today" value={band.today && present(band.today.orders) ? fmtInt(band.today.orders) : EM_DASH} />
+              <BandStat label="Revenue today" value={band.today && present(band.today.revenue) ? fmtMoney(band.today.revenue) : EM_DASH} />
+              <BandStat label="Spend today" value={band.today && present(band.today.spend) ? fmtMoney(band.today.spend) : EM_DASH} />
+              <BandStat label="Net today" value={band.today && present(band.today.net) ? fmtMoney(band.today.net) : EM_DASH} />
+              {/* WHY TODAY'S NUMBERS ARE DASHES WHILE THE PAGE IS FULL OF DATA.
+                  `in_window` is the server saying the selected window does not
+                  contain today; without printing it, an operator reading a
+                  historical range sees a dead band beside a live page and
+                  concludes tracking is down. Tri-state: absent says nothing. */}
+              {band.inWindow === false && (
+                <span className="text-[10.5px] text-warning/90" data-testid="an-dash-band-out-of-window">
+                  Today is outside the selected window — these are live counters, not part of the report below.
+                </span>
+              )}
+              {/* The cadence is stated because the page actually keeps it: the
+                  heartbeat hits Lane 1's dedicated /band route, not the whole
+                  composite. It stops when the tab is hidden — an answer nobody
+                  is looking at is worth nothing and costs a query. */}
+              <span className="text-[10px] text-text-faint ml-auto">
+                today, refreshed every 15s while this tab is open
+              </span>
             </div>
           )}
 
@@ -213,7 +306,7 @@ export default function DashboardView({
             kpis={kpis}
             previous={prevKpis}
             spark={spark}
-            state={tileState}
+            state={cardState === 'ready' ? undefined : cardState}
             onDrill={onDrillMetric}
           />
 
@@ -224,15 +317,16 @@ export default function DashboardView({
                 flush
                 title="Total sales over time"
                 headline={headline(kpis && kpis.gross_sales, fmtMoney)}
-                sub={days ? `${days} day${days === 1 ? '' : 's'} · previous period overlaid by position, not by date` : undefined}
-                points={col(series, 'gross_sales')}
-                prevPoints={col(prevSeries, 'gross_sales')}
+                sub={days ? `${days} day${days === 1 ? '' : 's'} · gross sales · previous period overlaid by position, not by date` : 'Gross sales'}
+                points={seriesCol(series, 'gross_sales')}
+                prevPoints={seriesCol(prevSeries, 'gross_sales')}
                 labels={labels}
                 prevLabels={prevLabels}
                 fmt={fmtMoneyShort}
                 comparisonLabel={comparisonLabel}
                 height={240}
-                loading={loading}
+                state={cardState}
+                reason={error ? String(error) : undefined}
                 testid="an-card-sales-over-time"
               />
             </div>
@@ -240,7 +334,8 @@ export default function DashboardView({
               <BreakdownListCard
                 flush
                 title="Total sales breakdown"
-                loading={loading}
+                state={cardState}
+                reason={error ? String(error) : undefined}
                 testid="an-card-sales-breakdown"
                 /* THE TWO REFUND LEDGERS, both on screen. Base money reverses
                    into the session refund ledger and is the "Refunds" row;
@@ -253,21 +348,21 @@ export default function DashboardView({
                   {
                     label: 'of which upsells',
                     hint: 'Upsell and rebill legs already inside gross sales, net of the legs’ own reversals.',
-                    value: kpis ? kpis.upsell_revenue : null,
+                    value: upsell ? upsell.upsell_revenue : null,
                   },
                   ...(upsell && present(upsell.upsell_refunds) && Number(upsell.upsell_refunds) > 0 ? [{
                     label: '…reversed on the leg',
                     hint: 'Refunded upsell money. It never enters the session refund ledger, so it is deducted from the upsell line itself — once, not twice and not never.',
                     kind: 'negative',
                     value: upsell.upsell_refunds,
-                    fmt: (v) => `−${fmtMoney(v)}`,
+                    fmt: fmtDeduction,
                   }] : []),
                   {
                     label: 'Refunds',
                     hint: 'The session refund ledger — base money only, on the day it went back.',
                     kind: 'negative',
                     value: kpis ? kpis.refunds : null,
-                    fmt: (v) => `−${fmtMoney(v)}`,
+                    fmt: fmtDeduction,
                   },
                   { label: 'Net sales', kind: 'total', value: kpis ? kpis.net_sales : null },
                 ]}
@@ -280,57 +375,89 @@ export default function DashboardView({
             rows={funnels.rows}
             totals={kpis}
             basisLabel={funnels.basis_label}
-            loading={loading}
+            metricLabel={funnels.metric ? `Money column: ${MONEY_METRIC_LABELS[funnels.metric]}` : ''}
+            state={cardState}
+            reason={error ? String(error) : undefined}
             sessionsUnknown={sessionsUnknown}
             activeFunnelId={funnelId}
-            onPickFunnel={(r) => onScopeChange(
-              String(r.id) === String(funnelId || '') ? '' : String(r.id),
-            )}
+            onPickFunnel={(r) => {
+              const id = String(r.key ?? r.id ?? '');
+              if (!id) return;
+              onScopeChange(id === String(funnelId || '') ? '' : id);
+            }}
           />
 
           {/* ── masonry ───────────────────────────────────────────────────── */}
           <div className="columns-1 lg:columns-2 xl:columns-3 gap-3" data-testid="an-card-masonry">
-            <OrderValueCard kpis={kpis} upsellLines={upsell} loading={loading} />
+            <OrderValueCard
+              kpis={kpis}
+              upsellLines={upsell}
+              state={cardState}
+              reason={error ? String(error) : undefined}
+            />
 
             <DonutCard
               title="Sales by funnel"
-              sub={basisSub(funnels, undefined)}
-              loading={loading}
+              sub={moneySub(funnels)}
+              state={cardState}
+              reason={error ? String(error) : undefined}
               testid="an-card-sales-by-funnel"
-              rows={funnels.rows.map((r) => ({ label: rowLabel(r) ?? EM_DASH, value: rowSales(r) }))}
+              rows={funnels.rows.map((r) => ({ label: rowLabel(r) ?? EM_DASH, value: rowMoney(r).value }))}
+              total={funnels.total}
+              totalRows={funnels.rows_total}
+              totalLabel={funnels.metric ? MONEY_METRIC_LABELS[funnels.metric].toLowerCase() : ''}
               centerFmt={fmtMoneyShort}
             />
 
-            {/* Lane 2's own payload — the ONE attribution request. The blank
-                bucket is labelled honestly rather than dropped, and the footer
-                prints the folded period total so the tail the rank cut removed
-                is admitted in words. */}
+            {/* Lane 2's own payload — the ONE attribution request, with ITS OWN
+                state so a dead endpoint cannot print "no attributed sales". */}
             <HBarCard
               title="Sales attributed to marketing"
-              sub={basisSub(mk, 'Last-touch campaign, stitched across the visitor’s sessions')}
-              loading={loading}
+              /* THE REVENUE BASIS IS PRINTED because Lane 2 draws it on a
+                 different one from /roas ('order_window' vs 'click_cohort'),
+                 and its own header warns the two "will not tie out for the same
+                 dates, by definition". A card that omits which basis it is on
+                 invites exactly that comparison. */
+              sub={[
+                moneySub(mk, 'Last-touch campaign, stitched across the visitor’s sessions'),
+                mk.revenueBasisLabel,
+              ].filter(Boolean).join(' · ') || undefined}
+              notice={marketingNotice}
+              state={mkState}
+              reason={marketingError ? String(marketingError) : undefined}
               testid="an-card-marketing"
               total={mk.total}
               totalRows={mk.rows_total}
+              totalLabel={mk.metric ? MONEY_METRIC_LABELS[mk.metric].toLowerCase() : 'total'}
+              /* `label` VERBATIM — Lane 2's contract. The unattributed rows
+                 already say which of the two facts they are; the sub carries
+                 the state so the distinction survives even if a label is
+                 truncated. */
               rows={mk.rows.map((r) => ({
-                label: honestKeyLabel(r, 'No campaign on the click'),
-                value: rowSales(r),
-                sub: present(r.orders) ? `${fmtInt(r.orders)} orders` : '',
+                label: String(r.label ?? r.key ?? EM_DASH),
+                value: rowMoney(r).value,
+                sub: [
+                  present(r.orders) ? plural(r.orders, 'order', 'orders') : '',
+                  r.attribution === 'none' ? 'nothing measured'
+                    : r.attribution === 'untagged' ? 'visit seen, not tagged' : '',
+                ].filter(Boolean).join(' · '),
               }))}
               emptyText="No attributed sales in this date range"
             />
 
             <HBarCard
               title="Sales by UTM source"
-              sub={basisSub(sources, undefined)}
-              loading={loading}
+              sub={moneySub(sources)}
+              state={cardState}
+              reason={error ? String(error) : undefined}
               testid="an-card-sources"
               total={sources.total}
               totalRows={sources.rows_total}
+              totalLabel={sources.metric ? MONEY_METRIC_LABELS[sources.metric].toLowerCase() : 'total'}
               rows={sources.rows.map((r) => ({
                 label: honestKeyLabel(r, 'direct / none'),
-                value: rowSales(r),
-                sub: present(r.orders) ? `${fmtInt(r.orders)} orders` : '',
+                value: rowMoney(r).value,
+                sub: present(r.orders) ? plural(r.orders, 'order', 'orders') : '',
               }))}
             />
 
@@ -338,14 +465,18 @@ export default function DashboardView({
               title="Conversion rate over time"
               headline={headline(kpis && kpis.conv_pct, fmtPctPlain)}
               sub="Orders ÷ sessions per bucket. A bucket with no measured sessions is a hole, not 0%."
-              points={col(series, 'conv_pct')}
-              prevPoints={col(prevSeries, 'conv_pct')}
+              points={seriesCol(series, 'conv_pct')}
+              prevPoints={seriesCol(prevSeries, 'conv_pct')}
               labels={labels}
               prevLabels={prevLabels}
               fmt={(v) => fmtPctPlain(v, 2)}
               comparisonLabel={comparisonLabel}
               height={180}
-              loading={loading}
+              state={cardState}
+              reason={error ? String(error) : undefined}
+              withheldReason={sessionsUnknown
+                ? 'Conversion is orders ÷ sessions, and the session denominator for this window has expired past the 90-day tracking retention. A rate over an unknown denominator is unknown, not 0%.'
+                : undefined}
               testid="an-card-conversion-over-time"
             />
 
@@ -353,14 +484,18 @@ export default function DashboardView({
               title="Sessions over time"
               headline={headline(kpis && kpis.sessions, fmtInt)}
               sub="Distinct visitors per bucket — not hits."
-              points={col(series, 'sessions')}
-              prevPoints={col(prevSeries, 'sessions')}
+              points={seriesCol(series, 'sessions')}
+              prevPoints={seriesCol(prevSeries, 'sessions')}
               labels={labels}
               prevLabels={prevLabels}
               fmt={fmtCountShort}
               comparisonLabel={comparisonLabel}
               height={180}
-              loading={loading}
+              state={cardState}
+              reason={error ? String(error) : undefined}
+              withheldReason={sessionsUnknown
+                ? 'This window reaches past the 90-day tracking retention, so the visitor spine for it no longer exists. The visitors are not zero — the record of them has expired.'
+                : undefined}
               testid="an-card-sessions-over-time"
             />
 
@@ -372,16 +507,17 @@ export default function DashboardView({
             {countries.sent && (
               <DonutCard
                 title="Sales by country"
-                /* No prefix: the server's own basis label already names the
-                   record this money came off, and prefixing it printed the
-                   same sentence twice. */
-                sub={basisSub(countries, undefined)}
-                loading={loading}
+                sub={moneySub(countries, 'Shipping country on the order')}
+                state={cardState}
+                reason={error ? String(error) : undefined}
                 testid="an-card-sales-by-country"
                 rows={countries.rows.map((r) => ({
                   label: countryLabel(r.country ?? r.key ?? r.label),
-                  value: rowSales(r),
+                  value: rowMoney(r).value,
                 }))}
+                total={countries.total}
+                totalRows={countries.rows_total}
+                totalLabel={countries.metric ? MONEY_METRIC_LABELS[countries.metric].toLowerCase() : ''}
                 centerFmt={fmtMoneyShort}
               />
             )}

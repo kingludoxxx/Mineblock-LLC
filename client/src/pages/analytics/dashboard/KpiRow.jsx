@@ -22,23 +22,39 @@
 // unknown denominator is unknown, not 0%.
 import { Sparkline } from './cardKit.jsx';
 import {
-  EM_DASH, deltaPct, fmtInt, fmtMoney, fmtPctPlain, fmtX, present, safeRate,
+  EM_DASH, deltaPct, fmtInt, fmtMoney, fmtPctPlain, fmtX, numOrGap, present,
+  safeRate,
 } from './dashFormat.js';
 
 /* ── delta chip ──────────────────────────────────────────────────────────── */
 
+/**
+ * THE CHIP BRANCHES ON THE REAL PERCENTAGE, NEVER ON THE ROUNDED ONE.
+ *
+ * Rounding first collapses every movement smaller than half a point onto zero,
+ * and `Math.round(-0.4) === -0` — which is `>= 0`, so a metric that FELL
+ * rendered as a green "↗ 0%". The chip was then simultaneously wrong about the
+ * direction, wrong about the colour, and printing a number ("0%") that asserts
+ * no change at all. Direction and colour now come from the unrounded value.
+ *
+ * A magnitude under half a point prints "≈0%" rather than "0%": the sign is
+ * real and is shown, but the movement is noise and must not be stated as an
+ * exact figure. Between 0.5 and 10 points it keeps one decimal, above that it
+ * rounds — a "↗ 143.7%" is false precision on a delta.
+ */
 function DeltaChip({ cur, prev, invert = false }) {
   const pct = deltaPct(cur, prev);
   if (pct === null) return null;
-  const rounded = Math.round(pct);
-  const good = invert ? rounded <= 0 : rounded >= 0;
+  const good = invert ? pct <= 0 : pct >= 0;
+  const mag = Math.abs(pct);
+  const text = mag < 0.5 ? '≈0%' : `${mag.toFixed(mag < 10 ? 1 : 0)}%`;
   return (
     <span
       className={`tabular-nums text-[10px] font-medium ${good ? 'text-success' : 'text-danger'}`}
-      title="vs previous period"
+      title={`vs previous period (${pct >= 0 ? '+' : '−'}${mag.toFixed(2)}%)`}
       data-testid="an-kpi-delta"
     >
-      {`${rounded >= 0 ? '↗' : '↘'} ${Math.abs(rounded)}%`}
+      {`${pct >= 0 ? '↗' : '↘'} ${text}`}
     </span>
   );
 }
@@ -103,13 +119,24 @@ export default function KpiRow({ kpis, previous, spark, state, onDrill }) {
   const kv = (k) => (kpis && present(kpis[k]) ? kpis[k] : null);
   const pv = (k) => (previous && present(previous[k]) ? previous[k] : null);
 
-  // RETURNING RATE — the only client-derived tile, and only from two counts the
-  // server sent. `safeRate` returns null on a missing or zero denominator, so
-  // "no customers yet" renders as an em dash rather than as 0.0% returning.
+  // RETURNING RATE — the only client-derived tile, and the last place in this
+  // workspace where absent-means-zero could hide.
+  //
+  // THE BUG THIS SHAPE EXISTS TO PREVENT: the denominator used to be
+  // `Number(new_customers) + Number(returning_customers)`, and `Number(null)`
+  // is `0`. So a payload with `new_customers: null` (withheld) and
+  // `returning_customers: 572` computed 572 / (0 + 572) = 100% RETURNING —
+  // a fabricated, maximally alarming figure built entirely out of a missing
+  // value. BOTH counts must be real numbers or the rate is null.
+  //
+  // A server-computed `returning_rate` wins outright when Lane 1 ships it.
   const returningRate = (src) => {
     if (!src) return null;
-    if (present(src.returning_rate)) return Number(src.returning_rate);
-    const r = safeRate(src.returning_customers, Number(src.new_customers) + Number(src.returning_customers));
+    if (present(src.returning_rate)) return numOrGap(src.returning_rate);
+    const ret = numOrGap(src.returning_customers);
+    const fresh = numOrGap(src.new_customers);
+    if (ret === null || fresh === null) return null;
+    const r = safeRate(ret, ret + fresh);
     return r === null ? null : r * 100;
   };
 

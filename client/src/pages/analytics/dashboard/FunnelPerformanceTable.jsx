@@ -1,34 +1,55 @@
 // FunnelPerformanceTable — the economics table this dashboard exists for
 // (NEW FILE, LANE 3). Built FIRST, per the work order.
 //
-// Eighteen columns, one row per funnel, and every one of them is either the
-// server's own figure or an em dash. NOTHING on this table is re-aggregated on
-// the client and nothing is derived from a denominator the server withheld.
+// Eighteen columns are DECLARED; every one of them is either the server's own
+// figure, an em dash with a reason, or — when this build's payload carries the
+// metric for nobody — a named absence under the table. NOTHING here is
+// re-aggregated on the client and nothing is derived from a denominator the
+// server withheld.
 //
 //   Funnel · Sessions · Orders · Conv · Gross · Net · AOV · $/session ·
 //   Refunds · COGS · Fees · GP · GP% · Coverage · Spend · Net profit ·
 //   ROAS · CPA
 //
-// THE TWO WITHHOLDINGS, and why each cell dashes rather than prints:
+// ── THE THREE WITHHOLDINGS, and why each cell dashes rather than prints ─────
 //
-//   1. SESSIONS (and every rate over them). Lane 1 §7: when any day of the
-//      window crosses the 90-day lb_touches TTL the visitor spine is gone, so
-//      sessions are withheld and Conv and $/session go with them. Coercing
-//      those to zero produces, verbatim, "Sessions 0 · Orders 412 · Conv
-//      0.00% · Gross $52,000" — an argument to kill a funnel that is earning.
-//      Orders, Gross, Net and Refunds keep printing: those are always measured,
-//      and a genuine 0 there is a fact.
+//   1. SESSIONS (and every rate over them). When the window crosses the 90-day
+//      lb_touches retention the visitor spine is gone, so sessions are withheld
+//      and Conv and $/session go with them. Coercing those to zero produces,
+//      verbatim, "Sessions 0 · Orders 412 · Conv 0.00% · Gross $52,000" — an
+//      argument to kill a funnel that is earning. Orders, Gross, Net and
+//      Refunds keep printing: those are always measured, and a genuine 0 there
+//      is a fact.
 //
 //   2. COSTS AND SPEND. GP, GP%, Net profit, ROAS and CPA are withheld at zero
-//      cost coverage or unknown spend (funnelCosts.js precedent). A gross
-//      profit equal to net sales is the 100%-margin lie, and a ROAS against a
-//      spend nobody recorded is a ratio over nothing. Coverage carries the
-//      missing-leg count so a partial figure is never mistaken for a complete
-//      one.
+//      cost coverage or unknown spend. A gross profit equal to net sales is the
+//      100%-margin lie, and a ROAS against a spend nobody recorded is a ratio
+//      over nothing. Coverage carries the missing-leg count so a partial figure
+//      is never mistaken for a complete one.
+//
+//   3. NOT CARRIED BY THIS PAYLOAD — a different fact from either of the above,
+//      and the one this table used to get wrong. Lane 1's funnel breakdown is
+//      folded on three metrics (net_sales, orders, aov); the other fifteen
+//      columns are not in the response AT ALL. Rendering them as fifteen
+//      columns of em dashes says "we measured fifteen things about your funnels
+//      and refuse to tell you", which is false and unreadable. A column no row
+//      carries is COLLAPSED and named underneath, so the gap is visible, the
+//      table stays legible, and the column reappears by itself the moment the
+//      server starts folding it. `hasKey` is what separates this from case 1/2:
+//      absent ≠ null.
+//
+// A FAILED LOAD IS NOT AN EMPTY WINDOW. "No funnel took money in this window"
+// is a positive claim about the world; it is only ever printed after a request
+// actually succeeded.
 //
 // Row click scopes the whole page to that funnel; clicking the active row zooms
-// back out.
-import { EM_DASH, fmtInt, fmtMoney, fmtPctPlain, fmtX, present } from './dashFormat.js';
+// back out. A bucket that is not a funnel (the '(none)' catch-all) is not
+// clickable — there is nothing to scope to.
+import { AlertTriangle } from 'lucide-react';
+import {
+  EM_DASH, fmtInt, fmtMoney, fmtPctPlain, fmtX, present,
+} from './dashFormat.js';
+import { hasKey } from '../metricsApi.js';
 
 /* ── cells ───────────────────────────────────────────────────────────────── */
 
@@ -65,14 +86,11 @@ function Money({ v, why, cls = 'text-text-primary' }) {
 }
 
 /** Coverage % plus the missing-leg counts that qualify every partial number. */
-function CoverageCell({ row }) {
-  const pct = row.cost_coverage_pct;
-  if (!present(pct)) {
-    return <Dash why="Cost coverage was not reported for this funnel in this window" />;
-  }
-  const n = Number(pct);
+function CoverageCell({ value, missingLegs, why }) {
+  if (!present(value)) return <Dash why={why} />;
+  const n = Number(value);
   const tone = n >= 100 ? 'bg-success' : n > 0 ? 'bg-warning' : 'bg-danger';
-  const missing = present(row.missing_legs) ? Number(row.missing_legs) : null;
+  const missing = present(missingLegs) ? Number(missingLegs) : null;
   return (
     <div className="flex items-center gap-2 justify-end">
       {missing !== null && missing > 0 && (
@@ -91,38 +109,7 @@ function CoverageCell({ row }) {
   );
 }
 
-/* ── row reader ──────────────────────────────────────────────────────────── */
-
-/**
- * ONE place that names the row vocabulary. Lane 1's funnel breakdown rows carry
- * the frozen metric keys; the alternates here are the two spellings the work
- * order itself uses for the same quantity (GP === net_after_cogs, GP% ===
- * margin_pct, $/session === rev_per_session). `??` is used ONLY between two
- * spellings of the SAME field — never between a field and a zero.
- */
-const read = (r) => ({
-  id: r.id ?? r.key ?? r.funnel_id ?? null,
-  name: r.name ?? r.label ?? r.id ?? r.key ?? EM_DASH,
-  sessions: r.sessions,
-  orders: r.orders,
-  conv_pct: r.conv_pct,
-  gross_sales: r.gross_sales,
-  net_sales: r.net_sales,
-  aov: r.aov,
-  rev_per_session: r.rev_per_session ?? r.epc,
-  refunds: r.refunds,
-  cogs: r.cogs,
-  fees: r.fees,
-  gp: r.gp ?? r.net_after_cogs,
-  gp_pct: r.gp_pct ?? r.margin_pct,
-  cost_coverage_pct: r.cost_coverage_pct,
-  missing_legs: r.missing_legs,
-  spend: r.spend,
-  spend_known: r.spend_known,
-  net_profit: r.net_profit,
-  roas: r.roas,
-  cpa: r.cpa,
-});
+/* ── why a cell is blank ─────────────────────────────────────────────────── */
 
 const WHY = {
   sessionsTtl:
@@ -132,15 +119,64 @@ const WHY = {
   conv: 'A conversion rate over an unmeasured session count is unknown, not 0%.',
   eps: 'Revenue per session needs a session count. It is unknown, not $0.00.',
   aov: 'AOV needs orders. With no orders there is no average — not $0.00.',
+  money: 'Not reported for this funnel in this window.',
   cogs: 'No cost coverage — COGS is unknown for this window.',
   fees: 'Fees were not reported for this window.',
   gp: 'Withheld — cost coverage is incomplete. Gross profit equal to net sales would be a 100%-margin claim.',
   gpPct: 'Withheld — margin is unknown, not 100%.',
+  coverage: 'Cost coverage was not reported for this funnel in this window.',
   spend: 'No spend recorded — bind a campaign or add manual spend.',
   netProfit: 'Withheld — net profit needs full costs AND known spend.',
   roas: 'Withheld — a return on a spend nobody recorded is a ratio over nothing.',
   cpa: 'Withheld — cost per acquisition needs known spend.',
 };
+
+/* ── the declared column set ─────────────────────────────────────────────── */
+
+/**
+ * ONE place that names the row vocabulary. `alt` is the SECOND SPELLING OF THE
+ * SAME QUANTITY — never a different quantity, and never a fallback to zero.
+ * (GP === net_after_cogs, GP% === margin_pct, $/session === rev_per_session ===
+ * epc.) Presence is tested against the RAW row so an absent key and a null one
+ * stay distinguishable.
+ */
+const COLUMNS = [
+  { key: 'sessions', label: 'Sessions', kind: 'int', muted: true, why: WHY.sessions },
+  { key: 'orders', label: 'Orders', kind: 'int', muted: true, why: WHY.money },
+  { key: 'conv_pct', label: 'Conv', kind: 'pct2', why: WHY.conv, title: 'Orders ÷ sessions' },
+  { key: 'gross_sales', label: 'Gross', kind: 'money', why: WHY.money, title: 'Collected money including upsell and rebill legs' },
+  { key: 'net_sales', label: 'Net', kind: 'money', why: WHY.money, title: 'Gross less refunds' },
+  { key: 'aov', label: 'AOV', kind: 'money', muted: true, why: WHY.aov, title: 'Net sales ÷ orders' },
+  { key: 'rev_per_session', alt: 'epc', label: '$/session', kind: 'money', muted: true, why: WHY.eps, title: 'Net sales ÷ sessions' },
+  { key: 'refunds', label: 'Refunds', kind: 'money', muted: true, why: WHY.money },
+  { key: 'cogs', label: 'COGS', kind: 'money', muted: true, why: WHY.cogs },
+  { key: 'fees', label: 'Fees', kind: 'money', muted: true, why: WHY.fees },
+  { key: 'gp', alt: 'net_after_cogs', label: 'GP', kind: 'money', why: WHY.gp, title: 'Net sales − COGS − shipping − fees. Before ad spend.' },
+  { key: 'gp_pct', alt: 'margin_pct', label: 'GP%', kind: 'pct1', why: WHY.gpPct },
+  { key: 'cost_coverage_pct', label: 'Coverage', kind: 'coverage', why: WHY.coverage, title: 'Share of order legs in this window that carry a cost' },
+  { key: 'spend', label: 'Spend', kind: 'money', muted: true, why: WHY.spend },
+  { key: 'net_profit', label: 'Net profit', kind: 'money', why: WHY.netProfit, title: 'GP − spend' },
+  { key: 'roas', label: 'ROAS', kind: 'x', why: WHY.roas, title: 'Gross sales ÷ spend' },
+  { key: 'cpa', label: 'CPA', kind: 'money', muted: true, why: WHY.cpa, title: 'Spend ÷ orders' },
+];
+
+/** Does this row carry the column's metric AT ALL (under either spelling)? */
+const carries = (row, col) => hasKey(row, col.key) || (!!col.alt && hasKey(row, col.alt));
+
+/** The value, under whichever spelling the row used. Null when withheld. */
+const valueOf = (row, col) => {
+  if (!row) return null;
+  if (hasKey(row, col.key) && present(row[col.key])) return row[col.key];
+  if (col.alt && hasKey(row, col.alt) && present(row[col.alt])) return row[col.alt];
+  return null;
+};
+
+/** The catch-all bucket key Lane 1 uses for rows that belong to no funnel. */
+const NON_FUNNEL_KEYS = new Set(['(none)', 'none', '', 'null', 'undefined']);
+const isScopable = (id) => !!id && !NON_FUNNEL_KEYS.has(String(id).trim().toLowerCase());
+
+const rowId = (r) => r.key ?? r.id ?? r.funnel_id ?? null;
+const rowName = (r) => r.name ?? r.label ?? rowId(r) ?? EM_DASH;
 
 /* ── the table ───────────────────────────────────────────────────────────── */
 
@@ -148,18 +184,135 @@ export default function FunnelPerformanceTable({
   rows,
   totals,
   basisLabel,
-  loading,
+  metricLabel,
+  state,
+  reason,
   sessionsUnknown,
   activeFunnelId,
   onPickFunnel,
 }) {
-  const list = (Array.isArray(rows) ? rows.filter(Boolean) : []).map(read);
-  const t = totals ? read(totals) : null;
+  const list = Array.isArray(rows) ? rows.filter(Boolean) : [];
 
-  // A dash in the sessions column has two different reasons and the header note
-  // has to name the right one: the TTL breach is a property of the WINDOW, a
-  // per-funnel null is a property of that row.
-  const sessionWhy = sessionsUnknown ? WHY.sessionsTtl : WHY.sessions;
+  // PRESENCE IS DECIDED BY THE ROWS, not by the totals. The totals block is the
+  // window-wide KPI set and carries far more metrics than the per-funnel fold —
+  // letting it vote would resurrect fifteen columns of dashes that no row can
+  // ever fill.
+  const shown = COLUMNS.filter((c) => list.some((r) => carries(r, c)));
+  const hidden = COLUMNS.filter((c) => !shown.includes(c));
+
+  // A dash in the sessions column has two different reasons and the note has to
+  // name the right one: the TTL breach is a property of the WINDOW, a per-funnel
+  // null is a property of that row.
+  const whyFor = (col) => (col.key === 'sessions' && sessionsUnknown ? WHY.sessionsTtl : col.why);
+
+  const cell = (row, col) => {
+    const v = valueOf(row, col);
+    const why = whyFor(col);
+    const cls = col.muted ? 'text-text-muted' : 'text-text-primary';
+    switch (col.kind) {
+      case 'int':
+        return present(v) ? <span className={cls}>{fmtInt(v)}</span> : <Dash why={why} />;
+      case 'pct2':
+        return present(v) ? <span className="text-text-primary">{fmtPctPlain(v)}</span> : <Dash why={why} />;
+      case 'pct1':
+        return present(v) ? <span className="text-text-primary">{fmtPctPlain(v, 1)}</span> : <Dash why={why} />;
+      case 'x':
+        return present(v) ? <span className="text-text-primary">{fmtX(v)}</span> : <Dash why={why} />;
+      case 'coverage':
+        return <CoverageCell value={v} missingLegs={valueOf(row, { key: 'missing_legs' })} why={why} />;
+      default: {
+        // `spend_known:false` is the server SAYING it does not know, which is a
+        // stronger statement than a null and gets the spend-specific reason.
+        const unknownSpend = col.key === 'spend' && row && row.spend_known === false;
+        return <Money v={unknownSpend ? null : v} why={why} cls={col.muted ? 'text-text-muted' : 'text-text-primary'} />;
+      }
+    }
+  };
+
+  const body = () => {
+    if (state === 'loading' && !list.length) {
+      return <div className="text-xs text-text-muted py-10 text-center">Loading…</div>;
+    }
+    if (state === 'failed' && !list.length) {
+      return (
+        <div
+          className="flex flex-col items-center justify-center gap-1 py-10 text-center"
+          data-testid="an-funnel-performance-failed"
+          role="status"
+        >
+          <AlertTriangle className="w-4 h-4 text-warning" />
+          <p className="text-xs text-warning/90">Couldn&apos;t load funnel performance</p>
+          {reason ? <p className="text-[10.5px] text-text-faint max-w-[420px]">{reason}</p> : null}
+          <p className="text-[10.5px] text-text-faint max-w-[420px]">
+            This is NOT &ldquo;no funnel took money&rdquo; — the request did not come back, so nothing
+            is known about this window either way.
+          </p>
+        </div>
+      );
+    }
+    if (!list.length) {
+      return (
+        <div className="text-xs text-text-muted py-10 text-center" data-testid="an-funnel-performance-empty">
+          No funnel took money in this window.
+        </div>
+      );
+    }
+    return (
+      <table className="w-full text-[11px] border-collapse" data-testid="an-funnel-performance-table">
+        <thead>
+          <tr className="border-b border-border-default">
+            <TH>Funnel</TH>
+            {shown.map((c) => <TH key={c.key} right title={c.title}>{c.label}</TH>)}
+          </tr>
+        </thead>
+        <tbody>
+          {list.map((r, i) => {
+            const id = rowId(r);
+            const scopable = isScopable(id);
+            const active = scopable && String(id) === String(activeFunnelId || '');
+            const name = rowName(r);
+            const isRawId = String(name) === String(id);
+            return (
+              <tr
+                key={id ?? i}
+                onClick={scopable && onPickFunnel ? () => onPickFunnel(r) : undefined}
+                className={`border-b border-border-default/50 last:border-b-0 ${
+                  scopable && onPickFunnel ? 'cursor-pointer hover:bg-bg-elevated/40' : ''
+                } ${active ? 'bg-bg-elevated/60' : ''}`}
+                data-testid={`an-funnel-row-${id ?? i}`}
+              >
+                <TD className="max-w-[240px]">
+                  <span
+                    className="font-medium text-text-primary truncate block"
+                    title={isRawId
+                      ? `Funnel id ${id} — this payload does not carry a display name for it`
+                      : String(name)}
+                  >
+                    {name}
+                  </span>
+                </TD>
+                {shown.map((c) => <TD key={c.key} right>{cell(r, c)}</TD>)}
+              </tr>
+            );
+          })}
+        </tbody>
+        {totals && (
+          /* THE WINDOW TOTAL, NOT A SUM OF THE ROWS. The rows are a ranked
+             breakdown and may be truncated; these are the server's own
+             window-scoped KPIs. Adding the visible rows here would produce a
+             "total" that silently omits the tail. */
+          <tfoot>
+            <tr className="border-t border-border-default bg-bg-elevated/20">
+              <TD><span className="font-semibold text-text-primary">Window total</span></TD>
+              {shown.map((c) => <TD key={c.key} right>{cell(totals, c)}</TD>)}
+            </tr>
+          </tfoot>
+        )}
+      </table>
+    );
+  };
+
+  const settled = state !== 'loading' && state !== 'failed';
 
   return (
     <section
@@ -173,151 +326,38 @@ export default function FunnelPerformanceTable({
             Click a row to scope the whole page to that funnel.
           </p>
         </div>
-        {basisLabel ? (
-          <span className="text-[10.5px] text-text-faint max-w-[420px] text-right">{basisLabel}</span>
+        {(metricLabel || basisLabel) ? (
+          <span className="text-[10.5px] text-text-faint max-w-[460px] text-right" data-testid="an-funnel-performance-basis">
+            {[metricLabel, basisLabel].filter(Boolean).join(' · ')}
+          </span>
         ) : null}
       </div>
 
-      <div className="overflow-x-auto">
-        {loading && !list.length ? (
-          <div className="text-xs text-text-muted py-10 text-center">Loading…</div>
-        ) : !list.length ? (
-          <div className="text-xs text-text-muted py-10 text-center" data-testid="an-funnel-performance-empty">
-            No funnel took money in this window.
-          </div>
-        ) : (
-          <table className="w-full min-w-[1480px] border-collapse" data-testid="an-funnel-performance-table">
-            <thead>
-              <tr className="border-b border-border-default">
-                <TH>Funnel</TH>
-                <TH right>Sessions</TH>
-                <TH right>Orders</TH>
-                <TH right title="Orders ÷ sessions">Conv</TH>
-                <TH right title="Collected money including upsell and rebill legs">Gross</TH>
-                <TH right title="Gross less refunds">Net</TH>
-                <TH right title="Net sales ÷ orders">AOV</TH>
-                <TH right title="Net sales ÷ sessions">$/session</TH>
-                <TH right>Refunds</TH>
-                <TH right>COGS</TH>
-                <TH right>Fees</TH>
-                <TH right title="Net sales − COGS − shipping − fees. Before ad spend.">GP</TH>
-                <TH right>GP%</TH>
-                <TH right title="Share of order legs in this window that carry a cost">Coverage</TH>
-                <TH right>Spend</TH>
-                <TH right title="GP − spend">Net profit</TH>
-                <TH right title="Gross sales ÷ spend">ROAS</TH>
-                <TH right title="Spend ÷ orders">CPA</TH>
-              </tr>
-            </thead>
-            <tbody>
-              {list.map((r, i) => {
-                const active = r.id !== null && String(r.id) === String(activeFunnelId || '');
-                const spendUnknown = r.spend_known === false;
-                return (
-                  <tr
-                    key={r.id ?? i}
-                    onClick={() => onPickFunnel && r.id !== null && onPickFunnel(r)}
-                    className={`border-b border-border-default/50 last:border-b-0 ${
-                      onPickFunnel && r.id !== null ? 'cursor-pointer hover:bg-bg-elevated/40' : ''
-                    } ${active ? 'bg-bg-elevated/60' : ''}`}
-                    data-testid={`an-funnel-row-${r.id ?? i}`}
-                  >
-                    <TD className="max-w-[220px]">
-                      <span className="font-medium text-text-primary truncate block" title={String(r.name)}>
-                        {r.name}
-                      </span>
-                    </TD>
-                    <TD right className="text-text-muted">
-                      {present(r.sessions) ? fmtInt(r.sessions) : <Dash why={sessionWhy} />}
-                    </TD>
-                    <TD right className="text-text-muted">{fmtInt(r.orders)}</TD>
-                    <TD right>
-                      {present(r.conv_pct)
-                        ? <span className="text-text-primary">{fmtPctPlain(r.conv_pct)}</span>
-                        : <Dash why={WHY.conv} />}
-                    </TD>
-                    <TD right><Money v={r.gross_sales} /></TD>
-                    <TD right><Money v={r.net_sales} /></TD>
-                    <TD right><Money v={r.aov} why={WHY.aov} cls="text-text-muted" /></TD>
-                    <TD right><Money v={r.rev_per_session} why={WHY.eps} cls="text-text-muted" /></TD>
-                    <TD right><Money v={r.refunds} cls="text-text-muted" /></TD>
-                    <TD right><Money v={r.cogs} why={WHY.cogs} cls="text-text-muted" /></TD>
-                    <TD right><Money v={r.fees} why={WHY.fees} cls="text-text-muted" /></TD>
-                    <TD right><Money v={r.gp} why={WHY.gp} /></TD>
-                    <TD right>
-                      {present(r.gp_pct)
-                        ? <span className="text-text-primary">{fmtPctPlain(r.gp_pct, 1)}</span>
-                        : <Dash why={WHY.gpPct} />}
-                    </TD>
-                    <TD right><CoverageCell row={r} /></TD>
-                    <TD right>
-                      {spendUnknown ? <Dash why={WHY.spend} /> : <Money v={r.spend} why={WHY.spend} cls="text-text-muted" />}
-                    </TD>
-                    <TD right><Money v={r.net_profit} why={spendUnknown ? WHY.spend : WHY.netProfit} /></TD>
-                    <TD right>
-                      {present(r.roas)
-                        ? <span className="text-text-primary">{fmtX(r.roas)}</span>
-                        : <Dash why={WHY.roas} />}
-                    </TD>
-                    <TD right><Money v={r.cpa} why={WHY.cpa} cls="text-text-muted" /></TD>
-                  </tr>
-                );
-              })}
-            </tbody>
-            {t && (
-              /* THE WINDOW TOTAL, NOT A SUM OF THE ROWS. The rows are a ranked
-                 breakdown and may be truncated; these are the server's own
-                 window-scoped KPIs. Adding the visible rows here would produce
-                 a "total" that silently omits the tail. */
-              <tfoot>
-                <tr className="border-t border-border-default bg-bg-elevated/20">
-                  <TD><span className="font-semibold text-text-primary">Window total</span></TD>
-                  <TD right className="text-text-muted">
-                    {present(t.sessions) ? fmtInt(t.sessions) : <Dash why={sessionWhy} />}
-                  </TD>
-                  <TD right className="text-text-muted">{fmtInt(t.orders)}</TD>
-                  <TD right>
-                    {present(t.conv_pct) ? <span className="text-text-primary">{fmtPctPlain(t.conv_pct)}</span> : <Dash why={WHY.conv} />}
-                  </TD>
-                  <TD right><Money v={t.gross_sales} /></TD>
-                  <TD right><Money v={t.net_sales} /></TD>
-                  <TD right><Money v={t.aov} why={WHY.aov} cls="text-text-muted" /></TD>
-                  <TD right><Money v={t.rev_per_session} why={WHY.eps} cls="text-text-muted" /></TD>
-                  <TD right><Money v={t.refunds} cls="text-text-muted" /></TD>
-                  <TD right><Money v={t.cogs} why={WHY.cogs} cls="text-text-muted" /></TD>
-                  <TD right><Money v={t.fees} why={WHY.fees} cls="text-text-muted" /></TD>
-                  <TD right><Money v={t.gp} why={WHY.gp} /></TD>
-                  <TD right>
-                    {present(t.gp_pct) ? <span className="text-text-primary">{fmtPctPlain(t.gp_pct, 1)}</span> : <Dash why={WHY.gpPct} />}
-                  </TD>
-                  <TD right><CoverageCell row={t} /></TD>
-                  <TD right>
-                    {t.spend_known === false ? <Dash why={WHY.spend} /> : <Money v={t.spend} why={WHY.spend} cls="text-text-muted" />}
-                  </TD>
-                  <TD right><Money v={t.net_profit} why={WHY.netProfit} /></TD>
-                  <TD right>
-                    {present(t.roas) ? <span className="text-text-primary">{fmtX(t.roas)}</span> : <Dash why={WHY.roas} />}
-                  </TD>
-                  <TD right><Money v={t.cpa} why={WHY.cpa} cls="text-text-muted" /></TD>
-                </tr>
-              </tfoot>
-            )}
-          </table>
-        )}
-      </div>
+      <div className="overflow-x-auto">{body()}</div>
 
       {/* WHY THREE COLUMNS ARE DASHES. Without this the table reads as broken
           rather than as honest, and the one field that explains the dashes
           would be on the wire with no reader. */}
-      {sessionsUnknown && !loading && list.length > 0 && (
+      {sessionsUnknown && settled && list.length > 0 && shown.some((c) => c.key === 'sessions') && (
         <p className="text-[10.5px] text-text-faint px-4 py-2 border-t border-border-default" data-testid="an-funnel-sessions-note">
           Sessions, Conv and $/session are “{EM_DASH}” because part of this window reaches past the
           90-day tracking retention — the visitor spine for those days no longer exists. Orders, Gross,
           Net and Refunds are measured.
         </p>
       )}
-      {t && !loading && list.length > 0 && (
-        <p className="text-[10.5px] text-text-faint px-4 pb-2.5">
+
+      {/* A COLUMN NOBODY CARRIES IS NAMED, NOT SILENTLY DROPPED. */}
+      {settled && list.length > 0 && hidden.length > 0 && (
+        <p className="text-[10.5px] text-text-faint px-4 py-2 border-t border-border-default" data-testid="an-funnel-absent-note">
+          Not carried per funnel by this build&apos;s dashboard payload, so the column is not drawn:{' '}
+          <span className="text-text-muted">{hidden.map((c) => c.label).join(' · ')}</span>. This is an
+          absence in the response, not a withheld measurement — the columns return on their own once the
+          breakdown folds them.
+        </p>
+      )}
+
+      {totals && settled && list.length > 0 && (
+        <p className="text-[10.5px] text-text-faint px-4 pb-2.5 pt-2">
           The total row is the server&apos;s window-scoped figure, not a sum of the rows above — the
           breakdown is ranked and may be truncated.
         </p>
