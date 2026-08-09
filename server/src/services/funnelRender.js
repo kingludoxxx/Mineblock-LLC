@@ -985,14 +985,27 @@ function doMount(){if(mounted){return;}mounted=true;
   if(embed.redirect_url){mount.setAttribute('data-whop-checkout-return-url',embed.redirect_url);}
   if(placeholder){placeholder.hidden=true;}
   loadWhopLoader();}
-/* If the buyer corrects the address after the form mounted, the baked-in value
-   is stale - tear the frame down and rebuild it with the new one rather than
-   charging a receipt to the wrong address. */
+/* Rebake policy — PROTECT THE TYPED CARD. Re-creating the iframe erases
+   whatever card number the buyer already typed, so a rebake is allowed in
+   exactly two cases:
+     1. the frame has never been baked with a COMPLETE email+address (the
+        one rebake that normally happens right before card entry);
+     2. the EMAIL changed — the charge identity Whop actually requires in
+        the iframe URL; without it the charge cannot complete.
+   Address edits AFTER a complete bake never rebuild the frame: the buyer's
+   card input survives, the order's address comes from OUR session (synced
+   server-side on every edit), and Whop keeps the earlier-baked address —
+   a slightly stale AVS hint, never a wrong receipt. This is the fix for:
+   'I typed my card, went back to change the city, and the card vanished.' */
 function remount(){var v=emailValue();if(!mounted||!valid(v)||!billingReady()){return;}
-  var k=prefillKey();if(mount.getAttribute('data-fos-prefill-key')===k){return;}
+  var bakedComplete=mount.getAttribute('data-fos-baked-complete')==='1';
+  var bakedEmail=mount.getAttribute('data-fos-baked-email')||'';
+  if(bakedComplete&&bakedEmail===v){return;} /* card-safe: address-only edits never touch the frame */
   mount.removeAttribute('data-whop-checkout-session');
   applyPrefill(billing(),v);
-  mount.setAttribute('data-fos-prefill-key',k);
+  mount.setAttribute('data-fos-prefill-key',prefillKey());
+  mount.setAttribute('data-fos-baked-complete','1');
+  mount.setAttribute('data-fos-baked-email',v);
   setTimeout(function(){mount.setAttribute('data-whop-checkout-session',embed.whop_session_id);activate();},50);}
 ['email','first_name','last_name','address1','address2','city','state','postal','country'].forEach(function(n){
   var el=document.querySelector('[name="'+n+'"]');if(!el){return;}
