@@ -23,8 +23,14 @@ const NEW = await import('../../src/services/funnelRender.js');
 const repoDir = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 const base = execFileSync('git', ['-C', repoDir, 'merge-base', 'HEAD', 'main'], { encoding: 'utf8' }).trim();
 const tmp = mkdtempSync(join(tmpdir(), 'fnl-baseline-'));
-for (const f of ['funnelRender.js', 'trackingRuntime.js']) {
-  writeFileSync(join(tmp, f), execFileSync('git', ['-C', repoDir, 'show', `${base}:server/src/services/${f}`], { encoding: 'utf8' }));
+for (const f of ['funnelRender.js', 'trackingRuntime.js', 'trackingCustomCode.js']) {
+  // trackingCustomCode.js joined the renderer's import graph late — a baseline
+  // predating it simply doesn't need the file, so an absent blob is skipped.
+  try {
+    writeFileSync(join(tmp, f), execFileSync('git', ['-C', repoDir, 'show', `${base}:server/src/services/${f}`], { encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] }));
+  } catch {
+    if (f === 'funnelRender.js' || f === 'trackingRuntime.js') throw new Error(`baseline extract failed for required file ${f}`);
+  }
 }
 const OLD = await import(pathToFileURL(join(tmp, 'funnelRender.js')).href);
 console.log(`baseline = funnelRender.js @ ${base.slice(0, 7)} (merge-base with main)`);
