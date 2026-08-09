@@ -165,8 +165,10 @@ export default function CanvasArea({
               const def = BLOCK_DEFS[b.type];
               const selected = selectedId === b.id;
               const inlineProp = def?.inlineEditProp;
-              // Style-inspector values (props.style) mirrored on the canvas.
-              const blkStyle = styleToCanvas(b.props);
+              // Style-inspector values mirrored on the canvas. At the mobile
+              // device preview this is base ← props.mobile_styles, the same
+              // cascade a max-width media query produces on the public page.
+              const blkStyle = styleToCanvas(b.props, device);
               const hiddenHere = hiddenOnDevice(b.props, device);
               return (
                 <div key={b.id}>
