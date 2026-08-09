@@ -60,7 +60,7 @@ import SplitResultsModal from '../../components/funnels/split/SplitResultsModal'
 import SplitQuickCreateModal from '../../components/funnels/split/SplitQuickCreateModal';
 import {
   fetchFunnelSplitTests, fetchSplitMetrics, fetchLifetimeResults,
-  armLetter, fmtInt, fmtPct, utcDay,
+  armLetter, utcDay,
 } from '../../components/funnels/split/splitApi';
 
 const nodeTypes = { page: PageNode, splitGroup: SplitGroupNode };
@@ -194,13 +194,19 @@ function CanvasInner() {
   }, [id]);
 
   // ---- Split tests + their canvas tiles -----------------------------------
-  // Visitors / Orders / CVR, preferring the analytics overlay (windowed) and
-  // falling back to the split ledger's lifetime figures.
+  // Visitors / CTR % / CVR %, preferring the analytics overlay and falling
+  // back to the split ledger's own lifetime figures.
   //
-  // The third tile is NOT CTR. Neither source can measure one — the ledger has
-  // never seen a click, and the overlay's `submit_rate` is a constant 1 by
-  // construction, which would render as a permanent "100.0%". Orders is a real
-  // number in both sources, so the tile says something true in both modes.
+  // RAW NUMBERS CROSS THIS BOUNDARY, not formatted strings. SplitGroupNode
+  // formats them (splitUiCopy.fmtCount / fmtRate1) because the reference puts
+  // the unit in the LABEL — "12.3" under "CTR %" — and a pre-formatted "12.3%"
+  // here would print the sign twice. `undefined` stays `undefined` all the way
+  // to the tile, where it renders as an em-dash; it must never become 0.
+  //
+  // CTR IS ALWAYS undefined AND THAT IS THE HONEST ANSWER. Neither source can
+  // measure one: the ledger has never recorded a click, and the overlay's
+  // per-arm `submit_rate` is `visitors > 0 ? 1 : null` in funnelAnalytics.js —
+  // a constant that would paint a permanent "100.0" on every arm.
   const loadSplits = useCallback(async () => {
     let tests = [];
     try {
@@ -215,19 +221,21 @@ function CanvasInner() {
     const entries = await Promise.all(
       tests.map(async (t) => {
         // Windowed from the day the test was created (the server would default
-        // to the last 30 days, silently clipping older tests) — the canvas
-        // caption says "since created" and this is what makes that true. UTC
-        // day on purpose: the server truncates in UTC, and the local day of a
-        // 23:50Z creation would start the window a day late.
+        // to the last 30 days, silently clipping older tests). This is what
+        // makes the canvas caption's word "lifetime" literally true: no
+        // exposure can predate the test that minted it, so from=created_at IS
+        // the test's whole life. UTC day on purpose — the server truncates in
+        // UTC, and the local day of a 23:50Z creation would start it a day late.
         const from = t.created_at ? utcDay(t.created_at) : undefined;
         const overlay = await fetchSplitMetrics(t.id, from ? { from } : {});
         if (overlay.available) {
           // normalizeMetrics has already converted `cvr` from a fraction to a
           // percent exactly once — it must NOT be scaled again here.
           return [t.id, Object.fromEntries((overlay.data.arms || []).map((a) => [a.arm_key, {
-            visitors: a.visitors === undefined ? undefined : fmtInt(a.visitors),
-            orders: a.orders === undefined ? undefined : fmtInt(a.orders),
-            cvr: a.cvr === undefined ? undefined : fmtPct(a.cvr, { digits: 1 }),
+            visitors: a.visitors,
+            orders: a.orders,
+            ctr: undefined, // see the CTR note above — unmeasurable, not omitted
+            cvr: a.cvr,
           }]))];
         }
         try {
@@ -236,9 +244,10 @@ function CanvasInner() {
             const exp = Number(a.exposures) || 0;
             const conv = Number(a.conversions) || 0;
             return [a.arm_key, {
-              visitors: fmtInt(exp),
-              orders: fmtInt(conv),
-              cvr: exp > 0 ? fmtPct((conv / exp) * 100, { digits: 1 }) : undefined,
+              visitors: exp,
+              orders: conv,
+              ctr: undefined,
+              cvr: exp > 0 ? (conv / exp) * 100 : undefined,
             }];
           }))];
         } catch {
@@ -381,6 +390,7 @@ function CanvasInner() {
                 page_updated_at: p?.updated_at,
                 visitors: m.visitors,
                 orders: m.orders,
+                ctr: m.ctr,
                 cvr: m.cvr,
               };
             }),

@@ -12,13 +12,21 @@
 // else. That is what makes the numbers in the results modal mean anything.
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { X, Monitor, Shuffle, Pencil, Copy, Plus, AlertTriangle, Loader2, ExternalLink } from 'lucide-react';
+import { X, Monitor, Shuffle, Pencil, Copy, AlertTriangle, Loader2, ExternalLink } from 'lucide-react';
 import api from '../../../services/api';
 import usePageThumbnail from '../usePageThumbnail';
 import {
   fetchSplitTest, patchSplitTest, patchSplitArm, addSplitArm, setSplitEntryArm,
   fetchEligiblePages, armLetter, weightSum, fmtDate, handlePath, num, armLiveUrl,
 } from './splitApi';
+import {
+  pageOptionText, partitionArmPages, ineligibleCountsPhrase, nextSplitLetter,
+} from './splitUiCopy';
+
+// One select skin, shared by the import column and the per-arm page pickers.
+const selectCls = `w-full px-2.5 py-1.5 text-xs bg-bg-elevated border border-border-default rounded-lg
+  text-text-primary focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent
+  transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed`;
 
 const ERROR_COPY = {
   invalid_handle: 'Handle must be lowercase letters, numbers and dashes (max 64).',
@@ -50,7 +58,6 @@ export default function SplitSetupModal({ open, onClose, funnel, testId, onTestC
   // are reconciled from the server response, never from the optimistic value.
   const [handleDraft, setHandleDraft] = useState('');
   const [weightDrafts, setWeightDrafts] = useState({});
-  const [importOpen, setImportOpen] = useState(false);
   // Per-PAGE inline refusals (slug collision etc.) — prose that stays on the
   // card until the next commit, never a toast that vanishes.
   const [pageErrors, setPageErrors] = useState({});
@@ -280,11 +287,31 @@ export default function SplitSetupModal({ open, onClose, funnel, testId, onTestC
       await addSplitArm(testId, { arm_key: nextArmKey(), weight: 0, page_id: pageId });
       await load();
       onTestChanged?.();
-      setImportOpen(false);
     } catch (err) {
       setError(errText(err, 'Failed to add the arm'));
     } finally { setBusy(false); }
   }, [testId, nextArmKey, load, onTestChanged]);
+
+  // "Choose / import page" — re-point an EXISTING arm at a different page.
+  // One PATCH. The arm keeps its key, its weight and its ledger history: every
+  // credit row is keyed by arm_key, so past exposures stay attributed to the
+  // ARM, not to the page that used to be behind it.
+  //
+  // Never offered on the first arm. Arm A is the split's original page — the
+  // thing every other arm is being compared against — and swapping it silently
+  // would change what "the control" means without changing a single number.
+  const setArmPage = useCallback(async (arm, pageId) => {
+    if (!pageId || pageId === arm.page_id) return;
+    setBusy(true); setError(null);
+    try {
+      await patchSplitArm(testId, arm.id, { page_id: pageId });
+      await load();
+      onTestChanged?.();
+    } catch (err) {
+      setError(errText(err, 'Failed to change this arm’s page'));
+      load();
+    } finally { setBusy(false); }
+  }, [testId, load, onTestChanged]);
 
   const duplicateAndAdd = useCallback(async () => {
     const source = liveArms.find((a) => a.is_entry) || liveArms[0];
@@ -312,10 +339,7 @@ export default function SplitSetupModal({ open, onClose, funnel, testId, onTestC
 
   if (!open) return null;
 
-  const ineligible = (eligible.pages || []).filter((p) => !p.eligible);
-  const importable = (eligible.pages || []).filter(
-    (p) => p.eligible && !liveArms.some((a) => a.page_id === p.id)
-  );
+  const { importable, ineligible } = partitionArmPages({ pages: eligible.pages, liveArms });
   const counts = eligible.counts || {};
   const livePath = handlePath(handle);
 
@@ -334,11 +358,25 @@ export default function SplitSetupModal({ open, onClose, funnel, testId, onTestC
             </div>
             <p className="mt-0.5 text-xs text-text-faint">
               {liveArms.length} {liveArms.length === 1 ? 'arm' : 'arms'}
-              {' · '}Created {fmtDate(test?.created_at)}
-              {' · '}Last edited {fmtDate(test?.updated_at)}
             </p>
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex items-start gap-3">
+            {/* PAGE ANALYTICS — the split's own row timestamps, top-right
+                (reference placement). These are the lb_split_tests row's
+                created_at/updated_at: when the TEST was defined and last
+                edited. They are NOT traffic figures — the numbers live in the
+                results modal, and nothing here is windowed. */}
+            <div className="hidden sm:block text-right leading-tight">
+              <div className="text-[10px] font-semibold uppercase tracking-wide text-text-faint">
+                Page Analytics
+              </div>
+              <div className="mt-0.5 text-[11px] text-text-muted whitespace-nowrap">
+                Created {fmtDate(test?.created_at)}
+              </div>
+              <div className="text-[11px] text-text-muted whitespace-nowrap">
+                Last edited {fmtDate(test?.updated_at)}
+              </div>
+            </div>
             {busy && <Loader2 className="w-4 h-4 animate-spin text-text-faint" />}
             <button
               onClick={onClose}
@@ -381,7 +419,9 @@ export default function SplitSetupModal({ open, onClose, funnel, testId, onTestC
                 {/* Handle + domain */}
                 <div className="grid gap-4 sm:grid-cols-2">
                   <div className="space-y-1">
-                    <label htmlFor="split-handle" className="block text-xs font-medium text-text-muted">Split handle</label>
+                    <label htmlFor="split-handle" className="block text-xs font-medium text-text-muted">
+                      Split Name (handle)
+                    </label>
                     <div className="flex items-stretch">
                       <span className="inline-flex items-center px-2.5 rounded-l-lg border border-r-0 border-border-default bg-bg-elevated text-sm text-text-faint font-mono">/</span>
                       <input
@@ -483,14 +523,32 @@ export default function SplitSetupModal({ open, onClose, funnel, testId, onTestC
                       onEdit={() => editArm(arm)}
                       onPagePatch={patchPage}
                       pageError={arm.page_id ? pageErrors[arm.page_id] : null}
+                      // Arm A is the original page — no picker (see setArmPage).
+                      canChoosePage={i > 0}
+                      pageChoices={partitionArmPages({
+                        pages: eligible.pages,
+                        liveArms,
+                        currentPageId: arm.page_id,
+                      })}
+                      onChoosePage={(pageId) => setArmPage(arm, pageId)}
                       disabled={busy}
                     />
                   ))}
 
-                  {/* Add arm card */}
+                  {/* ── "+ Add Split C" column ────────────────────────────
+                      Two ways to mint the next arm: DUPLICATE the entry arm's
+                      page, or IMPORT one that already exists. Both end in the
+                      same single POST /:id/arms.
+
+                      A third arm needs NO server change: the route's only
+                      arm-count rule is a FLOOR (need_at_least_two_arms), the
+                      arm_key column is an open charset with no CHECK and no
+                      enum, and the resolver walks a cumulative sum over N
+                      relative weights. Verified against the route + schema,
+                      not assumed. */}
                   <div className="w-56 shrink-0 rounded-xl border border-dashed border-border-default bg-bg-elevated/30 p-3 flex flex-col gap-2">
                     <div className="text-sm font-medium text-text-primary">
-                      + Add Split {armLetter(liveArms.length)}
+                      + Add Split {nextSplitLetter(liveArms.length)}
                     </div>
                     <button
                       type="button"
@@ -499,65 +557,48 @@ export default function SplitSetupModal({ open, onClose, funnel, testId, onTestC
                       className="flex items-center justify-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-border-default
                         text-xs text-text-muted hover:text-text-primary hover:bg-bg-hover transition-colors cursor-pointer
                         disabled:opacity-40 disabled:cursor-not-allowed"
+                      title="Copies the entry arm's page — its blocks and escape hatches — and arms the copy at weight 0."
                     >
                       <Copy className="w-3.5 h-3.5" /> Duplicate a page
                     </button>
-                    <div className="relative">
-                      <button
-                        type="button"
-                        onClick={() => setImportOpen((v) => !v)}
-                        disabled={busy}
-                        className="w-full flex items-center justify-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-border-default
-                          text-xs text-text-muted hover:text-text-primary hover:bg-bg-hover transition-colors cursor-pointer
-                          disabled:opacity-40 disabled:cursor-not-allowed"
-                      >
-                        <Plus className="w-3.5 h-3.5" /> Import existing page
-                      </button>
-                      {importOpen && (
-                        <div className="absolute z-30 mt-1 left-0 right-0 max-h-56 overflow-y-auto rounded-lg bg-bg-elevated border border-border-default shadow-xl py-1">
-                          {importable.length === 0 && ineligible.length === 0 && (
-                            <div className="px-2.5 py-2 text-[11px] text-text-faint">No other pages on this funnel.</div>
-                          )}
-                          {importable.map((p) => (
-                            <button
-                              key={p.id}
-                              type="button"
-                              onClick={() => addFromPage(p.id)}
-                              className="w-full text-left px-2.5 py-1.5 text-xs text-text-muted hover:text-text-primary hover:bg-bg-hover cursor-pointer"
-                            >
-                              <span className="block truncate">{p.title || 'Untitled'}</span>
-                              <span className="block font-mono text-[10px] text-text-faint truncate">
-                                {p.slug}
-                                {p.status !== 'published' ? " · draft (won't serve until published)" : ''}
-                              </span>
-                            </button>
-                          ))}
-                          {/* Ineligible pages are LISTED, greyed, with the reason. */}
-                          {ineligible.map((p) => (
-                            <div
-                              key={p.id}
-                              className="px-2.5 py-1.5 text-xs opacity-40 cursor-not-allowed"
-                              title={`Can't be an arm: ${p.reason_label}`}
-                            >
-                              <span className="block truncate text-text-muted">{p.title || 'Untitled'}</span>
-                              <span className="block font-mono text-[10px] text-text-faint truncate">
-                                {p.slug} · {p.reason_label}
-                              </span>
-                            </div>
-                          ))}
-                        </div>
-                      )}
+
+                    {/* OR divider */}
+                    <div className="flex items-center gap-2">
+                      <span className="h-px flex-1 bg-border-subtle" />
+                      <span className="text-[10px] font-semibold uppercase tracking-wide text-text-faint">or</span>
+                      <span className="h-px flex-1 bg-border-subtle" />
                     </div>
+
+                    <div className="space-y-1">
+                      <label htmlFor="split-import-page" className="block text-[11px] font-medium text-text-muted">
+                        Import existing page
+                      </label>
+                      <select
+                        id="split-import-page"
+                        value=""
+                        onChange={(e) => { if (e.target.value) addFromPage(e.target.value); }}
+                        disabled={busy}
+                        className={`${selectCls} ${!importable.length ? 'opacity-60' : ''}`}
+                      >
+                        {/* Ineligible pages stay LISTED and disabled, with the
+                            reason — an option that silently vanishes is an
+                            option the operator cannot ask about. */}
+                        <option value="">
+                          {importable.length ? 'Choose a page…' : 'No page to import'}
+                        </option>
+                        {importable.map((p) => (
+                          <option key={p.id} value={p.id}>{pageOptionText(p)}</option>
+                        ))}
+                        {ineligible.map((p) => (
+                          <option key={p.id} value="" disabled>{pageOptionText(p)}</option>
+                        ))}
+                      </select>
+                    </div>
+
                     {ineligible.length > 0 && (
                       <p className="text-[11px] text-text-faint leading-snug">
                         {ineligible.length} of this funnel&apos;s pages can&apos;t be an arm
-                        {' ('}
-                        {[
-                          counts.post_purchase ? `${counts.post_purchase} post-purchase` : null,
-                          counts.funnel_default ? `${counts.funnel_default} funnel default` : null,
-                          counts.in_other_test ? `${counts.in_other_test} in another split` : null,
-                        ].filter(Boolean).join(', ')}
-                        {') '}
+                        {' ('}{ineligibleCountsPhrase(counts)}{') '}
                         — they&apos;re listed greyed out with the reason.
                       </p>
                     )}
@@ -637,7 +678,8 @@ function WeightSlider({ arms, draft, onDraft, onCommit, disabled }) {
 // ── One arm ────────────────────────────────────────────────────────────────
 function ArmCard({
   arm, letter, page, test, funnel, weightDraft, onWeightDraft, onWeightCommit,
-  showWeightInput, onPreview, onEntry, onEdit, onPagePatch, pageError, disabled,
+  showWeightInput, onPreview, onEntry, onEdit, onPagePatch, pageError,
+  canChoosePage, pageChoices, onChoosePage, disabled,
 }) {
   const thumbUrl = usePageThumbnail(
     page?.id && funnel?.id ? { id: page.id, funnel_id: funnel.id, updated_at: page.updated_at } : null
@@ -844,6 +886,34 @@ function ArmCard({
             {arm.page_id ? 'Page not on this funnel' : 'No page yet'}
           </div>
           <div className="text-[11px] text-text-faint font-mono truncate">—</div>
+        </div>
+      )}
+
+      {/* "Choose / import page" — every arm after the first. Rendered whether
+          or not the arm HAS a page: an arm with none is exactly the case this
+          picker exists for. */}
+      {canChoosePage && (
+        <div className="space-y-1">
+          <label htmlFor={`arm-page-${arm.id}`} className="block text-[11px] font-medium text-text-muted">
+            Choose / import page
+          </label>
+          <select
+            id={`arm-page-${arm.id}`}
+            value={arm.page_id || ''}
+            onChange={(e) => onChoosePage?.(e.target.value)}
+            disabled={disabled}
+            className={selectCls}
+          >
+            <option value="">
+              {(pageChoices?.importable || []).length ? 'Choose a page…' : 'No page to choose'}
+            </option>
+            {(pageChoices?.importable || []).map((p) => (
+              <option key={p.id} value={p.id}>{pageOptionText(p)}</option>
+            ))}
+            {(pageChoices?.ineligible || []).map((p) => (
+              <option key={p.id} value="" disabled>{pageOptionText(p)}</option>
+            ))}
+          </select>
         </div>
       )}
 

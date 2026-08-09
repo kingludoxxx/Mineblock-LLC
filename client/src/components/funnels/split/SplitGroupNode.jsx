@@ -13,23 +13,25 @@
 //     would 400 and take the whole canvas layout with it. Removing the handles
 //     makes that unreachable rather than merely unlikely.
 //
-//  2. THE CAPTION SAYS WHAT THE NUMBERS ARE NOT. "since created · not the
-//     verdict" is there because a per-arm number on a canvas card is exactly
-//     the thing an operator reads as a result. The tiles are windowed from the
-//     test's created_at (the canvas fetch passes from=created_at; the ledger
-//     fallback only ever contains post-creation rows, so the caption is true
-//     in both modes) and carry no significance test; the verdict lives in the
-//     results modal.
+//  2. THE CAPTION SAYS WHAT THE NUMBERS ARE NOT. "lifetime · not the verdict"
+//     is there because a per-arm number on a canvas card is exactly the thing
+//     an operator reads as a result. "lifetime" is literal: the canvas fetch
+//     windows from the test's created_at, and no exposure can predate the test
+//     that minted it, so that window IS the test's whole life — not a trailing
+//     30 days. The tiles carry no significance test; the verdict lives in the
+//     results modal, and the caption says so.
 //
-//  The third tile is ORDERS, not CTR. The reference tool shows CTR, but neither
-//  source can produce one: the split ledger has never seen a click, and the
-//  analytics service's `submit_rate` is `visitors > 0 ? 1 : null` by
-//  construction — a constant that would paint "100.0% CTR" on every arm
-//  forever. Orders is a real number both sources agree on, so the tile carries
-//  a measurement instead of an artefact.
+//  CTR % IS A DELIBERATE EM-DASH, NOT A MISSING FEATURE. The reference tool
+//  feeds its CTR from page-level lifetime click counters. This platform has
+//  none per arm: the split ledger has never recorded a click, and the analytics
+//  service's per-arm `submit_rate` is literally `visitors > 0 ? 1 : null`
+//  (funnelAnalytics.js) — a constant that would paint a permanent "100.0" on
+//  every arm forever. The tile therefore renders DASH until a real per-arm
+//  click source exists. A dash is a true statement; 100.0 is not.
 import { memo } from 'react';
 import { BarChart3, Settings, SlidersHorizontal, Shuffle, Eye } from 'lucide-react';
 import { DASH } from './splitApi';
+import { splitNodeTitle, armLettersChip, fmtCount, fmtRate1 } from './splitUiCopy';
 import usePageThumbnail from '../usePageThumbnail';
 
 const ACCENT = '#22c55e';
@@ -74,8 +76,12 @@ function SplitGroupNodeInner({ data, selected }) {
         style={{ background: `${ACCENT}1f`, borderBottom: `1px solid ${ACCENT}33` }}
       >
         <Shuffle className="w-3.5 h-3.5 shrink-0" style={{ color: ACCENT }} />
-        <span className="text-[11px] font-semibold uppercase tracking-wide truncate" style={{ color: ACCENT }}>
-          {handle ? `/${handle}` : 'split'} A/B
+        <span
+          className="text-[11px] font-semibold uppercase tracking-wide truncate"
+          style={{ color: ACCENT }}
+          title={handle ? `This split owns the route /${handle}` : 'This split has no handle yet'}
+        >
+          {splitNodeTitle(handle)}
         </span>
         <span className="ml-auto text-[10px] text-text-faint">{arms.length} arms</span>
       </div>
@@ -88,9 +94,33 @@ function SplitGroupNodeInner({ data, selected }) {
         {arms.map((arm) => <ArmTile key={arm.id} arm={arm} />)}
       </div>
 
-      {/* Caption */}
-      <div className="px-3 pb-2">
-        <span className="text-[10px] font-mono text-text-faint">since created · not the verdict</span>
+      {/* Caption — the honesty marker, verbatim */}
+      <div className="px-3">
+        <span
+          className="text-[10px] font-mono text-text-faint"
+          title="Every figure above covers the test's whole life — every day since it was created. No significance test is applied here; the verdict lives in the results modal."
+        >
+          lifetime · not the verdict
+        </span>
+      </div>
+
+      {/* Bottom chips. Inside the card frame on purpose: the hover toolbar
+          already occupies the strip BELOW the card (-bottom-9), where the
+          reference puts these, and two things there would overlap. */}
+      <div className="flex items-center justify-center gap-1 px-3 pt-1.5 pb-2">
+        <span
+          className="px-1.5 py-0.5 rounded text-[8px] font-mono font-bold uppercase tracking-widest border"
+          style={{ background: `${ACCENT}1f`, color: ACCENT, borderColor: `${ACCENT}4d` }}
+        >
+          Split
+        </span>
+        <span
+          className="px-1 py-0.5 rounded text-[8px] font-mono font-bold uppercase tracking-wide
+            bg-bg-elevated border border-border-default text-text-muted whitespace-nowrap"
+          title={`${arms.length} ${arms.length === 1 ? 'arm' : 'arms'}`}
+        >
+          {armLettersChip(arms)}
+        </span>
       </div>
     </div>
   );
@@ -137,19 +167,35 @@ function ArmTile({ arm }) {
         <div className="text-[10px] text-text-faint font-mono truncate">{arm.slug || DASH}</div>
       </div>
 
-      {/* Footer metrics */}
+      {/* Footer metrics — the label carries the unit, so the VALUE never
+          repeats it (reference formatting: "12.3" under "CTR %"). */}
       <div className="mt-1.5 grid grid-cols-3 border-t border-border-subtle divide-x divide-[rgba(255,255,255,0.06)]">
-        <Tile label="Visitors" value={arm.visitors} />
-        <Tile label="Orders" value={arm.orders} />
-        <Tile label="CVR" value={arm.cvr} />
+        <Tile
+          label="Visitors"
+          value={fmtCount(arm.visitors)}
+          title="Exposures assigned to this arm over the test's lifetime. Bot-inclusive; blank means nothing was recorded, not zero."
+        />
+        <Tile
+          label="CTR %"
+          value={fmtRate1(arm.ctr)}
+          title="No per-arm click is recorded anywhere on this platform — the split ledger has never seen one, and the analytics service's per-arm submit_rate is a constant. This stays blank rather than showing an invented rate."
+        />
+        <Tile
+          label="CVR %"
+          value={fmtRate1(arm.cvr)}
+          // Orders is the numerator and a real measurement in both sources; it
+          // lost its own tile to the reference's three-tile layout, so it is
+          // kept here rather than dropped.
+          title={`Conversions ÷ exposures over the test's lifetime. Orders: ${fmtCount(arm.orders)}. Blank means the source withheld it (too small a sample) or recorded nothing — never zero.`}
+        />
       </div>
     </div>
   );
 }
 
-function Tile({ label, value }) {
+function Tile({ label, value, title }) {
   return (
-    <div className="px-1 py-1 text-center">
+    <div className="px-1 py-1 text-center" title={title}>
       <div className="text-[10px] tabular-nums text-text-primary truncate">{value ?? DASH}</div>
       <div className="text-[8px] uppercase tracking-wide text-text-faint">{label}</div>
     </div>
