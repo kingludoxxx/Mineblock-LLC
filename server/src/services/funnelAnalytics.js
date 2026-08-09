@@ -141,21 +141,55 @@
 //   A negative pre-AOV (refunds exceeding base revenue in-window) is REFUSED
 //   as null with reason 'blend_inconsistent' rather than rendered.
 //
-// ── UPSELLS ────────────────────────────────────────────────────────────────
-//   legs   = COUNT(*) of co_upsell_charges rows at status 'settled'
+// ── UPSELLS — AND THE REFUND TRAP THAT COMES WITH THEM ─────────────────────
+//   legs   = co_upsell_charges rows at status IN ('settled','refunded')
 //   buyers = COUNT(DISTINCT session_id) of the same
 //   legs >= buyers ALWAYS (one buyer can accept several offers).
 //   'declined' rows are decline MARKERS carrying no money (checkoutSettle
 //   writes them explicitly) and are counted separately, never as revenue.
-//   Puure's co_upsell_charges has no `refunded_total` column, so an upsell
-//   reversal is only visible in the parent session's refunds[] — upsell-level
-//   refund attribution is NOT available and is reported as such.
+//
+//   WHY 'refunded' IS COUNTED AS GROSS AND NOT DROPPED — the sharpest edge in
+//   this file. There is NO `refunded_total` column on co_upsell_charges, so
+//   gatewayWebhooks flips the whole leg's status to 'refunded' for ANY refund,
+//   INCLUDING A $5 PARTIAL ONE. Filtering `status = 'settled'` therefore makes
+//   a fully-earned $200 leg VANISH the moment $5 comes back. Worse, on the
+//   STRIPE upsell path nothing is appended to co_sessions.refunds at all, so
+//   the $200 disappears from gross while `refunded` still reads $0 — the money
+//   is not moved, it is deleted, and a closed month silently restates.
+//   Counting the leg at gross and subtracting the ACTUAL refunded amount is
+//   the only arithmetic that survives a partial.
+//
+//   WHERE THE REAL PARTIAL AMOUNT LIVES: the `void` rows in lb_split_credits,
+//   keyed `charge_id = co_upsell_charges.id`. Both gateways write them
+//   (gatewayWebhooks Stripe :309, Whop :536) and the value is the true delta,
+//   capped at the leg's own room. That is the ONLY place a partial upsell
+//   refund amount survives.
+//
+//   ⚠️ AND ITS LIMIT, STATED HONESTLY: voidSessionRefund only writes a void row
+//   for a session that carries a split CREDIT — i.e. a session in a live split
+//   test. For a funnel with NO split test, a Stripe partial upsell refund
+//   leaves its amount NOWHERE in the database. This file does not guess. Such
+//   legs are counted at gross, their count is returned as
+//   `upsell_refunds_unmeasured`, and the response flags net revenue as an
+//   UPPER BOUND. Inventing "probably fully refunded" would be a fabricated
+//   number in a money report; silently ignoring it would be worse.
+//
+//   THE DOUBLE-SUBTRACTION TRAP (gateways are ASYMMETRIC on main):
+//     Stripe upsell refund → flips leg, writes void row, NOTHING in refunds[]
+//     Whop   upsell refund → flips leg, writes void row, AND appends to
+//                            refunds[] (applyRefund is called unconditionally
+//                            at gatewayWebhooks:519, BEFORE the upsell
+//                            discrimination at :531)
+//   So on Whop the same refund appears twice. Base refunds are therefore
+//   summed from refunds[] with any entry whose `id` matches an upsell void
+//   row's `refund_key` EXCLUDED. Refunds are counted exactly once per gateway;
+//   the harness asserts both paths against the same expected total.
 //
 // ── CURRENCY ───────────────────────────────────────────────────────────────
 //   Assumed single-currency. If more than one appears in a window the sums are
 //   still returned but `mixed_currency: true` is set and `currency` is null —
 //   loudly, never silently.
-import { pgQuery } from '../db/pg.js';
+import { analyticsQuery } from './analyticsDb.js';
 import { buildVerdict, varianceFromSums, MIN_RATE_SAMPLE, STAT_METHOD } from './analyticsStats.js';
 
 // THE predicate. Every revenue read in this file interpolates this constant and
@@ -353,12 +387,18 @@ async function readMoney(query, funnelId, w) {
   );
   // Upsell legs, scoped to the SAME money-moved session set as `orders` so the
   // AOV identity holds (same denominator, same window, same predicate).
+  // A 'refunded' leg is a leg that WAS SOLD and later partly/fully reversed —
+  // it belongs in gross, with the reversal subtracted separately. See the
+  // header block: filtering to 'settled' deletes the whole leg over a $5
+  // partial refund.
   const upsells = await query(
     `SELECT s.page_id,
-            COUNT(*) FILTER (WHERE c.status = 'settled')::bigint                 AS upsell_legs,
-            COUNT(DISTINCT c.session_id) FILTER (WHERE c.status = 'settled')::bigint
+            COUNT(*) FILTER (WHERE c.status IN ('settled','refunded'))::bigint   AS upsell_legs,
+            COUNT(DISTINCT c.session_id) FILTER (WHERE c.status IN ('settled','refunded'))::bigint
               AS upsell_buyers,
-            COALESCE(SUM(c.amount) FILTER (WHERE c.status = 'settled'), 0)       AS upsell_revenue,
+            COALESCE(SUM(c.amount) FILTER (WHERE c.status IN ('settled','refunded')), 0)
+              AS upsell_revenue,
+            COUNT(*) FILTER (WHERE c.status = 'refunded')::bigint                AS upsell_refunded_legs,
             COUNT(*) FILTER (WHERE c.status = 'declined')::bigint                AS upsell_declined_legs
      FROM co_upsell_charges c
      JOIN co_sessions s ON s.id = c.session_id
@@ -367,10 +407,68 @@ async function readMoney(query, funnelId, w) {
      GROUP BY s.page_id`,
     [funnelId, w.fromTs, w.toTs]
   );
-  // Refunds dated on the REFUND ENTRY, not on the order. The two regex guards
-  // are not decoration: `(r->>'at')::timestamptz` throws on a malformed entry
-  // and Postgres has no try_cast, so one bad JSONB row would take down the
-  // whole report. A row that fails the guard is skipped and counted.
+  // Does the split ledger exist? A fresh install has no lb_split_credits, and
+  // the refund reads below must not take the whole money report down with them.
+  // to_regclass returns NULL instead of throwing. The result only ever selects
+  // between two FIXED query strings — no value from it reaches SQL.
+  const [reg] = await query(`SELECT to_regclass('public.lb_split_credits') IS NOT NULL AS present`);
+  const hasLedger = Boolean(reg?.present);
+
+  // The true amount of an upsell reversal, deduped across tests.
+  // A session in N split tests gets N void rows for ONE physical refund (one
+  // per group_id), so summing them raw multiplies the refund by N. Collapsing
+  // on (session, charge, refund_key) first and taking MAX makes it one refund
+  // again — MAX rather than MIN because each test's row is capped at its own
+  // credit's room, and the largest is the closest to the real amount.
+  // Windowed on the void row's own created_at: the funnel report is CALENDAR
+  // basis, and a reversal belongs to the day it settled.
+  const upsellRefunds = hasLedger
+    ? await query(
+        `WITH v AS (
+           SELECT session_id, charge_id, refund_key,
+                  MAX(-value) AS amt,
+                  MIN(created_at) AS ts
+           FROM lb_split_credits
+           WHERE kind = 'void'
+           GROUP BY session_id, charge_id, refund_key
+         )
+         SELECT s.page_id,
+                COALESCE(SUM(v.amt), 0) AS upsell_refunded,
+                COUNT(*)::bigint        AS upsell_refund_events
+         FROM v
+         JOIN co_upsell_charges c ON c.id = v.charge_id AND c.session_id = v.session_id
+         JOIN co_sessions s        ON s.id = v.session_id
+         WHERE s.funnel_id = $1 AND ${MONEY_MOVED_SQL}
+           AND v.ts >= $2 AND v.ts < $3
+         GROUP BY s.page_id`,
+        [funnelId, w.fromTs, w.toTs]
+      )
+    : [];
+
+  // Base refunds, dated on the REFUND ENTRY, not on the order.
+  //
+  // ⚠️ MONEY_MOVED_SQL IS LOAD-BEARING HERE, not copy-paste. Without it a
+  // session that NEVER PAID still contributes its refund while contributing no
+  // gross — and main can reach status='refunded' with paid_at NULL, so this is
+  // reachable, not theoretical. It produced net = 100 on a real 500 order.
+  //
+  // ⚠️ THE NOT EXISTS CLAUSE IS THE WHOP DE-DUPLICATION. Whop calls applyRefund
+  // unconditionally BEFORE discriminating upsell from base, so an upsell refund
+  // lands in refunds[] AND in a void row. Counting both subtracts it twice.
+  // Stripe's upsell path writes only the void row. Matching on the gateway
+  // refund id (refunds[].id === void.refund_key — both are the same `ref`)
+  // makes the count exactly one on BOTH gateways.
+  //
+  // The two regex guards are not decoration: `(r->>'at')::timestamptz` throws
+  // on a malformed entry and Postgres has no try_cast, so one bad JSONB row
+  // would take down the whole report. A row that fails is skipped and counted.
+  const dedupeClause = hasLedger
+    ? `AND NOT EXISTS (
+         SELECT 1 FROM lb_split_credits v
+         JOIN co_upsell_charges uc ON uc.id = v.charge_id AND uc.session_id = v.session_id
+         WHERE v.kind = 'void' AND v.session_id = s.id AND v.refund_key = r->>'id'
+       )`
+    : '';
   const refunds = await query(
     `SELECT s.page_id,
             COALESCE(SUM((r->>'amount')::numeric), 0) AS refunded,
@@ -378,10 +476,12 @@ async function readMoney(query, funnelId, w) {
      FROM co_sessions s
      CROSS JOIN LATERAL jsonb_array_elements(s.refunds) r
      WHERE s.funnel_id = $1
+       AND ${MONEY_MOVED_SQL}
        AND r->>'at' ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}'
        AND r->>'amount' ~ '^-?[0-9]+(\\.[0-9]+)?$'
        AND (r->>'at')::timestamptz >= $2
        AND (r->>'at')::timestamptz <  $3
+       ${dedupeClause}
      GROUP BY s.page_id`,
     [funnelId, w.fromTs, w.toTs]
   );
@@ -390,9 +490,25 @@ async function readMoney(query, funnelId, w) {
      FROM co_sessions s
      CROSS JOIN LATERAL jsonb_array_elements(s.refunds) r
      WHERE s.funnel_id = $1
+       AND ${MONEY_MOVED_SQL}
        AND NOT (r->>'at' ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}'
                 AND r->>'amount' ~ '^-?[0-9]+(\\.[0-9]+)?$')`,
     [funnelId]
+  );
+  // Legs we KNOW were reversed but whose amount is nowhere in the database:
+  // status='refunded' with no void row (a non-split funnel on the Stripe path).
+  // Net revenue is an UPPER BOUND while this is non-zero.
+  const [unmeasured] = await query(
+    `SELECT COUNT(*)::bigint AS n
+     FROM co_upsell_charges c
+     JOIN co_sessions s ON s.id = c.session_id
+     WHERE s.funnel_id = $1 AND s.paid_at >= $2 AND s.paid_at < $3
+       AND ${MONEY_MOVED_SQL} AND c.status = 'refunded'
+       ${hasLedger
+         ? `AND NOT EXISTS (SELECT 1 FROM lb_split_credits v
+                            WHERE v.kind = 'void' AND v.charge_id = c.id AND v.session_id = c.session_id)`
+         : ''}`,
+    [funnelId, w.fromTs, w.toTs]
   );
   // Sessions started but never paid, for the funnel card.
   const [processing] = await query(
@@ -414,9 +530,12 @@ async function readMoney(query, funnelId, w) {
   put(submits, '_s');
   put(upsells, '_u');
   put(refunds, '_r');
+  put(upsellRefunds, '_ur');
   return {
     perPage: byPage,
     malformedRefundEntries: int(skipped?.n),
+    upsellRefundsUnmeasured: int(unmeasured?.n),
+    hasLedger,
     processingSessions: int(processing?.n),
     processingAmount: money(processing?.amount),
   };
@@ -441,7 +560,15 @@ export function derivePageMetrics({ page = {}, traffic = null, moneyRow = null }
   const upsellLegs = moneyOk ? int(moneyRow.upsell_legs) : null;
   const upsellBuyers = moneyOk ? int(moneyRow.upsell_buyers) : null;
   const upsellDeclinedLegs = moneyOk ? int(moneyRow.upsell_declined_legs) : null;
-  const refunded = moneyOk ? money(moneyRow.refunded) : null;
+  const upsellRefundedLegs = moneyOk ? int(moneyRow.upsell_refunded_legs) : null;
+
+  // Refunds come from TWO disjoint sources by construction: base reversals from
+  // co_sessions.refunds (with upsell duplicates already excluded in SQL) and
+  // upsell reversals from the void ledger. Disjoint ⇒ they add, never
+  // double-count. `refunded` is the total the operator sees.
+  const baseRefunded = moneyOk ? money(moneyRow.refunded) : null;
+  const upsellRefunded = moneyOk ? money(moneyRow.upsell_refunded) : null;
+  const refunded = moneyOk ? money(num(baseRefunded) + num(upsellRefunded)) : null;
 
   const grossRevenue = moneyOk ? money(num(baseRevenue) + num(upsellRevenue)) : null;
   const netRevenue = moneyOk ? money(num(grossRevenue) - num(refunded)) : null;
@@ -527,8 +654,11 @@ export function derivePageMetrics({ page = {}, traffic = null, moneyRow = null }
     upsell_legs: upsellLegs,
     upsell_buyers: upsellBuyers,
     upsell_declined_legs: upsellDeclinedLegs,
+    upsell_refunded_legs: upsellRefundedLegs,
     gross_revenue: grossRevenue,
     refunded,
+    base_refunded: baseRefunded,
+    upsell_refunded: upsellRefunded,
     net_revenue: netRevenue,
 
     aov_pre_upsell: aovPre,
@@ -559,7 +689,7 @@ export function derivePageMetrics({ page = {}, traffic = null, moneyRow = null }
  * `pages[]` and use { page_id, visitors, ctr, cvr } per node; every other field
  * is additive and safe to ignore.
  */
-export async function getFunnelOverview({ funnelId, from, to }, { query = pgQuery } = {}) {
+export async function getFunnelOverview({ funnelId, from, to }, { query = analyticsQuery } = {}) {
   const w = parseWindow({ from, to });
   if (!w.ok) return { error: w.error };
   const fid = idOf(funnelId, 64);
@@ -649,8 +779,11 @@ export async function getFunnelOverview({ funnelId, from, to }, { query = pgQuer
       upsell_revenue: moneyData ? upsellRevenue : null,
       upsell_legs: moneyData ? rows.reduce((t, r) => t + int(r.upsell_legs), 0) : null,
       upsell_buyers: moneyData ? rows.reduce((t, r) => t + int(r.upsell_buyers), 0) : null,
+      upsell_refunded_legs: moneyData ? rows.reduce((t, r) => t + int(r.upsell_refunded_legs), 0) : null,
       gross_revenue: moneyData ? grossRevenue : null,
       refunded: moneyData ? refunded : null,
+      base_refunded: moneyData ? money(sum('base_refunded')) : null,
+      upsell_refunded: moneyData ? money(sum('upsell_refunded')) : null,
       net_revenue: moneyData ? netRevenue : null,
       aov_pre_upsell: aovPre,
       aov_post_upsell: aovPost,
@@ -669,6 +802,15 @@ export async function getFunnelOverview({ funnelId, from, to }, { query = pgQuer
       traffic_ttl_days: TOUCH_TTL_DAYS,
       traffic_ttl_risk: trafficTtlRisk,
       malformed_refund_entries: moneyData ? moneyData.malformedRefundEntries : null,
+      // Upsell legs known to be reversed whose AMOUNT is nowhere in the DB
+      // (no void row — a non-split funnel on the Stripe path). While this is
+      // non-zero, net revenue is an UPPER BOUND, not a measurement.
+      upsell_refunds_unmeasured: moneyData ? moneyData.upsellRefundsUnmeasured : null,
+      net_revenue_is_upper_bound: Boolean(moneyData && moneyData.upsellRefundsUnmeasured > 0),
+      split_ledger_present: moneyData ? moneyData.hasLedger : null,
+      refund_sources:
+        'base = co_sessions.refunds[] (upsell duplicates excluded); ' +
+        'upsell = lb_split_credits void rows. Disjoint by construction.',
       ctr_note:
         'CTR is a labelled PROXY. Puure emits no click-through event; ' +
         'the value is max(step-through, checkout-submit) = a LOWER BOUND.',
@@ -679,7 +821,7 @@ export async function getFunnelOverview({ funnelId, from, to }, { query = pgQuer
 }
 
 /** One page, full metric set. Same math as the overview row — one code path. */
-export async function getPageMetrics({ funnelId, pageId, from, to }, { query = pgQuery } = {}) {
+export async function getPageMetrics({ funnelId, pageId, from, to }, { query = analyticsQuery } = {}) {
   const pid = idOf(pageId, 64);
   if (!pid) return { error: 'invalid_page_id' };
   const overview = await getFunnelOverview({ funnelId, from, to }, { query });
@@ -737,12 +879,19 @@ async function readArmSessions(query, testId, w) {
   );
 }
 
+// Same 'settled' → ('settled','refunded') correction as the funnel path. This
+// one MOVES A/B WINNERS: a partial refund on one arm's upsell used to delete
+// that arm's entire leg from revenue, and the t-test's sufficient statistics
+// moved with it (readArmMoments below shares the fix).
 async function readArmUpsells(query, testId, w) {
   return query(
     `SELECT e.arm_key,
-            COUNT(*) FILTER (WHERE c.status = 'settled')::bigint AS upsell_legs,
-            COUNT(DISTINCT c.session_id) FILTER (WHERE c.status = 'settled')::bigint AS upsell_buyers,
-            COALESCE(SUM(c.amount) FILTER (WHERE c.status = 'settled'), 0) AS upsell_revenue,
+            COUNT(*) FILTER (WHERE c.status IN ('settled','refunded'))::bigint AS upsell_legs,
+            COUNT(DISTINCT c.session_id) FILTER (WHERE c.status IN ('settled','refunded'))::bigint
+              AS upsell_buyers,
+            COALESCE(SUM(c.amount) FILTER (WHERE c.status IN ('settled','refunded')), 0)
+              AS upsell_revenue,
+            COUNT(*) FILTER (WHERE c.status = 'refunded')::bigint AS upsell_refunded_legs,
             COUNT(*) FILTER (WHERE c.status = 'declined')::bigint AS upsell_declined_legs
      FROM lb_split_credits e
      JOIN co_sessions s ON s.id = e.session_id
@@ -773,19 +922,53 @@ async function readArmUpsells(query, testId, w) {
 // The MONEY_MOVED filter here is not redundant: it keeps this query's session
 // set byte-identical to readArmMoments', so `net_revenue` and the Σx the
 // t-test consumes can never diverge. The harness asserts they are equal.
+// Returns BASE reversals (refunds[], upsell duplicates excluded) and UPSELL
+// reversals (void rows) as two disjoint columns. Same de-duplication story as
+// the funnel path: on Whop one physical upsell refund is in both places.
+// Scoped to this test's group_id, so the cross-test multiplication the funnel
+// path has to collapse cannot arise here.
 async function readArmRefunds(query, testId, w) {
   return query(
-    `SELECT e.arm_key,
-            COALESCE(SUM((r->>'amount')::numeric), 0) AS refunded
-     FROM lb_split_credits e
-     JOIN co_sessions s ON s.id = e.session_id
-     CROSS JOIN LATERAL jsonb_array_elements(s.refunds) r
-     WHERE e.group_id = $1 AND e.kind = 'exposure'
-       AND e.created_at >= $2 AND e.created_at < $3
-       AND ${MONEY_MOVED_SQL}
-       AND r->>'at' ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}'
-       AND r->>'amount' ~ '^-?[0-9]+(\\.[0-9]+)?$'
-     GROUP BY e.arm_key`,
+    `WITH ex AS (
+       SELECT session_id, arm_key
+       FROM lb_split_credits
+       WHERE group_id = $1 AND kind = 'exposure'
+         AND created_at >= $2 AND created_at < $3
+     ),
+     up AS (
+       SELECT ex.arm_key,
+              COALESCE(SUM(-v.value), 0) AS upsell_refunded,
+              COUNT(*)::bigint           AS upsell_refund_events
+       FROM lb_split_credits v
+       JOIN ex ON ex.session_id = v.session_id
+       JOIN co_upsell_charges c ON c.id = v.charge_id AND c.session_id = v.session_id
+       JOIN co_sessions s ON s.id = v.session_id
+       WHERE v.kind = 'void' AND v.group_id = $1 AND ${MONEY_MOVED_SQL}
+       GROUP BY ex.arm_key
+     ),
+     base AS (
+       SELECT ex.arm_key,
+              COALESCE(SUM((r->>'amount')::numeric), 0) AS base_refunded
+       FROM ex
+       JOIN co_sessions s ON s.id = ex.session_id
+       CROSS JOIN LATERAL jsonb_array_elements(s.refunds) r
+       WHERE ${MONEY_MOVED_SQL}
+         AND r->>'at' ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}'
+         AND r->>'amount' ~ '^-?[0-9]+(\\.[0-9]+)?$'
+         AND NOT EXISTS (
+           SELECT 1 FROM lb_split_credits v2
+           JOIN co_upsell_charges uc ON uc.id = v2.charge_id AND uc.session_id = v2.session_id
+           WHERE v2.kind = 'void' AND v2.session_id = s.id AND v2.refund_key = r->>'id'
+         )
+       GROUP BY ex.arm_key
+     )
+     SELECT k.arm_key,
+            COALESCE(base.base_refunded, 0)      AS base_refunded,
+            COALESCE(up.upsell_refunded, 0)      AS upsell_refunded,
+            COALESCE(base.base_refunded, 0) + COALESCE(up.upsell_refunded, 0) AS refunded
+     FROM (SELECT DISTINCT arm_key FROM ex) k
+     LEFT JOIN base ON base.arm_key = k.arm_key
+     LEFT JOIN up   ON up.arm_key   = k.arm_key`,
     [testId, w.fromTs, w.toTs]
   );
 }
@@ -801,15 +984,32 @@ async function readArmRefunds(query, testId, w) {
  * metric with a different denominator.
  */
 async function readArmMoments(query, testId, w) {
+  // x MUST be assembled from exactly the same four terms readArmRefunds and
+  // readArmUpsells use, or the t-test would be run on a different series than
+  // the table displays. The harness asserts Σx === net_revenue per arm, which
+  // is what keeps these two queries honest about each other.
   return query(
     `WITH sess AS (
        SELECT e.arm_key, s.id,
               s.total
               + COALESCE((SELECT SUM(c.amount) FROM co_upsell_charges c
-                          WHERE c.session_id = s.id AND c.status = 'settled'), 0)
+                          WHERE c.session_id = s.id
+                            AND c.status IN ('settled','refunded')), 0)
               - COALESCE((SELECT SUM((r->>'amount')::numeric)
                           FROM jsonb_array_elements(s.refunds) r
-                          WHERE r->>'amount' ~ '^-?[0-9]+(\\.[0-9]+)?$'), 0) AS x
+                          WHERE r->>'amount' ~ '^-?[0-9]+(\\.[0-9]+)?$'
+                            AND NOT EXISTS (
+                              SELECT 1 FROM lb_split_credits v2
+                              JOIN co_upsell_charges uc
+                                ON uc.id = v2.charge_id AND uc.session_id = v2.session_id
+                              WHERE v2.kind = 'void' AND v2.session_id = s.id
+                                AND v2.refund_key = r->>'id'
+                            )), 0)
+              - COALESCE((SELECT SUM(-v.value) FROM lb_split_credits v
+                          JOIN co_upsell_charges c2
+                            ON c2.id = v.charge_id AND c2.session_id = v.session_id
+                          WHERE v.kind = 'void' AND v.group_id = $1
+                            AND v.session_id = s.id), 0) AS x
        FROM lb_split_credits e
        JOIN co_sessions s ON s.id = e.session_id
        WHERE e.group_id = $1 AND e.kind = 'exposure'
@@ -837,7 +1037,7 @@ async function readArmMoments(query, testId, w) {
  */
 export async function getSplitResults(
   { testId, from, to },
-  { query = pgQuery, readLedger = null } = {}
+  { query = analyticsQuery, readLedger = null } = {}
 ) {
   const w = parseWindow({ from, to });
   if (!w.ok) return { error: w.error };
@@ -917,7 +1117,9 @@ export async function getSplitResults(
     const baseRevenue = money(s.base_revenue);
     const upsellRevenue = money(u.upsell_revenue);
     const grossRevenue = money(baseRevenue + upsellRevenue);
-    const refunded = money(r.refunded);
+    const baseRefunded = money(r.base_refunded);
+    const upsellRefunded = money(r.upsell_refunded);
+    const refunded = money(baseRefunded + upsellRefunded);
     const netRevenue = money(grossRevenue - refunded);
 
     let aovPost = null;
@@ -956,11 +1158,14 @@ export async function getSplitResults(
       upsell_legs: int(u.upsell_legs),
       upsell_buyers: int(u.upsell_buyers),
       upsell_declined_legs: int(u.upsell_declined_legs),
+      upsell_refunded_legs: int(u.upsell_refunded_legs),
       upsell_revenue: upsellRevenue,
 
       base_revenue: baseRevenue,
       gross_revenue: grossRevenue,
       refunded,
+      base_refunded: baseRefunded,
+      upsell_refunded: upsellRefunded,
       net_revenue: netRevenue,
       rev_per_visitor: rate(netRevenue, visitors),
 

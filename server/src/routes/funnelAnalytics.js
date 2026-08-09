@@ -19,7 +19,7 @@
 // EVERY handler here is READ-ONLY. There is no POST/PUT/PATCH/DELETE and there
 // must never be: this subsystem reports on money, it never touches it.
 import { Router } from 'express';
-import { pgQuery } from '../db/pg.js';
+import { analyticsQuery } from '../services/analyticsDb.js';
 import { authenticate } from '../middleware/auth.js';
 import { requirePermission } from '../middleware/rbac.js';
 import { readResults } from '../services/splitCredits.js';
@@ -111,7 +111,7 @@ router.get('/split/:testId/results', async (req, res, next) => {
       res,
       await getSplitResults(
         { testId: req.params.testId, ...win(req) },
-        { query: pgQuery, readLedger: readResults }
+        { query: analyticsQuery, readLedger: readResults }
       )
     );
   } catch (err) {
@@ -126,7 +126,7 @@ router.get('/split/:testId/results', async (req, res, next) => {
  */
 router.get('/funnels', async (_req, res, next) => {
   try {
-    const rows = await pgQuery(
+    const rows = await analyticsQuery(
       `SELECT id, slug, name, status FROM funnels
        WHERE NOT archived ORDER BY updated_at DESC LIMIT 200`
     );
@@ -139,7 +139,7 @@ router.get('/funnels', async (_req, res, next) => {
 /** GET /funnel/:funnelId/split-tests — the split picker's options. */
 router.get('/funnel/:funnelId/split-tests', async (req, res, next) => {
   try {
-    const rows = await pgQuery(
+    const rows = await analyticsQuery(
       `SELECT id, name, scope, enabled, archived, created_at
        FROM lb_split_tests WHERE funnel_id = $1 AND NOT archived
        ORDER BY created_at DESC LIMIT 100`,

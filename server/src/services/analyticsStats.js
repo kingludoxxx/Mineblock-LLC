@@ -192,7 +192,9 @@ export function varianceFromSums(n, sum, sumSquares) {
 
 const DEGENERATE = (reason) => ({
   confidence: 0.5,
+  significant_uncorrected: false,
   significant: false,
+  alpha: 0.05,
   requiredSamplePerArm: null,
   pValue: 1,
   statistic: 0,
@@ -211,6 +213,13 @@ const DEGENERATE = (reason) => ({
  *            relativeLift:number|null, normalApproxWeak:boolean}}
  */
 export function compareConversion(control, variant, opts = {}) {
+  // `alpha` is the bar this comparison is judged at. buildVerdict passes the
+  // BONFERRONI-ADJUSTED value so that `significant` and the verdict gate can
+  // never disagree — previously `significant` was p<0.05 flat while the gate
+  // used α/(k−1), so a 5-arm test could report `significant: true` on an arm
+  // the verdict correctly refused to call. `significant_uncorrected` keeps the
+  // raw p<0.05 answer for anyone who wants it, explicitly named.
+  const alpha = Number.isFinite(opts.alpha) && opts.alpha > 0 ? opts.alpha : 0.05;
   const n1 = nonNegInt(control?.visitors);
   const n2 = nonNegInt(variant?.visitors);
   // Conversions can never exceed the denominator; clamping here means a
@@ -256,8 +265,11 @@ export function compareConversion(control, variant, opts = {}) {
 
   return {
     confidence: round(1 - pValue),
-    significant: pValue < 0.05,
+    significant: pValue < alpha,
+    significant_uncorrected: pValue < 0.05,
+    alpha: round(alpha),
     requiredSamplePerArm: requiredSampleForProportions(p1, p2, opts.power),
+    sized_on_observed_effect: true,
     pValue: round(pValue),
     statistic: round(z, 4),
     reason: null,
@@ -276,6 +288,7 @@ export function compareConversion(control, variant, opts = {}) {
  * @param {{visitors:number, revenueSum:number, revenueSumSquares:number}} variant
  */
 export function compareRevenuePerVisitor(control, variant, opts = {}) {
+  const alpha = Number.isFinite(opts.alpha) && opts.alpha > 0 ? opts.alpha : 0.05;
   const n1 = nonNegInt(control?.visitors);
   const n2 = nonNegInt(variant?.visitors);
   const s1 = finite(Number(control?.revenueSum));
@@ -313,7 +326,9 @@ export function compareRevenuePerVisitor(control, variant, opts = {}) {
     if (delta === 0) return { ...DEGENERATE('zero_variance_identical'), ...base };
     return {
       confidence: 0.9999,
-      significant: true,
+      significant: 0.0001 < alpha,
+      significant_uncorrected: true,
+      alpha: round(alpha),
       requiredSamplePerArm: 2,
       pValue: 0.0001,
       statistic: 0,
@@ -334,8 +349,11 @@ export function compareRevenuePerVisitor(control, variant, opts = {}) {
 
   return {
     confidence: round(1 - pValue),
-    significant: pValue < 0.05,
+    significant: pValue < alpha,
+    significant_uncorrected: pValue < 0.05,
+    alpha: round(alpha),
     requiredSamplePerArm: requiredSampleForMeans(v1, v2, delta, opts.power),
+    sized_on_observed_effect: true,
     pValue: round(pValue),
     statistic: round(t, 4),
     degreesOfFreedom: round(df, 2),
@@ -430,33 +448,68 @@ export function buildVerdict(arms) {
   const leader = ranked[0];
   const challenger = leader.arm_key === control.arm_key ? ranked[1] : leader;
 
-  const conversion = compareConversion(
-    { visitors: control.visitors, conversions: control.orders },
-    { visitors: challenger.visitors, conversions: challenger.orders }
-  );
-  const revenue = compareRevenuePerVisitor(
-    {
-      visitors: control.visitors,
-      revenueSum: control.net_revenue,
-      revenueSumSquares: control.net_revenue_sum_squares,
-    },
-    {
-      visitors: challenger.visitors,
-      revenueSum: challenger.net_revenue,
-      revenueSumSquares: challenger.net_revenue_sum_squares,
-    }
-  );
+  // Bonferroni FIRST: k arms ⇒ k−1 comparisons against control. Every
+  // comparison below is judged at the adjusted bar, so `significant` on a
+  // comparison and the verdict gate can never disagree.
+  const comparisons = Math.max(1, rows.length - 1);
+  const alphaAdjusted = 0.05 / comparisons;
+
+  const cmp = (arm) => ({
+    conversion: compareConversion(
+      { visitors: control.visitors, conversions: control.orders },
+      { visitors: arm.visitors, conversions: arm.orders },
+      { alpha: alphaAdjusted }
+    ),
+    revenue: compareRevenuePerVisitor(
+      {
+        visitors: control.visitors,
+        revenueSum: control.net_revenue,
+        revenueSumSquares: control.net_revenue_sum_squares,
+      },
+      {
+        visitors: arm.visitors,
+        revenueSum: arm.net_revenue,
+        revenueSumSquares: arm.net_revenue_sum_squares,
+      },
+      { alpha: alphaAdjusted }
+    ),
+  });
+
+  // PER-ARM, not one scalar. A single confidence painted under every arm is
+  // wrong the moment there are 3+ arms: arm C would display arm B's 97% even
+  // when C is losing to control. Each non-control arm is compared against
+  // control on its own.
+  const perArm = {};
+  for (const a of rows) {
+    if (a.arm_key === control.arm_key) continue;
+    const c = cmp(a);
+    perArm[a.arm_key] = {
+      conversion_confidence: c.conversion.confidence,
+      revenue_confidence: c.revenue.confidence,
+      significant: c.revenue.significant,
+      significant_uncorrected: c.revenue.significant_uncorrected,
+      requiredSamplePerArm: c.revenue.requiredSamplePerArm,
+    };
+  }
+
+  const headToHead = cmp(challenger);
+  const conversion = headToHead.conversion;
+  const revenue = headToHead.revenue;
 
   // The headline metric IS revenue per visitor. Conversion is reported
   // alongside but never overrides it — DECISIONS #8's warning about mixing
   // denominators applies here too: these are two tests, not one.
   const needed = [conversion.requiredSamplePerArm, revenue.requiredSamplePerArm]
     .filter((n) => Number.isFinite(n));
-  const requiredSamplePerArm = needed.length ? Math.max(...needed) : null;
-
-  // Bonferroni: k arms ⇒ k−1 comparisons against control.
-  const comparisons = Math.max(1, rows.length - 1);
-  const alphaAdjusted = 0.05 / comparisons;
+  // FLOORED AT THE READINESS BAR. Sizing on the OBSERVED effect is biased: at
+  // small n the observed gap is inflated by noise, so the formula happily
+  // answers "42 visitors per arm" in the same breath the readiness rule says
+  // "you need 300". Reporting the raw figure produced a self-contradicting
+  // sentence. The floor makes the two agree, and `sized_on_observed_effect`
+  // tells the UI to render the caveat rather than treat this as a forecast.
+  const rawRequired = needed.length ? Math.max(...needed) : null;
+  const requiredSamplePerArm =
+    rawRequired === null ? null : Math.max(rawRequired, SPLIT_MIN_VISITORS_PER_ARM);
   const thin = rows.filter(
     (r) =>
       r.visitors < SPLIT_MIN_VISITORS_PER_ARM || r.orders < SPLIT_MIN_CONVERSIONS_PER_ARM
@@ -469,6 +522,9 @@ export function buildVerdict(arms) {
     minVisitorsPerArm: SPLIT_MIN_VISITORS_PER_ARM,
     minConversionsPerArm: SPLIT_MIN_CONVERSIONS_PER_ARM,
     thinArms: thin.map((r) => r.arm_key),
+    requiredSampleRaw: rawRequired,
+    requiredSampleFloored: rawRequired !== null && rawRequired < SPLIT_MIN_VISITORS_PER_ARM,
+    sized_on_observed_effect: true,
   };
 
   const totalVisitors = rows.reduce((t, r) => t + r.visitors, 0);
@@ -480,6 +536,7 @@ export function buildVerdict(arms) {
       control: control.arm_key,
       conversion,
       revenue,
+      perArm,
       sample,
       requiredSamplePerArm: null,
       ranked: ranked.map((r) => r.arm_key),
@@ -502,6 +559,7 @@ export function buildVerdict(arms) {
       control: control.arm_key,
       conversion,
       revenue,
+      perArm,
       sample,
       requiredSamplePerArm,
       ranked: ranked.map((r) => r.arm_key),
@@ -524,6 +582,7 @@ export function buildVerdict(arms) {
       control: control.arm_key,
       conversion,
       revenue,
+      perArm,
       sample,
       requiredSamplePerArm,
       ranked: ranked.map((r) => r.arm_key),
@@ -541,6 +600,7 @@ export function buildVerdict(arms) {
     control: control.arm_key,
     conversion,
     revenue,
+    perArm,
     sample,
     requiredSamplePerArm,
     ranked: ranked.map((r) => r.arm_key),

@@ -8,6 +8,11 @@
 // The DDL is the repo's own (ensureTrackingTables / ensureCheckoutTables /
 // ensureSplitTables / funnels' ensureTables) — nothing is re-declared here, so
 // a schema drift breaks this harness instead of hiding.
+// ⚠️ MUST BE THE FIRST IMPORT. It pins DATABASE_URL as a module side effect,
+// and module evaluation follows import order — every import below builds a DB
+// handle at load time, so anything placed after them is too late. A plain
+// top-level assignment does NOT work here: ESM hoists imports above it.
+import { HARNESS_DB_URL } from './analyticsHarnessEnv.mjs';
 import postgres from 'postgres';
 import { ensureTrackingTables } from '../server/src/services/trackingSchema.js';
 import { ensureCheckoutTables } from '../server/src/services/checkoutSchema.js';
@@ -30,7 +35,7 @@ import {
   varianceFromSums,
 } from '../server/src/services/analyticsStats.js';
 
-const DB = process.env.DATABASE_URL || 'postgresql://puure@127.0.0.1:5433/puure_analytics';
+const DB = HARNESS_DB_URL;
 const sql = postgres(DB, { max: 10, idle_timeout: 5 });
 const query = (text, params = []) => sql.unsafe(text, params);
 
@@ -125,6 +130,24 @@ async function upsell({ id, sessionId, offerId, chargeId, amount, status }) {
     `INSERT INTO co_upsell_charges (id, session_id, offer_id, charge_id, amount, currency, status, line_items)
      VALUES ($1,$2,$3,$4,$5,'USD',$6,$7)`,
     [id, sessionId, offerId, chargeId, amount, status, []]
+  );
+}
+
+// A refund's TRUE amount as gatewayWebhooks records it: a negative 'void' row
+// in the credits ledger keyed by the co_upsell_charges row id. This is the only
+// place a PARTIAL upsell refund amount survives (there is no refunded_total
+// column). `group` mirrors the test the session was exposed to.
+async function voidRow({ sessionId, chargeId, amount, refundKey, group, arm = 'a', at = inWin(24) }) {
+  await query(
+    `INSERT INTO lb_split_credits (entry_id, kind, session_id, group_id, arm_key, charge_id,
+                                   value, credited, currency, day, refund_key, created_at)
+     VALUES ($1,'void',$2,$3,$4,$5,$6,TRUE,'USD',$7,$8,$9)
+     ON CONFLICT (entry_id) DO NOTHING`,
+    [
+      `void:${sessionId}|${group}|u:${chargeId}|${refundKey}`,
+      sessionId, group, arm, chargeId, -Math.abs(amount),
+      at.toISOString().slice(0, 10), refundKey, at,
+    ]
   );
 }
 
@@ -242,6 +265,31 @@ async function seedMain() {
   await upsell({ id: 'u4', sessionId: 's3', offerId: 'o1', chargeId: 'decline', amount: 0, status: 'declined' });
   await upsell({ id: 'u5', sessionId: 'sp1', offerId: 'o1', chargeId: 'v:1', amount: 999, status: 'settled' });
 
+  // ── THE PARTIAL-UPSELL-REFUND FIXTURE (both gateways) ───────────────────
+  // s4: STRIPE path. A $200 upsell leg, $5 partially refunded. main flips the
+  // WHOLE leg to 'refunded' and appends NOTHING to co_sessions.refunds. The
+  // true amount survives only in the void row.
+  //   truth: gross +200, refunded +5, net +195
+  //   the old `status='settled'` filter reported: gross +0, refunded +0
+  await upsell({ id: 'u6', sessionId: 's4', offerId: 'o3', chargeId: 'v:3', amount: 200, status: 'refunded' });
+  await voidRow({ sessionId: 's4', chargeId: 'u6', amount: 5, refundKey: 're_stripe_partial', group: T_MAIN });
+
+  // s5: WHOP path. A $120 upsell leg, $20 refunded. main flips the leg AND
+  // appends to co_sessions.refunds (applyRefund runs unconditionally), so the
+  // same $20 is in TWO places and must be counted ONCE.
+  //   truth: gross +120, refunded +20, net +100
+  await upsell({ id: 'u7', sessionId: 's5', offerId: 'o4', chargeId: 'v:4', amount: 120, status: 'refunded' });
+  await voidRow({ sessionId: 's5', chargeId: 'u7', amount: 20, refundKey: 'whop_rf_1', group: T_MAIN });
+  await query(`UPDATE co_sessions SET refunds = $1::jsonb WHERE id = 's5'`, [
+    [{ id: 'whop_rf_1', amount: 20, gateway: 'whop', dispute: false, at: inWin(23).toISOString() }],
+  ]);
+
+  // s6: the UNMEASURABLE case. A $60 leg flipped to 'refunded' with NO void row
+  // — a funnel with no split test, on the Stripe path. The amount exists
+  // nowhere in the database. It must be counted at GROSS, flagged, and the
+  // report must say net revenue is an upper bound. It must NOT be guessed at.
+  await upsell({ id: 'u8', sessionId: 's6', offerId: 'o5', chargeId: 'v:5', amount: 60, status: 'refunded' });
+
   // One-visitor funnel: a single touch, no money at all.
   await touch(F_ONE, 'pg_solo', 'vOne', inWin(6));
 }
@@ -257,6 +305,8 @@ async function seedMain() {
 //   Both arms clear the floors (400 ≥ 300 visitors, 30 & 80 ≥ 25 orders).
 const T1 = 'lbsg_t1';
 const T2 = 'lbsg_t2';
+const T3 = 'lbsg_t3';
+const T_MAIN = 'lbsg_main';
 async function seedSplit() {
   await query(
     `INSERT INTO lb_split_tests (id, funnel_id, name, scope, enabled, archived, created_at, updated_at)
@@ -309,6 +359,43 @@ async function seedSplit() {
   await mk('a', 400, 30);
   await mk('b', 400, 80);
 
+  // ── T3: a THREE-arm test (comparisons = 2 ⇒ Bonferroni actually bites) ────
+  // a = control (400 exp, 40 paid), b = strong winner (400, 90), c = LOSER
+  // (400, 20). The bug this catches: one scalar confidence painted under every
+  // non-control arm makes losing arm c display winning arm b's confidence.
+  await query(
+    `INSERT INTO lb_split_tests (id, funnel_id, name, scope, enabled, archived, created_at, updated_at)
+     VALUES ($1,$2,'Three arm','page',TRUE,FALSE,$3,$3)`,
+    [T3, F2, OUT_BEFORE]
+  );
+  for (const [key, ctrl] of [['a', true], ['b', false], ['c', false]]) {
+    await query(
+      `INSERT INTO lb_split_arms (id, test_id, arm_key, weight, is_control, archived)
+       VALUES ($1,$2,$3,33,$4,FALSE)`,
+      [`arm3_${key}`, T3, key, ctrl]
+    );
+  }
+  const mk3 = async (arm, n, paidCount) => {
+    for (let i = 0; i < n; i += 1) {
+      const sid = `t3_${arm}_s${i}`;
+      const paid = i < paidCount;
+      await session({
+        id: sid, funnelId: F2, pageId: 'pg_a', vid: `vt3_${arm}_${i}`,
+        status: paid ? 'paid' : 'processing', total: 100,
+        paidAt: paid ? inWin(10) : null, createdAt: inWin(9),
+      });
+      await query(
+        `INSERT INTO lb_split_credits (entry_id, kind, session_id, group_id, arm_key, charge_id,
+                                       value, credited, currency, day, created_at)
+         VALUES ($1,'exposure',$2,$3,$4,'__exposure__',0,FALSE,'USD',$5,$6)`,
+        [`exp:${sid}|${T3}`, sid, T3, arm, '2026-07-09', inWin(9)]
+      );
+    }
+  };
+  await mk3('a', 400, 40);
+  await mk3('b', 400, 90);
+  await mk3('c', 400, 20);
+
   // T2 — created AFTER the funnel's first touch → disclosure flag must be false.
   await query(
     `INSERT INTO lb_split_tests (id, funnel_id, name, scope, enabled, archived, created_at, updated_at)
@@ -336,17 +423,27 @@ async function main() {
   eq(co.base_revenue, 800, 'base revenue excludes $750 of processing sessions');
   eq(ov.totals.processing_sessions, 3, 'processing sessions are reported separately');
   eq(ov.totals.processing_amount_excluded, 750, 'the excluded processing amount is disclosed');
+  // If processing leaked in it would add $750 of base + the $999 upsell leg,
+  // i.e. 1285 → 3034. The exact equality is the assertion; the inequality names
+  // the number a leak would produce.
+  eq(ov.totals.gross_revenue, 1285, 'gross revenue is 1285');
   assert(
-    ov.totals.gross_revenue < 750 + 905 && ov.totals.gross_revenue === 905,
-    `gross revenue is 905, NOT 1655 (got ${ov.totals.gross_revenue})`
+    ov.totals.gross_revenue < 1285 + 750 + 999,
+    `gross is NOT 3034 — processing base+upsell stayed out (got ${ov.totals.gross_revenue})`
   );
-  eq(co.upsell_revenue, 105, "the processing session's $999 upsell leg is excluded");
+  eq(co.upsell_revenue, 485, "upsell gross excludes the processing session's $999 leg");
+  assert(
+    co.upsell_revenue < 999,
+    `the $999 processing leg is absent (upsell gross ${co.upsell_revenue} < 999)`
+  );
   eq(co.orders, 8, 'the out-of-window $500 paid session is excluded');
 
   hr('2. fully-refunded sessions stay counted; refunds net; no negatives');
-  eq(co.refunded, 130, 'refunded = 100 (full) + 30 (partial)');
-  eq(co.gross_revenue, 905, 'gross = 800 base + 105 upsell (refunded session INCLUDED)');
-  eq(co.net_revenue, 775, 'net = gross − refunded = 905 − 130');
+  eq(co.base_refunded, 130, 'base refunded = 100 (full) + 30 (partial); the Whop $20 is NOT double-counted here');
+  eq(co.upsell_refunded, 25, 'upsell refunded = $5 (Stripe partial) + $20 (Whop) from the void ledger');
+  eq(co.refunded, 155, 'total refunded = 130 base + 25 upsell');
+  eq(co.gross_revenue, 1285, 'gross = 800 base + 485 upsell (refunded LEGS included at gross)');
+  eq(co.net_revenue, 1130, 'net = gross − refunded = 1285 − 155');
   eq(co.net_revenue, co.gross_revenue - co.refunded, 'net === gross − refunded identity');
   assert(
     ov.pages.every((p) => p.visitors === null || p.visitors >= 0),
@@ -355,15 +452,48 @@ async function main() {
   assertNoNonFinite(ov, 'main funnel overview');
 
   hr('3. upsell legs vs buyers; AOV post > pre');
-  eq(co.upsell_legs, 3, 'upsell legs = 3 settled');
-  eq(co.upsell_buyers, 2, 'upsell buyers = 2 distinct sessions');
+  eq(co.upsell_legs, 6, 'upsell legs = 6 (3 settled + 3 refunded); a refunded leg WAS sold');
+  eq(co.upsell_buyers, 5, 'upsell buyers = 5 distinct sessions');
   assert(co.upsell_legs >= co.upsell_buyers, `legs (${co.upsell_legs}) >= buyers (${co.upsell_buyers})`);
+  eq(co.upsell_refunded_legs, 3, 'reversed legs counted separately');
   eq(co.upsell_declined_legs, 1, 'the declined leg is counted separately, not as revenue');
-  eq(co.aov_pre_upsell, 83.75, 'AOV pre-upsell = 775/8 − 105/8');
-  eq(co.aov_post_upsell, 96.88, 'AOV post-upsell = 775/8 rounded');
+  eq(co.upsell_revenue, 485, 'upsell gross = 40+25+40+200+120+60 (processing $999 still excluded)');
+  eq(co.aov_pre_upsell, 80.63, 'AOV pre-upsell = 1130/8 − 485/8');
+  eq(co.aov_post_upsell, 141.25, 'AOV post-upsell = 1130/8');
   assert(
     co.aov_post_upsell > co.aov_pre_upsell,
     `AOV post (${co.aov_post_upsell}) > pre (${co.aov_pre_upsell}) when upsells exist`
+  );
+
+  hr('3b. F1 — a PARTIAL upsell refund must not delete the whole leg');
+  // The regression this exists to catch: filtering `status='settled'` made a
+  // $200 leg vanish over a $5 refund, and on Stripe `refunded` stayed 0, so the
+  // report lost $195 silently and a closed month restated.
+  const [legs] = await query(
+    `SELECT COALESCE(SUM(c.amount),0) AS gross
+     FROM co_upsell_charges c JOIN co_sessions s ON s.id=c.session_id
+     WHERE s.funnel_id=$1 AND c.status='refunded'`, [F1]
+  );
+  eq(Number(legs.gross), 380, 'the three reversed legs carry $380 of gross in the DB (200+120+60)');
+  assert(
+    co.upsell_revenue >= 380,
+    `all $380 of reversed-leg gross survives into the report (got ${co.upsell_revenue})`
+  );
+  eq(co.upsell_refunded, 25, 'and only the $25 actually refunded is subtracted — not $380');
+
+  hr('3c. F2 — a Whop upsell refund is counted ONCE, not twice');
+  // Whop writes the SAME refund to co_sessions.refunds AND to a void row.
+  // Stripe writes only the void row. Both must net to the same total.
+  eq(co.base_refunded, 130, 'the Whop $20 is excluded from the base refunds[] sum');
+  eq(co.upsell_refunded, 25, 'and counted once, in the upsell column');
+  eq(co.refunded, 155, 'so the $20 moves net by exactly −20, not −40');
+
+  hr('3d. an unmeasurable upsell refund is FLAGGED, never guessed');
+  eq(ov.meta.upsell_refunds_unmeasured, 1, 's6 has a reversed leg with no void row');
+  eq(ov.meta.net_revenue_is_upper_bound, true, 'so net revenue is disclosed as an UPPER BOUND');
+  assert(
+    co.upsell_revenue >= 60,
+    'the unmeasurable leg is still counted at gross rather than dropped'
   );
 
   hr('4. per-page overlay numbers match the hand-computed fixture EXACTLY');
@@ -383,7 +513,7 @@ async function main() {
   eq(co.submit_rate, 0.275, 'checkout submit rate = 11/40 EXACTLY');
   eq(co.ctr, 0.275, 'checkout CTR proxy = the LARGER of the two proxies');
   eq(co.ctr_basis, 'checkout_submit_proxy', 'checkout CTR basis = submit proxy');
-  eq(co.rev_per_visitor, 19.375, 'checkout rev/visitor = 775/40 EXACTLY');
+  eq(co.rev_per_visitor, 28.25, 'checkout rev/visitor = 1130/40 EXACTLY');
   eq(up.visitors, 5, 'upsell page visitors = 5');
   eq(up.ctr, null, 'CTR withheld below the 30-visitor floor');
   eq(up.ctr_basis, 'sample_below_floor', 'and the reason is named');
@@ -394,7 +524,7 @@ async function main() {
   eq(pageSum, 95, 'the sum of per-page visitors is 95');
   eq(ov.totals.visitors, 50, 'funnel visitors is 50 DISTINCT — NOT the 95 sum');
   eq(ov.totals.pageviews, 96, 'funnel pageviews = 51 + 40 + 5');
-  eq(ov.totals.rev_per_visitor, 15.5, 'funnel rev/visitor = 775/50 EXACTLY');
+  eq(ov.totals.rev_per_visitor, 22.6, 'funnel rev/visitor = 1130/50 EXACTLY');
   eq(ov.totals.cvr, 0.16, 'funnel CVR = 8/50 EXACTLY');
 
   hr('5. empty funnel and 1-visitor funnel — no divide-by-zero');
@@ -563,6 +693,54 @@ async function main() {
   eq(ledgerA.exposures, 400, 'ledger arm a exposures agree with the table');
   eq(ledgerA.conversions, 30, 'ledger arm a conversions agree with the table');
 
+  hr('8d. F4/F8 — 3 arms: per-arm confidence, and Bonferroni actually applied');
+  const sr3 = await getSplitResults({ testId: T3, ...WIN }, { query });
+  const a3 = sr3.arms.find((a) => a.arm_key === 'a');
+  const b3 = sr3.arms.find((a) => a.arm_key === 'b');
+  const c3 = sr3.arms.find((a) => a.arm_key === 'c');
+  eq(a3.orders, 40, 'T3 control a = 40 orders');
+  eq(b3.orders, 90, 'T3 arm b = 90 orders (winner)');
+  eq(c3.orders, 20, 'T3 arm c = 20 orders (loser)');
+  eq(sr3.verdict.sample.comparisons, 2, 'comparisons = arms − 1 = 2');
+  eq(sr3.verdict.sample.alphaAdjusted, 0.025, 'Bonferroni α = 0.05/2');
+  assert(sr3.verdict.perArm && sr3.verdict.perArm.b && sr3.verdict.perArm.c,
+    'verdict carries PER-ARM comparisons, not one scalar');
+  const cb = sr3.verdict.perArm.b.revenue_confidence;
+  const cc = sr3.verdict.perArm.c.revenue_confidence;
+  console.log(`  per-arm rev confidence: b=${(cb * 100).toFixed(2)}%  c=${(cc * 100).toFixed(2)}%`);
+  assert(cb !== cc, `arm b and arm c carry DIFFERENT confidences (${cb} vs ${cc})`);
+  eq(sr3.verdict.leader, 'b', 'the leader is b, not c');
+  eq(sr3.verdict.perArm.c.significant && c3.rev_per_visitor > a3.rev_per_visitor, false,
+    'the LOSING arm is never reported as a significant winner');
+  // F8: `significant` must agree with the Bonferroni gate, not a flat 0.05.
+  const borderline = compareConversion(
+    { visitors: 1000, conversions: 100 }, { visitors: 1000, conversions: 128 },
+    { alpha: 0.025 }
+  );
+  console.log(`  borderline p=${borderline.pValue} α=0.025`);
+  eq(borderline.significant, borderline.pValue < 0.025, '`significant` is judged at the ADJUSTED α');
+  eq(borderline.significant_uncorrected, borderline.pValue < 0.05, '`significant_uncorrected` keeps the raw answer');
+  assert(borderline.pValue > 0.025 && borderline.pValue < 0.05,
+    `and this case actually separates them (p=${borderline.pValue})`);
+  eq(borderline.significant, false, 'so the corrected verdict refuses where the raw one would not');
+  assertNoNonFinite(sr3, 'three-arm split results');
+
+  hr('8e. F9 — required-N never contradicts the readiness floor');
+  const vThin2 = buildVerdict([
+    { arm_key: 'a', is_control: true, visitors: 40, orders: 4, net_revenue: 400, net_revenue_sum_squares: 40000 },
+    { arm_key: 'b', is_control: false, visitors: 40, orders: 20, net_revenue: 2000, net_revenue_sum_squares: 200000 },
+  ]);
+  assert(
+    vThin2.requiredSamplePerArm >= 300,
+    `required N is floored at the readiness bar (got ${vThin2.requiredSamplePerArm}, raw ${vThin2.sample.requiredSampleRaw})`
+  );
+  eq(vThin2.sample.sized_on_observed_effect, true, 'and is flagged as sized on the observed (biased) effect');
+  assert(
+    !(vThin2.headline.includes('300 visitors') && /about (\d+) visitors/.test(vThin2.headline)
+      && Number(RegExp.$1) < 300),
+    `headline cannot say "needs 300" and "about <300" at once: "${vThin2.headline}"`
+  );
+
   hr('9. the honest window disclosure');
   eq(sr.disclosure.tracking_started_after_test, true, 'tracking began AFTER T1 was created → flag fires');
   assert(sr.disclosure.test_created_at instanceof Date, 'test_created_at is returned');
@@ -655,7 +833,7 @@ async function main() {
   );
   eq(degraded.totals.visitors, null, 'visitors is NULL, not 0 — "unmeasured" ≠ "no traffic"');
   eq(degraded.pages.find((p) => p.page_id === P_CHECKOUT).cvr, null, 'CVR is null when the denominator is unmeasured');
-  eq(degraded.pages.find((p) => p.page_id === P_CHECKOUT).net_revenue, 775, 'money still reports while tracking is down');
+  eq(degraded.pages.find((p) => p.page_id === P_CHECKOUT).net_revenue, 1130, 'money still reports while tracking is down');
   assertNoNonFinite(degraded, 'degraded overview');
   await query(`ALTER TABLE lb_touches_hidden RENAME TO lb_touches`);
 
@@ -666,11 +844,42 @@ async function main() {
   );
   const withBad = await getFunnelOverview({ funnelId: F1, ...WIN }, deps);
   assert(!withBad.error, 'a malformed refunds[] entry does not throw');
-  eq(withBad.totals.refunded, 130, 'the malformed entry is skipped, the good ones still count');
+  eq(withBad.totals.refunded, 155, 'the malformed entry is skipped, the good ones still count');
   eq(withBad.meta.malformed_refund_entries, 1, 'and the skipped entry is disclosed');
   await query(`UPDATE co_sessions SET refunds = '[]'::jsonb WHERE id = 's6'`);
 
   // ═══════════════════════════════════════════════════════════════════════
+  hr('11c. F5 — analytics cannot open the money path\'s circuit breaker');
+  // The coupling: pgQuery's timeout is a Promise.race (no server-side cancel),
+  // so a slow analytics query holds a connection from the SHARED max-10 pool
+  // until statement_timeout, and EVERY lost race calls recordFailure() on a
+  // process-wide breaker that opens after 5 and then rejects settlement for 30s.
+  // Analytics now runs on its own pool and never touches that breaker.
+  const { analyticsQuery, ANALYTICS_DB_LIMITS, closeAnalyticsPool } =
+    await import('../server/src/services/analyticsDb.js');
+  const pgMod = await import('../server/src/db/pg.js');
+  eq(ANALYTICS_DB_LIMITS.sharedBreaker, false, 'the analytics handle declares no breaker participation');
+  assert(ANALYTICS_DB_LIMITS.poolMax <= 3, `analytics pool is small (max ${ANALYTICS_DB_LIMITS.poolMax}) — it cannot starve the money pool`);
+  eq(pgMod.isDbCircuitOpen(), false, 'breaker starts closed');
+  // Fire enough failing analytics queries to trip a 5-failure breaker, if it
+  // were shared. It must stay closed, and pgQuery must still work afterwards.
+  for (let i = 0; i < 8; i += 1) {
+    try { await analyticsQuery('SELECT * FROM a_table_that_does_not_exist'); } catch { /* expected */ }
+  }
+  eq(pgMod.isDbCircuitOpen(), false, '8 failed analytics queries leave the shared breaker CLOSED');
+  const moneyStillWorks = await pgMod.pgQuery(`SELECT COUNT(*)::int AS n FROM co_sessions`);
+  assert(Number.isFinite(moneyStillWorks[0].n), 'the money path still queries fine after the analytics failures');
+  // And the analytics pool enforces a server-side cancel, not an abandoned race.
+  const tSlow = Date.now();
+  let cancelled = false;
+  try { await analyticsQuery('SELECT pg_sleep(30)'); }
+  catch (e) { cancelled = /statement timeout|canceling/i.test(e.message); }
+  const slowMs = Date.now() - tSlow;
+  assert(cancelled, `a slow analytics query is CANCELLED server-side (not abandoned) — ${slowMs}ms`);
+  assert(slowMs < 12_000, `and it gives up inside its own budget (${slowMs}ms < 12s)`);
+  eq(pgMod.isDbCircuitOpen(), false, 'even the timeout leaves the money breaker closed');
+  await closeAnalyticsPool();
+
   hr('12. performance at realistic volume (rollup decision)');
   const t0 = Date.now();
   await query(

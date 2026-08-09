@@ -29,7 +29,17 @@ function VerdictBanner({ verdict, currency }) {
             </span>
           ) : null}
           {verdict.requiredSamplePerArm ? (
-            <span>~{fmtInt(verdict.requiredSamplePerArm)} visitors/arm needed</span>
+            <span
+              title={
+                verdict.sample?.requiredSampleFloored
+                  ? `Sized on the currently observed gap (${fmtInt(verdict.sample.requiredSampleRaw)}), ` +
+                    'which is inflated by noise at small n — floored at the readiness minimum.'
+                  : 'Sized on the currently observed gap, which is itself an estimate.'
+              }
+            >
+              ~{fmtInt(verdict.requiredSamplePerArm)} visitors/arm needed
+              {verdict.sample?.sized_on_observed_effect ? '*' : ''}
+            </span>
           ) : null}
         </div>
       </div>
@@ -91,8 +101,26 @@ export default function SplitResultsPanel({ data }) {
   if (!arms.length) return <Card className="text-sm text-text-muted">This test has no arms yet.</Card>;
 
   const leader = data.verdict?.leader;
-  const conf = data.verdict?.revenue?.confidence;
-  const convConf = data.verdict?.conversion?.confidence;
+  // PER-ARM, never one scalar. `verdict.revenue.confidence` is the head-to-head
+  // number for the CHALLENGER only; painting it under every non-control arm
+  // showed a losing arm the winner's confidence. verdict.perArm carries one
+  // comparison per arm, each judged at the Bonferroni-adjusted α.
+  const perArm = data.verdict?.perArm || {};
+  const armConf = (a, key) => {
+    if (a.is_control) return null;
+    const p = perArm[a.arm_key];
+    return p ? p[key] : null;
+  };
+  // A two-sided test is confident an arm DIFFERS — including when it differs by
+  // being worse. Showing a bare 99% next to a losing arm reads as a win, so the
+  // direction is rendered with it.
+  const control = data.arms.find((a) => a.is_control) || null;
+  const isBehind = (a) =>
+    !a.is_control &&
+    control &&
+    a.rev_per_visitor !== null &&
+    control.rev_per_visitor !== null &&
+    a.rev_per_visitor < control.rev_per_visitor;
 
   // Rows are metrics, columns are arms — matching the operator's reference report.
   const rows = [
@@ -124,12 +152,25 @@ export default function SplitResultsPanel({ data }) {
     {
       label: 'Confidence',
       emphasis: true,
-      sub: 'rev / visitor',
-      get: (a) => (a.is_control ? EM_DASH : conf === null || conf === undefined ? EM_DASH : fmtRate(conf, 1)),
+      sub: 'vs control, rev / visitor',
+      get: (a) => {
+        const c = armConf(a, 'revenue_confidence');
+        if (c === null || c === undefined) return EM_DASH;
+        return (
+          <span className={isBehind(a) ? 'text-danger' : undefined}>
+            {fmtRate(c, 1)}
+            {isBehind(a) ? <span className="ml-1 text-[10px]">behind</span> : null}
+          </span>
+        );
+      },
     },
     {
       label: 'Conv. confidence',
-      get: (a) => (a.is_control ? EM_DASH : convConf === null || convConf === undefined ? EM_DASH : fmtRate(convConf, 1)),
+      sub: 'vs control',
+      get: (a) => {
+        const c = armConf(a, 'conversion_confidence');
+        return c === null || c === undefined ? EM_DASH : fmtRate(c, 1);
+      },
     },
     {
       label: 'Sample',
@@ -157,7 +198,13 @@ export default function SplitResultsPanel({ data }) {
                   <th
                     key={a.arm_key}
                     className={`px-3 py-2.5 text-right text-sm font-semibold whitespace-nowrap ${
-                      a.arm_key === leader ? 'text-green-400' : 'text-text-primary'
+                      // Green ONLY for a DECLARED winner. Gated on status, same
+                      // as the trophy — an ungated highlight painted the
+                      // top-ranked arm of a not_ready test as if it had won,
+                      // which is the whole thing the readiness floor prevents.
+                      a.arm_key === leader && data.verdict?.status === 'winner'
+                        ? 'text-green-400'
+                        : 'text-text-primary'
                     }`}
                   >
                     <span className="uppercase">{a.arm_key}</span>
@@ -166,6 +213,9 @@ export default function SplitResultsPanel({ data }) {
                     ) : null}
                     {a.arm_key === leader && data.verdict?.status === 'winner' ? (
                       <Trophy className="inline-block w-3.5 h-3.5 ml-1.5 -mt-0.5" />
+                    ) : null}
+                    {a.arm_key === leader && data.verdict?.status !== 'winner' ? (
+                      <span className="ml-1.5 text-[10px] font-normal text-text-faint">leading</span>
                     ) : null}
                     {a.archived ? (
                       <span className="ml-1.5 text-[10px] font-normal text-amber-400">archived</span>

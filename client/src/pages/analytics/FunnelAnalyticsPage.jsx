@@ -15,7 +15,7 @@ import DateRangePicker from '../../components/ui/DateRangePicker';
 import FunnelTotalsCards from './components/FunnelTotalsCards';
 import PageMetricsTable from './components/PageMetricsTable';
 import SplitResultsPanel from './components/SplitResultsPanel';
-import { daysAgoIso, todayIso } from './format';
+import { daysAgoIso, todayIso, fmtInt } from './format';
 
 const BASE = '/funnel-analytics';
 
@@ -180,6 +180,37 @@ export default function FunnelAnalyticsPage() {
         <div className="rounded-lg border border-amber-500/30 bg-amber-500/5 px-3 py-2.5 text-[12px] text-amber-200/90">
           <strong className="font-medium">Mixed currencies in this window.</strong> The money columns are raw sums
           across more than one currency and are not directly comparable.
+        </div>
+      ) : null}
+
+      {/* These three were computed but never rendered — a silently eroded
+          denominator or a silently skipped refund is exactly the failure this
+          subsystem is supposed to make visible. */}
+      {overview?.meta?.traffic_ttl_risk ? (
+        <div className="rounded-lg border border-amber-500/30 bg-amber-500/5 px-3 py-2.5 text-[12px] text-amber-200/90">
+          <strong className="font-medium">This window reaches past the {overview.meta.traffic_ttl_days}-day
+          tracking retention.</strong> Touch rows older than that have expired, so the visitor denominator is
+          eroded and every rate here (CTR, CVR, rev/visitor) is OVERSTATED for the early part of the range.
+          Narrow the window for accurate rates.
+        </div>
+      ) : null}
+
+      {overview?.meta?.net_revenue_is_upper_bound ? (
+        <div className="rounded-lg border border-amber-500/30 bg-amber-500/5 px-3 py-2.5 text-[12px] text-amber-200/90">
+          <strong className="font-medium">Net revenue is an upper bound.</strong>{' '}
+          {fmtInt(overview.meta.upsell_refunds_unmeasured)} upsell{' '}
+          {overview.meta.upsell_refunds_unmeasured === 1 ? 'leg was' : 'legs were'} reversed but the refunded
+          amount is not recorded anywhere (no void row — a funnel with no split test on the Stripe path). Those
+          legs are counted at full value, so true net is this figure or lower.
+        </div>
+      ) : null}
+
+      {overview?.meta?.malformed_refund_entries > 0 ? (
+        <div className="rounded-lg border border-amber-500/30 bg-amber-500/5 px-3 py-2.5 text-[12px] text-amber-200/90">
+          <strong className="font-medium">{fmtInt(overview.meta.malformed_refund_entries)} refund{' '}
+          {overview.meta.malformed_refund_entries === 1 ? 'entry was' : 'entries were'} skipped.</strong> They
+          carry an unparseable date or amount, so they are excluded from the refunded total — which is therefore
+          understated.
         </div>
       ) : null}
 
