@@ -13,7 +13,7 @@
 //   purchase       ← co_events 'paid'              emerald
 //                    ('upsell_settled' → purchase + upsell:true)
 import { Eye, CreditCard, BadgeDollarSign, Radio } from 'lucide-react';
-import { fmtMoney, timeAgo } from './livePresentation.js';
+import { fmtMoneyParts, timeAgo } from './livePresentation.js';
 import './liveview.css';
 
 // Module-local on purpose: exporting a non-component beside components trips
@@ -51,7 +51,9 @@ const TYPE_META = {
 export function RailCard({ ev, fresh = false }) {
   const meta = TYPE_META[ev.type] || TYPE_META.view;
   const Icon = meta.icon;
-  const money = fmtMoney(ev.value, ev.currency);
+  // fmtMoneyParts, not fmtMoney: co_sessions.currency is nullable, and a bare
+  // "59.00" must not be dressed up with a dollar sign we never read.
+  const money = fmtMoneyParts(ev.value, ev.currency);
   const where = ev.funnel_name
     || (ev.funnel_id ? `funnel ${String(ev.funnel_id).slice(0, 12)}…` : 'unattributed');
   const page = ev.page_title || ev.page_slug || null;
@@ -89,9 +91,17 @@ export function RailCard({ ev, fresh = false }) {
           {/* An amount is rendered only when there IS one. A purchase with a
               null value means the amount was not recorded — printing $0.00
               there would claim the sale was free. */}
-          {money ? (
-            <span className="shrink-0 text-[12px] font-semibold tabular-nums text-text-primary">
-              {money}
+          {money.text ? (
+            <span
+              className="shrink-0 text-[12px] font-semibold tabular-nums text-text-primary"
+              title={money.hasCurrency ? undefined : 'currency not recorded for this order'}
+            >
+              {money.text}
+              {!money.hasCurrency && (
+                <span className="ml-1 text-[10px] font-normal text-text-faint" data-testid="lv-row-no-currency">
+                  (no currency)
+                </span>
+              )}
             </span>
           ) : null}
         </div>

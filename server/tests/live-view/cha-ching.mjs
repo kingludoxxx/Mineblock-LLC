@@ -68,6 +68,7 @@ const cc = (await import('../../../client/src/pages/live/chaChing.js')).default;
 // ═══ 1. the snapshot cache ═════════════════════════════════════════════════
 console.log('\n── 1. snapshot stability (useSyncExternalStore contract) ──');
 {
+  eq(cc.getState(), 'locked', 'a fresh module starts LOCKED, not "idle" (F7)');
   const a = cc.getSnapshot();
   const b = cc.getSnapshot();
   ok(a === b, 'two getSnapshot() calls return the IDENTICAL object (else React loops forever)');
@@ -226,11 +227,25 @@ console.log('\n── 6. dispose ──');
   cc.dispose();
   eq(closedCount, closedBefore + 1, 'dispose CLOSES the AudioContext');
   eq(listeners.length, 0, 'and removes the gesture listeners');
-  eq(cc.getState(), 'idle', 'and resets the state');
+  // F7: 'locked', not 'idle'. Every browser blocks audio until a gesture, so
+  // "locked" is the truthful resting state — and it is what makes the UI show
+  // its Enable-sound affordance BEFORE the first sale is missed.
+  eq(cc.getState(), 'locked', 'and resets to LOCKED (the pre-gesture truth, not a fake idle)');
 
   let threw = null;
   try { cc.dispose(); cc.dispose(); } catch (e) { threw = e; }
   ok(!threw, 'dispose is idempotent', String(threw));
+
+  // F7: dispose must cancel the master-gain teardown timers, or they fire
+  // later against a closed graph. Counted via the process's own handle census.
+  await cc.prime();
+  cc.setMuted(false);
+  await cc.play();
+  await cc.play();
+  const withTimers = process.getActiveResourcesInfo().filter((r) => r === 'Timeout').length;
+  cc.dispose();
+  const afterDispose = process.getActiveResourcesInfo().filter((r) => r === 'Timeout').length;
+  ok(afterDispose < withTimers, `dispose clears the pending gain timers (${withTimers} → ${afterDispose})`);
 }
 
 console.log(`\n${pass}/${pass + fail} passed`);

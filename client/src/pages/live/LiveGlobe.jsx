@@ -16,7 +16,13 @@
 // code. So the globe plots COUNTRIES, sized by visitor count, at a country
 // centroid — and the card says so in as many words. A rising count between two
 // snapshots is the only arrival claim the payload supports, and that is what
-// makes a marker ripple (livePresentation.diffArrivals).
+// makes a marker ripple (livePresentation.trackArrivals).
+//
+// The server ships only the TOP N countries and flags the cut with
+// geo.truncated / geo.countries_total. Both are honoured: the count is stated
+// in the header, and while the list is truncated a country appearing for the
+// first time does NOT ripple — we cannot tell "new" from "newly visible", and
+// rippling would report its whole running total as if it had just arrived.
 //
 // Explicitly NOT done: a pin per visitor, an arc between buyer and store, a
 // city. Each would require inventing a coordinate we never read.
@@ -25,11 +31,13 @@
 // listener, all torn down on unmount. The loop also parks itself when the tab
 // is hidden or the card scrolls out of view — a 60fps canvas in a background
 // tab is exactly the immortal-poll bug this codebase has been bitten by.
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Globe2 } from 'lucide-react';
 import Card from '../../components/ui/Card';
 import LAND_RINGS from './worldLand.js';
-import { deriveGeoPoints, diffArrivals, fmtInt, countryLabel } from './livePresentation.js';
+import {
+  deriveGeoPoints, trackArrivals, createArrivalState, fmtInt, countryLabel,
+} from './livePresentation.js';
 import drawGlobe from './globeRender.js';
 
 const ROTATION_DEG_PER_SEC = 4.5; // a full turn every 80s — ambient, not dizzying
@@ -55,25 +63,49 @@ function useReducedMotion() {
 }
 
 export default function LiveGlobe({ geo, live = 0 }) {
+  // CALLBACK REFS IN STATE, not useRef. This component early-returns an empty
+  // state when there is nothing to plot, and on the very first commit there is
+  // ALWAYS nothing to plot — the snapshot starts null, so no <canvas> exists
+  // yet. A `useRef` + `[]`-dep effect therefore ran exactly once, found
+  // `canvasRef.current === null`, returned, and never ran again when the
+  // canvas finally appeared: the globe rendered as a blank default-sized
+  // canvas on every single load, and one degraded read that emptied the card
+  // killed it permanently. Keying the effect on the ELEMENT re-arms it every
+  // time the canvas mounts, including after an empty → populated → empty →
+  // populated cycle. (Regression-tested in
+  // server/tests/live-view/globe-effect.mjs.)
+  // The ELEMENTS live in refs (a DOM node is not React state, and mutating
+  // canvas.width on a useState value trips react-hooks/immutability); a
+  // MOUNT COUNTER in state is what re-arms the effect. Callback refs write the
+  // ref and bump the counter — both at commit time, never during render.
   const canvasRef = useRef(null);
   const wrapRef = useRef(null);
+  const [mountTick, setMountTick] = useState(0);
+  const setCanvasEl = useCallback((node) => {
+    canvasRef.current = node;
+    setMountTick((t) => t + 1);
+  }, []);
+  const setWrapEl = useCallback((node) => {
+    wrapRef.current = node;
+    setMountTick((t) => t + 1);
+  }, []);
   const reduced = useReducedMotion();
 
   // Derived synchronously so the legend and the canvas can never disagree.
   const derived = useMemo(() => deriveGeoPoints(geo), [geo]);
+  const truncated = Boolean(geo?.truncated);
 
-  // Everything the animation loop reads lives in this ref. The loop is started
-  // ONCE; feeding it through a ref instead of the dependency array is what
-  // stops every snapshot (~3s) from tearing down and rebuilding the rAF loop.
+  // Everything the animation loop reads lives in this ref, so a new snapshot
+  // (~every 3s) updates the scene WITHOUT tearing down the rAF loop.
   const sceneRef = useRef({ points: [], ripples: [], reduced: false, max: 1 });
-  const prevPointsRef = useRef(null);
+  const arrivalRef = useRef(createArrivalState());
 
   useEffect(() => {
     const pts = derived.points;
-    // Only a RISE is an arrival. A fall is UTC-midnight rollover or a degraded
-    // read — see diffArrivals.
-    const arrivals = diffArrivals(prevPointsRef.current, pts);
-    prevPointsRef.current = pts;
+    // Stateful across snapshots, and truncation-aware: a country crossing into
+    // a truncated top-N list is NOT an arrival of its whole running total.
+    const { state, arrivals } = trackArrivals(arrivalRef.current, pts, { truncated });
+    arrivalRef.current = state;
 
     const now = performance.now();
     const scene = sceneRef.current;
@@ -86,7 +118,7 @@ export default function LiveGlobe({ geo, live = 0 }) {
         scene.ripples.splice(0, scene.ripples.length - MAX_RIPPLES);
       }
     }
-  }, [derived]);
+  }, [derived, truncated]);
 
   useEffect(() => { sceneRef.current.reduced = reduced; }, [reduced]);
 
@@ -182,7 +214,7 @@ export default function LiveGlobe({ geo, live = 0 }) {
       ro.disconnect();
       if (io) io.disconnect();
     };
-  }, []);
+  }, [mountTick]);
 
   const cov = geo?.coverage || null;
   const covLine = cov && cov.resolved_pct != null
@@ -229,13 +261,22 @@ export default function LiveGlobe({ geo, live = 0 }) {
           <h2 className="text-sm font-semibold text-text-primary">Visitors by country</h2>
         </div>
         <span className="shrink-0 text-[11px] tabular-nums text-text-faint">
-          {fmtInt(live)} live
+          {/* A truncated list presented as a whole is the same lie as a sample
+              presented as a census — the server flags the cut, so say so. */}
+          {truncated ? (
+            <span data-testid="lv-globe-truncated">
+              top {fmtInt(derived.plotted + derived.offMap.length)} of{' '}
+              {fmtInt(geo?.countries_total)} countries
+            </span>
+          ) : (
+            <>{fmtInt(live)} live</>
+          )}
         </span>
       </div>
 
-      <div ref={wrapRef} className="flex items-center justify-center">
+      <div ref={setWrapEl} className="flex items-center justify-center">
         <canvas
-          ref={canvasRef}
+          ref={setCanvasEl}
           role="img"
           aria-label={`Rotating globe showing ${derived.plotted} countries with visitors today`}
           className="max-w-full"
@@ -261,6 +302,13 @@ export default function LiveGlobe({ geo, live = 0 }) {
       <p className="mt-3 text-[11px] leading-relaxed text-text-faint" data-testid="lv-globe-caveat">
         Each marker is a COUNTRY placed at its centroid and sized by today&rsquo;s visitors —
         not a person&rsquo;s location. A marker ripples when that country&rsquo;s count rises.
+        {truncated && (
+          <span className="mt-0.5 block">
+            Only the top {fmtInt(derived.plotted + derived.offMap.length)} of{' '}
+            {fmtInt(geo?.countries_total)} countries are shown, so a country entering the
+            list is not counted as an arrival.
+          </span>
+        )}
         {derived.offMap.length > 0 && (
           <span className="mt-0.5 block">
             {fmtInt(derived.offMapVisitors)} visitor(s) from {derived.offMap.length} code(s) have no

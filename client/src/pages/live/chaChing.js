@@ -26,13 +26,19 @@ const RING_SPACING_S = 0.28;           // min gap between two rings in a burst
 const MAX_LOOKAHEAD_S = 1.5;           // queued further out than this → dropped
 
 let ctx = null;
-let state = 'idle'; // idle | locked | ready | unsupported
+// Starts LOCKED, not 'idle'. Every browser blocks audio until a user gesture,
+// so "locked" is the truthful description of a fresh page — and it is what
+// makes SaleAlertControls show its "Enable sound" affordance BEFORE the first
+// sale is missed rather than after. 'idle' rendered as if sound were working.
+let state = 'locked'; // locked | ready | unsupported
 let nextSlot = 0;
 let primingPromise = null;
 let gestureCleanup = null;
 let warned = false;
 
 const subscribers = new Set();
+// Outstanding master-gain teardown timers, so dispose() can cancel them.
+const pendingTimers = new Set();
 
 function warnOnce(...args) {
   if (warned) return;
@@ -191,7 +197,11 @@ export function dispose() {
   nextSlot = 0;
   primingPromise = null;
   if (gestureCleanup) gestureCleanup();
-  setState('idle');
+  // Every pending master-gain disconnect timer dies with the context —
+  // otherwise dispose() leaves timers pointing at a closed graph.
+  for (const t of pendingTimers) clearTimeout(t);
+  pendingTimers.clear();
+  setState('locked'); // back to the pre-gesture state, not a fake 'idle'
   if (c) {
     try { c.onstatechange = null; c.close(); } catch { /* noop */ }
   }
@@ -303,9 +313,11 @@ export async function play(opts = {}) {
       { peak: 0.55, decay: 0.62, bright: 7200 });
 
     const endsAt = t0 + 0.09 + tail + 0.1;
-    setTimeout(() => {
+    const timer = setTimeout(() => {
+      pendingTimers.delete(timer);
       try { master.disconnect(); } catch { /* noop */ }
     }, Math.max(0, (endsAt - ctx.currentTime) * 1000) + 60);
+    pendingTimers.add(timer);
 
     return 'played';
   } catch (e) {

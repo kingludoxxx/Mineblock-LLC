@@ -83,28 +83,102 @@ console.log('\n── 2. deriveGeoPoints ──');
     const r = M.deriveGeoPoints(junk);
     eq(r.plotted, 0, `deriveGeoPoints(${JSON.stringify(junk)}) → empty, no throw`);
   }
-  const messy = M.deriveGeoPoints({ by_country: [null, { country: '' }, { country: 'US' }, { country: 'US', visitors: -5 }] });
-  eq(messy.plotted, 2, 'malformed rows are skipped, negatives clamp to 0');
-  eq(messy.total, 0, 'a negative visitor count contributes 0, never a negative total');
+  // F7: an unusable count is NOT a zero-visitor marker. A marker asserts that
+  // somebody was there, so a NaN/negative/missing count is excluded and
+  // COUNTED as malformed rather than plotted at the origin of that country.
+  const messy = M.deriveGeoPoints({
+    by_country: [null, { country: '' }, { country: 'US' }, { country: 'GB', visitors: -5 },
+      { country: 'DE', visitors: 'abc' }, { country: 'FR', visitors: 0 }, { country: 'IT', visitors: 4 }],
+  });
+  eq(messy.plotted, 1, 'only the row with a usable positive count is plotted');
+  eq(messy.points[0].country, 'IT', 'and it is the right one');
+  eq(messy.malformed, 6, 'every unusable row is COUNTED, not silently dropped');
+  eq(messy.total, 4, 'unusable rows contribute nothing to the total');
 }
 
-// ═══ 3. diffArrivals ═══════════════════════════════════════════════════════
-console.log('\n── 3. diffArrivals ──');
+// ═══ 3. trackArrivals (F5) ═════════════════════════════════════════════════
+console.log('\n── 3. trackArrivals ──');
 {
-  const a = [{ country: 'US', visitors: 10 }, { country: 'GB', visitors: 5 }];
-  const b = [{ country: 'US', visitors: 12 }, { country: 'GB', visitors: 5 }, { country: 'FR', visitors: 3 }];
+  const P = (cc, v) => ({ country: cc, visitors: v, lat: 0, lon: 0 });
+  const step = (st, pts, opts) => M.trackArrivals(st, pts, opts);
 
-  eq(M.diffArrivals(null, b), [], 'FIRST snapshot arrives nothing (else the whole day pulses at once)');
-  eq(M.diffArrivals(undefined, b), [], 'undefined prev arrives nothing');
-  const d = M.diffArrivals(a, b);
-  eq(d.map((x) => [x.country, x.gained]), [['US', 2], ['FR', 3]], 'rises and new countries arrive, with the gain');
-  eq(M.diffArrivals(b, b), [], 'an unchanged snapshot arrives nothing');
-  // A fall is midnight rollover or a degraded read — never a departure.
-  eq(M.diffArrivals(b, a), [], 'a FALLING count arrives nothing');
-  eq(M.diffArrivals([], []), [], 'empty → empty');
-  eq(M.diffArrivals(a, null), [], 'a null next is not a throw');
-  eq(M.diffArrivals([null, { country: 'US' }], [{ country: 'US', visitors: 1 }]).length, 1,
-    'malformed prev rows do not break the diff');
+  // Priming: the first reading is a baseline, never a wall of arrivals.
+  let s = M.createArrivalState();
+  let r = step(s, [P('US', 10), P('GB', 5)]);
+  eq(r.arrivals, [], 'the FIRST reading arrives nothing (else the whole day pulses at once)');
+  s = r.state;
+
+  r = step(s, [P('US', 12), P('GB', 5), P('FR', 3)]);
+  eq(r.arrivals.map((x) => [x.country, x.gained]), [['US', 2], ['FR', 3]],
+    'a rise and a genuinely new country both arrive, with the gain');
+  s = r.state;
+
+  eq(step(s, [P('US', 12), P('GB', 5), P('FR', 3)]).arrivals, [],
+    'an unchanged reading arrives nothing');
+
+  // F5(a) TRUNCATION — a country crossing into the top-N cut is NOT a new
+  // arrival of its entire running total.
+  let t = M.createArrivalState();
+  t = step(t, [P('US', 40)], { truncated: true }).state;
+  r = step(t, [P('US', 40), P('BR', 300)], { truncated: true });
+  eq(r.arrivals, [], 'while TRUNCATED, a newly-listed country does NOT ripple its whole total');
+  t = r.state;
+  // But once it is being tracked, its own subsequent rise is real.
+  r = step(t, [P('US', 40), P('BR', 305)], { truncated: true });
+  eq(r.arrivals.map((x) => [x.country, x.gained]), [['BR', 5]],
+    'and its next genuine rise DOES ripple, at the true delta');
+
+  // On a COMPLETE list the same shape is a real arrival.
+  let u = M.createArrivalState();
+  u = step(u, [P('US', 40)]).state;
+  eq(step(u, [P('US', 40), P('BR', 3)]).arrivals.map((x) => x.country), ['BR'],
+    'on a complete list a new country IS an arrival');
+
+  // F5(b) DEGRADED READ / RECOVERY — 50 → 12 → 50 must be silent on recovery.
+  const fifty = Array.from({ length: 50 }, (_, i) => P(`C${i}`, 10 + i));
+  let d = M.createArrivalState();
+  d = step(d, fifty).state;
+  const twelve = fifty.slice(0, 12);
+  r = step(d, twelve);
+  eq(r.arrivals, [], 'a read that returns only 12 of 50 countries arrives nothing');
+  d = r.state;
+  r = step(d, fifty);
+  eq(r.arrivals, [], 'and RECOVERY to the same 50 arrives nothing — the 38 were never forgotten');
+  d = r.state;
+  // A real rise after recovery still lands.
+  const bumped = fifty.map((p, i) => (i === 3 ? P(p.country, p.visitors + 7) : p));
+  eq(step(d, bumped).arrivals.map((x) => [x.country, x.gained]), [['C3', 7]],
+    'a genuine rise after recovery still arrives');
+
+  // F5(c) MIDNIGHT ROLLOVER — counts reset; no arrivals, and the baseline
+  // drops so the next real visitor ripples instead of the board going dead.
+  let m = M.createArrivalState();
+  m = step(m, [P('US', 900)]).state;
+  r = step(m, [P('US', 2)]);
+  eq(r.arrivals, [], 'a FALLING count (midnight rollover) arrives nothing');
+  m = r.state;
+  eq(step(m, [P('US', 3)]).arrivals.map((x) => [x.country, x.gained]), [['US', 1]],
+    'and the baseline was re-anchored DOWN, so the next visitor ripples');
+
+  // The gain is bounded, so a bad read cannot spray hundreds of ripples.
+  let b = M.createArrivalState();
+  b = step(b, [P('US', 1)]).state;
+  eq(step(b, [P('US', 99999)]).arrivals[0].gained, M.MAX_ARRIVAL_GAIN,
+    'an absurd jump is capped at MAX_ARRIVAL_GAIN');
+
+  // Robustness.
+  eq(step(M.createArrivalState(), null).arrivals, [], 'a null list is not a throw');
+  eq(step(M.createArrivalState(), []).arrivals, [], 'empty → empty');
+  const junk = step(step(M.createArrivalState(), [P('US', 1)]).state,
+    [null, { country: 'US', visitors: 5 }, { visitors: 3 }]);
+  eq(junk.arrivals.map((x) => x.country), ['US'], 'malformed rows are skipped, not crashed on');
+
+  // Purity.
+  const before = M.createArrivalState();
+  const snap = before.known.size;
+  M.trackArrivals(before, [P('US', 1)]);
+  eq(before.known.size, snap, 'trackArrivals does not mutate the state it is given');
+  eq(before.primed, false, 'nor its primed flag');
 }
 
 // ═══ 4. orthographic projection ════════════════════════════════════════════
@@ -254,6 +328,123 @@ console.log('\n── 6. hidden-tab buffer ──');
   eq(M.pushToast(dh, purchase('d1'), { hidden: true }).reason, 'duplicate', 'the hidden path still dedupes');
 }
 
+// ═══ 6b. F4 — the aggregate must never invent a total ══════════════════════
+console.log('\n── 6b. aggregate money honesty (F4) ──');
+{
+  const buy = (id, over) => purchase(id, over);
+  const bufferUp = (evs) => {
+    let s = M.createToastState();
+    for (const ev of evs) s = M.pushToast(s, ev, { hidden: true }).state;
+    return M.flushBuffer(s).emitted[0];
+  };
+
+  // (a) MIXED CURRENCIES — summing USD + JPY + EUR into one figure invents a
+  // number that looks entirely plausible on a dashboard.
+  const mixed = bufferUp([
+    buy('m1', { value: 100, currency: 'USD' }),
+    buy('m2', { value: 100, currency: 'JPY' }),
+    buy('m3', { value: 100, currency: 'EUR' }),
+  ]);
+  eq(mixed.count, 3, 'the mixed batch counts all three');
+  eq(mixed.amount, null, 'and refuses a total (was $300 across three currencies)');
+  eq(mixed.mixedCurrencies, true, 'flagging WHY');
+  eq(mixed.currencies.sort(), ['EUR', 'JPY', 'USD'], 'and naming the currencies seen');
+
+  // One currency throughout ⇒ a real total is fine.
+  const same = bufferUp([
+    buy('s1', { value: 100, currency: 'USD' }),
+    buy('s2', { value: 50, currency: 'USD' }),
+    buy('s3', { value: 25, currency: 'USD' }),
+  ]);
+  eq(same.amount, 175, 'a single-currency batch DOES total');
+  eq(same.mixedCurrencies, false, 'and is not flagged mixed');
+  eq(same.currency, 'USD', 'carrying the currency');
+
+  // (b) NOTHING PRICED — $0.00 would read as five free orders.
+  const unpriced = bufferUp([
+    buy('u1', { value: null }), buy('u2', { value: null }), buy('u3', { value: null }),
+    buy('u4', { value: null }), buy('u5', { value: null }),
+  ]);
+  eq(unpriced.count, 5, 'the all-unpriced batch counts all five');
+  eq(unpriced.amount, null, 'and refuses a total (was $0.00 — "five free orders")');
+  eq(unpriced.unpriced, 5, 'reporting how many were unpriced');
+  eq(unpriced.priced, 0, 'and that none carried a price');
+
+  // Partially priced: a real total, plus the shortfall.
+  const partial = bufferUp([
+    buy('p1', { value: 10, currency: 'USD' }), buy('p2', { value: 20, currency: 'USD' }),
+    buy('p3', { value: null, currency: 'USD' }), buy('p4', { value: null, currency: 'USD' }),
+    buy('p5', { value: null, currency: 'USD' }),
+  ]);
+  eq(partial.amount, 30, 'a partly-priced batch totals what it CAN');
+  eq(partial.unpriced, 3, 'and says how many it could not');
+  eq(partial.priced, 2, 'and how many it could');
+
+  // A batch with no currency recorded at all. (Three events: at or below
+  // BUFFER_SAMPLE the buffer replays VERBATIM instead of aggregating, so a
+  // two-event batch would return the first toast, not a summary.)
+  const noCur = bufferUp([
+    buy('n1', { value: 10, currency: null }),
+    buy('n2', { value: 20, currency: null }),
+    buy('n3', { value: null, currency: null }),
+  ]);
+  eq(noCur.aggregate, true, 'three events DO aggregate');
+  eq(noCur.amount, 30, 'amounts with no currency still total');
+  eq(noCur.currency, null, 'but the unit stays unknown');
+  eq(M.fmtMoneyParts(noCur.amount, noCur.currency).hasCurrency, false,
+    'so it renders bare, never as dollars');
+}
+
+// ═══ 6c. F3 — the batch path (reconnect after an absence) ══════════════════
+// useLiveFeed CLOSES the stream while the tab is hidden, so events never
+// trickle in behind the operator's back — the whole gap lands at once in the
+// reconnect's snapshot backfill. That made the hidden-tab buffer dead code and
+// meant a 20-minute absence produced a wall of toasts and one chime per sale.
+// The buffer is now reached by BATCHING that backfill instead.
+console.log('\n── 6c. batch coalescing (F3) ──');
+{
+  // The batch path is pushToast(hidden:true) x N followed by one flush — the
+  // same primitives usePaymentToasts.pushBatch composes.
+  const batch = (n) => {
+    let s = M.createToastState();
+    for (let i = 0; i < n; i++) {
+      s = M.pushToast(s, purchase(`b${i}`, { value: 10, currency: 'USD' }), { hidden: true }).state;
+    }
+    return M.flushBuffer(s);
+  };
+
+  const many = batch(23);
+  eq(many.emitted.length, 1, '23 backfilled sales produce ONE toast, not 23');
+  eq(many.emitted[0].aggregate, true, 'and it is the summary row');
+  eq(many.emitted[0].count, 23, 'carrying the true count');
+  eq(many.emitted[0].amount, 230, 'and the real total');
+  eq(many.state.toasts.length, 1, 'the stack holds exactly one row');
+
+  // A short glance away still replays verbatim — two sales should look normal.
+  const few = batch(2);
+  eq(few.emitted.length, 2, 'two backfilled sales replay VERBATIM');
+  ok(few.emitted.every((t) => !t.aggregate), 'neither is a summary');
+
+  // Alert gating over the same batch: every key is consumed, so the NEXT tick
+  // is silent even though the chime itself only sounds once.
+  let a = M.createAlertState();
+  const evs = Array.from({ length: 23 }, (_, i) => purchase(`b${i}`));
+  let allowed = 0;
+  for (const ev of evs) {
+    const r = M.shouldAlert(a, ev);
+    a = r.state;
+    if (r.allowed) allowed++;
+  }
+  eq(allowed, 23, 'all 23 pass the gate (so all 23 dedupe keys are consumed)');
+  let again = 0;
+  for (const ev of evs) {
+    const r = M.shouldAlert(a, ev);
+    a = r.state;
+    if (r.allowed) again++;
+  }
+  eq(again, 0, 'and a re-delivery of the same backfill is entirely silent');
+}
+
 // ═══ 7. alert gating ═══════════════════════════════════════════════════════
 console.log('\n── 7. alert gating ──');
 {
@@ -315,9 +506,18 @@ console.log('\n── 8. toast view-model ──');
 
   eq(M.fmtMoney(59, 'USD'), '$59.00', 'fmtMoney formats');
   eq(M.fmtMoney(null), null, 'fmtMoney(null) → null (the caller renders a dash)');
-  eq(M.fmtMoney(0), '$0.00', 'fmtMoney(0) is $0.00 — zero is a real amount');
+  eq(M.fmtMoney(0, 'USD'), '$0.00', 'fmtMoney(0, USD) is $0.00 — zero is a real amount');
   ok(typeof M.fmtMoney(10, 'NOTACURRENCY') === 'string',
     'a bogus ISO code falls back instead of throwing RangeError');
+
+  // F4(c): an UNRECORDED currency is never dressed up as dollars.
+  eq(M.fmtMoney(59), '59.00', 'no currency ⇒ a BARE number, never a $ we did not read');
+  eq(M.fmtMoney(59, null), '59.00', 'an explicit null currency is bare too');
+  eq(M.fmtMoney(59, '  '), '59.00', 'a whitespace currency is bare too');
+  eq(M.fmtMoneyParts(59, null).hasCurrency, false, 'and the caller is TOLD the unit is unknown');
+  eq(M.fmtMoneyParts(59, 'USD').hasCurrency, true, 'a real currency reports true');
+  eq(M.fmtMoneyParts(59, 'jpy').currency, 'JPY', 'the code is normalised upward');
+  eq(M.fmtMoneyParts(null, 'USD').text, null, 'a null amount still yields no text');
   eq(M.fmtInt(null), '—', 'fmtInt(null) → dash, never 0');
   eq(M.fmtInt(1234), '1,234', 'fmtInt groups');
 

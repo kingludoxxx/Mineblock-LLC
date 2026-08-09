@@ -36,20 +36,53 @@ export const VOLUME_DEFAULT = 0.5;
 // exports both components and helpers trips react-refresh/only-export-components,
 // which was a standing lint error on this page.)
 
-/** null/NaN → null, NEVER 0. A dash means "not measured"; 0 means "none". */
-export function fmtMoney(v, currency = 'USD') {
-  if (v == null || !Number.isFinite(Number(v))) return null;
-  const code = String(currency || 'USD').toUpperCase();
+/**
+ * null/NaN → null, NEVER 0. A dash means "not measured"; 0 means "none".
+ *
+ * A NULL currency is NOT defaulted to USD. co_sessions.currency is nullable,
+ * and rendering "$59.00" for a row whose currency we never read is a claim
+ * about the money, not a formatting nicety — a JPY sale would be off by ~150x.
+ * With no currency the number is formatted BARE and `fmtMoneyParts` tells the
+ * caller to caption it.
+ */
+export function fmtMoney(v, currency) {
+  return fmtMoneyParts(v, currency).text;
+}
+
+/**
+ * The same formatting, but with the provenance the UI needs:
+ *   { text, hasCurrency, currency }
+ * `hasCurrency: false` means the amount is real but its unit is unknown, and
+ * the caller must say so rather than let a bare number read as dollars.
+ */
+export function fmtMoneyParts(v, currency) {
+  if (v == null || !Number.isFinite(Number(v))) {
+    return { text: null, hasCurrency: false, currency: null };
+  }
+  const n = Number(v);
+  const raw = typeof currency === 'string' ? currency.trim() : '';
+  if (!raw) {
+    return {
+      text: new Intl.NumberFormat('en-US', {
+        minimumFractionDigits: 2, maximumFractionDigits: 2,
+      }).format(n),
+      hasCurrency: false,
+      currency: null,
+    };
+  }
+  const code = raw.toUpperCase();
   try {
-    return new Intl.NumberFormat('en-US', {
-      style: 'currency',
+    return {
+      text: new Intl.NumberFormat('en-US', {
+        style: 'currency', currency: code, maximumFractionDigits: 2,
+      }).format(n),
+      hasCurrency: true,
       currency: code,
-      maximumFractionDigits: 2,
-    }).format(Number(v));
+    };
   } catch {
     // Intl throws RangeError on a bogus ISO code — a bad currency string must
-    // not blank out a real amount.
-    return `${code} ${Number(v).toFixed(2)}`;
+    // not blank out a real amount, but it must not be passed off as valid.
+    return { text: `${code} ${n.toFixed(2)}`, hasCurrency: true, currency: code };
   }
 }
 
@@ -106,33 +139,45 @@ export function hasCentroid(code) {
 /**
  * snapshot.geo → what the globe can actually draw.
  *
- * Returns { points, offMap, offMapVisitors, plotted, total } where `points` is
- * sorted by visitors DESC (so the biggest markers are painted last / on top)
- * and every entry carries its own centroid. `offMap` names the codes with no
- * centroid — Natural Earth 110m has no polygon for them and no supplement was
- * entered — so the UI can say "3 countries not on the map" instead of lying by
- * omission.
+ * Returns { points, offMap, offMapVisitors, plotted, malformed, total }.
+ *
+ * `points` is sorted by visitors ASCENDING — deliberately, because the canvas
+ * paints in array order and the biggest marker must land LAST so it sits on
+ * top. (The legend re-reverses it.) Every entry carries its own centroid.
+ *
+ * `offMap` names the codes with no centroid — Natural Earth 110m has no
+ * polygon for them and no supplement was entered — so the UI can say "3
+ * countries not on the map" instead of lying by omission. `malformed` counts
+ * rows whose visitor count was not a usable number; those are NOT plotted as
+ * zero-visitor markers, because a marker asserts that somebody was there.
  */
 export function deriveGeoPoints(geo) {
   const rows = Array.isArray(geo?.by_country) ? geo.by_country : [];
   const points = [];
   const offMap = [];
   let offMapVisitors = 0;
+  let malformed = 0;
   let total = 0;
 
   for (const r of rows) {
     const cc = typeof r?.country === 'string' ? r.country.trim().toUpperCase() : '';
+    if (!cc) { malformed++; continue; }
     const visitors = Number(r?.visitors);
-    const n = Number.isFinite(visitors) && visitors > 0 ? visitors : 0;
-    if (!cc) continue;
-    total += n;
+    if (!Number.isFinite(visitors) || visitors <= 0) {
+      // A missing, negative or NaN count is not "zero visitors from there" —
+      // it is an unusable row. Plotting it would put a marker on a country we
+      // have no evidence for.
+      malformed++;
+      continue;
+    }
+    total += visitors;
     const c = lookupCentroid(cc);
     if (!c) {
       offMap.push(cc);
-      offMapVisitors += n;
+      offMapVisitors += visitors;
       continue;
     }
-    points.push({ country: cc, label: countryLabel(cc), visitors: n, lat: c.lat, lon: c.lon });
+    points.push({ country: cc, label: countryLabel(cc), visitors, lat: c.lat, lon: c.lon });
   }
 
   points.sort((a, b) => a.visitors - b.visitors || a.country.localeCompare(b.country));
@@ -141,6 +186,7 @@ export function deriveGeoPoints(geo) {
     offMap,
     offMapVisitors,
     plotted: points.length,
+    malformed,
     total,
   };
 }
@@ -160,23 +206,67 @@ export function deriveGeoPoints(geo) {
  * from `prev` entirely is only an arrival when `prev` was a real reading —
  * on the very first snapshot every country would otherwise "arrive" at once.
  */
-export function diffArrivals(prev, next) {
-  const out = [];
-  if (!Array.isArray(next)) return out;
-  const isFirst = !Array.isArray(prev);
-  if (isFirst) return out;
+export function createArrivalState() {
+  return { known: new Map(), primed: false };
+}
 
-  const before = new Map();
-  for (const p of prev) {
-    if (p && typeof p.country === 'string') before.set(p.country, Number(p.visitors) || 0);
-  }
-  for (const p of next) {
+/** A single tick can never legitimately add more than this to one country. */
+export const MAX_ARRIVAL_GAIN = 500;
+
+/**
+ * Track which countries GAINED visitors, across snapshots.
+ *
+ * Stateful rather than a two-list diff, because a two-list diff is wrong in
+ * three ways that all produce PHANTOM ripples:
+ *
+ *   1. TRUNCATION. The server ships only the top N countries (geo.truncated /
+ *      geo.countries_total). A country crossing into the cut is absent from
+ *      the previous list and would report its ENTIRE running total as if it
+ *      had just arrived — a country at 300 visitors ripples as +300. While the
+ *      list is truncated, a country we have never seen is therefore recorded
+ *      SILENTLY: we cannot tell "new" from "newly visible", and guessing wrong
+ *      invents traffic.
+ *   2. DEGRADED READS. A tick that returns 12 countries instead of 50 must not
+ *      erase the other 38 — on recovery they would all re-arrive. Countries
+ *      ABSENT from a tick are left untouched in `known` for exactly this
+ *      reason, which is what makes the 50 → 12 → 50 round trip silent.
+ *   3. MIDNIGHT ROLLOVER. Counts reset to near zero at UTC midnight. A country
+ *      whose count FELL is re-baselined DOWNWARD with no arrival emitted, so
+ *      the next genuine visitor ripples instead of the board staying dead
+ *      until it climbs past yesterday's peak.
+ *
+ * Returns { state, arrivals }; `arrivals` carries `gained`, capped at
+ * MAX_ARRIVAL_GAIN so a bad read cannot spray hundreds of ripples.
+ */
+export function trackArrivals(state, points, opts = {}) {
+  const { truncated = false } = opts;
+  const known = new Map(state.known);
+  const arrivals = [];
+  const list = Array.isArray(points) ? points : [];
+
+  // The FIRST reading is a baseline, never an arrival — otherwise opening the
+  // board lights up every country at once.
+  const priming = !state.primed;
+
+  for (const p of list) {
     if (!p || typeof p.country !== 'string') continue;
-    const was = before.get(p.country) ?? 0;
-    const now = Number(p.visitors) || 0;
-    if (now > was) out.push({ ...p, gained: now - was });
+    const n = Number(p.visitors);
+    const now = Number.isFinite(n) && n > 0 ? n : 0;
+    const was = known.get(p.country);
+    known.set(p.country, now);
+
+    if (priming) continue;
+    if (was === undefined) {
+      // Never seen before. Only a claim when the list is COMPLETE.
+      if (truncated) continue;
+      arrivals.push({ ...p, gained: Math.min(now, MAX_ARRIVAL_GAIN) });
+      continue;
+    }
+    if (now > was) arrivals.push({ ...p, gained: Math.min(now - was, MAX_ARRIVAL_GAIN) });
+    // now < was ⇒ rollover / degraded read: re-baselined above, no arrival.
   }
-  return out;
+
+  return { state: { known, primed: true }, arrivals };
 }
 
 // ── orthographic projection ─────────────────────────────────────────────────
@@ -194,7 +284,26 @@ const DEG = Math.PI / 180;
  * `visible` is false for the far hemisphere — the caller must not draw those,
  * or the back of the globe bleeds through the front.
  */
-export function project(lat, lon, { rotation = 0, tilt = 0, radius = 1, cx = 0, cy = 0 } = {}) {
+export function project(lat, lon, opts) {
+  return projectInto({ x: 0, y: 0, z: 0, visible: false }, lat, lon, opts);
+}
+
+/**
+ * The same projection, written INTO a caller-owned object.
+ *
+ * The globe projects ~4,200 points per frame (land + graticule + markers). At
+ * 60fps `project` alone was allocating a quarter of a million short-lived
+ * objects a second and handing the GC a sawtooth. `drawGlobe` reuses one
+ * scratch object; `project` is kept as the allocating convenience wrapper for
+ * callers (and tests) that want a value back.
+ */
+export function projectInto(out, lat, lon, opts) {
+  const rotation = opts?.rotation ?? 0;
+  const tilt = opts?.tilt ?? 0;
+  const radius = opts?.radius ?? 1;
+  const cx = opts?.cx ?? 0;
+  const cy = opts?.cy ?? 0;
+
   const phi = lat * DEG;
   const lambda = (lon + rotation) * DEG;
   const t = tilt * DEG;
@@ -209,12 +318,11 @@ export function project(lat, lon, { rotation = 0, tilt = 0, radius = 1, cx = 0, 
   const y2 = y * Math.cos(t) - z * Math.sin(t);
   const z2 = y * Math.sin(t) + z * Math.cos(t);
 
-  return {
-    x: cx + radius * x,
-    y: cy - radius * y2, // canvas Y grows downward
-    z: z2,
-    visible: z2 >= 0,
-  };
+  out.x = cx + radius * x;
+  out.y = cy - radius * y2; // canvas Y grows downward
+  out.z = z2;
+  out.visible = z2 >= 0;
+  return out;
 }
 
 // ── payment events ──────────────────────────────────────────────────────────
@@ -272,7 +380,9 @@ export function toastFromEvent(ev) {
   return {
     upsell,
     amount: Number.isFinite(amount) ? amount : null, // null = unrecorded, NOT free
-    currency: ev?.currency || 'USD',
+    // NOT defaulted to USD — see fmtMoneyParts. co_sessions.currency is
+    // nullable and guessing the unit misstates the money.
+    currency: typeof ev?.currency === 'string' && ev.currency.trim() ? ev.currency.trim() : null,
     where: ev?.funnel_name || (ev?.funnel_id ? `funnel ${String(ev.funnel_id).slice(0, 12)}…` : ''),
     page: ev?.page_title || ev?.page_slug || '',
     country: cc,
@@ -349,16 +459,25 @@ export function pushToast(state, ev, opts = {}) {
   const toast = toastFromEvent(ev);
 
   if (hidden) {
-    const buf = state.buffer || { count: 0, total: 0, items: [], allUpsell: true, currency: null };
+    const buf = state.buffer || {
+      count: 0, total: 0, unpriced: 0, priced: 0, items: [], allUpsell: true, currencies: [],
+    };
+    // Currencies are COLLECTED, not collapsed into the first one seen. Summing
+    // USD + JPY + EUR into "$300" is a fabricated number, and it is the kind
+    // that looks perfectly plausible on a dashboard.
+    const currencies = toast.currency && !buf.currencies.includes(toast.currency)
+      ? [...buf.currencies, toast.currency]
+      : buf.currencies;
     const next = {
       count: buf.count + 1,
       // A null amount is "unrecorded" — it must not be summed as 0, or the
       // "collected while you were away" total silently understates itself.
       total: buf.total + (toast.amount ?? 0),
-      unpriced: (buf.unpriced || 0) + (toast.amount == null ? 1 : 0),
+      priced: buf.priced + (toast.amount == null ? 0 : 1),
+      unpriced: buf.unpriced + (toast.amount == null ? 1 : 0),
       items: buf.items.length < BUFFER_SAMPLE ? [...buf.items, toast] : buf.items,
       allUpsell: buf.allUpsell && toast.upsell,
-      currency: buf.currency || toast.currency,
+      currencies,
     };
     return { state: { ...state, seen, buffer: next }, emitted: null, dropped: [], reason: 'buffered' };
   }
@@ -390,15 +509,25 @@ export function flushBuffer(state, opts = {}) {
       dropped.push(...r.dropped);
     }
   } else {
+    // THREE distinct honest outcomes, never one fake number:
+    //   • every event priced in ONE currency  → a real total
+    //   • more than one currency              → NO total; "mixed currencies"
+    //   • nothing priced at all               → NO total; "amounts unrecorded"
+    const mixed = buf.currencies.length > 1;
+    const nonePriced = buf.priced === 0;
+    const showTotal = !mixed && !nonePriced;
     const r = emit(s, {
       aggregate: true,
       count: buf.count,
       upsell: buf.allUpsell,
-      amount: buf.total,
-      currency: buf.currency || 'USD',
+      amount: showTotal ? buf.total : null,
+      currency: showTotal ? (buf.currencies[0] || null) : null,
+      mixedCurrencies: mixed,
+      currencies: buf.currencies,
       // The aggregate total is only the whole story when every event carried a
       // price. Carry the shortfall rather than presenting a partial sum as one.
       unpriced: buf.unpriced || 0,
+      priced: buf.priced,
       where: '',
       page: '',
       country: null,
@@ -430,7 +559,10 @@ export function removeToast(state, key) {
 export function clampVolume(v) {
   // Same trap as toastFromEvent: Number(null) is 0, so a bare finite-check
   // reads "no stored preference" as "the operator set it to silent".
-  if (v == null || v === '' || typeof v === 'boolean') return VOLUME_DEFAULT;
+  // Number('   ') is ALSO 0, so a whitespace-only stored value has to be
+  // trimmed away before the check or it mutes the board silently.
+  if (v == null || typeof v === 'boolean') return VOLUME_DEFAULT;
+  if (typeof v === 'string' && v.trim() === '') return VOLUME_DEFAULT;
   const n = Number(v);
   if (!Number.isFinite(n)) return VOLUME_DEFAULT;
   return Math.min(VOLUME_MAX, Math.max(VOLUME_MIN, n));

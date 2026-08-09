@@ -28,21 +28,30 @@ const eq = (a, b, m) => ok(Object.is(a, b), m, `got ${a} want ${b}`);
 /** A recording CanvasRenderingContext2D stand-in. */
 function fakeCtx() {
   const calls = [];
-  const pts = [];   // every coordinate handed to moveTo/lineTo/arc
+  const pts = [];   // every coordinate handed to moveTo/lineTo/arc, in CSS px
   const rec = (op) => (...args) => { calls.push([op, ...args]); };
+  // The marker halos are drawn at the ORIGIN under a translating transform
+  // (the gradient cache is position-independent), so a recorder that ignored
+  // the transform would report every marker at 0,0. Track it and record the
+  // EFFECTIVE coordinate.
+  let sx = 1, sy = 1, tx = 0, ty = 0;
+  const eff = (x, y) => [(sx * x + tx) / sx, (sy * y + ty) / sy];
   const ctx = {
     calls, pts,
     globalAlpha: 1, globalCompositeOperation: 'source-over',
     fillStyle: null, strokeStyle: null, lineWidth: 1,
-    setTransform: rec('setTransform'),
+    setTransform: (a, b, c, d, e, f) => {
+      calls.push(['setTransform', a, b, c, d, e, f]);
+      sx = a; sy = d; tx = e; ty = f;
+    },
     clearRect: rec('clearRect'),
     beginPath: rec('beginPath'),
     closePath: rec('closePath'),
     fill: rec('fill'),
     stroke: rec('stroke'),
-    moveTo: (x, y) => { calls.push(['moveTo', x, y]); pts.push([x, y]); },
-    lineTo: (x, y) => { calls.push(['lineTo', x, y]); pts.push([x, y]); },
-    arc: (x, y, r, a, b) => { calls.push(['arc', x, y, r, a, b]); pts.push([x, y]); },
+    moveTo: (x, y) => { calls.push(['moveTo', x, y]); pts.push(eff(x, y)); },
+    lineTo: (x, y) => { calls.push(['lineTo', x, y]); pts.push(eff(x, y)); },
+    arc: (x, y, r, a, b) => { calls.push(['arc', x, y, r, a, b]); pts.push(eff(x, y)); },
     createLinearGradient: (...a) => { calls.push(['createLinearGradient', ...a]); return { addColorStop() {} }; },
     createRadialGradient: (...a) => { calls.push(['createRadialGradient', ...a]); return { addColorStop() {} }; },
   };
@@ -114,7 +123,7 @@ console.log('\n── 3. hemisphere culling ──');
 {
   // With rotation 0 / tilt 0, longitude 0 faces the viewer and +/-180 is behind.
   const ctx = fakeCtx();
-  drawGlobe(ctx, {
+  const out = drawGlobe(ctx, {
     points: [
       { lat: 0, lon: 0, visitors: 10 },     // dead centre, visible
       { lat: 0, lon: 180, visitors: 10 },   // antipode, hidden
@@ -123,7 +132,7 @@ console.log('\n── 3. hemisphere culling ──');
     ripples: [],
     max: 10,
   }, { ...OPTS, rotation: 0, tilt: 0, landRings: [] });
-  eq(ctx.calls.filter((c) => c[0] === 'createRadialGradient').length, 1,
+  eq(out.markersDrawn, 1,
     'only the front-facing country is drawn — the two behind the globe are culled');
 }
 
@@ -232,12 +241,67 @@ console.log('\n── 7. rotation ──');
     const out = drawGlobe(ctx, { points: [{ lat: 0, lon: 0, visitors: 1 }], ripples: [], max: 1 },
       { ...OPTS, rotation: rot, tilt: 0, landRings: [] });
     if (out.markersDrawn === 0) return null;
-    const arcs = ctx.calls.filter((c) => c[0] === 'arc');
-    return arcs[arcs.length - 1][1];
+    // Read the EFFECTIVE coordinate, not the raw arc argument: markers are
+    // drawn at the origin under a translating transform so the cached gradient
+    // can be reused, so the raw x is always 0.
+    return ctx.pts[ctx.pts.length - 1][0];
   };
   const a = at(0), b = at(45);
   ok(a !== null && b !== null && Math.abs(a - b) > 1, 'rotating the globe moves the marker');
   eq(at(180), null, 'rotating a point to the far side culls it');
+}
+
+// ═══ 8. F6 — the gradient cache ════════════════════════════════════════════
+// Before the cache, createRadialGradient ran once per marker per frame: ~200
+// countries at 60fps is ~12,000 gradient objects a second, each re-parsed by
+// the canvas implementation. Cached gradients are built at the origin and
+// positioned with the transform, so the count is bounded by the number of
+// DISTINCT quantised radii, not by markers × frames.
+console.log('\n── 8. gradient cache (F6) ──');
+{
+  const points = Object.keys(COUNTRY_CENTROIDS)
+    .slice(0, 200)
+    .map((code) => ({ ...centroid(code), country: code, visitors: 20 }));
+  const scene = { points, ripples: [], max: 20 };
+
+  const ctx = fakeCtx();
+  let markersTotal = 0;
+  const FRAMES = 30;
+  for (let f = 0; f < FRAMES; f++) {
+    const out = drawGlobe(ctx, scene, { ...OPTS, rotation: f * 7 });
+    markersTotal += out.markersDrawn;
+  }
+  const gradients = count(ctx, 'createRadialGradient');
+  ok(markersTotal > 1000, `${markersTotal} markers drawn across ${FRAMES} frames`);
+  ok(gradients <= 4, `only ${gradients} gradient(s) built for all of them (was 1 per marker per frame)`);
+  console.log(`      measured: ${markersTotal} markers → ${gradients} createRadialGradient calls`);
+
+  // Same-size markers must collapse to ONE cached gradient.
+  const ctx2 = fakeCtx();
+  drawGlobe(ctx2, {
+    points: [
+      { lat: 0, lon: 0, visitors: 10 },
+      { lat: 10, lon: 10, visitors: 10 },
+      { lat: -10, lon: -10, visitors: 10 },
+    ],
+    ripples: [], max: 10,
+  }, { ...OPTS, rotation: 0, tilt: 0, landRings: [] });
+  eq(count(ctx2, 'createRadialGradient'), 1, 'three equal-sized markers share ONE gradient');
+
+  // A fresh context must NOT reuse another context's gradient (a canvas
+  // gradient is bound to the context that created it — sharing throws in a
+  // real browser).
+  const ctx3 = fakeCtx();
+  drawGlobe(ctx3, { points: [{ lat: 0, lon: 0, visitors: 10 }], ripples: [], max: 10 },
+    { ...OPTS, rotation: 0, tilt: 0, landRings: [] });
+  eq(count(ctx3, 'createRadialGradient'), 1, 'a NEW context builds its own gradient');
+
+  // And the transform is always restored, or the next frame draws offset.
+  // calls are ['setTransform', a, b, c, d, e, f] — the translation is e,f at
+  // indices 5 and 6, not 4 and 5.
+  const last = ctx3.calls.filter((c) => c[0] === 'setTransform').pop();
+  eq(last[5], 0, 'the frame ends with the translation reset to 0 (x)');
+  eq(last[6], 0, 'the frame ends with the translation reset to 0 (y)');
 }
 
 console.log(`\n${pass}/${pass + fail} passed`);

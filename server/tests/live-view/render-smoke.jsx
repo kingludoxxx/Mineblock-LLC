@@ -131,6 +131,58 @@ console.log('\n── 2. PaymentToastStack ──');
   has(withLoc, 'Germany', 'a location renders when the event carries one');
 }
 
+// ═══ 2b. F4 — money honesty, rendered ══════════════════════════════════════
+console.log('\n── 2b. money honesty (F4) ──');
+{
+  const T = (over) => R(<PaymentToastStack onDismiss={() => {}} toasts={[
+    { key: 'k', upsell: false, where: 'F', page: 'P', exiting: false, ...over },
+  ]} />);
+
+  // (a) mixed currencies: no total, and the reason is named.
+  const mixed = T({ aggregate: true, count: 3, amount: null, currency: null,
+    mixedCurrencies: true, currencies: ['USD', 'JPY', 'EUR'], unpriced: 0, priced: 3 });
+  has(mixed, '3 payments', 'a mixed-currency batch still reports its COUNT');
+  has(mixed, 'lv-toast-no-total', 'and renders the no-total state');
+  has(mixed, 'mixed currencies', 'naming the reason');
+  has(mixed, 'USD, JPY, EUR', 'and listing the currencies seen');
+  lacks(mixed, '$300', 'and NEVER the fabricated cross-currency sum');
+  lacks(mixed, '$0.00', 'and never $0.00 either');
+
+  // (b) nothing priced: no total, different reason.
+  const unpriced = T({ aggregate: true, count: 5, amount: null, currency: null,
+    mixedCurrencies: false, currencies: [], unpriced: 5, priced: 0 });
+  has(unpriced, '5 payments', 'an all-unpriced batch reports its count');
+  has(unpriced, 'amounts unrecorded', 'and says the amounts were unrecorded');
+  has(unpriced, '5 unpriced', 'and how many');
+  lacks(unpriced, '$0.00', 'NEVER $0.00 — that would read as five free orders');
+
+  // A real single-currency total still renders normally.
+  const real = T({ aggregate: true, count: 4, amount: 175, currency: 'USD',
+    mixedCurrencies: false, currencies: ['USD'], unpriced: 0, priced: 4 });
+  has(real, '$175.00', 'a single-currency batch DOES show its total');
+  lacks(real, 'mixed currencies', 'with no mixed-currency note');
+
+  // (c) an amount with no currency: bare number + an explicit caption.
+  const noCur = T({ amount: 59, currency: null });
+  has(noCur, '59.00', 'an amount with no currency renders BARE');
+  lacks(noCur, '$59.00', 'never with an assumed dollar sign');
+  has(noCur, 'lv-toast-no-currency', 'and is captioned');
+  has(noCur, 'currency not recorded', 'in words');
+
+  const withCur = T({ amount: 59, currency: 'EUR' });
+  has(withCur, '\u20ac59.00', 'a recorded currency renders with its symbol');
+  lacks(withCur, 'currency not recorded', 'and carries no caption');
+
+  // The rail says the same thing.
+  const railNoCur = R(<RailCard ev={{ id: 'r', type: 'purchase', ts: null, value: 59, currency: null }} />);
+  has(railNoCur, '59.00', 'the rail renders a currency-less amount bare');
+  lacks(railNoCur, '$59.00', 'never assuming USD');
+  has(railNoCur, 'lv-row-no-currency', 'and marks it');
+  const railCur = R(<RailCard ev={{ id: 'r2', type: 'purchase', ts: null, value: 59, currency: 'USD' }} />);
+  has(railCur, '$59.00', 'a recorded currency renders normally in the rail');
+  lacks(railCur, 'no currency', 'with no marker');
+}
+
 // ═══ 3. SaleAlertControls ══════════════════════════════════════════════════
 console.log('\n── 3. SaleAlertControls ──');
 {

@@ -90,6 +90,39 @@ export default function usePaymentToasts({ onPayment } = {}) {
   }, [commit]);
 
   /**
+   * Offer a BATCH of events that arrived together.
+   *
+   * This is the path a resync takes, and it is why the coalescing buffer is
+   * reachable at all. useLiveFeed CLOSES the stream while the tab is hidden,
+   * so events never trickle in behind the operator's back — instead the whole
+   * gap lands at once in the reconnect's snapshot backfill. Pushed one by one
+   * that is a wall of toasts and a machine-gun of chimes; routed through the
+   * buffer it becomes a single "N payments while you were away" row.
+   *
+   * Below BUFFER_SAMPLE the events still replay verbatim, so two sales during
+   * a short glance away look exactly as they would have live.
+   *
+   * Returns the number of events that were genuinely new.
+   */
+  const pushBatch = useCallback((events) => {
+    if (!aliveRef.current) return 0;
+    const list = Array.isArray(events) ? events : [];
+    if (list.length === 0) return 0;
+    if (list.length === 1) return push(list[0]) === 'emitted' ? 1 : 0;
+
+    let s = stateRef.current;
+    let accepted = 0;
+    for (const ev of list) {
+      const r = pushToast(s, ev, { armed: armedRef.current, hidden: true, max: TOAST_MAX });
+      s = r.state;
+      if (r.reason === 'buffered') accepted++;
+    }
+    stateRef.current = s;
+    commit(flushBuffer(stateRef.current, { max: TOAST_MAX }));
+    return accepted;
+  }, [commit, push]);
+
+  /**
    * Seed the dedupe set from a snapshot's backfill, then arm.
    * Idempotent on the ARM (a resync re-seeds but never disarms), and it is the
    * reason a reconnect does not fire the whole afternoon's sales at once.
@@ -135,7 +168,7 @@ export default function usePaymentToasts({ onPayment } = {}) {
   }, [commit]);
 
   return useMemo(
-    () => ({ toasts, push, dismiss, seedAndArm, reset }),
-    [toasts, push, dismiss, seedAndArm, reset],
+    () => ({ toasts, push, pushBatch, dismiss, seedAndArm, reset }),
+    [toasts, push, pushBatch, dismiss, seedAndArm, reset],
   );
 }

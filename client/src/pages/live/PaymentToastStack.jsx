@@ -19,13 +19,23 @@
 //                additive server field supplies one, and stays absent until
 //                then rather than showing a placeholder.
 import { BadgeDollarSign, Flame, X } from 'lucide-react';
-import { fmtMoney, fmtInt } from './livePresentation.js';
+import { fmtMoneyParts, fmtInt } from './livePresentation.js';
 import './liveview.css';
 
 function ToastRow({ toast, onDismiss }) {
   const upsell = toast.upsell;
   const Icon = upsell ? Flame : BadgeDollarSign;
-  const money = fmtMoney(toast.amount, toast.currency);
+  const money = fmtMoneyParts(toast.amount, toast.currency);
+
+  // An aggregate with no total is NOT a $0.00 sale. Two ways it happens, and
+  // each gets its own words instead of a fabricated number:
+  //   • more than one currency in the batch — summing USD + JPY + EUR into
+  //     "$300" produces a plausible-looking figure that is simply invented;
+  //   • nothing in the batch carried a price at all.
+  const aggNoTotal = toast.aggregate && money.text == null;
+  const noTotalReason = toast.mixedCurrencies
+    ? `mixed currencies${toast.currencies?.length ? ` (${toast.currencies.join(', ')})` : ''}`
+    : 'amounts unrecorded';
 
   const title = toast.aggregate
     ? `${fmtInt(toast.count)} ${upsell ? 'upsells' : 'payments'} while you were away`
@@ -66,18 +76,29 @@ function ToastRow({ toast, onDismiss }) {
             </button>
           </div>
 
-          <div className="mt-1 flex items-baseline gap-2">
-            {money ? (
+          <div className="mt-1 flex flex-wrap items-baseline gap-x-2">
+            {money.text ? (
               <span className="lv-amount origin-left text-xl font-semibold tabular-nums text-text-primary">
-                {money}
+                {money.text}
+              </span>
+            ) : aggNoTotal ? (
+              // A batch we cannot total. Say WHICH reason — never $0.00.
+              <span className="text-[12px] italic text-text-faint" data-testid="lv-toast-no-total">
+                {noTotalReason}
               </span>
             ) : (
               // null ≠ 0. An unrecorded amount says so.
               <span className="text-[12px] italic text-text-faint">amount not recorded</span>
             )}
+            {/* A real number whose UNIT we never read must not read as dollars. */}
+            {money.text && !money.hasCurrency && (
+              <span className="text-[10px] text-text-faint" data-testid="lv-toast-no-currency">
+                currency not recorded
+              </span>
+            )}
             {toast.aggregate && toast.unpriced > 0 && (
               <span className="text-[10px] text-text-faint">
-                +{fmtInt(toast.unpriced)} unpriced
+                {money.text ? `+${fmtInt(toast.unpriced)} unpriced` : `${fmtInt(toast.unpriced)} unpriced`}
               </span>
             )}
           </div>

@@ -12,7 +12,36 @@
 // 60fps a per-frame array for each of ~3,100 land vertices would be 180k
 // allocations a second. The pure maths it stands on (project) is proven
 // separately in presentation.mjs.
-import { project } from './livePresentation.js';
+import { projectInto } from './livePresentation.js';
+
+// ── per-frame scratch ───────────────────────────────────────────────────────
+// One reused projection result for the whole module. The globe projects ~4,200
+// points per frame; allocating one object per point handed the GC ~250k
+// short-lived objects a second. drawGlobe is never re-entrant (one rAF loop
+// per canvas, and the loop is synchronous), so a module-level scratch is safe.
+const P0 = { x: 0, y: 0, z: 0, visible: false };
+
+// ── marker halo cache ───────────────────────────────────────────────────────
+// createRadialGradient was called once per marker per frame: 200 countries at
+// 60fps is 12,000 gradient objects a second, each one re-parsed by the canvas
+// implementation. A gradient is position-bound, so the cached ones are built at
+// the ORIGIN and moved into place with the transform instead.
+// Keyed by ctx so a remounted canvas gets its own (and the old one is
+// collectable), then by quantised radius.
+const haloCache = new WeakMap();
+
+function haloFor(ctx, key, radius) {
+  let byRadius = haloCache.get(ctx);
+  if (!byRadius) { byRadius = new Map(); haloCache.set(ctx, byRadius); }
+  let g = byRadius.get(key);
+  if (!g) {
+    g = ctx.createRadialGradient(0, 0, 0, 0, 0, radius);
+    g.addColorStop(0, COLORS.marker);
+    g.addColorStop(1, 'rgba(34, 197, 94, 0)');
+    byRadius.set(key, g);
+  }
+  return g;
+}
 
 export const RIPPLE_MS = 2600;
 
@@ -42,7 +71,7 @@ function tracePath(ctx, pts, opts, { closed = false } = {}) {
   let pen = false;
   let drew = false;
   for (let i = 0; i < pts.length; i += 2) {
-    const p = project(pts[i + 1], pts[i], opts);
+    const p = projectInto(P0, pts[i + 1], pts[i], opts);
     if (!p.visible) { pen = false; continue; }
     if (pen) ctx.lineTo(p.x, p.y);
     else { ctx.moveTo(p.x, p.y); pen = true; }
@@ -88,7 +117,7 @@ export function drawGlobe(ctx, scene, opts) {
     ctx.beginPath();
     let pen = false;
     for (let lon = -180; lon <= 180; lon += 4) {
-      const p = project(lat, lon, P);
+      const p = projectInto(P0, lat, lon, P);
       if (!p.visible) { pen = false; continue; }
       if (pen) ctx.lineTo(p.x, p.y); else { ctx.moveTo(p.x, p.y); pen = true; }
     }
@@ -98,7 +127,7 @@ export function drawGlobe(ctx, scene, opts) {
     ctx.beginPath();
     let pen = false;
     for (let lat = -90; lat <= 90; lat += 4) {
-      const p = project(lat, lon, P);
+      const p = projectInto(P0, lat, lon, P);
       if (!p.visible) { pen = false; continue; }
       if (pen) ctx.lineTo(p.x, p.y); else { ctx.moveTo(p.x, p.y); pen = true; }
     }
@@ -133,7 +162,7 @@ export function drawGlobe(ctx, scene, opts) {
     // Reverse iteration is load-bearing: splicing while walking forwards skips
     // the element after every removal.
     if (age > RIPPLE_MS) { ripples.splice(i, 1); continue; }
-    const p = project(ripples[i].lat, ripples[i].lon, P);
+    const p = projectInto(P0, ripples[i].lat, ripples[i].lon, P);
     if (!p.visible) continue;
     const t = age / RIPPLE_MS;
     ctx.beginPath();
@@ -153,28 +182,32 @@ export function drawGlobe(ctx, scene, opts) {
   const max = Math.max(1, scene.max || 1);
   ctx.globalCompositeOperation = 'lighter';
   for (const pt of scene.points || []) {
-    const p = project(pt.lat, pt.lon, P);
+    const p = projectInto(P0, pt.lat, pt.lon, P);
     if (!p.visible) continue;
     const share = Math.sqrt(Math.max(0, pt.visitors) / max);
-    const rad = 2 + share * 6;
+    // Quantised to 1/4 px so the halo cache has a small, bounded key space
+    // (~25 entries) instead of one gradient per distinct float radius.
+    const rad = Math.round((2 + share * 6) * 4) / 4;
+    const haloR = rad * 3.4;
     const depth = 0.35 + 0.65 * p.z; // dim toward the limb, for roundness
 
-    const halo = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, rad * 3.4);
-    halo.addColorStop(0, COLORS.marker);
-    halo.addColorStop(1, 'rgba(34, 197, 94, 0)');
+    // The cached gradient is built at the ORIGIN, so the marker is positioned
+    // with the transform rather than by rebuilding the gradient in place.
+    ctx.setTransform(dpr, 0, 0, dpr, p.x * dpr, p.y * dpr);
     ctx.globalAlpha = 0.42 * depth;
     ctx.beginPath();
-    ctx.arc(p.x, p.y, rad * 3.4, 0, Math.PI * 2);
-    ctx.fillStyle = halo;
+    ctx.arc(0, 0, haloR, 0, Math.PI * 2);
+    ctx.fillStyle = haloFor(ctx, rad, haloR);
     ctx.fill();
 
     ctx.globalAlpha = 0.95 * depth;
     ctx.beginPath();
-    ctx.arc(p.x, p.y, rad, 0, Math.PI * 2);
+    ctx.arc(0, 0, rad, 0, Math.PI * 2);
     ctx.fillStyle = COLORS.markerCore;
     ctx.fill();
     markersDrawn++;
   }
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.globalAlpha = 1;
   ctx.globalCompositeOperation = 'source-over';
 

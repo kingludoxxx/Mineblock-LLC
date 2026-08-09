@@ -141,12 +141,21 @@ export default function LiveViewPage() {
     if (!armedRef.current || !Array.isArray(feed)) return;
     const offered = offeredRef.current;
     // Oldest-first, so a burst toasts in the order it happened.
+    const fresh = [];
     for (let i = feed.length - 1; i >= 0; i--) {
       const ev = feed[i];
       if (!ev || !ev.id || offered.has(ev.id) || !isPaymentEvent(ev)) continue;
       offered.add(ev.id);
-      toastsRef.current.push(ev);
-      alertsRef.current.fire(ev);
+      fresh.push(ev);
+    }
+    if (fresh.length > 0) {
+      // BATCHED, not one-by-one. useLiveFeed closes the stream while the tab is
+      // hidden, so a reconnect delivers the entire gap in a single snapshot
+      // backfill. Pushed individually that is a wall of toasts and one chime
+      // per sale; batched it is one summary toast and one chime. A single new
+      // event still takes the ordinary path (pushBatch delegates for length 1).
+      toastsRef.current.pushBatch(fresh);
+      alertsRef.current.fireMany(fresh);
     }
     // The feed is capped at 100 by useLiveFeed; keep this set from outliving
     // it. The queue's own SEEN_MAX is the real dedupe — this is just a cheap

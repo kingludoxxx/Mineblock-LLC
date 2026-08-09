@@ -71,6 +71,37 @@ export default function useSaleAlerts() {
     return r.reason;
   }, []);
 
+  /**
+   * Ring ONCE for a batch that arrived together.
+   *
+   * Every event is still run through the gate so its dedupe key is consumed
+   * (otherwise the next tick would ring for all of them individually), but at
+   * most one chime is played. A reconnect after twenty minutes away should
+   * sound like one notification, not like a slot machine paying out.
+   *
+   * Returns how many events would have rung on their own.
+   */
+  const fireMany = useCallback((events) => {
+    const list = Array.isArray(events) ? events : [];
+    let allowed = 0;
+    for (const ev of list) {
+      const r = shouldAlert(gateRef.current, ev, {
+        muted: chaChing.isMuted(),
+        volume: chaChing.getVolume(),
+        armed: armedRef.current,
+        supported: chaChing.isSupported(),
+      });
+      gateRef.current = r.state;
+      if (r.allowed) allowed++;
+    }
+    if (allowed > 0) {
+      try {
+        Promise.resolve(chaChing.play({ volume: chaChing.getVolume() })).catch(() => {});
+      } catch { /* sound is never load-bearing */ }
+    }
+    return allowed;
+  }, []);
+
   /** Arm after the first snapshot — otherwise a reconnect replays the day. */
   const arm = useCallback(() => {
     armedRef.current = true;
@@ -113,6 +144,7 @@ export default function useSaleAlerts() {
 
   return {
     fire,
+    fireMany,
     arm,
     armed,
     sound: {

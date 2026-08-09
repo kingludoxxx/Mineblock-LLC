@@ -3039,3 +3039,68 @@ branch is based on 36b57d5 and touches only client/src/pages/live/** and
 server/tests/live-view/**, so the merge should be disjoint.
 STATUS: COMPLETE
 ---
+
+---
+TIMESTAMP: 2026-08-10 01:40
+TASK: Live View presentation — review round (FIX-FIRST: F1, F2, F4, F5 gating; F3, F6, F7)
+BUILT: Fixes for all seven review findings, plus the harness class that could
+see the blocker.
+F1 (BLOCKER) — the globe never animated in production. LiveGlobe early-returns
+its empty state when there is nothing to plot, and on the FIRST commit there
+never is (the snapshot starts null), so no <canvas> existed; the rAF effect had
+`[]` deps and early-returned on the null ref, then never re-ran when the canvas
+appeared. Fixed by keying the effect on a mount counter bumped by callback refs
+(elements stay in refs — a DOM node is not state, and mutating canvas.width on a
+useState value trips react-hooks/immutability). It now re-arms on every canvas
+mount, including after empty -> populated -> empty -> populated.
+F2 — added server/tests/live-view/hookRuntime.jsx (a positional-hook React
+runtime: render -> attach/detach refs -> deps-gated effects) and globe-effect.jsx,
+which drives the REAL component through REAL commits with instrumented
+requestAnimationFrame/ResizeObserver/IntersectionObserver/canvas.
+F4 — money honesty on three paths: mixed-currency batches refuse a total and say
+"mixed currencies (USD, JPY, EUR)"; all-unpriced batches say "amounts
+unrecorded" instead of $0.00; a null currency renders a BARE number plus an
+explicit "currency not recorded" caption in both the toast and the rail.
+F5 — truncation is now disclosed ("top N of M countries") and trackArrivals
+replaced diffArrivals: stateful, so a country entering a truncated cut does not
+ripple its whole running total, a degraded read never forgets absent countries
+(50->12->50 is silent), a fall re-anchors downward for midnight rollover, and
+gains are capped at MAX_ARRIVAL_GAIN.
+F3 — pushBatch/fireMany: a reconnect's backfill is routed through the coalescing
+buffer, producing ONE summary toast and ONE chime instead of a wall. This also
+makes the previously-dead buffer path reachable, since useLiveFeed closes the
+stream while hidden.
+F6 — projectInto() writes into a reused scratch object (was ~250k allocations/sec
+at 60fps) and marker halos are cached at the origin and positioned by transform.
+F7 — clampVolume trims whitespace; initial audio state is 'locked' not 'idle';
+deriveGeoPoints docstring corrected to ASC (with the reason); unusable visitor
+counts are excluded and counted as `malformed` rather than plotted as zero;
+dispose() clears pending master-gain timers.
+TESTED: Five harnesses, 415 assertions total — presentation 201/201,
+globe-render 38/38, cha-ching 55/55, render-smoke 89/89, globe-effect 32/32.
+NEGATIVE CONTROL RUN TWICE: F1 was deliberately re-introduced (useRef + [] deps,
+then [] deps alone) and globe-effect FAILED 11 and 8 assertions respectively,
+including "0 frame(s) scheduled" and canvas width 0 want 640 — the exact
+blank-default-canvas artefact. Restored and re-verified green both times.
+OUTPUT: eslint 0 across client/src/pages/live/. vite build succeeds
+(2,960.39 kB / 746.32 kB gzip). Measured F6 result printed by the harness:
+2879 markers drawn across 30 frames -> 1 createRadialGradient call (was 1 per
+marker per frame).
+DECISIONS:
+(1) DECISION MADE — trackArrivals suppresses ripples for first-seen countries
+only WHILE the list is truncated. On a complete list a genuinely new country
+still ripples. We cannot distinguish "new" from "newly visible" under
+truncation, and inventing the difference invents traffic.
+(2) DECISION MADE — countries absent from a tick are NOT removed from the known
+map. That is what makes a degraded read recoverable in silence; the cost is that
+a country genuinely dropping to zero keeps its last value, which is invisible
+anyway since it is no longer plotted.
+(3) DECISION MADE — the hook runtime is deliberately NOT React: no concurrent
+mode, suspense, context, or child rendering. It reproduces exactly the
+commit-order semantics this bug class lives in. One fidelity bug was found and
+fixed during the round (effects were queued per render pass rather than per
+commit, which double-created a ResizeObserver on mount).
+(4) Server still untouched. This lane remains client/src/pages/live/** +
+server/tests/live-view/** + logs/progress.md.
+STATUS: COMPLETE
+---
