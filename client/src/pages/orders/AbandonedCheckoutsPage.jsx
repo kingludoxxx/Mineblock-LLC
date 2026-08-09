@@ -377,17 +377,24 @@ export default function AbandonedCheckoutsPage() {
     }
   };
 
+  // Same sequence guard as `load`, and for the same reason: click cart A then
+  // cart B quickly and A's slower response would repaint B's open modal with
+  // A's contents — a wrong cart shown under the right heading.
+  const detailSeq = useRef(0);
   const openDetail = async (row) => {
+    const seq = ++detailSeq.current;
     setDetailOpen(true);
     setDetailLoading(true);
     setDetail(null);
     try {
       const res = await api.get(`/abandoned/${row.source}/${encodeURIComponent(row.ref_id)}`);
+      if (seq !== detailSeq.current) return;
       setDetail(res.data?.data || null);
     } catch {
+      if (seq !== detailSeq.current) return;
       setDetail(null);
     } finally {
-      setDetailLoading(false);
+      if (seq === detailSeq.current) setDetailLoading(false);
     }
   };
 

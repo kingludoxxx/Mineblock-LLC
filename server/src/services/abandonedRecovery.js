@@ -156,6 +156,12 @@ export function cartSummary(lineItems, { max = 50 } = {}) {
 //     entire nudgeable population as 'paid' and silently disable recovery.
 //   • ⛔ NOT gateway_payment_id — that column lives on co_upsell_charges, not
 //     on co_sessions, so on a real row it is always undefined.
+// 'paid' and 'refunded' are written today (checkoutSettle.js and the refund
+// handler in gatewayWebhooks.js respectively). 'deposit_paid' is ASPIRATIONAL:
+// no writer sets it in this repo yet — it is listed because a deposit is money
+// received, so if a deposit flow ever lands, the safe classification is already
+// in place rather than one release behind it. Listing an unwritten status can
+// only ever make this MORE conservative (fewer nudges), never less.
 export const SETTLED_STATUSES = ['paid', 'deposit_paid', 'refunded'];
 
 export function classifyCheckout(row, opts = {}) {
@@ -398,6 +404,23 @@ async function createRecoveryTables() {
   );
   await pgQuery(
     `CREATE INDEX IF NOT EXISTS idx_crm_recovery_sent ON crm_recovery_meta (sent_at DESC) WHERE sent_at IS NOT NULL`
+  );
+  // THE ARBITER for "one payment recovers one cart". The attribution sweep runs
+  // on every list load, so two operators with the page open — or two Render
+  // instances — reconcile concurrently. Both read the same not-yet-credited
+  // payment, both pass any in-process guard, and both credit it: the KPI
+  // reports revenue that was never earned. No application-level mutex can fix
+  // that across instances; only the database can arbitrate.
+  //
+  // Safe by construction: recovered_by is a paying co_sessions id (funnel) or
+  // 'shopify:<checkout_id>' (self-recovery), so a legitimate value is unique
+  // already. If this CREATE ever fails, duplicate credits are ALREADY in the
+  // table and the recovered-revenue number cannot be trusted until they are
+  // reconciled by hand — which is why it is allowed to throw rather than be
+  // swallowed into a silently-wrong KPI.
+  await pgQuery(
+    `CREATE UNIQUE INDEX IF NOT EXISTS uq_crm_recovery_recovered_by
+     ON crm_recovery_meta (recovered_by) WHERE recovered_by IS NOT NULL`
   );
 }
 

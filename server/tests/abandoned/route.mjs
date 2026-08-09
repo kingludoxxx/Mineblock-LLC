@@ -477,10 +477,93 @@ console.log('\n10b. multi-credit');
     meta.recovery_status === 'Sent', JSON.stringify(meta));
 }
 
+// ── 10b2. CONCURRENT reconciles must not double-spend a payment ─────────────
+// The attribution sweep runs on every GET /, so two operators with the page
+// open — or two Render instances — reconcile at the same time. The consume set
+// is per-process, so both find the same uncredited payment and both spend it.
+// No in-process mutex can fix that across instances; only the database can.
+//
+// Twelve independent trials, three parallel list loads each. The assertion is
+// on the INVARIANT (attributed == real), not on any one trial, because the bug
+// is probabilistic.
+//
+// NEGATIVE CONTROL, run before shipping the fix: reverted to the pre-fix
+// crediting UPDATE (no NOT EXISTS, no unique index, no consume on a zero-row
+// update) and this section reported `bad trials = 11` and
+// `attributed 11500 vs real 6000`. It reproduces the bug, so a green run here
+// means something.
+console.log('\n10b2. concurrent reconciles');
+{
+  const TRIALS = 12;
+  let badTrials = 0;
+  let attributed = 0;
+  let real = 0;
+  for (let t = 0; t < TRIALS; t += 1) {
+    const email = `conc${t}@buyer.test`;
+    // The post-nudge state, written exactly as the detector writes it: two
+    // nudged carts for one buyer, then one payment.
+    await seedSession(`s_conc${t}_a`, { email, hours: 5 });
+    await seedSession(`s_conc${t}_b`, { email, hours: 4 });
+    for (const suffix of ['a', 'b']) {
+      await sql`INSERT INTO crm_recovery_meta (source, ref_id, recovery_status, sent_at)
+                VALUES ('funnel', ${`s_conc${t}_${suffix}`}, 'Sent', ${hoursAgo(1)})`;
+    }
+    await seedSession(`s_conc${t}_paid`, {
+      email, hours: 0.01, status: 'paid', total: 500, paidAt: new Date(),
+    });
+    real += 500;
+
+    // Three list loads racing — the real shape of two tabs plus a poll.
+    const responses = await Promise.all([
+      req('GET', '/?nosync=1&days=7'),
+      req('GET', '/?nosync=1&days=7'),
+      req('GET', '/?nosync=1&days=7'),
+    ]);
+    check(`trial ${t}: all three concurrent loads still answered 200`,
+      responses.every((r) => r.status === 200), JSON.stringify(responses.map((r) => r.status)));
+
+    const credited = await sql`SELECT ref_id, recovered_value, recovered_by FROM crm_recovery_meta
+      WHERE recovery_status = 'Recovered' AND ref_id IN (${`s_conc${t}_a`}, ${`s_conc${t}_b`})`;
+    attributed += credited.reduce((n, c) => n + Number(c.recovered_value || 0), 0);
+    if (credited.length !== 1 || Number(credited[0].recovered_value) !== 500) badTrials += 1;
+  }
+  check(`every one of ${TRIALS} trials credited exactly once at the real value`,
+    badTrials === 0, `bad trials = ${badTrials}`);
+  check('total attributed == total real, to the cent',
+    attributed === real, `attributed ${attributed} vs real ${real}`);
+  // The constraint that makes the above true, asserted directly — a passing
+  // race is not proof the arbiter exists.
+  const idx = await sql`SELECT indexdef FROM pg_indexes
+    WHERE tablename = 'crm_recovery_meta' AND indexname = 'uq_crm_recovery_recovered_by'`;
+  check('a UNIQUE index on recovered_by is the arbiter, not luck',
+    idx.length === 1 && /UNIQUE/i.test(idx[0].indexdef), JSON.stringify(idx));
+  // POSITIVE control on the constraint itself: a second row claiming the same
+  // payment must be rejected by the database.
+  let violated = false;
+  try {
+    await sql`INSERT INTO crm_recovery_meta (source, ref_id, recovery_status, recovered_by)
+              VALUES ('funnel', 's_dup_probe', 'Recovered', 's_conc0_paid')`;
+  } catch (e) { violated = e.code === '23505'; }
+  check('positive control: a duplicate recovered_by is REFUSED by the database', violated);
+  // And NULL recovered_by must still be freely repeatable (partial index).
+  await sql`INSERT INTO crm_recovery_meta (source, ref_id, recovery_status) VALUES ('funnel', 's_null_a', 'Sent')`;
+  await sql`INSERT INTO crm_recovery_meta (source, ref_id, recovery_status) VALUES ('funnel', 's_null_b', 'Sent')`;
+  check('uncredited rows are unaffected — the index is partial',
+    (await sql`SELECT COUNT(*)::int AS n FROM crm_recovery_meta WHERE recovered_by IS NULL`)[0].n >= 2);
+}
+
 // ── 10c. the Shopify mirror must LEARN completion ───────────────────────────
-// status=open is a feed of what has NOT happened: a paid checkout leaves it.
-// With it as the only writer, completed_at stayed NULL forever — so a Shopify
-// buyer who paid was re-nudged every sweep and self-recovery was unreachable.
+// What this pins is the BEHAVIOUR we depend on — a checkout that comes back
+// carrying completed_at must retire the nudge and credit the self-recovery —
+// and the request shape we send.
+//
+// It deliberately does NOT encode the original diagnosis. A live read-only
+// probe of the real store refuted it: completed checkouts do NOT leave the
+// status=open feed (2 of the 5 oldest rows carry completed_at and appear under
+// both status values, whose bodies were byte-identical at 26,163 B). status=any
+// is kept as a costless superset; the parameter that actually earns its place
+// is created_at_min, which the probe showed IS honoured and which stops the
+// oldest-first crawl from exhausting its page cap before reaching live carts.
 console.log('\n10c. shopify sync learns completion');
 {
   process.env.SHOPIFY_STORE_DOMAIN = 'harness.myshopify.com';
@@ -593,7 +676,7 @@ console.log('\n11. money-path invariants');
   check('no order was created', orders[0].n === 0);
 }
 
-const EXPECTED_CHECKS = 129;
+const EXPECTED_CHECKS = 146;
 check(`coverage: exactly ${EXPECTED_CHECKS} checks ran before this one`, pass + fail === EXPECTED_CHECKS, `ran=${pass + fail}`);
 
 console.log(`\nRESULT: ${pass} passed, ${fail} failed`);

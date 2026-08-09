@@ -2661,3 +2661,53 @@ and the sweep looks back at most 30, so an older completion changes nothing we
 display (DECISION MADE).
 STATUS: COMPLETE
 ---
+
+---
+TIMESTAMP: 2026-08-09 23:55
+TASK: Abandoned Checkouts — delta re-verify round (N1-N6 + M16 remainder)
+BUILT: N2 (gating) concurrent reconciles double-spending one payment: the credit
+is now taken in ONE statement with an AND NOT EXISTS guard on recovered_by,
+backed by a UNIQUE partial index on recovered_by, with SQLSTATE 23505 handled as
+a normal lost-race outcome rather than an error. A zero-row update now also
+consumes the payment for the rest of the pass (conservative: under-crediting
+self-corrects on the next sweep, over-crediting does not). N1: probed the LIVE
+store read-only before trusting the status=any change. M16 remainder: openDetail
+got the same reqSeq guard as load. N3: lastSyncAt is stamped in .finally so a
+failing Shopify does not launch a fresh crawl on every list load. N4:
+recovery_secret_unset answers 503, matching /recovery-link. N5: SETTLED_STATUSES
+documents deposit_paid as aspirational (no writer sets it in this repo; listing
+it can only make classification more conservative). N6: partial index
+(created_at DESC) WHERE completed_at IS NULL on the mirror table.
+TESTED: route.mjs 147/147 (was 130), recovery.mjs 164/164. New section 10b2 runs
+12 trials of 3 parallel list loads over 2 nudged carts + 1 payment, asserting the
+invariant attributed == real, plus a direct assertion that the UNIQUE index
+exists and a positive control that the database itself refuses a duplicate
+recovered_by, plus a check that NULL recovered_by stays repeatable.
+NEGATIVE CONTROL RUN: reverting to the f552e1d crediting path made this section
+report "bad trials = 11" and "attributed 11500 vs real 6000", so it genuinely
+reproduces the bug rather than passing vacuously. A FIRST attempt at the negative
+control PASSED while neutered, which showed the case was not yet exercising the
+race; it was tightened until it failed for the right reason. vite build exit 0,
+node --check clean on all four files, eslint 0 errors.
+OUTPUT: 147/147 + 164/164, exit 0 both; build exit 0.
+DECISIONS: (1) THE N1 LIVE PROBE REFUTED THE B3 PREMISE, and the code comment was
+rewritten to say so. Against 17cca0-2.myshopify.com (API 2024-01, read-only, token
+in header only): status=any and status=open returned BYTE-IDENTICAL bodies
+(26,163 B, same 5 ids); status=closed returned an empty checkouts array (16 B),
+proving the status parameter IS read and that this store simply has zero closed
+checkouts; and completed checkouts do NOT leave the open feed — 2 of the 5 oldest
+rows carry a completed_at and appear under both status values. So status=open was
+already capable of learning completion. status=any is KEPT as a costless superset
+but is no longer claimed to have fixed a demonstrated production failure. The
+two-pass (open+closed) fallback is DECLINED: its stated precondition ("if
+status=any is not honoured") did not occur, and a status=closed pass fetches 0
+rows on this store (DECISION MADE).
+(2) The probe identified the parameter that IS load-bearing: created_at_min is
+honoured (a 90-day floor dropped the 2025 rows and cleared the rel="next" link; a
+1-day floor returned 16 B) and the feed is ordered OLDEST-FIRST, so the previous
+unbounded crawl started at the store's most ancient checkouts and, on a store with
+more than 40x250 = 10,000 of them, would exhaust the page cap before reaching any
+recoverable cart. limit was probed too (5 to 2 shrank the body), so the page cap
+means what it says (DECISION MADE).
+STATUS: COMPLETE
+---

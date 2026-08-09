@@ -130,6 +130,14 @@ async function createTables() {
   await pgQuery(
     `CREATE INDEX IF NOT EXISTS idx_crm_abandoned_created ON crm_abandoned_checkouts (created_at DESC)`
   );
+  // Since the sync moved to status=any this table also accumulates COMPLETED
+  // checkouts, which the list never shows. Every read filters
+  // `completed_at IS NULL`, so a partial index keeps the scan proportional to
+  // the open population instead of to everything the store has ever sold.
+  await pgQuery(
+    `CREATE INDEX IF NOT EXISTS idx_crm_abandoned_open
+     ON crm_abandoned_checkouts (created_at DESC) WHERE completed_at IS NULL`
+  );
   await ensureRecoveryTables();
 }
 
@@ -153,19 +161,34 @@ function handleRouteError(res, err, where, fallback) {
   return res.status(500).json({ error: fallback });
 }
 
-// Shopify's checkouts feed.
+// Shopify's checkouts feed. Both parameters here were verified against the LIVE
+// store (17cca0-2.myshopify.com, API 2024-01) with read-only GETs before this
+// shipped, because both encode a claim about somebody else's API:
 //
-// status=ANY, not status=open. The open feed is a feed of things that have NOT
-// happened yet: the moment a buyer pays, their checkout LEAVES it. With
-// status=open as the only writer, `completed_at` on our mirror stayed NULL
-// forever — so a Shopify buyer who paid kept getting nudged every sweep, and a
-// self-recovery could never be credited. `any` is the only value that lets a
-// completion reach the row at all.
+// status=any (was: status=open)
+//   PROBE RESULT: `status` is read — status=closed answers {"checkouts":[]} —
+//   but status=any and status=open returned BYTE-IDENTICAL bodies (26,163 B,
+//   same 5 ids), because this store has zero "closed" checkouts.
+//   The probe also REFUTED the reason this was changed. Completed checkouts do
+//   NOT leave the open feed: 2 of the 5 oldest rows carry a completed_at
+//   (2025-03-31, 2025-03-20) and are returned under status=open as well. So the
+//   mirror was already able to learn completion, and `any` is kept only because
+//   it is a superset by definition and costs nothing — NOT because it fixed a
+//   demonstrated production failure. Do not re-derive that story from this line.
 //
-// Bounded by created_at_min: the list can never show a checkout older than its
-// 90-day maximum window, and the detector only looks back 30, so a completion
-// older than that changes nothing we display. Rows outside the window are
-// never deleted — the upsert simply stops refreshing them.
+// created_at_min (new)
+//   PROBE RESULT: honoured — a 90-day floor dropped the 2025 rows and cleared
+//   the `rel="next"` link; a 1-day floor returned {"checkouts":[]} (16 B).
+//   This one IS load-bearing. The feed is ordered OLDEST-FIRST (ascending id),
+//   so the old unbounded crawl started at the store's most ancient checkouts
+//   and, on a store with more than 40×250 = 10,000 of them, would exhaust the
+//   page cap before ever reaching a recoverable cart. The floor is 90 days
+//   because the list's own maximum window is 90 and the sweep looks back at
+//   most 30. Rows outside it are never deleted — the upsert just stops
+//   refreshing them.
+//
+// `limit` was probed too (5 → 2 shrank the result), so the page size is real
+// and the 40-page cap means what it says.
 const SYNC_LOOKBACK_DAYS = 90;
 const MAX_429_RETRIES = 5;
 
@@ -271,11 +294,13 @@ function syncFromShopifyGuarded({ force = false } = {}) {
   }
   if (!syncInFlight) {
     syncInFlight = syncFromShopify()
-      .then((imported) => {
-        lastSyncAt = Date.now();
-        return { imported };
-      })
+      .then((imported) => ({ imported }))
       .finally(() => {
+        // The floor is stamped in `finally`, so a FAILING Shopify counts as an
+        // attempt. Stamping only on success meant a store with bad credentials
+        // (or a sustained 429) launched a fresh 40-page crawl attempt on every
+        // single list load, forever, with the error swallowed into a log line.
+        lastSyncAt = Date.now();
         syncInFlight = null;
       });
   }
@@ -547,19 +572,50 @@ async function reconcileRecovered({ windowDays }) {
       ) || null;
     }
     if (!match) continue;
-    const res = await pgQuery(
-      `UPDATE crm_recovery_meta
-       SET recovery_status = 'Recovered', recovered_at = NOW(),
-           recovered_by = $3, recovered_value = $4, updated_at = NOW()
-       WHERE source = $1 AND ref_id = $2 AND recovery_status = 'Sent'
-       RETURNING ref_id`,
-      [row.source, row.ref_id, String(match.id).slice(0, 128), match.total == null ? null : Number(match.total)]
-    );
+    const payer = String(match.id).slice(0, 128);
+    // THE CREDIT IS TAKEN IN ONE STATEMENT, and the database is the arbiter.
+    //
+    // This sweep runs on every list load, so two operators with the page open —
+    // or two Render instances — reconcile at the same time. `consumed` is
+    // per-process, so both would find the same uncredited payment and both
+    // would spend it. The NOT EXISTS closes the common case inside one
+    // statement's snapshot; the UNIQUE index on recovered_by closes the rest,
+    // because two concurrent transactions CAN both pass a NOT EXISTS under READ
+    // COMMITTED and only a constraint can break that tie. Losing the tie is a
+    // normal outcome here, not an error: skip the row and leave it 'Sent'.
+    let res = [];
+    try {
+      res = await pgQuery(
+        `UPDATE crm_recovery_meta
+         SET recovery_status = 'Recovered', recovered_at = NOW(),
+             recovered_by = $3, recovered_value = $4, updated_at = NOW()
+         WHERE source = $1 AND ref_id = $2 AND recovery_status = 'Sent'
+           AND NOT EXISTS (
+             SELECT 1 FROM crm_recovery_meta m2 WHERE m2.recovered_by = $3
+           )
+         RETURNING ref_id`,
+        [row.source, row.ref_id, payer, match.total == null ? null : Number(match.total)]
+      );
+    } catch (err) {
+      // 23505 = unique_violation on uq_crm_recovery_recovered_by: a concurrent
+      // reconcile credited this payment first. That is the guard working.
+      if (err.code !== '23505') throw err;
+      consumed.add(payer);
+      continue;
+    }
     // Consume only on a credit that actually landed: if the row had already
     // moved off 'Sent', the payment is still available to the next cart.
     if (res.length) {
       recovered += 1;
-      consumed.add(match.id);
+      consumed.add(payer);
+    } else {
+      // Zero rows means either the NOT EXISTS refused it (someone else owns the
+      // payment) or this row left 'Sent' underneath us. We cannot tell which
+      // from here, so take the conservative reading and stop offering the
+      // payment in this pass. Under-crediting is self-correcting — the next
+      // sweep re-seeds `consumed` from recovered_by and will credit it if it is
+      // genuinely still free. Over-crediting is not.
+      consumed.add(payer);
     }
   }
   return { checked: sent.length, recovered };
@@ -850,9 +906,14 @@ router.post('/:source/:refId/send', async (req, res) => {
       recheck: () => loadOne(source, row.ref_id),
     });
     if (!result.ok) {
+      // A missing signing secret is a CONFIGURATION fault, not a conflict —
+      // 503 here matches what /recovery-link answers for the same cause, so
+      // the operator gets one consistent, actionable message either way.
+      if (result.error === 'recovery_secret_unset') {
+        return res.status(503).json({ error: SECRET_UNSET_MESSAGE });
+      }
       const message = {
         not_configured: 'Klaviyo is not connected — connect it in Settings → Integrations',
-        recovery_secret_unset: SECRET_UNSET_MESSAGE,
         settled_before_send: 'This checkout settled while the request was in flight — refusing to send',
         vanished: 'This checkout no longer exists',
       }[result.error];
