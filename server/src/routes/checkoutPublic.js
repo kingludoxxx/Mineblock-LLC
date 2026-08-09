@@ -1229,6 +1229,181 @@ router.post('/session/:id/discount', async (req, res) => {
   }
 });
 
+// ORDER BUMP toggle — add/remove the pre-purchase add-on the checkout page's
+// order_bump block offers. The client names only WHICH block (page_id +
+// block_id); the variant and quantity come from the PUBLISHED page's block
+// props and the price from Shopify — a client can never name a product or a
+// number. Same gates as /discount: HttpOnly confirm token, processing-only.
+// If a discount code is applied, it is RE-validated against the new subtotal:
+// still valid → recomputed; no longer valid → dropped and reported (the buyer
+// sees why their code disappeared, never a silently wrong total).
+router.post('/session/:id/bump', async (req, res) => {
+  try {
+    if (!(await rateLimit(req, res, 'session-bump', 30))) return;
+    await ensureCheckoutTables();
+    const id = String(req.params.id || '').slice(0, 80);
+    const rows = await pgQuery(
+      `SELECT id, funnel_id, status, line_items, shipping, tax, currency,
+              discount_code, discount_amount, confirm_token_hash
+       FROM co_sessions WHERE id = $1`, [id]
+    );
+    if (!rows.length) return res.status(404).json({ success: false, error: { code: 'session_not_found' } });
+    const s = rows[0];
+    if (s.confirm_token_hash
+      && !digestsMatch(hashToken(confirmTokenFrom(req)), s.confirm_token_hash)) {
+      return res.status(403).json({ success: false, error: { code: 'confirmation_required' } });
+    }
+    if (s.status !== 'processing') {
+      return res.status(409).json({ success: false, error: { code: 'session_not_editable' } });
+    }
+    const pageId = String(req.body?.page_id || '').slice(0, 64);
+    const blockId = String(req.body?.block_id || '').slice(0, 64);
+    const selected = req.body?.selected === true;
+    if (!pageId || !blockId) {
+      return res.status(422).json({ success: false, error: { code: 'bump_ref_required' } });
+    }
+
+    // The PUBLISHED page's block is the offer definition — operator-authored,
+    // never client-supplied. Scoped to the session's funnel.
+    const [page] = await pgQuery(
+      `SELECT blocks FROM funnel_pages
+       WHERE id = $1 AND funnel_id = $2 AND status = 'published' AND NOT archived`,
+      [pageId, String(s.funnel_id || '')]
+    );
+    if (!page) return res.status(404).json({ success: false, error: { code: 'bump_page_not_found' } });
+    const blocks = Array.isArray(page.blocks) ? page.blocks : [];
+    const bump = blocks.find((b) => b && b.type === 'order_bump' && String(b.id || '') === blockId);
+    if (!bump) return res.status(404).json({ success: false, error: { code: 'bump_block_not_found' } });
+    const bp = (bump.props && typeof bump.props === 'object') ? bump.props : {};
+    const bumpVariant = String(bp.variant_id || '').trim();
+    if (!bumpVariant) {
+      // Display-only bump (no product wired) — refuse honestly rather than
+      // pretending the tick changed the charge.
+      return res.status(422).json({ success: false, error: { code: 'bump_not_chargeable' } });
+    }
+    const bumpQty = Math.max(1, Math.min(parseInt(bp.quantity, 10) || 1, 10));
+
+    const lines = (Array.isArray(s.line_items) ? s.line_items : [])
+      .filter((li) => li && typeof li === 'object');
+    const withoutThisBump = lines.filter((li) => String(li.bump_block_id || '') !== blockId);
+    let newLines;
+    if (selected) {
+      if (withoutThisBump.length !== lines.length) {
+        // Already added — idempotent: recompute nothing, report current state.
+        newLines = lines;
+      } else {
+        // AUTHORITATIVE re-pricing, same posture as create-session.
+        let priced;
+        try {
+          priced = await resolveVariantPrices([bumpVariant]);
+        } catch (err) {
+          if (err instanceof PricingUnavailableError) {
+            return res.status(503).json({ success: false, error: { code: 'pricing_unavailable' } });
+          }
+          throw err;
+        }
+        const info = priced[toVariantGid(bumpVariant)];
+        if (!info) return res.status(422).json({ success: false, error: { code: 'invalid_variant' } });
+        if (s.currency && info.currency && info.currency !== s.currency) {
+          return res.status(422).json({ success: false, error: { code: 'currency_mismatch' } });
+        }
+        newLines = [...lines, {
+          variant_id: bumpVariant,
+          quantity: bumpQty,
+          price: round2(Number(info.price)),
+          currency: s.currency || info.currency,
+          title: info.title || '',
+          product_title: info.product_title || '',
+          image: info.image || null,
+          line_total: round2(Number(info.price) * bumpQty),
+          is_bump: true,
+          bump_block_id: blockId,
+        }];
+      }
+    } else {
+      newLines = withoutThisBump; // absent already → idempotent no-op
+    }
+
+    const subtotal = round2(newLines.reduce((t, li) => t + Number(li.price) * (parseInt(li.quantity, 10) || 1), 0));
+
+    // Re-validate an applied discount against the CHANGED cart. Fail-closed on
+    // transport (retryable 503) — never guess a discount amount.
+    let discountCode = s.discount_code || null;
+    let discountAmount = Number(s.discount_amount) || 0;
+    let discountDropped = null;
+    if (discountCode) {
+      let v;
+      try {
+        v = await validateDiscountCode(discountCode, { subtotal });
+      } catch (err) {
+        return res.status(503).json({ success: false, error: { code: 'discount_unavailable' } });
+      }
+      if (v.ok) {
+        discountAmount = v.amount;
+      } else {
+        discountDropped = v.reason;
+        discountCode = null;
+        discountAmount = 0;
+      }
+    }
+
+    const total = round2(Math.max(0, subtotal - discountAmount) + Number(s.shipping) + Number(s.tax));
+    if (total < MIN_TOTAL) {
+      // Refuse a toggle that would leave the session unchargeable.
+      return res.status(422).json({ success: false, error: { code: 'total_below_minimum' } });
+    }
+
+    await pgQuery(
+      `UPDATE co_sessions
+         SET line_items = $2, subtotal = $3, discount_code = $4, discount_amount = $5,
+             total = $6, updated_at = NOW()
+       WHERE id = $1 AND status = 'processing'`,
+      [id, newLines, subtotal, discountCode, discountAmount, total]
+    );
+
+    // IN-PLACE price update on the live payment session (card survives);
+    // failure falls back to remint, same seam as /discount.
+    let frameUpdate = 'remint';
+    try {
+      const [g] = await pgQuery(
+        `SELECT funnel_id, gateway, gateway_plan_id FROM co_sessions WHERE id = $1`, [id]
+      );
+      if (g && g.gateway === 'whop' && g.gateway_plan_id) {
+        const { resolveCredential } = await import('../services/gatewayConfigs.js');
+        const whopGw3 = await import('../services/gateways/whop.js');
+        const up = await whopGw3.updatePlanPrice(
+          { api_key: await resolveCredential(g.funnel_id || '', 'whop', 'api_key') },
+          { planId: g.gateway_plan_id, amount: total }
+        );
+        if (up.ok) frameUpdate = 'in_place';
+      }
+    } catch (err) {
+      console.error('[checkout] in-place plan update failed (fallback to remint):', err.message);
+    }
+
+    return res.json({
+      success: true,
+      data: {
+        bump_selected: selected,
+        frame_update: frameUpdate,
+        discount_code: discountCode,
+        discount_amount: discountAmount,
+        ...(discountDropped ? { discount_dropped: discountDropped } : {}),
+        totals: {
+          subtotal,
+          shipping: Number(s.shipping),
+          tax: Number(s.tax),
+          discount: discountAmount,
+          total,
+        },
+      },
+    });
+  } catch (err) {
+    console.error('[checkout] session bump failed:', err.message);
+    return res.status(500).json({ success: false, error: { code: 'internal_error' } });
+  }
+});
+
 router.post('/session/:id/customer', async (req, res) => {
   try {
     if (!(await rateLimit(req, res, 'session-customer', 60))) return;
