@@ -6,10 +6,12 @@ import { useEffect, useState } from 'react';
 import { X, Settings, Type, Globe, CreditCard, Package, Truck, Repeat, Activity, HeartPulse, Code2, FileCode2, CornerUpRight, Stethoscope } from 'lucide-react';
 import PaymentsSection from './PaymentsSection';
 import TrackingSection from './TrackingSection';
+import ProductsSection from './ProductsSection';
+import ShippingSection from './ShippingSection';
 import {
   GeneralSection, RedirectsSection, HealthSection,
   TrackingHealthSection, CustomTrackingSection,
-  FontsSection, DomainsSection, ProductsSection, ShippingSection,
+  FontsSection, DomainsSection,
   SubscriptionsSection, ScriptsSection,
 } from './sections';
 
@@ -74,8 +76,8 @@ export default function FunnelSettingsModal({ open, onClose, funnel, initialSect
       case 'fonts': return <FontsSection funnel={funnel} onFunnelUpdated={onFunnelUpdated} />;
       case 'domains': return <DomainsSection funnel={funnel} onFunnelUpdated={onFunnelUpdated} />;
       case 'payments': return <PaymentsSection funnelId={funnelId} />;
-      case 'products': return <ProductsSection />;
-      case 'shipping': return <ShippingSection />;
+      case 'products': return <ProductsSection funnel={funnel} />;
+      case 'shipping': return <ShippingSection funnel={funnel} onFunnelUpdated={onFunnelUpdated} />;
       case 'subscriptions': return <SubscriptionsSection />;
       case 'tracking': return <TrackingSection funnel={funnel} onFunnelUpdated={onFunnelUpdated} />;
       case 'tracking-health': return <TrackingHealthSection funnel={funnel} />;

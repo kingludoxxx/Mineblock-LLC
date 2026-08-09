@@ -43,6 +43,7 @@ import healthAlertsRoutes from './healthAlerts.js';
 import funnelMetricsRoutes from './funnelMetrics.js';
 import funnelAttributionRoutes from './funnelAttribution.js';
 import funnelTrackingExtrasRoutes from './funnelTrackingExtras.js';
+import funnelCommerceRoutes from './funnelCommerce.js';
 
 const mountRoutes = (app) => {
   app.use('/api/v1/users', userRoutes);
@@ -106,6 +107,10 @@ const mountRoutes = (app) => {
   // funnels permission; read-only, isolated analytics pool, REPORT_TZ buckets).
   app.use('/api/v1/funnel-metrics', funnelMetricsRoutes);
   app.use('/api/v1/funnel-attribution', funnelAttributionRoutes); // ATTRIBUTION LANE: last-touch marketing breakdowns, ROAS, click ledger (authed, funnels permission; isolated analytics pool, read-only, Europe/Madrid days)
+  // Settings → Commerce: Shopify catalog snapshot, Shopify↔Whop product map,
+  // read-only Shopify shipping zones (authed, funnels permission; additive —
+  // prices are DISPLAY data, the checkout re-prices server-side).
+  app.use('/api/v1/funnel-commerce', funnelCommerceRoutes);
   // MEDIA LIBRARY routes are mounted in app.js, AHEAD of the global body
   // parser, so the router's own 7mb cap is real (see app.js media mount).
 };

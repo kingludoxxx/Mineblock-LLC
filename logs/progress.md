@@ -2871,3 +2871,119 @@ blocks rather than bumped on every batch, so an AI edit elsewhere does not
 interrupt typing in the inspector (DECISION MADE).
 STATUS: COMPLETE
 ---
+
+---
+TIMESTAMP: 2026-08-09 22:20
+TASK: Funnel Settings → Commerce — replace the Products + Shipping scaffolds
+      with real implementations (branch feat/settings-commerce)
+BUILT: New server lane, additive only. routes/funnelCommerce.js mounted at
+/api/v1/funnel-commerce (authenticate + funnels:access, the same chain as
+trackingAdmin/shopifyVariants) with seven endpoints: catalog snapshot read,
+Shopify catalog sync (paged GraphQL, cursor-followed), Whop mapping list /
+manual upsert / delete, auto "Map to Whop", and a read-only Shopify
+deliveryProfiles zones view. Supporting services: funnelCommerceSchema.js
+(ensureTables for co_funnel_products + co_whop_product_map, mirrored by
+migration 092), whopProducts.js (Whop list/create + the pure mapping planner),
+checkoutCountries.js (ISO 3166-1 validation + the defensive settings reader
+that handles jsonb in BOTH object and string shapes). Client: three new files
+(ProductsSection.jsx, ShippingSection.jsx, WhopMappingModal.jsx) in our dark
+theme, replacing the two ScaffoldPanel stubs in sections.jsx; shipping mode,
+checkout countries and flat rates persist through the EXISTING funnels PATCH
+(settingsPatch.js) with every write serialized (serialQueue.js). funnels.js,
+funnelRender.js, checkoutPublic.js, checkoutPricing.js and app.js untouched.
+TESTED: new harness server/tests/funnel-settings/commerce.mjs — 204/204, exit
+0, run three times (fetch mocks for Shopify + Whop, a REAL local Postgres for
+the jsonb cases). Covers: sync happy path incl. cursor paging, eight Shopify
+outage shapes (all 503, none returns an empty products array), Whop
+create-when-missing + match-not-duplicate + idempotent re-run, Whop outage
+creating nothing, jsonb round-trip in BOTH shapes (jsonb_typeof asserted
+'array' for a normal write and 'string' for a forced double-encode, both
+reading back as arrays), malformed GraphQL/zone/Whop payloads, country
+validation, funnel scoping, rate limiting, and the 8s abort. Pre-existing
+variant-search 94/94 unchanged. Migration 092 applied to a scratch DB from
+DROP, 23 columns + 5 indexes, and re-applied idempotently. Real app booted
+against the scratch DB: all seven endpoints answer 401 unauthenticated.
+vite build exit 0. eslint: 0 errors on every new file; the 6 touched files
+still report exactly the 4 errors present on the base commit (delta ZERO).
+OUTPUT: 204 passed, 0 failed / 94 passed, 0 failed / VITE_EXIT=0.
+DECISIONS: (1) migration numbered 092 as briefed even though 091 is free —
+091 is left for a parallel lane; the runner sorts by filename so gaps are
+inert. (2) `parseJsonColumn` did not exist in this repo — the shape copied is
+briefPipeline.js's `parseJsonb`, re-homed in checkoutCountries.js. (3) Whop
+product CREATE sends no price: Whop pricing lives on PLANS, not products, so
+the Shopify display price is stored on our mapping row instead. The product
+path is env-overridable (WHOP_API_BASE / WHOP_PRODUCTS_PATH) and is verified
+against a MOCK only — the reference tool never called a real Whop product API.
+(4) "Exact name" match is trim + case-fold, not byte-exact; substring/fuzzy
+was rejected because it would link the wrong product. (5) restrict_countries
+true with an empty allow-list degrades to unrestricted — a funnel that sells
+to nobody is never what an operator meant. (6) The country limit is NOT
+enforced; the exact enforcement point (checkoutPublic.js, before pricing) is
+documented in the funnelCommerce.js header.
+STATUS: COMPLETE
+---
+
+---
+TIMESTAMP: 2026-08-09 23:05
+TASK: feat/settings-commerce — adversarial review remediation (11 gating findings)
+BUILT: Server. walkCatalog() now returns a proven `complete` flag and the PRUNE
+is gated on it — a hasNextPage:true with a null cursor, a page-cap exit and a
+throttle stop all report truncated:true and delete NOTHING, and a 200 whose body
+carries no products connection now throws as an outage instead of reading as an
+empty catalog (it used to delete the whole snapshot). Pruned products now take
+their orphaned Whop mapping rows with them. listWhopProducts pages on the RAW
+page length (a dropped id-less row made a full page look short, stopped the walk,
+and made the mapper create a duplicate live product) and reports {complete,
+dropped}; the route REFUSES to create against an incomplete catalog. POST
+/whop/map is wrapped in a pg_try_advisory_lock on a reserved connection, so two
+simultaneous runs cannot both create — the loser gets 409 map_in_progress.
+Create failures are isolated per row and the response carries planned_match /
+planned_create so a shortfall is detectable; a fatal class stops further CALLS
+but still accounts for every remaining product. Zone prices: an absent amount
+stays null instead of coercing to 0 (the UI rendered that as FREE) and an unknown
+rateProvider yields null too. uncoveredCountries requires a zone to have at least
+one RATE before it counts as coverage. The zones walk detects two profiles paging
+against one shared cursor and reports truncated instead of using an unrelated
+cursor. The rate limiter is keyed SHOP+FUNNEL rather than per user and fails
+CLOSED for the two admin jobs (injectable `check` seam so that branch is covered
+by execution). Both upstream-spending handlers require the funnel row to exist
+(404) before any Whop write. Client: truthful country copy throughout (config
+only, not enforced), Retry repeats the action that failed instead of firing a
+full sync, mapped count renders as unknown rather than 0 on an outage, the US
+placeholder is no longer persisted, stale-funnel guards discard late responses,
+and one SHARED module-level settings queue replaces the per-section queues.
+TESTED: server/tests/funnel-settings/commerce.mjs 312/312, exit 0, run 3x
+identical. New coverage: all three destructive prune inputs (each asserted to
+leave the live rows intact), truncation flags + reasons, concurrent double map,
+Whop short-batch paging, a 5-product batch with one failure, a fatal-code batch,
+funnel 404, limiter fail-closed/fail-open/scope, zone price nulls, zero-rate
+coverage, cost + throttle units. The cross-section queue test carries a CONTROL
+that proves the OLD per-section shape really loses a write. Neighbours unchanged:
+variant-search 94/94, tracking-tab 19/19, patch-settings 22/22. vite build exit 0.
+eslint 0 errors on every file this branch owns. Real app booted against the
+scratch DB: all seven endpoints 401 unauthenticated.
+OUTPUT: 312 passed, 0 failed (x3) · 94/94 · 19/19 · 22/22 · VITE_EXIT=0.
+SHOPIFY COST PROBE (read-only, live store 17cca0-2.myshopify.com, API 2024-01,
+token in X-Shopify-Access-Token header only): the shipped PRODUCTS_QUERY at
+products(first:N)/variants(first:50) measured requestedQueryCost 35 (N=5), 101
+(N=100, the shipped size), 123 (N=250); with variants(first:25): 32/62/92/112 at
+N=5/25/100/250. All 200, no GraphQL errors, throttleStatus max 2000 restore 100.
+DECISIONS: (1) The review's cost claim is EMPIRICALLY REFUTED — requested cost
+grows sublinearly for this shape, so even Shopify's maximum page (250) costs 123,
+not ~5.2k, and no page size was ever a MAX_COST_EXCEEDED hazard. I measured
+before choosing rather than shrinking on the estimate, and settled on first:100 /
+variants:50 because a larger page is strictly CHEAPER in total (10x101 for 1000
+products vs 40x62 at N=25) and halves the truncation risk. The throttle backoff
+and cost plumbing the finding asked for are in regardless. (2) Session advisory
+lock on a reserved connection rather than pg_advisory_xact_lock: the critical
+section makes outbound Whop calls and an xact lock would hold a transaction open
+across seconds of third-party I/O; try_ rather than blocking so a second click
+gets an honest 409. (3) create_returned_no_id was re-coded whop_create_no_id —
+as a generic outage code it wrongly aborted the whole batch. (4) The shared
+settings queue lives inside saveFunnelPatch so all five call sites are covered
+with no call-site churn; callers must NOT re-wrap it (documented — nesting the
+same queue deadlocks). (5) Declined: AbortController on client fetches — the
+stale-funnel guards already prevent the observable bug (wrong funnel's data
+painting) and aborting is an optimisation, not a correctness fix.
+STATUS: COMPLETE
+---
