@@ -1,0 +1,77 @@
+/* Live View presentation animations.
+ *
+ * Kept in a stylesheet rather than Tailwind utilities because these are
+ * keyframes with a spring curve — expressing them as arbitrary-value classes
+ * would be less readable and would not be reusable across the toast and the
+ * rail. Scoped with an `lv-` prefix; nothing here is global.
+ *
+ * Every animation is wrapped in a prefers-reduced-motion guard at the bottom:
+ * a payment toast that slides is delightful, and a payment toast that slides
+ * for someone with vestibular sensitivity is not. */
+
+@keyframes lv-toast-in {
+  from { opacity: 0; transform: translateX(24px) scale(0.96); }
+  60%  { opacity: 1; transform: translateX(-3px) scale(1.01); }
+  to   { opacity: 1; transform: translateX(0) scale(1); }
+}
+
+@keyframes lv-toast-out {
+  from { opacity: 1; transform: translateX(0) scale(1); max-height: 200px; }
+  to   { opacity: 0; transform: translateX(24px) scale(0.96); max-height: 0; }
+}
+
+.lv-toast {
+  animation: lv-toast-in 260ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+/* MUST stay under usePaymentToasts' TOAST_EXIT_MS (240ms) or the node is
+ * unmounted mid-animation and the toast disappears with a jump. */
+.lv-toast--exiting {
+  animation: lv-toast-out 220ms cubic-bezier(0.4, 0, 1, 1) both;
+  pointer-events: none;
+}
+
+/* The money figure gets one pulse on arrival — the eye goes to the number. */
+@keyframes lv-amount-pop {
+  from { transform: scale(0.86); }
+  55%  { transform: scale(1.06); }
+  to   { transform: scale(1); }
+}
+
+.lv-amount {
+  animation: lv-amount-pop 420ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+/* Rail rows flash once when they are genuinely new (see diffFreshIds — the
+ * first paint's backfill deliberately does NOT flash). */
+@keyframes lv-row-flash {
+  from { background-color: rgba(232, 213, 163, 0.14); border-color: rgba(232, 213, 163, 0.45); }
+  to   { background-color: transparent; border-color: transparent; }
+}
+
+.lv-row-fresh {
+  animation: lv-row-flash 5200ms ease-out both;
+}
+
+/* A soft breathing ring on the "live" indicator. */
+@keyframes lv-breathe {
+  0%, 100% { opacity: 0.35; }
+  50%      { opacity: 1; }
+}
+
+.lv-breathe {
+  animation: lv-breathe 2.4s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .lv-toast,
+  .lv-toast--exiting,
+  .lv-amount,
+  .lv-row-fresh,
+  .lv-breathe {
+    animation: none !important;
+  }
+  /* Without the keyframes the exiting toast would otherwise stay fully opaque
+     until its removal timer fires. Fade it statically instead. */
+  .lv-toast--exiting { opacity: 0; }
+}
