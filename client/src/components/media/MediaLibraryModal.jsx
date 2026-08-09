@@ -315,6 +315,10 @@ export default function MediaLibraryModal({
   }, [editingAlt, items, patchItem]);
 
   const choose = useCallback((item) => {
+    // CHANGE-TOGETHER: AiMediaDialog.jsx's `toAsset` mirrors this mapping field
+    // for field (its "From files" tab cannot mount this overlay inline). Any
+    // edit here is an edit there, in the same commit.
+    //
     // The two halves of the documented guarantee, asserted at the only place
     // onSelect is ever called: non-empty url, never archived.
     if (!selectMode || !item?.url || item.archived) return;
