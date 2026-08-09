@@ -950,19 +950,18 @@ function prefillKey(){var b=billing();return emailValue()+'|'+b.name+'|'+b.line1
    as /^[^@s]+.../ and rejected every address containing the letter s,
    which is why the first live order never mounted a payment form.
    Plain string checks cannot be mangled by an escaping layer. */function valid(v){if(!v||v.indexOf(' ')!==-1)return false;var at=v.indexOf('@');if(at<1||at!==v.lastIndexOf('@'))return false;var dot=v.lastIndexOf('.');return dot>at+1&&dot<v.length-1;}
-/* Mount the card iframe IMMEDIATELY on load so the buyer sees the secure
-   payment fields right away instead of a grey "enter your details above"
-   placeholder. The email + address are STILL baked into the iframe URL at
-   creation (the embed ignores post-mount messaging on hidden fields), but the
-   CHARGE-READY frame is the one remount() re-creates once real values exist.
-   This first frame carries only whatever is typed so far (usually nothing) and
-   is never submittable: the Complete button refuses without a valid email and
-   Whop cannot charge without one, so an empty first frame can never take money.
-   Because the delivery fields sit ABOVE the card fields, buyers fill top-down —
-   the address is baked (remount) before they reach the card, so card entry
-   lands in the final, correctly-addressed frame. */
-function doMount(){if(mounted){return;}mounted=true;
-  applyPrefill(billing(),emailValue());
+/* Mount ONLY once we have a valid email + a complete address. This looks like
+   it just gates a placeholder, but it is load-bearing for the CHARGE: Whop's
+   loader identifies a frame (populates wco.identifiedFrames, which wco.submit
+   needs) by observing the mount node being ADDED — and its observer is not
+   live until index.js finishes loading. Mounting eagerly at page load ran
+   activate() before that observer existed, so the frame was never registered
+   and submit had nothing to target (verified live: identifiedFrames stayed
+   empty, the button hit its 8s watchdog). Waiting until the buyer has filled
+   the form gives index.js time to load first, so the single mount below is the
+   one Whop actually registers. */
+function doMount(){var v=emailValue();if(mounted||!valid(v)||!billingReady()){return;}mounted=true;
+  applyPrefill(billing(),v);
   mount.setAttribute('data-fos-prefill-key',prefillKey());
   mount.setAttribute('data-whop-checkout-session',embed.whop_session_id);
   /* Belt + braces with the plan's server-side redirect_url: also tell the
