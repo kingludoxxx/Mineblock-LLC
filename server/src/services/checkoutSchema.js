@@ -116,6 +116,32 @@ async function createTables() {
     ON co_orders (shopify_status) WHERE shopify_status IS NOT NULL
   `);
 
+  // Bookkeeping refunds reflected INTO Shopify (shopifyRefund.js). When a Whop
+  // refund settles, the money is already back on the buyer's card, but the
+  // mirrored Shopify order still reads 'paid' — so the Orders view (backed by
+  // Shopify) misstates it. We create a MANUAL Shopify refund (no gateway money
+  // movement) so Shopify flips the order to refunded and its orders/updated
+  // webhook carries that into crm_orders. Exactly-once is arbitrated on THIS
+  // row: UNIQUE(session_id, ref) + an atomic INSERT…ON CONFLICT DO NOTHING claim
+  // taken BEFORE the Shopify call, so a redelivered refund webhook can never
+  // create a second Shopify refund for the same gateway refund ref. status:
+  // 'reflected' (done) | 'needs_reconcile' (Shopify call failed — a human owns
+  // it; never auto-retried, matching the order-create stance).
+  await pgQuery(`
+    CREATE TABLE IF NOT EXISTS co_shopify_refunds (
+      session_id TEXT NOT NULL,
+      ref TEXT NOT NULL,
+      shopify_order_id TEXT,
+      shopify_refund_id TEXT,
+      amount NUMERIC(12,2),
+      status TEXT NOT NULL DEFAULT 'claimed',
+      error TEXT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      PRIMARY KEY (session_id, ref)
+    )
+  `);
+
   // Upsell offer definitions. variant_id '' = "charge whatever the on-page
   // selection control resolves to" (reference semantics).
   await pgQuery(`
