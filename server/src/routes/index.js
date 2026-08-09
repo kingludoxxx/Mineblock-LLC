@@ -24,6 +24,7 @@ import customersRoutes from './customers.js';
 import abandonedRoutes from './abandonedCheckouts.js';
 import checkoutAdminRoutes from './checkoutAdmin.js';
 import funnelsRoutes from './funnels.js';
+import pageCloneRoutes from './pageClone.js';
 import splitTestsRoutes from './splitTests.js';
 import trackingAdminRoutes from './trackingAdmin.js';
 import domainHubRoutes from './domainHub.js';
@@ -55,6 +56,7 @@ const mountRoutes = (app) => {
   app.use('/api/v1/customers', customersRoutes);
   app.use('/api/v1/abandoned', abandonedRoutes);
   app.use('/api/v1/funnels', funnelsRoutes);
+  app.use('/api/v1/page-clone', pageCloneRoutes); // clone-a-page scan + create (authed, funnels permission)
   app.use('/api/v1/checkout', checkoutAdminRoutes); // authed CRM surface (public /checkout/public mounted earlier in app.js)
   app.use('/api/v1/tracking-admin', trackingAdminRoutes); // authed attribution read surface (public /track mounted earlier in app.js)
   app.use('/api/v1/split-tests', splitTestsRoutes); // authed A/B test CRUD + results (credits ledger)
