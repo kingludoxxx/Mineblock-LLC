@@ -21,10 +21,12 @@
 //    but a DB/render failure here returns 500 + no-store, never a hang.
 import { Router } from 'express';
 import rateLimit from 'express-rate-limit';
+import crypto from 'crypto';
 import { pgQuery } from '../db/pg.js';
 import { verifyAccessToken } from '../utils/jwt.js';
 import { renderPageHtml } from '../services/funnelRender.js';
 import { ensureTables, getEnabledRedirects, pickRedirect } from './funnels.js';
+import { resolvePageSplit, recordView } from '../services/splitDelivery.js';
 
 const router = Router();
 
@@ -161,7 +163,45 @@ async function servePage(req, res, resolvePage) {
       }
     }
 
-    const page = await resolvePage(funnel);
+    // ---- SPLIT DELIVERY: a live page-scope test's handle owns its route ----
+    // (live serving only — preview always shows the exact page the operator
+    // asked for). The visitor's arm is a sticky pure hash of (visitor id,
+    // test id); the arm's page is served INLINE at the handle. First-touch
+    // visitors get their id minted HERE — the client tracking script mints it
+    // too late for the very first render, and without an id every first view
+    // would land on the entry arm. Fail-open: any error inside resolves to
+    // null and the request falls through to normal slug serving.
+    let page = null;
+    if (!preview) {
+      const relPath = relativePath(req, funnelSlug);
+      let visitorId = String(req.cookies?._fos_vid || '');
+      const needsMint = !visitorId;
+      if (needsMint) visitorId = `v_${crypto.randomBytes(12).toString('hex')}`;
+      const split = await resolvePageSplit({ funnelId: funnel.id, relPath, visitorId });
+      if (split) {
+        if (needsMint) {
+          // Same cookie the client runtime mints (name/path/lifetime/SameSite;
+          // NOT HttpOnly — trackingRuntime reads it back for beacons). secure
+          // only in production, matching the checkout cookie's pattern — an
+          // unconditional flag makes plain-HTTP dev drop it, re-rolling the
+          // arm every request.
+          res.cookie('_fos_vid', visitorId, {
+            maxAge: 365 * 864e5, path: '/', sameSite: 'lax',
+            secure: process.env.NODE_ENV === 'production',
+          });
+        }
+        // The delivered render is the visitor count (funnel-os counts the
+        // impression on delivery). Fire-and-forget — never delays the page.
+        // A PAUSED test serves unbranched: no view, no measurement.
+        if (!split.paused) {
+          recordView({ testId: split.test.id, armKey: split.arm.arm_key, visitorId })
+            .catch(() => {});
+        }
+        page = split.page; // already published + not archived, by query
+      }
+    }
+
+    if (!page) page = await resolvePage(funnel);
     if (!page || page.archived) return notFound(res);
     if (!preview && page.status !== 'published') return notFound(res);
 

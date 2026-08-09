@@ -1049,12 +1049,27 @@ export async function getSplitResults(
 
   const testRows = await safeRead('lb_split_tests', warnings, () =>
     query(
-      `SELECT id, funnel_id, name, scope, enabled, archived, created_at
+      `SELECT id, funnel_id, name, scope, enabled, archived, created_at, delivery_epoch_at
        FROM lb_split_tests WHERE id = $1`,
       [tid]
     ), []);
   const test = testRows[0];
   if (!test) return { error: 'test_not_found' };
+
+  // ── DELIVERY EPOCH CUT ────────────────────────────────────────────────
+  // delivery_epoch_at = the instant arms actually started being SERVED
+  // differently (first delivered view / first overridden offer display).
+  // Exposures recorded before it were collected while every arm served
+  // identical content — noise by construction. The window is CLAMPED so no
+  // pre-epoch row can enter the experiment table, and with no epoch at all
+  // the verdict below refuses outright.
+  const deliveryEpochAt = test.delivery_epoch_at ? new Date(test.delivery_epoch_at) : null;
+  let windowClampedToEpoch = false;
+  if (deliveryEpochAt && deliveryEpochAt.getTime() > w.fromTs.getTime()) {
+    w.fromTs = deliveryEpochAt;
+    w.from = deliveryEpochAt.toISOString().slice(0, 10);
+    windowClampedToEpoch = true;
+  }
 
   const armDefs = await safeRead('lb_split_arms', warnings, () =>
     query(
@@ -1206,18 +1221,23 @@ export async function getSplitResults(
       net_revenue_sum_squares: a.net_revenue_sum_squares,
     }))
   );
-  const verdict = SPLIT_DELIVERY_WIRED ? verdictRaw : {
+  // Scoreable only when delivery is wired AND this test has actually
+  // DELIVERED at least once (the epoch exists). A test with no epoch has
+  // arms that never differed for a single visitor — its numbers are real,
+  // its comparison is not.
+  const scoreable = SPLIT_DELIVERY_WIRED && deliveryEpochAt !== null;
+  const verdict = scoreable ? verdictRaw : {
     ...verdictRaw,
     status: 'not_ready',
     winner_arm_key: null,
     leader: null,
     significant: false,
-    headline: 'Not scoreable yet — arms are measured but not served',
-    body: 'Every visitor currently sees the same page and the same offer: '
-      + 'arm assignment is recorded, but nothing in the serving path renders a '
-      + 'different variant yet. Any gap below is sampling noise, so no winner '
-      + 'can be declared. The numbers are real; the comparison is not.',
-    blocked_reason: 'arm_delivery_not_wired',
+    headline: 'Not scoreable yet — no delivered traffic',
+    body: 'No visitor has been served a variant of this test yet (or delivery '
+      + 'is not wired). Until arms are actually delivered differently, any gap '
+      + 'below is sampling noise, so no winner can be declared. The numbers '
+      + 'are real; the comparison is not.',
+    blocked_reason: SPLIT_DELIVERY_WIRED ? 'no_delivered_traffic' : 'arm_delivery_not_wired',
   };
 
   // vs-control percentage on the ranking metric.
@@ -1278,11 +1298,19 @@ export async function getSplitResults(
       window_only:
         'These figures cover the selected window only. Arms that started at ' +
         'different times are not comparable across a window they do not both span.',
-      visitors_understated: true,
+      delivery_epoch_at: deliveryEpochAt ? deliveryEpochAt.toISOString() : null,
+      window_clamped_to_epoch: windowClampedToEpoch,
+      epoch_note: windowClampedToEpoch
+        ? 'The window start was clamped to the delivery epoch — exposures ' +
+          'recorded before arms were actually served differently are noise ' +
+          'and are excluded.'
+        : null,
+      visitors_understated: false,
       visitors_basis:
-        'split exposure ledger — written at CHECKOUT SESSION MINT, not at page ' +
-        'serve. This counts visitors who reached checkout, NOT page traffic. ' +
-        'No page-serve exposure hook is wired today.',
+        'table visitors = split exposure ledger (checkout sessions attributable ' +
+        'to a delivered arm); ledger.arms[].visitors = delivered page views ' +
+        '(lb_split_views, one per visitor). Page traffic and money denominators ' +
+        'are reported separately on purpose.',
     },
     meta: {
       money_predicate: "paid_at IS NOT NULL AND status IN ('paid','refunded')",
