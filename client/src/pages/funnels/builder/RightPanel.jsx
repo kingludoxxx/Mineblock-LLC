@@ -764,7 +764,10 @@ function PageSettings({ meta, onMeta, funnel, blocksCount, saveError, slugRefusa
                 {/* Names BOTH values when we have them. "The server refused the change" alone
                     left the operator to work out which slug is live — and the box above now
                     shows the SERVER's, not the one they typed. */}
-                {slugRefusal?.value
+                {/* Between the 409 and the next successful save, meta.slug still holds the
+                    refused value — naming it as "still at" would call the refused URL live.
+                    Only name both values once they actually differ (post-resync). */}
+                {slugRefusal?.value && String(slugRefusal.value) !== String(meta.slug)
                   ? <>Another page in this funnel already uses <code className="font-mono">{String(slugRefusal.value)}</code>, so it was refused and this page is still at <code className="font-mono">{meta.slug}</code>. </>
                   : <>Another page in this funnel already uses this slug, so the server refused the change and your previous slug is still live. </>}
                 Pick a different one and press Enter — the refused slug is NOT retried on its own,
