@@ -118,6 +118,27 @@ export async function setSplitEntryArm(testId, armId) {
   return res.data?.data || null;
 }
 
+/**
+ * PROMOTE THE WINNER — make `armId` the entry arm AND pause the test in one
+ * atomic server-side act. `confirm: true` is required by the endpoint; sending
+ * it is the caller's assertion that a human typed the arm key.
+ *
+ * The paused test KEEPS SERVING: splitDelivery does not filter on `enabled`, so
+ * /<handle> stays live and pins every visitor to the promoted arm. Pausing is
+ * what stops the experiment, not what stops the traffic.
+ *
+ * Throws on refusal — the caller reads `err.response.data.error.code`:
+ *   confirm_required · not_found · arm_archived · arm_has_no_page ·
+ *   arm_page_not_published · already_promoted (409)
+ */
+export async function promoteSplitWinner(testId, armId) {
+  const res = await api.post(`/split-tests/${encodeURIComponent(testId)}/promote`, {
+    arm_id: armId,
+    confirm: true,
+  });
+  return res.data?.data || null;
+}
+
 export async function fetchEligiblePages(funnelId, testId) {
   const res = await api.get('/split-tests/eligible-pages', {
     params: { funnel_id: funnelId, ...(testId ? { test_id: testId } : {}) },

@@ -3,7 +3,7 @@
 // lane's authed admin surface (server routes/trackingAdmin.js, mounted at
 // /api/v1/tracking-admin — verified against the tracking-server branch).
 //
-// WIRED TODAY: meta_pixel (the only kind in the server's TRACKING_NETWORKS
+// WIRED TODAY: meta_pixel + ga4 (server-side); google_ads registered-but-dormant (in TRACKING_NETWORKS
 // registry). Every other card is a directory stub that opens an honest
 // "not wired yet" page — no fake connectivity, no fake numbers, ever.
 //
