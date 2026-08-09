@@ -38,10 +38,16 @@ const SHOT = { width: 400, height: 600, quality: 60, settleMs: 500, timeoutMs: 8
 const CACHE_DIR = path.join(os.tmpdir(), 'page-thumbs');
 const CACHE_MAX_AGE = 300; // seconds, Cache-Control
 const MEM_CACHE_MAX = 200; // entries; simple FIFO eviction
+// Idle-close: with no shots for this long the shared chromium is closed and
+// the next request relaunches lazily (getBrowser self-heals). On the 512MB
+// dyno this keeps the two-browsers window (this + the ad-library extractor's
+// own chromium) down to active use only. Env override exists for the tests.
+const IDLE_CLOSE_MS = Number(process.env.THUMB_BROWSER_IDLE_MS || 60_000);
 
 // Test/observability hooks — the verification harness counts these to prove
-// the cache short-circuits (second call must not add a screenshot).
-export const _stats = { launches: 0, screenshots: 0 };
+// the cache short-circuits (second call must not add a screenshot) and that
+// the private-host filter actually fires.
+export const _stats = { launches: 0, screenshots: 0, abortedPrivate: 0 };
 
 // ---------------------------------------------------------------------------
 // Shared chromium (lazy singleton). Same production concern as
@@ -103,10 +109,57 @@ async function getBrowser() {
 }
 
 export async function closeBrowser() {
+  if (idleTimer) { clearTimeout(idleTimer); idleTimer = null; }
   if (!browserPromise) return;
   const p = browserPromise;
   browserPromise = null;
-  try { (await p).close(); } catch { /* already gone */ }
+  try { await (await p).close(); } catch { /* already gone */ }
+}
+
+// True while a launched (or launching) browser is held. Test hook for the
+// idle-close assertion; also handy for ops introspection.
+export function isBrowserActive() {
+  return browserPromise !== null;
+}
+
+// ---------------------------------------------------------------------------
+// Idle-close timer — armed when the last in-flight shot finishes, cleared
+// when a new one starts. unref()d so it never holds the process open.
+// ---------------------------------------------------------------------------
+let idleTimer = null;
+let busyShots = 0;
+
+function armIdleClose() {
+  if (idleTimer) clearTimeout(idleTimer);
+  idleTimer = setTimeout(() => {
+    idleTimer = null;
+    if (busyShots === 0) closeBrowser().catch(() => {});
+  }, IDLE_CLOSE_MS);
+  if (typeof idleTimer.unref === 'function') idleTimer.unref();
+}
+
+// ---------------------------------------------------------------------------
+// Private/loopback host guard — defense-in-depth for the shot's request
+// filter. JS is disabled in the shot page, but markup alone (img/css/font
+// URLs) could still probe the dyno's network; anything resolving to
+// loopback/link-local/RFC1918 space is aborted.
+// ---------------------------------------------------------------------------
+export function isPrivateHost(url) {
+  let host;
+  try {
+    host = new URL(url).hostname.toLowerCase();
+  } catch {
+    return true; // unparseable → treat as hostile
+  }
+  if (host === 'localhost' || host.endsWith('.localhost')) return true;
+  if (host === '0.0.0.0' || host === '::1' || host === '[::1]' || host === '::') return true;
+  if (/^127\./.test(host)) return true;      // loopback
+  if (/^10\./.test(host)) return true;       // RFC1918
+  if (/^192\.168\./.test(host)) return true; // RFC1918
+  if (/^172\.(1[6-9]|2\d|3[01])\./.test(host)) return true; // RFC1918
+  if (/^169\.254\./.test(host)) return true; // link-local / cloud metadata
+  if (host.startsWith('[')) return true;     // any other IPv6 literal — refuse
+  return false;
 }
 
 // ---------------------------------------------------------------------------
@@ -116,25 +169,41 @@ export async function closeBrowser() {
 // Renders arbitrary page HTML in a fresh chromium page and returns a JPEG
 // Buffer. Throws on failure — generateThumbnail is the fail-open wrapper.
 export async function screenshotHtml(html) {
-  const browser = await getBrowser();
-  const page = await browser.newPage({
-    viewport: { width: SHOT.width, height: SHOT.height },
-    deviceScaleFactor: 1,
-    javaScriptEnabled: true,
-  });
+  // Mark busy BEFORE the (possibly pending) launch so the idle timer can
+  // never close the browser out from under a shot that is starting.
+  busyShots += 1;
+  if (idleTimer) { clearTimeout(idleTimer); idleTimer = null; }
+  let page = null;
   try {
+    const browser = await getBrowser();
+    page = await browser.newPage({
+      viewport: { width: SHOT.width, height: SHOT.height },
+      deviceScaleFactor: 1,
+      // Thumbnails don't need JS. Disabling it kills the two worst hostile
+      // cases at once: operator scripts probing the dyno's network from
+      // inside chromium (SSRF/exfil), and while(true) loops pinning a shot
+      // slot until timeout. Runtime-filled UI (order summaries etc.) shows
+      // as its static placeholder in the miniature — accepted trade.
+      javaScriptEnabled: false,
+    });
     page.setDefaultTimeout(SHOT.timeoutMs);
-    // Operator pages may carry scripts — they run in the chromium sandbox,
-    // but the network is closed: only http(s) images/stylesheets/fonts load
-    // (so the page looks right); documents, xhr/fetch, and everything else
-    // abort. Navigation attempts therefore dead-end too.
+    // The network is nearly closed: only http(s)/data images/stylesheets/
+    // fonts load (so the page looks right) and NEVER from private/loopback
+    // space; documents, xhr/fetch, and everything else abort. Navigation
+    // attempts therefore dead-end too.
     await page.route('**/*', (route) => {
       const req = route.request();
       const type = req.resourceType();
       const url = req.url();
       const isAsset = type === 'image' || type === 'stylesheet' || type === 'font';
-      if (isAsset && /^(https?|data):/i.test(url)) return route.continue();
-      return route.abort();
+      if (!isAsset) return route.abort();
+      if (/^data:/i.test(url)) return route.continue();
+      if (!/^https?:/i.test(url)) return route.abort();
+      if (isPrivateHost(url)) {
+        _stats.abortedPrivate += 1;
+        return route.abort();
+      }
+      return route.continue();
     });
     page.on('dialog', (d) => d.dismiss().catch(() => {}));
     // domcontentloaded + a short settle — networkidle is deliberately NOT
@@ -153,7 +222,9 @@ export async function screenshotHtml(html) {
     _stats.screenshots += 1;
     return buf;
   } finally {
-    await page.close().catch(() => {});
+    if (page) await page.close().catch(() => {});
+    busyShots -= 1;
+    if (busyShots === 0) armIdleClose();
   }
 }
 
@@ -231,6 +302,34 @@ export function writeCache(page, buf) {
 }
 
 // ---------------------------------------------------------------------------
+// In-flight dedupe: concurrent uncached requests for the SAME page (same
+// cache key) await ONE screenshot instead of consuming two slots. The map
+// entry is set synchronously on first call and cleared when the render
+// settles, so JS's single thread guarantees exactly one producer per key.
+// Exported for the verification harness.
+// ---------------------------------------------------------------------------
+const inflight = new Map(); // cacheKey -> Promise<Buffer|null>
+
+export function inflightFor(page) {
+  return inflight.get(cacheKeyFor(page)) || null;
+}
+
+export function renderAndCacheDeduped(page, funnel, pagesById) {
+  const key = cacheKeyFor(page);
+  let p = inflight.get(key);
+  if (!p) {
+    p = (async () => {
+      const buf = await generateThumbnail(page, funnel, pagesById);
+      if (buf) writeCache(page, buf);
+      return buf;
+    })();
+    inflight.set(key, p);
+    p.finally(() => inflight.delete(key)).catch(() => {});
+  }
+  return p;
+}
+
+// ---------------------------------------------------------------------------
 // Concurrency guard: at most 2 simultaneous screenshots. Overflow answers
 // 202 {pending:true} and the client retries — queueing here would pile
 // request handlers up behind a slow chromium.
@@ -272,6 +371,13 @@ router.get('/:funnelId/:pageId.png', async (req, res) => {
     const cached = readCache(page);
     if (cached) return sendJpeg(res, cached);
 
+    // Same page already rendering? Join it — no slot needed, one screenshot.
+    const joined = inflightFor(page);
+    if (joined) {
+      const buf = await joined;
+      return buf ? sendJpeg(res, buf) : res.status(204).end();
+    }
+
     if (!tryAcquireShot()) return res.status(202).json({ pending: true });
 
     let buf = null;
@@ -283,13 +389,12 @@ router.get('/:funnelId/:pageId.png', async (req, res) => {
         [funnelId]
       );
       const pagesById = new Map(allPages.map((p) => [p.id, { slug: p.slug }]));
-      buf = await generateThumbnail(page, funnel, pagesById);
+      buf = await renderAndCacheDeduped(page, funnel, pagesById); // caches on success
     } finally {
       releaseShot();
     }
 
     if (!buf) return res.status(204).end(); // fail-open — placeholder stays
-    writeCache(page, buf);
     return sendJpeg(res, buf);
   } catch (err) {
     // NEVER 500 the canvas over a thumbnail.

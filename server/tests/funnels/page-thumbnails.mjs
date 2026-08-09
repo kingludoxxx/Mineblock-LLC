@@ -10,6 +10,10 @@
 process.env.DATABASE_URL = 'postgres://puure@127.0.0.1:5433/puure_shoporder';
 process.env.NODE_ENV = 'development';
 process.env.MONEY_SWEEP_DISABLED = '1';
+// Short idle window so the idle-close test (T11) runs in seconds. Every gap
+// between consecutive shots in this harness is a few ms of DB work, far
+// under 1500ms, so earlier launch-count assertions stay valid.
+process.env.THUMB_BROWSER_IDLE_MS = '1500';
 
 import { existsSync, statSync } from 'node:fs';
 import os from 'node:os';
@@ -27,6 +31,8 @@ const {
   writeCache,
   cacheKeyFor,
   closeBrowser,
+  isBrowserActive,
+  renderAndCacheDeduped,
   _stats,
 } = await import('../../src/routes/pageThumbnails.js');
 
@@ -131,6 +137,57 @@ try {
   poisonOutcome = `threw: ${err.message}`;
 }
 check('T7 poisoned page -> null, not throw', poisonOutcome === 'null', poisonOutcome);
+
+// ── T8: in-flight dedupe — two concurrent renders, ONE screenshot ──────────
+await q(`UPDATE funnel_pages SET blocks = $2, updated_at = NOW() + interval '2 seconds' WHERE id = $1`, [PID_B, BLOCKS]);
+const pageB2 = (await q(`SELECT * FROM funnel_pages WHERE id = $1`, [PID_B]))[0];
+const shotsBeforeDedupe = _stats.screenshots;
+const [d1, d2] = await Promise.all([
+  renderAndCacheDeduped(pageB2, funnel, pagesById),
+  renderAndCacheDeduped(pageB2, funnel, pagesById),
+]);
+check('T8 both concurrent callers get a buffer', Buffer.isBuffer(d1) && Buffer.isBuffer(d2));
+check('T8 same-page concurrency took exactly ONE screenshot',
+  _stats.screenshots === shotsBeforeDedupe + 1,
+  `shots ${shotsBeforeDedupe} -> ${_stats.screenshots}`);
+check('T8 both callers share the same bytes', d1 && d2 && d1.equals(d2));
+check('T8 the deduped render landed in the cache', readCache(pageB2) !== null);
+
+// ── T9: hostile while(true) script — JS is OFF, shot stays fast ────────────
+await q(`UPDATE funnel_pages SET custom_js = 'while(true){}', updated_at = NOW() + interval '3 seconds' WHERE id = $1`, [PID_B]);
+const pageLoop = (await q(`SELECT * FROM funnel_pages WHERE id = $1`, [PID_B]))[0];
+const t9start = Date.now();
+const loopBuf = await generateThumbnail(pageLoop, funnel, pagesById);
+const t9ms = Date.now() - t9start;
+check('T9 while(true) page still produces a thumbnail (JS disabled)',
+  Buffer.isBuffer(loopBuf) && loopBuf.length > 1024, `len=${loopBuf?.length}`);
+check('T9 shot completed fast, not via timeout', t9ms < 5000, `took ${t9ms}ms`);
+
+// ── T10: private/loopback asset in the page is aborted by the filter ───────
+await q(
+  `UPDATE funnel_pages SET custom_js = '', custom_html = '<img src="http://127.0.0.1:9/x"><img src="http://169.254.169.254/latest/meta-data/">',
+   updated_at = NOW() + interval '4 seconds' WHERE id = $1`,
+  [PID_B]
+);
+const pageSsrf = (await q(`SELECT * FROM funnel_pages WHERE id = $1`, [PID_B]))[0];
+const abortedBefore = _stats.abortedPrivate;
+const ssrfBuf = await generateThumbnail(pageSsrf, funnel, pagesById);
+check('T10 page with private-host assets still screenshots', Buffer.isBuffer(ssrfBuf), String(ssrfBuf));
+check('T10 private-host requests were aborted by the filter',
+  _stats.abortedPrivate >= abortedBefore + 2,
+  `abortedPrivate ${abortedBefore} -> ${_stats.abortedPrivate}`);
+
+// ── T11: idle-close — browser closes after the idle window, relaunches ─────
+check('T11 browser is active right after a shot', isBrowserActive() === true);
+const launchesBeforeIdle = _stats.launches;
+await new Promise((r) => setTimeout(r, 2700)); // idle window is 1500ms
+check('T11 idle timer closed the browser', isBrowserActive() === false);
+const afterIdleBuf = await generateThumbnail(pageA2, funnel, pagesById);
+check('T11 next request relaunches and succeeds',
+  Buffer.isBuffer(afterIdleBuf) && afterIdleBuf.length > 1024, `len=${afterIdleBuf?.length}`);
+check('T11 relaunch counted (exactly one more launch)',
+  _stats.launches === launchesBeforeIdle + 1,
+  `launches ${launchesBeforeIdle} -> ${_stats.launches}`);
 
 // ── cleanup ────────────────────────────────────────────────────────────────
 await q(`DELETE FROM funnel_pages WHERE funnel_id = $1`, [FID]);

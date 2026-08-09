@@ -64,7 +64,7 @@ const BLOCKS = JSON.stringify([
   { id: 'b2', type: 'text', props: { text: 'Rendered by the thumbnail route.' } },
 ]);
 await sql`INSERT INTO funnels (id, slug, name) VALUES (${FID}, 'rt', 'Route Test')`;
-for (let i = 0; i < 5; i++) {
+for (let i = 0; i < 6; i++) {
   await sql.unsafe(
     `INSERT INTO funnel_pages (id, funnel_id, slug, type, title, status, blocks)
      VALUES ($1, $2, $3, 'lead', $4, 'published', $5)`,
@@ -145,6 +145,24 @@ if (retryIdx >= 0) {
 } else {
   ok(true, 'T6 skipped (no 202 in burst)');
 }
+
+// ---- T7: concurrent same-page requests dedupe to ONE screenshot -----------
+// pg_rt_5 was never requested. Two simultaneous authed GETs must both get
+// 200 with identical bytes while the screenshot counter moves by exactly 1
+// (the in-flight map shares one render even when both take a slot).
+const shotsBeforeT7 = _stats.screenshots;
+const [c1, c2] = await Promise.all([
+  get(`/api/v1/page-thumbnails/${FID}/pg_rt_5.png`),
+  get(`/api/v1/page-thumbnails/${FID}/pg_rt_5.png`),
+]);
+const c1b = Buffer.from(await c1.arrayBuffer());
+const c2b = Buffer.from(await c2.arrayBuffer());
+ok(c1.status === 200 && c2.status === 200,
+  `T7 both concurrent requests → 200 (got ${c1.status},${c2.status})`);
+ok(c1b.length > 1024 && c1b.equals(c2b),
+  `T7 byte-identical bodies (len ${c1b.length}/${c2b.length})`);
+ok(_stats.screenshots === shotsBeforeT7 + 1,
+  `T7 exactly ONE screenshot for the pair (${shotsBeforeT7} -> ${_stats.screenshots})`);
 
 // ---- cleanup --------------------------------------------------------------
 const { closeBrowser } = await import('../../src/routes/pageThumbnails.js');

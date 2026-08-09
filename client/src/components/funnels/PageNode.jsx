@@ -30,10 +30,16 @@ const chipRate = (v) => (isNil(v) ? '—' : `${Math.round(Number(v) * 100)}%`);
 // thumbnail is fetched through the app's api client and served to the <img>
 // as an object URL. URLs are refcounted per cache key (pageId + updated_at):
 // shared across nodes while mounted, revoked when the last user unmounts.
-// A 202 (screenshot slots busy) retries after 2s, up to 3 times; a 204 or
+// The server allows only 2 concurrent screenshots, so a big funnel loading
+// all its nodes at once would herd into lockstep 202 storms. Two defenses:
+// each node's FIRST fetch is staggered by a random 0-1500ms, and 202 retries
+// back off (~2s/5s/10s/10s, each +0-1s jitter, up to 4 retries). A 204 or
 // any failure resolves null and the gradient placeholder stays.
 // ---------------------------------------------------------------------------
 const thumbCache = new Map(); // key -> { promise, url, refs }
+
+const RETRY_DELAYS_MS = [2000, 5000, 10000, 10000];
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 function thumbKey(page) {
   const ms = new Date(page?.updated_at || 0).getTime() || 0;
@@ -42,13 +48,14 @@ function thumbKey(page) {
 
 async function fetchThumbUrl(page, attempt = 0) {
   try {
+    if (attempt === 0) await sleep(Math.random() * 1500); // de-herd the initial burst
     const res = await api.get(
       `/page-thumbnails/${page.funnel_id}/${page.id}.png`,
       { responseType: 'blob' }
     );
     if (res.status === 202) {
-      if (attempt >= 3) return null;
-      await new Promise((r) => setTimeout(r, 2000));
+      if (attempt >= RETRY_DELAYS_MS.length) return null;
+      await sleep(RETRY_DELAYS_MS[Math.min(attempt, RETRY_DELAYS_MS.length - 1)] + Math.random() * 1000);
       return fetchThumbUrl(page, attempt + 1);
     }
     if (res.status !== 200 || !res.data || !res.data.size) return null; // 204 → placeholder
