@@ -1408,13 +1408,24 @@ const CKT_TEMPLATE_JS = `(function(){
       }
       if(window.wco&&typeof window.wco.submit==='function'&&mount&&mount.getAttribute('data-whop-checkout-session')){
         btn.disabled=true;var prev=btn.textContent;btn.textContent='Processing\u2026';
-        var done=function(){btn.disabled=false;btn.textContent=prev;};
+        var settled=false;
+        var done=function(msg){if(settled){return;}settled=true;btn.disabled=false;btn.textContent=prev;
+          if(msg){showError(root,msg);}};
+        /* wco.submit is FIRE-AND-FORGET: it postMessages 'submit' into the frame
+           and resolves undefined. The outcome arrives as 'complete' or
+           'payment-error' events on the mount. A card that fails the embed's OWN
+           validation raises NEITHER — it just renders a message inside the
+           iframe — so a button that waits for an event sticks on 'Processing…'
+           forever while the real error sits out of view. Re-enable quickly and
+           point the buyer at the form instead of freezing. */
         try{
-          mount.addEventListener('payment-error',done,{once:true});
-          var r=window.wco.submit('puure-checkout');
-          if(r&&typeof r.catch==='function'){r.catch(done);}
-          setTimeout(function(){if(btn.disabled){done();}},45000);
-        }catch(e){done();}
+          mount.addEventListener('payment-error',function(ev){
+            var d=ev&&ev.detail;done((d&&(d.message||d.error))||'That payment could not be completed. Please check your card details.');},{once:true});
+          mount.addEventListener('complete',function(){settled=true;btn.textContent='Confirmed';},{once:true});
+          if(mount.scrollIntoView){mount.scrollIntoView({behavior:'smooth',block:'center'});}
+          window.wco.submit('puure-checkout');
+          setTimeout(function(){done('If your card details are incomplete, correct them above and try again.');},8000);
+        }catch(e){done('Could not submit the payment form.');}
         return;
       }
       /* Embed not mounted (creds missing / network): fall back to the hosted
