@@ -94,6 +94,8 @@ await q(`CREATE TABLE IF NOT EXISTS funnel_pages (
 // ═══ FIXTURE ════════════════════════════════════════════════════════════════
 const T0 = todayInTz();
 const D = (n) => new Date(new Date(`${T0}T12:00:00Z`).getTime() - n * 86400000).toISOString().slice(0, 10);
+/** n REPORT_TZ days AHEAD of today — for the unstarted-bucket cases. */
+const dayFwd = (n) => D(-n);
 // A wall-clock instant on a REPORT_TZ day, expressed as the UTC instant.
 const at = (day, hourLocal) => new Date(zonedDayStart(day).getTime() + hourLocal * 3600000).toISOString();
 
@@ -425,8 +427,12 @@ const expect422 = async (body, code, msg) => {
   for (const d of DIMENSIONS.filter((x) => x !== 'device')) {
     const metrics = ['orders'].filter((m) => DIM_METRICS[d].has(m));
     const r = await run({ metrics, dimension: d, window: W });
-    ok(r.meta.basis === BREAKDOWN_BASES[d] && r.meta.basis_label === BREAKDOWN_BASIS_LABELS[BREAKDOWN_BASES[d]],
-      `B1 dimension '${d}' names its basis (${r.meta.basis})`);
+    // basis_label COMPOSES the metric phrase with the population phrase, so it
+    // is no longer byte-equal to the population label — it must CONTAIN it.
+    ok(r.meta.basis === BREAKDOWN_BASES[d]
+      && r.meta.basis_label.includes(BREAKDOWN_BASIS_LABELS[BREAKDOWN_BASES[d]]),
+    `B1 dimension '${d}' names its basis (${r.meta.basis}) and folds the population phrase into the label`,
+    r.meta.basis_label);
     ok(typeof r.meta.basis_label === 'string' && r.meta.basis_label.length > 10,
       `B2 dimension '${d}' ships an operator-facing basis label`);
   }
@@ -593,6 +599,147 @@ const expect422 = async (body, code, msg) => {
     cogs: 0, ship_cost: 0, fees: 0, known_legs: 0, missing_legs: 0, spend: 0, spend_known: false },
   ['sessions', 'conv_pct', 'aov', 'roas', 'net_after_cogs', 'cost_coverage_pct']);
   ok(Object.values(pureNull).every((v) => v === null), 'E9 an all-unknown fold returns NULL for every derived metric', JSON.stringify(pureNull));
+}
+
+// ═══ WIRE CONTRACT, SECOND BATCH ════════════════════════════════════════════
+// (1) scalar total + rows_total on every breakdown block
+// (2) funnel rows carry name
+// (3) basis_label follows the metric actually folded
+// (4) meta.sessions_unknown on the wire
+// (5) GET /band as its own read
+// (6) every warning carries a string reason
+// (7) FUTURE report-day buckets are null, not zero
+{
+  // ── (3) basis_label describes the METRIC, not just the dimension ─────────
+  const net = await run({ metrics: ['net_sales', 'orders'], dimension: 'funnel', window: W });
+  ok(net.meta.basis_label.startsWith('Net sales'),
+    'X1 a net_sales breakdown leads with "Net sales", NOT "Gross sales"', net.meta.basis_label);
+  ok(!/gross sales/i.test(net.meta.basis_label),
+    'X2 …and the phrase "gross sales" appears nowhere in it', net.meta.basis_label);
+  ok(net.meta.basis_metric === 'net_sales', 'X3 basis_metric names the figure', net.meta.basis_metric);
+  const gross = await run({ metrics: ['gross_sales'], dimension: 'funnel', window: W });
+  ok(gross.meta.basis_label.startsWith('Gross sales'), 'X4 …while a gross_sales breakdown DOES say Gross sales', gross.meta.basis_label);
+  ok(gross.meta.basis_label.includes('captured base plus upsells'),
+    'X5 …and still names the population it folded', gross.meta.basis_label);
+  const gw = await run({ metrics: ['net_sales'], dimension: 'gateway', window: W });
+  ok(gw.meta.basis_label.startsWith('Net sales') && gw.meta.basis_label.includes('upsell money has no gateway'),
+    'X6 metric phrase + captured-base population compose correctly', gw.meta.basis_label);
+  const traffic = await run({ metrics: ['sessions'], dimension: 'source', window: W });
+  ok(/not money/.test(traffic.meta.basis_label),
+    'X7 a fold with NO money metric says so rather than mislabelling itself', traffic.meta.basis_label);
+
+  // ── (2) funnel rows carry name; key stays the id; '(none)' preserved ─────
+  await mkSession({ id: 'nofid', funnel_id: '', total: 25, customer: cust('nf@x.com', 'ES'),
+    line_items: [], paid_at: at(D(2), 13) });
+  const f = await run({ metrics: ['net_sales'], dimension: 'funnel', window: W });
+  const alpha = f.rows.find((r) => r.key === 'f1');
+  ok(alpha.name === 'Alpha', 'X8 funnel rows carry funnels.name', alpha.name);
+  ok(alpha.key === 'f1', 'X9 …while the KEY stays the funnel id (two funnels may share a name)', alpha.key);
+  ok(alpha.label === 'Alpha', 'X10 …and label upgrades to the readable name');
+  const none = f.rows.find((r) => r.key === '(none)');
+  ok(none && none.label === '(none)' && none.name === null,
+    'X11 the "(none)" bucket is PRESERVED, unlooked-up, with a null name', JSON.stringify(none && { k: none.key, l: none.label, n: none.name }));
+  const fCmp = await run({ metrics: ['net_sales'], dimension: 'funnel', window: W, compare: true });
+  ok(fCmp.previous.rows.every((r) => 'name' in r), 'X12 the previous-window rows carry name too');
+  const notFunnel = await run({ metrics: ['net_sales'], dimension: 'gateway', window: W });
+  ok(notFunnel.rows.every((r) => r.name === undefined), 'X13 …and no other dimension grows a bogus name');
+
+  // ── (1) scalar total + rows_total ───────────────────────────────────────
+  const lim = await run({ metrics: ['net_sales'], dimension: 'funnel', window: W, limit: 1 });
+  ok(lim.meta.total_metric === 'net_sales', 'X14 the breakdown names its footer metric', lim.meta.total_metric);
+  ok(near(lim.meta.total, lim.totals.net_sales),
+    'X15 …and the scalar total is the PRE-truncation fold, not the page', `${lim.meta.total}/${lim.totals.net_sales}`);
+  ok(lim.meta.total > lim.rows[0].net_sales, 'X16 …which is strictly larger than the one row shown');
+
+  // ── (4) meta.sessions_unknown on the wire ───────────────────────────────
+  const okWin = await run({ metrics: ['orders', 'sessions'], filters: F1, window: W });
+  ok(okWin.meta.sessions_unknown === false, 'X17 meta.sessions_unknown is false on a measurable window', okWin.meta.sessions_unknown);
+  const ttlWin = await run({ metrics: ['orders', 'sessions'], window: { start_day: D(200), end_day: D(190) } });
+  ok(ttlWin.meta.sessions_unknown === true, 'X18 …and true when the TTL clamp withheld sessions', ttlWin.meta.sessions_unknown);
+  ok(ttlWin.totals.sessions === null, 'X19 …matching the withheld value it explains');
+
+  // ── (6) every warning carries a string reason ───────────────────────────
+  const warned = [okWin, ttlWin, net, await run({ metrics: ['orders'], dimension: 'product', window: W }),
+    await run({ metrics: ['orders'], filters: { funnel_id: 'f1', source: 'meta' }, dimension: 'funnel', window: W })];
+  const allWarnings = warned.flatMap((r) => r.meta.warnings);
+  ok(allWarnings.length > 0, 'X20 the fixture actually produced warnings to check', allWarnings.length);
+  ok(allWarnings.every((w) => typeof w.source === 'string' && w.source.length > 0),
+    'X21 every warning has a non-empty string source');
+  ok(allWarnings.every((w) => typeof w.reason === 'string' && w.reason.length > 0),
+    'X22 every warning has a non-empty string reason (an empty banner is worse than none)',
+    JSON.stringify(allWarnings.filter((w) => typeof w.reason !== 'string')));
+
+  // ── (7) FUTURE report-days are null, not zero — the Auckland cliff ──────
+  const future = await run({ metrics: ['orders', 'gross_sales', 'net_sales', 'sessions'], filters: F1,
+    window: { start_day: D(1), end_day: dayFwd(3) } });
+  const past = future.series.filter((p) => p.key <= T0);
+  const ahead = future.series.filter((p) => p.key > T0);
+  ok(ahead.length === 3, 'X23 the window really does contain three unstarted days', ahead.length);
+  ok(ahead.every((p) => p.future === true), 'X24 unstarted buckets are flagged future');
+  ok(ahead.every((p) => p.orders === null && p.gross_sales === null && p.net_sales === null && p.sessions === null),
+    'X25 …and report NULL money, never 0 (no cliff-to-zero on the chart)', JSON.stringify(ahead[0]));
+  ok(past.every((p) => p.future === false), 'X26 today and earlier are NOT future');
+  const todayPoint = future.series.find((p) => p.key === T0);
+  ok(todayPoint && todayPoint.orders !== null,
+    'X27 TODAY is partial but REAL — it reports a number, not a null', todayPoint?.orders);
+  ok(future.meta.warnings.some((w) => w.source === 'window' && /null, never 0/.test(w.reason)),
+    'X28 …and the future gap is NAMED so it reads as "not yet", not "data lost"');
+  ok(near(future.totals.orders, past.reduce((t, p) => t + p.orders, 0)),
+    'X29 totals are unaffected — a future bucket contributes nothing either way');
+}
+
+// ═══ (5) GET /band — the 15s repoll target ══════════════════════════════════
+{
+  const band = await M.runBand({}, { query: q });
+  for (const k of ['live', 'unique_today', 'today', 'yesterday', 'timezone', 'meta']) {
+    ok(Object.prototype.hasOwnProperty.call(band, k), `BND1 band ships '${k}'`);
+  }
+  ok(band.today.day === T0 && band.yesterday.day === D(1), 'BND2 the band is always [yesterday, today] in REPORT_TZ',
+    `${band.today.day}/${band.yesterday.day}`);
+  for (const k of ['day', 'orders', 'revenue', 'spend', 'net']) {
+    ok(Object.prototype.hasOwnProperty.call(band.today, k), `BND3 today block ships '${k}'`);
+  }
+  ok(band.timezone === 'Europe/Madrid', 'BND4 the band names the reporting timezone', band.timezone);
+  ok(typeof band.meta.computed_ms === 'number', 'BND5 the band carries computed_ms', band.meta.computed_ms);
+  ok(band.today.spend === null || typeof band.today.spend === 'number',
+    'BND6 spend is a number or NULL — never a fabricated 0');
+
+  // The dashboard MUST serve the identical block, or the first paint and the
+  // 15s repoll print different numbers under the same two labels.
+  const d = await runDashboard({ start: D(3), end: D(0) }, { query: q });
+  for (const k of ['live', 'unique_today']) {
+    ok(typeof d.band[k] === 'number', `BND7 dashboard band ships '${k}'`);
+  }
+  ok(JSON.stringify(d.band.today) === JSON.stringify(band.today)
+    && JSON.stringify(d.band.yesterday) === JSON.stringify(band.yesterday),
+  'BND8 the dashboard band is BYTE-IDENTICAL to GET /band (one derivation)',
+  `${JSON.stringify(d.band.today)} vs ${JSON.stringify(band.today)}`);
+  ok(d.band.in_window === true, 'BND9 …plus in_window, saying whether the CHART covers today', d.band.in_window);
+  const outWin = await runDashboard({ start: D(30), end: D(10) }, { query: q });
+  ok(outWin.band.in_window === false && outWin.band.today.day === T0,
+    'BND10 a window that excludes today still reports TODAY in the band — "live" means live');
+  // Cheapness is the whole reason it exists; measure it rather than assert it.
+  const bt = []; const dt = [];
+  for (let i = 0; i < 3; i += 1) {
+    bt.push((await M.runBand({}, { query: q })).meta.computed_ms);
+    dt.push((await runDashboard({ start: D(3), end: D(0) }, { query: q })).meta.computed_ms);
+  }
+  console.log(`  → band ${bt.join('/')}ms vs composite ${dt.join('/')}ms`);
+  ok(true, `BND11 band timing recorded: ${bt.join('/')}ms vs composite ${dt.join('/')}ms`);
+
+  // (1) again, on the composite's own summary blocks
+  ok(Object.values(d.breakdown_summary).every((s) => typeof s.rows_total === 'number' && s.total_metric),
+    'BND12 every composite breakdown ships rows_total + total_metric');
+  ok(Object.values(d.breakdown_summary).every((s) => s.total === null || typeof s.total === 'number'),
+    'BND13 …and a scalar total that is a number or NULL');
+  ok(near(d.breakdown_summary.funnels.total, d.breakdown_summary.funnels.totals.net_sales),
+    'BND14 …equal to the pre-truncation fold of its own metric');
+  ok(!/gross sales/i.test(d.breakdown_summary.funnels.basis_label),
+    'BND15 the funnels block (net_sales) does not say "Gross sales"', d.breakdown_summary.funnels.basis_label);
+  ok(d.breakdown_summary.funnels.rows.every((r) => 'name' in r), 'BND16 composite funnel rows carry name');
+  ok(typeof d.meta.sessions_unknown === 'boolean', 'BND17 the dashboard surfaces sessions_unknown', d.meta.sessions_unknown);
+  ok(d.meta.warnings.every((w) => typeof w.reason === 'string' && w.reason.length > 0),
+    'BND18 every dashboard warning carries a string reason');
 }
 
 // ═══ PRESETS ════════════════════════════════════════════════════════════════

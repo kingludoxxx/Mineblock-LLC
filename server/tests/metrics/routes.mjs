@@ -64,9 +64,12 @@ const T0 = todayInTz();
 const D = (n) => new Date(new Date(`${T0}T12:00:00Z`).getTime() - n * 86400000).toISOString().slice(0, 10);
 const at = (day, h) => new Date(zonedDayStart(day).getTime() + h * 3600000).toISOString();
 
-// A funnel name carrying a SPREADSHEET FORMULA — the CSV guard's real target.
-await q(`INSERT INTO funnels (id, slug, name, status) VALUES ('f1','alpha','Alpha','live')`);
-await q(`INSERT INTO funnel_pages (id, funnel_id, slug, type) VALUES ('p1','f1','checkout','checkout')`);
+// A funnel whose ID is a SPREADSHEET FORMULA — hostile in the one column that
+// becomes a CSV cell verbatim (`key`), while its `name` is ordinary. That
+// exercises the CSV guard AND the funnels.name join in the same row, and pins
+// that the join keys on the ID rather than on the display string.
+await q(`INSERT INTO funnels (id, slug, name, status) VALUES ('=cmd|calc!A1','alpha','Alpha','live')`);
+await q(`INSERT INTO funnel_pages (id, funnel_id, slug, type) VALUES ('p1','=cmd|calc!A1','checkout','checkout')`);
 await q(
   `INSERT INTO co_sessions (id, funnel_id, page_id, status, line_items, total, currency, customer, gateway, vid, refunds, paid_at, created_at)
    VALUES ('s1','=cmd|calc!A1','p1','paid',$1,150,'USD',$2,'whop','v1','[]'::jsonb,$3,$3)`,
@@ -106,7 +109,7 @@ const W = { start_day: D(3), end_day: D(0) };
 
 // ═══ AUTH ═══════════════════════════════════════════════════════════════════
 {
-  for (const [m, p] of [['POST', '/query'], ['GET', '/dashboard'], ['GET', '/presets'], ['GET', '/definitions'], ['GET', '/query.csv?q=%7B%7D']]) {
+  for (const [m, p] of [['POST', '/query'], ['GET', '/dashboard'], ['GET', '/band'], ['GET', '/presets'], ['GET', '/definitions'], ['GET', '/query.csv?q=%7B%7D']]) {
     const r = await req(m, p, m === 'POST' ? { metrics: ['orders'], window: W } : undefined, { 'Content-Type': 'application/json' });
     ok(r.status === 401, `AUTH ${m} ${p.split('?')[0]} is 401 without a token`, r.status);
   }
@@ -195,6 +198,77 @@ const W = { start_day: D(3), end_day: D(0) };
   ok(badWin.status === 422, 'DASH7 a malformed window is 422, never a 500', badWin.status);
   const scoped = await req('GET', `/dashboard?start=${D(3)}&end=${D(0)}&funnel_id=%3Dcmd%7Ccalc%21A1`);
   ok(scoped.status === 200 && scoped.j.kpis.orders === 1, 'DASH8 funnel scoping works (and a hostile id is just a bound parameter)', scoped.j.kpis?.orders);
+}
+
+// ═══ GET /band — the 15s repoll target ══════════════════════════════════════
+{
+  const r = await req('GET', '/band');
+  ok(r.status === 200, 'BND1 answers 200', `${r.status} ${r.text.slice(0, 200)}`);
+  for (const k of ['live', 'unique_today', 'today', 'yesterday', 'timezone', 'meta']) {
+    ok(Object.prototype.hasOwnProperty.call(r.j, k), `BND2 ships '${k}'`);
+  }
+  for (const k of ['day', 'orders', 'revenue', 'spend', 'net']) {
+    ok(Object.prototype.hasOwnProperty.call(r.j.today, k), `BND3 today block ships '${k}'`);
+  }
+  ok(r.j.timezone === 'Europe/Madrid', 'BND4 names the reporting timezone', r.j.timezone);
+  ok(r.j.today.spend === null || typeof r.j.today.spend === 'number',
+    'BND5 spend is a number or NULL — never a fabricated 0', r.j.today.spend);
+
+  // The dashboard must serve the IDENTICAL block through the same door, or the
+  // first paint and the poll disagree on screen.
+  const d = await req('GET', `/dashboard?start=${W.start_day}&end=${W.end_day}`);
+  ok(JSON.stringify(d.j.band.today) === JSON.stringify(r.j.today)
+    && JSON.stringify(d.j.band.yesterday) === JSON.stringify(r.j.yesterday),
+  'BND6 the dashboard band is byte-identical to GET /band over HTTP',
+  `${JSON.stringify(d.j.band.today)} vs ${JSON.stringify(r.j.today)}`);
+  ok(typeof d.j.band.in_window === 'boolean', 'BND7 …plus in_window on the composite');
+
+  // Cheapness is the point of the route existing at all.
+  ok(r.j.meta.computed_ms <= d.j.meta.computed_ms,
+    `BND8 the band is cheaper than the composite it replaces (${r.j.meta.computed_ms}ms vs ${d.j.meta.computed_ms}ms)`);
+  const scoped = await req('GET', '/band?funnel_id=%3Dcmd%7Ccalc%21A1');
+  ok(scoped.status === 200, 'BND9 funnel scoping works (hostile id is a bound parameter)', scoped.status);
+  const noAuth = await fetch(`${B}/band`);
+  ok(noAuth.status === 401, 'BND10 …and it is authed like its siblings', noAuth.status);
+}
+
+// ═══ SECOND-BATCH WIRE KEYS, over HTTP ══════════════════════════════════════
+{
+  // basis_label follows the metric actually folded
+  const net = await req('POST', '/query', { metrics: ['net_sales'], dimension: 'funnel', window: W });
+  ok(net.j.meta.basis_label.startsWith('Net sales') && !/gross sales/i.test(net.j.meta.basis_label),
+    'WK1 a net_sales breakdown does not say "Gross sales"', net.j.meta.basis_label);
+  ok(net.j.meta.basis_metric === 'net_sales', 'WK2 basis_metric names the figure');
+  // funnel rows carry name; key stays the id
+  const row = net.j.rows.find((x) => x.key === '=cmd|calc!A1');
+  ok(row && row.name === 'Alpha' && row.key === '=cmd|calc!A1',
+    'WK3 funnel rows carry name while key stays the funnel id', JSON.stringify(row && { k: row.key, n: row.name }));
+  // scalar total + rows_total
+  ok(typeof net.j.meta.total === 'number' && net.j.meta.total_metric === 'net_sales'
+    && typeof net.j.meta.rows_total === 'number',
+  'WK4 breakdowns carry a scalar total + total_metric + rows_total');
+  // sessions_unknown on the wire
+  ok(typeof net.j.meta.sessions_unknown === 'boolean', 'WK5 meta.sessions_unknown is on the wire', net.j.meta.sessions_unknown);
+  // warnings all carry a string reason
+  const all = [net, await req('POST', '/query', { metrics: ['orders'], dimension: 'product', window: W })]
+    .flatMap((x) => x.j.meta.warnings);
+  ok(all.every((w) => typeof w.reason === 'string' && w.reason.length > 0
+    && typeof w.source === 'string' && w.source.length > 0),
+  'WK6 every warning over HTTP carries string source + reason', JSON.stringify(all));
+  // future buckets are null
+  const fwd = new Date(new Date(`${T0}T12:00:00Z`).getTime() + 2 * 86400000).toISOString().slice(0, 10);
+  const fut = await req('POST', '/query', { metrics: ['orders', 'net_sales'], window: { start_day: T0, end_day: fwd } });
+  const ahead = fut.j.series.filter((p) => p.key > T0);
+  ok(ahead.length === 2 && ahead.every((p) => p.future === true && p.orders === null && p.net_sales === null),
+    'WK7 unstarted report-days serialise as null, not 0', JSON.stringify(ahead));
+  ok(fut.j.series.find((p) => p.key === T0).future === false, 'WK8 today is not future');
+  // composite blocks
+  const d = await req('GET', `/dashboard?start=${W.start_day}&end=${W.end_day}`);
+  ok(Object.values(d.j.breakdown_summary).every((s) => typeof s.rows_total === 'number'
+    && s.total_metric && (s.total === null || typeof s.total === 'number')),
+  'WK9 every composite breakdown ships total + total_metric + rows_total');
+  ok(d.j.breakdown_summary.funnels.rows.every((x) => 'name' in x), 'WK10 composite funnel rows carry name');
+  ok(typeof d.j.meta.sessions_unknown === 'boolean', 'WK11 the dashboard surfaces sessions_unknown');
 }
 
 // ═══ GET /presets — EVERY preset must survive the HTTP door ═════════════════

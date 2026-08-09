@@ -30,6 +30,7 @@ import { requirePermission } from '../middleware/rbac.js';
 import {
   runQuery,
   runDashboard,
+  runBand,
   reportPresets,
   validateQuery,
   toCsv,
@@ -157,6 +158,28 @@ router.get('/dashboard', async (req, res, next) => {
       end: dayParam(req.query.end),
       funnel_id: req.query.funnel_id,
     }));
+  } catch (err) {
+    fail(res, err, next);
+  }
+});
+
+/**
+ * GET /api/v1/funnel-metrics/band?funnel_id
+ *
+ * THE LIVE BAND, ALONE — {live, unique_today, today, yesterday, timezone}.
+ *
+ * This exists because the band is the only block that RE-POLLS (every 15s
+ * while the tab is visible). Serving that poll off /dashboard would re-run the
+ * whole composite — every breakdown, both cost folds, the waterfall — four
+ * times a minute per open tab, to refresh two counters. On the 50K fixture
+ * that is ~700ms against ~10ms here.
+ *
+ * `runDashboard` calls the SAME function for its own band, so the first paint
+ * and every subsequent poll come from one derivation.
+ */
+router.get('/band', async (req, res, next) => {
+  try {
+    res.json(await runBand({ funnel_id: req.query.funnel_id }));
   } catch (err) {
     fail(res, err, next);
   }

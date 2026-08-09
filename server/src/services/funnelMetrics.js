@@ -254,11 +254,21 @@ export const BREAKDOWN_BASES = Object.freeze({
   device: 'unavailable',
 });
 
+/**
+ * The POPULATION each basis draws from — deliberately phrased as a noun
+ * phrase, not as a report title.
+ *
+ * These used to lead with "gross sales — …", which made a net_sales breakdown
+ * render a footer that said "Gross sales" under a column of net figures. A
+ * basis describes WHICH MONEY IS IN THE FOLD; the METRIC describes WHAT WAS
+ * MEASURED OVER IT. Conflating the two is how a label ends up contradicting
+ * the column it sits under. `basisLabelFor` composes the two.
+ */
 export const BREAKDOWN_BASIS_LABELS = Object.freeze({
-  gross: 'gross sales — captured base plus upsells',
+  gross: 'the captured base plus upsells',
   captured_base:
-    'captured base only — upsell money has no gateway, UTM or referrer of its '
-    + 'own and is not in here',
+    'the captured base only — upsell money has no gateway, UTM or referrer of '
+    + 'its own and is not in here',
   line_items: 'line-item value (price × quantity) — the cart\'s composition, not what was captured',
   unavailable: 'not collected',
 });
@@ -320,6 +330,39 @@ export const DIM_METRICS = Object.freeze({
   product: Object.freeze(new Set(['orders', 'gross_sales', 'aov'])),
   device: Object.freeze(new Set()),
 });
+
+/** Metrics that are MONEY (or derived from it) — the ones a basis describes. */
+const MONEY_SHAPED = Object.freeze(new Set([...BASE_MONEY, ...COST, ...SPEND]));
+
+/**
+ * The basis label for a SPECIFIC fold: what was measured, then what it was
+ * measured over.
+ *
+ * `basis` is a property of the DIMENSION (which money is attributable to it);
+ * the leading phrase is a property of the METRIC LIST. A net_sales breakdown
+ * must never render "Gross sales …" — that is a label contradicting its own
+ * column, and it is the single most expensive kind of reporting bug because it
+ * is invisible to everyone who already knows what the number should be.
+ *
+ * When the fold names no money metric at all (a sessions-by-source breakdown,
+ * say) the basis still matters — it says what the MONEY on that dimension
+ * would be — so it is stated as exactly that rather than dropped.
+ */
+export function basisLabelFor(basis, metrics = []) {
+  const population = BREAKDOWN_BASIS_LABELS[basis] || BREAKDOWN_BASIS_LABELS.unavailable;
+  const primary = metrics.find((m) => MONEY_SHAPED.has(m));
+  if (!primary) {
+    const head = METRIC_META[metrics[0]]?.label ?? 'This figure';
+    return `${head} — a traffic figure, not money; the money on this breakdown is ${population}`;
+  }
+  return `${METRIC_META[primary].label} — ${population}`;
+}
+
+/** The metric a breakdown's scalar `total` reports (and its footer names). */
+export function primaryMetricOf(metrics = []) {
+  if (metrics.includes('net_sales')) return 'net_sales';
+  return metrics.find((m) => MONEY_SHAPED.has(m)) ?? metrics[0] ?? null;
+}
 
 export const GRANULARITIES = Object.freeze(['day', 'hour', 'week', 'month']);
 
@@ -1542,6 +1585,75 @@ export function ttlRisk(w) {
 }
 
 /**
+ * Append a warning, GUARANTEEING `{source, reason}` with `reason` a non-empty
+ * string.
+ *
+ * Clients render `reason` directly. A warning that arrives as `undefined`
+ * renders as an empty banner — which is worse than no banner, because the
+ * operator sees an alarm with nothing in it and learns to ignore alarms.
+ * `source` and `reason` are written LAST so a caller's `extra` can never
+ * shadow them.
+ */
+function pushWarning(list, source, reason, extra = {}) {
+  const text = (typeof reason === 'string' ? reason : String(reason ?? '')).trim();
+  list.push({ ...extra, source: String(source || 'unknown'), reason: text || 'unspecified' });
+  return list;
+}
+
+/** The first REPORT_TZ day a bucket key covers ('2026-08' → '2026-08-01'). */
+function firstDayOfBucket(key) {
+  return key.length === 7 ? `${key}-01` : key.slice(0, 10);
+}
+
+/** The REPORT_TZ hour key for right now — the future test at hour grain. */
+function currentHourKey() {
+  const p = Object.fromEntries(_tzParts.formatToParts(new Date()).map((x) => [x.type, x.value]));
+  return `${p.year}-${p.month}-${p.day}T${String(Number(p.hour) % 24).padStart(2, '0')}`;
+}
+
+/**
+ * Has this bucket STARTED yet, in REPORT_TZ?
+ *
+ * A window may legitimately end after today — "this month" selected on the 9th
+ * runs to the 31st. Those buckets have not happened, and drawing them as 0
+ * produces a CLIFF TO ZERO in the chart that reads as a collapse in sales.
+ * Both keys compare lexicographically because both are zero-padded ISO, and
+ * both are evaluated in REPORT_TZ: an operator whose report zone is ahead of
+ * the server (Auckland against a UTC box) would otherwise have their current
+ * day classified as tomorrow and blanked.
+ */
+export function isFutureBucket(key, granularity) {
+  if (granularity === 'hour') return key > currentHourKey();
+  return firstDayOfBucket(key) > todayInTz();
+}
+
+/**
+ * Attach `funnels.name` to a funnel breakdown.
+ *
+ * The KEY stays the funnel id — it is the join key the client scopes the page
+ * with, and swapping it for a human name would make two funnels sharing a name
+ * collapse into one row. `label` upgrades to the name when one resolves so
+ * every existing label consumer (including the CSV) gets the readable string,
+ * and `name` is published separately for callers that want to tell the two
+ * apart. '(none)' is PRESERVED exactly: it is not a funnel id, so it is not
+ * looked up, and it keeps its label with `name: null`.
+ */
+async function attachFunnelNames(query, rows) {
+  const ids = [...new Set(rows.map((r) => r.key).filter((k) => k && k !== '(none)'))];
+  const byId = new Map();
+  if (ids.length) {
+    const found = await query(`SELECT id, name FROM funnels WHERE id = ANY($1)`, [ids]);
+    for (const f of found) byId.set(String(f.id), f.name || null);
+  }
+  for (const r of rows) {
+    const name = byId.get(String(r.key)) ?? null;
+    r.name = name;
+    if (name) r.label = name;
+  }
+  return rows;
+}
+
+/**
  * Run one validated query. Returns {series[]|rows[], totals, previous?, meta}.
  *
  * `previous` is the EQUAL-LENGTH IMMEDIATELY-PRECEDING window and its series
@@ -1556,9 +1668,15 @@ export async function runQuery(body, { query = analyticsQuery } = {}) {
   const warnings = [];
 
   const basis = q.dimension ? BREAKDOWN_BASES[q.dimension] : 'gross';
-  const basisLabel = BREAKDOWN_BASIS_LABELS[basis];
+  // Describes the METRIC ACTUALLY FOLDED, not just the dimension — see
+  // basisLabelFor. A net_sales breakdown never says "Gross sales".
+  const basisLabel = basisLabelFor(basis, q.metrics);
 
   const map = await gatherAtoms(query, q, folds, stats);
+  // Surfaced on the wire: the TTL clamp is invisible in the numbers (a
+  // withheld session and an unmeasured one both render "—"), so the client
+  // needs the boolean to explain WHICH it is looking at.
+  const sessionsUnknown = ttlRisk(q.window) || [...map.values()].some((s) => s.sessions_unknown);
 
   let previous = null;
   if (q.compare) {
@@ -1576,11 +1694,13 @@ export async function runQuery(body, { query = analyticsQuery } = {}) {
       rows_scanned: stats.rows_scanned,
       basis,
       basis_label: basisLabel,
+      basis_metric: primaryMetricOf(q.metrics),
       timezone: REPORT_TIMEZONE,
       granularity: q.granularity,
       // Names the bucket the session count is distinct WITHIN, because the
       // figure is a function of that bucket (see readTraffic).
       sessions_basis: `distinct lb_touches.vid per ${q.granularity === 'hour' ? 'hour' : 'day'}, summed (additive)`,
+      sessions_unknown: sessionsUnknown,
       metrics: q.metrics,
       dimension: q.dimension,
       // BOTH spellings on purpose. `start_day`/`end_day` is the REQUEST
@@ -1609,20 +1729,25 @@ export async function runQuery(body, { query = analyticsQuery } = {}) {
     out.meta.rows_total = stats.rows_total ?? out.rows.length;
     out.meta.rows_truncated = out.meta.rows_total > out.rows.length;
     out.totals = totalsOf(map, q, { product: q.dimension === 'product' });
+    // The scalar the "Top N of M · $total" footer prints, plus the name of the
+    // metric it IS — so the footer cannot claim one number and show another.
+    out.meta.total_metric = primaryMetricOf(q.metrics);
+    out.meta.total = out.meta.total_metric ? out.totals[out.meta.total_metric] ?? null : null;
+    if (q.dimension === 'funnel') await attachFunnelNames(query, out.rows);
     if (q.dimension === 'product') {
       // The product fold counts a session once PER LINE, so its rows sum to
       // more orders than exist. The TOTALS therefore come from a distinct
       // count, and the discrepancy is named rather than hidden.
       const distinct = await readDistinctOrders(query, q);
       out.totals.orders = q.metrics.includes('orders') ? distinct.orders : out.totals.orders;
-      out.meta.warnings.push({
-        source: 'product_dimension',
-        reason: 'rows count a session once per line; totals.orders is the DISTINCT session count',
-      });
+      pushWarning(out.meta.warnings, 'product_dimension',
+        'rows count a session once per line; totals.orders is the DISTINCT session count');
     }
     if (previous) {
+      const prevRows = breakdownRows(previous.map, previous.q, { rows_scanned: 0 });
+      if (q.dimension === 'funnel') await attachFunnelNames(query, prevRows);
       out.previous = {
-        rows: breakdownRows(previous.map, previous.q, { rows_scanned: 0 }),
+        rows: prevRows,
         totals: totalsOf(previous.map, previous.q, { product: q.dimension === 'product' }),
         window: { start_day: previous.window.from, end_day: previous.window.to },
       };
@@ -1645,16 +1770,19 @@ export async function runQuery(body, { query = analyticsQuery } = {}) {
   }
 
   if (stats.unapplied_filters.length) {
-    out.meta.warnings.push({
-      source: 'filters',
-      reason: `filter(s) ${stats.unapplied_filters.join(', ')} could not be applied on dimension '${q.dimension ?? 'none'}'`,
-    });
+    pushWarning(out.meta.warnings, 'filters',
+      `filter(s) ${stats.unapplied_filters.join(', ')} could not be applied on dimension '${q.dimension ?? 'none'}'`);
   }
   if (ttlRisk(q.window) && folds.traffic) {
-    out.meta.warnings.push({
-      source: 'lb_touches',
-      reason: `window reaches past the ${TOUCH_TTL_DAYS}-day touch retention — sessions and every rate over them are withheld for the affected buckets`,
-    });
+    pushWarning(out.meta.warnings, 'lb_touches',
+      `window reaches past the ${TOUCH_TTL_DAYS}-day touch retention — sessions and every rate over them are withheld for the affected buckets`);
+  }
+  // A window running past today is legitimate ("this month" on the 9th). Its
+  // unstarted buckets are drawn as nulls rather than zeros; say so, so the gap
+  // in the line reads as "not yet" instead of "we lost the data".
+  if (!q.dimension && (out.series || []).some((p) => p.future)) {
+    pushWarning(out.meta.warnings, 'window',
+      `window extends past today (${todayInTz()} in ${REPORT_TZ}); buckets that have not begun report null, never 0`);
   }
   // A DST-transition day is genuinely 23 or 25 hours long. The buckets are
   // right either way (they come from the zone, not from a hard-coded 24), but
@@ -1662,12 +1790,10 @@ export async function runQuery(body, { query = analyticsQuery } = {}) {
   // to be told why rather than left to file a bug.
   const dstDays = daysOfWindow(q.window).filter((d) => hoursInLocalDay(d) !== 24);
   if (dstDays.length) {
-    out.meta.warnings.push({
-      source: 'timezone',
-      reason: `window contains a daylight-saving transition in ${REPORT_TZ}: `
+    pushWarning(out.meta.warnings, 'timezone',
+      `window contains a daylight-saving transition in ${REPORT_TZ}: `
         + dstDays.map((d) => `${d} is ${hoursInLocalDay(d)}h`).join(', '),
-      days: dstDays,
-    });
+      { days: dstDays });
   }
   out.meta.computed_ms = Date.now() - t0;
   return out;
@@ -1685,9 +1811,24 @@ function seriesPoints(map, q) {
     const a = byBucket.get(key) || { ...emptyAtoms() };
     // A bucket with no traffic row and a TTL-crossed date is still UNKNOWN,
     // not zero — the row is missing because it EXPIRED, not because nobody came.
-    const day = key.length === 7 ? `${key}-01` : key.slice(0, 10);
+    const day = firstDayOfBucket(key);
     if (day < ttlEdgeDay()) a.sessions_unknown = true;
-    return { key, ...computeMetrics(a, q.metrics) };
+
+    // ── A BUCKET THAT HAS NOT BEGUN IS NULL, NOT ZERO ────────────────────
+    // "This month" picked on the 9th runs to the 31st. Those days have not
+    // happened; drawing them as 0 puts a cliff to zero on the chart that reads
+    // as a collapse in sales, and it drags every trend line the operator is
+    // about to make a spend decision on.
+    //
+    // Gated on the bucket being EMPTY on purpose: if a future bucket somehow
+    // carries rows, that is a clock or a data anomaly, and blanking it would
+    // hide exactly the thing worth seeing.
+    if (!byBucket.has(key) && isFutureBucket(key, q.granularity)) {
+      const nulls = {};
+      for (const m of q.metrics) nulls[m] = null;
+      return { key, future: true, ...nulls };
+    }
+    return { key, future: false, ...computeMetrics(a, q.metrics) };
   });
 }
 
@@ -1982,6 +2123,75 @@ function moversFrom(curRows, prevRows) {
 }
 
 /**
+ * GET /funnel-metrics/band — the live band, ON ITS OWN.
+ *
+ * WHY IT IS A SEPARATE ROUTE: the band is the one block that re-polls (every
+ * 15s while the tab is visible). Serving it off `/dashboard` would re-run the
+ * entire composite — every breakdown, both cost folds, the waterfall — four
+ * times a minute, per open tab, to refresh two counters. That is not a
+ * micro-optimisation; on the 50K fixture the composite is ~700ms against
+ * ~10ms for this.
+ *
+ * `runDashboard` calls THIS function for its own band, so the polled value and
+ * the first paint come from one derivation and cannot drift apart.
+ *
+ * Its own window is always [yesterday, today] in REPORT_TZ, independent of
+ * whatever range the page is showing — "live" and "today" mean today.
+ */
+export async function runBand({ funnel_id: funnelId } = {}, { query = analyticsQuery } = {}) {
+  const t0 = Date.now();
+  const fid = idOf(funnelId, 64) || null;
+  const today = todayInTz();
+  const yesterday = dayAdd(today, -1);
+  const w = localWindow(parseWindow({ from: yesterday, to: today }));
+
+  const metrics = ['orders', 'net_sales', 'spend', 'net_profit'];
+  const q = {
+    metrics,
+    dimension: null,
+    filters: { funnel_id: fid, country: null, gateway: null, source: null },
+    window: w,
+    compare: false,
+    granularity: 'day',
+    limit: DEFAULT_BREAKDOWN_LIMIT,
+  };
+  const stats = { rows_scanned: 0, unapplied_filters: [] };
+  const [live, map] = await Promise.all([
+    dashboardBand(query, fid),
+    gatherAtoms(query, q, neededFolds(metrics), stats),
+  ]);
+
+  const byKey = new Map(seriesPoints(map, q).map((p) => [p.key, p]));
+  // `?? null` throughout: an absent bucket is "nothing measured", and the band
+  // is the most-glanced-at block on the page — a 0 here is the single easiest
+  // place to convince an operator the day is dead when it merely has no rows
+  // yet.
+  const block = (d) => {
+    const p = byKey.get(d) || {};
+    return {
+      day: d,
+      orders: p.orders ?? null,
+      revenue: p.net_sales ?? null,
+      spend: p.spend ?? null,
+      net: p.net_profit ?? null,
+    };
+  };
+
+  return {
+    ...live,
+    today: block(today),
+    yesterday: block(yesterday),
+    timezone: REPORT_TIMEZONE,
+    meta: {
+      computed_ms: Date.now() - t0,
+      rows_scanned: stats.rows_scanned,
+      timezone: REPORT_TIMEZONE,
+      warnings: [],
+    },
+  };
+}
+
+/**
  * GET /funnel-metrics/dashboard — the whole page in ONE composite read.
  *
  * Everything below runs inside a single Promise.all: the page must not make
@@ -2018,7 +2228,9 @@ export async function runDashboard({ start, end, funnel_id: funnelId } = {}, { q
     brFunnels, brProducts, brSources, brCampaigns, brCountries,
     moversPrevRows, waterfall,
   ] = await Promise.all([
-    dashboardBand(query, fid),
+    // The SAME function GET /band serves, so the first paint and the 15s
+    // repoll can never print different numbers under the same two labels.
+    runBand({ funnel_id: fid }, { query }),
     runOne(kpiMetrics),
     runOne(kpiMetrics, { window: prevW }),
     runOne(DASHBOARD_KPIS_COST),
@@ -2067,56 +2279,55 @@ export async function runDashboard({ start, end, funnel_id: funnelId } = {}, { q
     })(),
   };
 
-  const brFunnelRows = breakdownRows(brFunnels.map, brFunnels.q, null);
+  const brFunnelRows = await attachFunnelNames(query, breakdownRows(brFunnels.map, brFunnels.q, null));
   const totalsFor = (r) => totalsOf(r.map, r.q, { product: r.q.dimension === 'product' });
-  const summary = (r) => {
+  const summary = (r, presetRows = null) => {
     const st = {};
-    const rows = breakdownRows(r.map, r.q, st);
+    const rows = presetRows ?? breakdownRows(r.map, r.q, st);
+    if (presetRows) breakdownRows(r.map, r.q, st); // recount for rows_total only
+    const totals = totalsFor(r);
+    const basis = BREAKDOWN_BASES[r.q.dimension];
+    const totalMetric = primaryMetricOf(r.q.metrics);
+    const rowsTotal = st.rows_total ?? rows.length;
     return {
       rows,
-      totals: totalsFor(r),
-      basis: BREAKDOWN_BASES[r.q.dimension],
-      basis_label: BREAKDOWN_BASIS_LABELS[BREAKDOWN_BASES[r.q.dimension]],
-      // "Top N of M · $total" — M and the total come from the PRE-truncation
-      // fold, so the footer describes the data rather than the page.
+      totals,
+      basis,
+      // Describes the METRIC ACTUALLY FOLDED, not just the dimension.
+      basis_label: basisLabelFor(basis, r.q.metrics),
+      basis_metric: totalMetric,
+      // "Top N of M · $total" — BOTH the M and the $ come from the
+      // PRE-TRUNCATION fold, so the footer describes the DATA and not the page
+      // that happened to fit. `total_metric` names which figure it is, so the
+      // footer cannot say "sales" over a column of orders.
       limit: r.q.limit,
-      rows_total: st.rows_total ?? rows.length,
-      rows_truncated: (st.rows_total ?? rows.length) > rows.length,
+      total: totalMetric ? totals[totalMetric] ?? null : null,
+      total_metric: totalMetric,
+      rows_total: rowsTotal,
+      rows_truncated: rowsTotal > rows.length,
     };
   };
 
   const bandTotals = totalsOf(kpiCur.map, kpiCur.q, {});
-
-  // Today / yesterday for the band — folded out of the SAME series the chart
-  // draws, so the band and the chart cannot disagree.
   const seriesRows = seriesPoints(seriesCur.map, seriesCur.q);
-  const byKey = new Map(seriesRows.map((p) => [p.key, p]));
   const today = todayInTz();
-  const yesterday = dayAdd(today, -1);
-  const spendSeries = seriesPoints(costCur.map, costCur.q);
-  const spendByKey = new Map(spendSeries.map((p) => [p.key, p]));
-  const dayBlock = (d) => ({
-    day: d,
-    orders: byKey.get(d)?.orders ?? null,
-    revenue: byKey.get(d)?.net_sales ?? null,
-    spend: spendByKey.get(d)?.spend ?? null,
-    net: spendByKey.get(d)?.net_profit ?? null,
-  });
 
   const out = {
+    // Verbatim from runBand — the same object GET /band serves, so the 15s
+    // repoll replaces this block wholesale and nothing can drift.
     band: {
       ...band,
-      today: dayBlock(today),
-      yesterday: dayBlock(yesterday),
-      // Both day blocks are null-filled when the day is outside the selected
-      // window — that is "not in this report", not "zero sales".
+      // `in_window` says whether the CHART covers today; the band's own
+      // figures are always today's, whatever range the page is showing.
       in_window: today >= w0.from && today <= w0.to,
     },
     kpis,
     series: seriesRows,
     prev_series: seriesPoints(seriesPrev.map, seriesPrev.q),
     breakdown_summary: {
-      funnels: summary(brFunnels),
+      // Pass the NAME-RESOLVED rows in — re-deriving them here would silently
+      // drop the funnels.name join that movers already got.
+      funnels: summary(brFunnels, brFunnelRows),
       products: summary(brProducts),
       sources: summary(brSources),
       campaigns: summary(brCampaigns),
@@ -2136,8 +2347,10 @@ export async function runDashboard({ start, end, funnel_id: funnelId } = {}, { q
       computed_ms: 0,
       rows_scanned: rowsScanned,
       basis: 'gross',
-      basis_label: BREAKDOWN_BASIS_LABELS.gross,
+      basis_label: basisLabelFor('gross', DASHBOARD_SERIES_METRICS),
+      basis_metric: primaryMetricOf(DASHBOARD_SERIES_METRICS),
       timezone: REPORT_TIMEZONE,
+      sessions_unknown: ttlRisk(w0) || bandTotals.sessions === null,
       series_aligned_by: 'index',
       // The same window echo every other response carries, so a client reading
       // `meta.window` never has to special-case this endpoint. NOTE: the
@@ -2151,13 +2364,15 @@ export async function runDashboard({ start, end, funnel_id: funnelId } = {}, { q
     },
   };
   if (ttlRisk(w0)) {
-    out.meta.warnings.push({
-      source: 'lb_touches',
-      reason: `window reaches past the ${TOUCH_TTL_DAYS}-day touch retention — sessions and every rate over them are withheld for the affected buckets`,
-    });
+    pushWarning(out.meta.warnings, 'lb_touches',
+      `window reaches past the ${TOUCH_TTL_DAYS}-day touch retention — sessions and every rate over them are withheld for the affected buckets`);
   }
   if (bandTotals.sessions === null) {
-    out.meta.warnings.push({ source: 'sessions', reason: 'sessions withheld for this window (touch retention)' });
+    pushWarning(out.meta.warnings, 'sessions', 'sessions withheld for this window (touch retention)');
+  }
+  if (seriesRows.some((p) => p.future)) {
+    pushWarning(out.meta.warnings, 'window',
+      `window extends past today (${today} in ${REPORT_TZ}); buckets that have not begun report null, never 0`);
   }
   out.meta.computed_ms = Date.now() - t0;
   return out;
@@ -2167,8 +2382,9 @@ export default {
   METRICS, METRIC_META, DIMENSIONS, DIMENSION_META, DIM_METRICS,
   BREAKDOWN_BASES, BREAKDOWN_BASIS_LABELS, UNAVAILABLE_DIMENSIONS,
   GRANULARITIES, MetricsError, validateQuery, previousWindow, computeMetrics,
-  runQuery, runDashboard, reportPresets, toCsv, csvCell, neededFolds,
-  bucketOf, bucketsFor, weekKey, monthKey, ttlRisk,
+  runQuery, runDashboard, runBand, reportPresets, toCsv, csvCell, neededFolds,
+  bucketOf, bucketsFor, weekKey, monthKey, ttlRisk, isFutureBucket,
+  basisLabelFor, primaryMetricOf,
   REPORT_TZ, REPORT_TIMEZONE, zonedDayStart, dayInTz, todayInTz,
   hoursInLocalDay, localWindow, UNSERVABLE_PRESETS,
   HOUR_ONLY_EXCLUSIONS, MAX_WINDOW_DAYS, MAX_METRICS, MAX_BREAKDOWN_LIMIT,
