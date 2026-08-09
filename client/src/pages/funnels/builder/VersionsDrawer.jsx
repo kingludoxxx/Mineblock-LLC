@@ -45,7 +45,7 @@ function LabelChip({ label }) {
   );
 }
 
-export default function VersionsDrawer({ funnelId, pageId, onClose, onRestored }) {
+export default function VersionsDrawer({ funnelId, pageId, onClose, onRestored, onBeforeRestore }) {
   const [versions, setVersions] = useState(null); // null = loading
   const [error, setError] = useState(null);
   const [retention, setRetention] = useState(null);
@@ -103,6 +103,23 @@ export default function VersionsDrawer({ funnelId, pageId, onClose, onRestored }
     setRestoringId(id);
     setError(null);
     try {
+      // F9. The server snapshots the DATABASE. Unsaved browser edits are not in
+      // it, and onRestored drops the whole dirty set — so the confirm's promise
+      // that "your current state is snapshotted first" was false for exactly
+      // the edits an operator would most want back. Flush first, and if the
+      // flush fails, do NOT restore: an unrecoverable state is worse than a
+      // restore that did not happen.
+      if (onBeforeRestore) {
+        const outcome = await onBeforeRestore();
+        if (outcome && outcome.ok === false) {
+          setError(
+            `Your unsaved edits could not be saved, so nothing was restored — the snapshot would not have `
+            + `contained them. Fix the save first: ${outcome.error}`
+          );
+          setRestoringId(null);
+          return;
+        }
+      }
       const res = await api.post(`/page-versions/${funnelId}/${pageId}/${id}/restore`, { confirm: true });
       // Hand the editor the restore THE MOMENT the POST resolves — before the
       // list refetch. load() is another round-trip, and every millisecond of
@@ -122,7 +139,7 @@ export default function VersionsDrawer({ funnelId, pageId, onClose, onRestored }
     } finally {
       setRestoringId(null);
     }
-  }, [funnelId, pageId, load, onRestored]);
+  }, [funnelId, pageId, load, onRestored, onBeforeRestore]);
 
   const previewBlocks = useMemo(
     () => (Array.isArray(preview?.blocks) ? preview.blocks : []),
@@ -296,8 +313,8 @@ export default function VersionsDrawer({ funnelId, pageId, onClose, onRestored }
                 <div className="rounded-md border border-amber-500/40 bg-amber-500/5 p-2 space-y-2">
                   <p className="text-[11px] text-amber-300/90 leading-snug">
                     This replaces the page's blocks, CSS, JS, SEO and title with version #{v.id}.
-                    Your current state is snapshotted first as <strong>before restore</strong>, so this is undoable.
-                    Slug, status and home stay as they are.
+                    Anything you have not saved yet is saved first, then snapshotted as{' '}
+                    <strong>before restore</strong> — so this is undoable. Slug, status and home stay as they are.
                   </p>
                   <input
                     autoFocus
