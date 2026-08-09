@@ -2987,3 +2987,70 @@ stale-funnel guards already prevent the observable bug (wrong funnel's data
 painting) and aborting is an optimisation, not a correctness fix.
 STATUS: COMPLETE
 ---
+
+---
+TIMESTAMP: 2026-08-10 00:20
+TASK: Split-test statistics layer (feat/split-statistics)
+BUILT: A pure statistics service (server/src/services/splitStats.js) plus an
+additive extension of splitCredits.readResults and a readiness/significance
+panel in the split results UI. The service does NOT re-derive any math: a grep
+before writing found server/src/services/analyticsStats.js already shipping the
+pooled two-proportion z-test, Welch's t with an exact Student-t tail via the
+regularized incomplete beta, varianceFromSums, both sample-size formulas and
+buildVerdict, consumed by funnelAnalytics for the WINDOWED endpoint. splitStats
+imports those primitives and adds only what the split lane lacked: per-arm
+readiness in DELTAS ("needs 240 more visitors"), incremental lift in MONEY
+(rpv_delta, per_1000_visitors, earned_so_far), time_to_decision_days (ported
+from funnel-os lb_split_incremental_service; zero hits in this repo before now),
+and a withholding contract that returns status 'insufficient_data' with prose
+and a NULL p-value in three named states. readResults gained arms[].stats and a
+top-level verdict/floors/method with every pre-existing raw key unchanged in
+name, type and value. The client got a lifetime-fed readiness panel that renders
+even when the windowed analytics overlay 404s, and a winner badge gated on
+readiness through a pure exported predicate.
+TESTED: New harness server/tests/split/statistics.mjs — 257/257. Known-answer
+cases with every derivation written out: normal CDF at exact/table points;
+Student-t at four t-table 5% critical values (3.182446/df3, 2.262157/df9,
+2.228139/df10, 2.085963/df20); two-proportion z hand-computed to z=2.10270,
+p=0.035488; Welch t hand-computed to t=0.97828, df=194.156, p=0.3291;
+required-N 686/arm (proportions) and 63/arm (means). Property cases: swap
+symmetry, 10x scale (rates hold, confidence rises, required-N scale-free),
+A==B never significant at four scales, required-N monotone in 1/delta^2,
+readiness outranking significance, the three withheld states, totality under 11
+hostile inputs (NaN, numeric strings, negatives, conversions>denominator,
+Infinity, n=1). Contract cases against real Postgres: raw counts survive, exactly
+ONE key added per arm, per-session moments, refunds netting into the variance.
+Client-boundary cases running the REAL splitApi.js: the 100x conversion in both
+directions, null->undefined never 0, a 12-row winner-badge truth table, eight
+transport failures, and the real service output through the real client reader.
+Regressions all identical to the pre-change baseline: verifySplitTesting 48/48,
+verifySplitUiGuards 25/25, split-delivery 33/33, verifyFunnelAnalytics 212
+passed/1 failed (the SAME pre-existing DST failure, present before any change).
+vite build exit 0. eslint on touched files: 2 errors, both pre-existing and
+unchanged, 0 added (baseline measured on the stashed tree).
+OUTPUT: 257/257 new; 48/48, 25/25, 33/33, 212+1 regressions; VITE_EXIT=0.
+Two real bugs were caught BY EXECUTION rather than by reading: (1) incrementalLift
+read `orders` while the ledger spells it `conversions`, so every ledger-fed
+caller had a real cvr_delta of 0.03 reported as 0.00 — a genuine difference
+rendered as "no difference"; (2) the harness's own api stub bound at module load
+and captured undefined, so all eight transport scenarios passed their
+"never throws" assertion while every reason was wrong.
+DECISIONS: (1) Compose analyticsStats rather than write a second engine — two
+implementations of one number would put two confidences for one test on screen
+the first time they disagreed by an ulp. (2) TWO floors, deliberately different:
+MIN_STATS_SAMPLE (30) gates whether a p-value is PRINTED, SPLIT_MIN_VISITORS_PER_ARM
+(300) gates whether a WINNER may be named; collapsing them would either hide the
+number until 300 or print one at n=3. (3) Moments are PER SESSION, not per leg —
+the unit of observation must be the unit of randomisation, and per-leg counting
+understates variance and manufactures confidence. (4) The denominator is
+`exposures`, not `visitors`: the money moments are summed over exposure sessions,
+and mixing populations would make the t statistic describe neither. (5) Archived
+arms STAY in the comparison — excluding them would make the same ledger score
+differently before and after an operator retires a loser. Cost accepted and
+documented. (6) A missing control is REPORTED as 'no_control', never silently
+substituted; buildVerdict's fallback to the worst arm by RPV would flip every
+vs-control number. (7) The two pre-existing eslint errors in SplitResultsModal
+were left alone: rewriting live data-loading behaviour with no harness over it,
+to satisfy a rule the repo violates 147 times, is the worse trade.
+STATUS: COMPLETE
+---
