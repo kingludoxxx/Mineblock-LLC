@@ -28,6 +28,7 @@ import pageCloneRoutes from './pageClone.js';
 import pageVersionsRoutes from './pageVersions.js';
 import pageLibraryRoutes from './pageLibrary.js';
 import shopifyVariantsRoutes from './shopifyVariants.js';
+import shopifyPagesRoutes from './shopifyPages.js';
 import aiPageGenerateRoutes from './aiPageGenerate.js';
 import pageThumbnailsRoutes from './pageThumbnails.js';
 import splitTestsRoutes from './splitTests.js';
@@ -81,6 +82,7 @@ const mountRoutes = (app) => {
   app.use('/api/v1/page-versions', pageVersionsRoutes); // builder page snapshots + restore (authed, funnels permission; owns lb_page_versions)
   app.use('/api/v1/page-library', pageLibraryRoutes); // saved reusable page snapshots + clone-into-any-funnel (authed, funnels permission; owns funnel_page_library, clones always land DRAFT)
   app.use('/api/v1/shopify-variants', shopifyVariantsRoutes); // builder product/variant typeahead (authed, funnels permission; read-only Shopify Admin proxy, writes nothing)
+  app.use('/api/v1/shopify-pages', shopifyPagesRoutes); // clone-a-page "From Shopify" tab: list Online Store pages + import one through pageClone's scanHtml (authed, funnels permission; read-only Shopify Admin proxy, writes nothing)
   app.use('/api/v1/ai-generate', aiPageGenerateRoutes); // Generate-with-AI page build stream (authed, funnels permission; never writes funnel_pages)
   app.use('/api/v1/page-thumbnails', pageThumbnailsRoutes); // canvas node miniatures (authed, funnels permission; fail-open 204)
   app.use('/api/v1/checkout', checkoutAdminRoutes); // authed CRM surface (public /checkout/public mounted earlier in app.js)

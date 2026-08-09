@@ -8,8 +8,10 @@
 // to absolutize relative image/link paths — the server never fetches it.
 //
 // "Generate with AI" is live (AiGenerateTab — brief in, streamed sections
-// out, creation through the same /page-clone/create). "From Shopify" stays a
-// visible-but-disabled tab.
+// out, creation through the same /page-clone/create). "From Shopify" is live
+// too (ShopifyTab — pick an Online Store page; the server runs the SAME scan
+// pipeline on its body_html and hands back the same { sections, stats }, so
+// the picker and /page-clone/create below are shared verbatim).
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   X, ClipboardPaste, FileUp, Sparkles, ShoppingBag, ScanLine,
@@ -19,12 +21,13 @@ import api from '../../services/api';
 import Button from '../ui/Button';
 import { formatHtml, formatCss, highlightHtml, highlightCss } from './codeFormat';
 import AiGenerateTab from './ai-generate/AiGenerateTab';
+import ShopifyTab from './shopify/ShopifyTab';
 
 const TABS = [
   { value: 'paste', label: 'Paste code', icon: ClipboardPaste },
   { value: 'file', label: 'Import file', icon: FileUp },
   { value: 'ai', label: 'Generate with AI', icon: Sparkles },
-  { value: 'shopify', label: 'From Shopify', icon: ShoppingBag, disabled: true },
+  { value: 'shopify', label: 'From Shopify', icon: ShoppingBag },
 ];
 
 // Token colors for the paste-pane highlighter (light panes, GitHub-light-ish).
@@ -173,6 +176,10 @@ export default function ClonePageModal({ open, onClose, funnelId, onCreated }) {
   const [title, setTitle] = useState('');
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState(null);
+  // The Shopify page list lives HERE, not in the tab: Back from the picker
+  // unmounts the tab, and a tab-owned list would re-hit the Shopify Admin API
+  // (the bucket shared with live checkout pricing) on every Back.
+  const [shopifyCache, setShopifyCache] = useState(null);
   const fileInputRef = useRef(null);
 
   // Fresh state every time the modal opens.
@@ -190,6 +197,7 @@ export default function ClonePageModal({ open, onClose, funnelId, onCreated }) {
     setTitle('');
     setCreating(false);
     setError(null);
+    setShopifyCache(null); // a fresh open re-reads the store
   }, [open]);
 
   useEffect(() => {
@@ -247,6 +255,27 @@ export default function ClonePageModal({ open, onClose, funnelId, onCreated }) {
     }
   }, [scanning, tab, pasteHtml, pasteCss, file, originalUrl]);
 
+  // The Shopify tab's import answers the SAME { sections, stats } payload as
+  // /page-clone/scan — it runs the same server-side pipeline — so it lands in
+  // the same picker state below. One code path, not a parallel one. The only
+  // extra is `page.title`: body_html carries no <title>, so the Shopify page
+  // title is the honest default (the paste path keeps using stats.title).
+  //
+  // Returns a message string on refusal, NEVER setError: this modal renders
+  // `error` only in the paste/file body and in the picker, so a message set
+  // from here while the Shopify tab is mounted would be invisible. The tab
+  // owns its own error surface, so the tab is told.
+  const adoptShopifyScan = useCallback((data) => {
+    const sections = data?.sections || [];
+    if (!sections.length) {
+      return 'The scan found no content sections in that page — try the Paste code tab.';
+    }
+    setResult(data);
+    setSelected(new Set(sections.map((s) => s.index)));
+    setTitle(data.page?.title || data.stats?.title || 'Cloned page');
+    return null;
+  }, []);
+
   const toggleSection = useCallback((idx) => {
     setSelected((prev) => {
       const next = new Set(prev);
@@ -303,14 +332,18 @@ export default function ClonePageModal({ open, onClose, funnelId, onCreated }) {
         <div className="shrink-0 flex items-start justify-between px-5 py-3.5 border-b border-border-subtle">
           <div className="min-w-0">
             <h2 className="text-base font-semibold text-text-primary">
-              {tab === 'ai' && !result
-                ? 'Generate with AI — describe the page'
-                : 'Clone a page — paste code or import a file'}
+              {result || (tab !== 'ai' && tab !== 'shopify')
+                ? 'Clone a page — paste code or import a file'
+                : tab === 'ai'
+                  ? 'Generate with AI — describe the page'
+                  : 'Clone from Shopify — pick a page from your store'}
             </h2>
             <p className="mt-0.5 text-xs text-text-faint">
-              {tab === 'ai' && !result
-                ? 'Claude designs the architecture, writes each section live, and leaves image slots as placeholders.'
-                : 'Scan strips junk scripts & tracking pixels (Meta, Google, ...), the source title & meta — then splits it into sections.'}
+              {result || (tab !== 'ai' && tab !== 'shopify')
+                ? 'Scan strips junk scripts & tracking pixels (Meta, Google, ...), inline event handlers, javascript: links and non-video iframes, the source title & meta — then splits it into sections.'
+                : tab === 'ai'
+                  ? 'Claude designs the architecture, writes each section live, and leaves image slots as placeholders.'
+                  : 'Your Online Store pages, read straight from the Shopify Admin API — the picked one runs through the same scan.'}
             </p>
           </div>
           <button
@@ -328,19 +361,6 @@ export default function ClonePageModal({ open, onClose, funnelId, onCreated }) {
             <div className="shrink-0 flex gap-1 px-5 pt-2 border-b border-border-subtle">
               {TABS.map((t) => {
                 const Icon = t.icon;
-                if (t.disabled) {
-                  return (
-                    <span
-                      key={t.value}
-                      className="inline-flex items-center gap-1.5 px-3 py-2 text-sm font-medium border-b-2 -mb-px border-transparent text-text-faint opacity-50 cursor-not-allowed"
-                      title="Coming soon"
-                    >
-                      <Icon className="w-3.5 h-3.5" />
-                      {t.label}
-                      <span className="px-1 py-0.5 rounded bg-bg-elevated text-[9px] uppercase">soon</span>
-                    </span>
-                  );
-                }
                 return (
                   <button
                     key={t.value}
@@ -360,6 +380,13 @@ export default function ClonePageModal({ open, onClose, funnelId, onCreated }) {
 
             {tab === 'ai' ? (
               <AiGenerateTab funnelId={funnelId} onCreated={onCreated} onClose={onClose} />
+            ) : tab === 'shopify' ? (
+              <ShopifyTab
+                cache={shopifyCache}
+                onLoaded={setShopifyCache}
+                onScanned={adoptShopifyScan}
+                onClose={onClose}
+              />
             ) : (
             <>
             {/* ── Input body ────────────────────────────────────── */}
@@ -446,7 +473,9 @@ export default function ClonePageModal({ open, onClose, funnelId, onCreated }) {
             {/* ── Input footer ──────────────────────────────────── */}
             <div className="shrink-0 flex items-center justify-between gap-3 px-5 py-3.5 border-t border-border-subtle">
               <p className="text-[11px] text-text-faint">
-                Scan removes scripts, Meta &amp; Google pixels, trackers, the source title &amp; comments.
+                Scan removes scripts, pixels &amp; trackers, inline event handlers,
+                <code className="font-mono"> javascript: </code>
+                links and non-video iframes, and disarms off-site form actions.
               </p>
               <div className="flex items-center gap-2 shrink-0">
                 <Button variant="secondary" onClick={onClose}>Cancel</Button>
@@ -469,6 +498,24 @@ export default function ClonePageModal({ open, onClose, funnelId, onCreated }) {
                 )}
                 {stats?.pixels_stripped > 0 && (
                   <ResultChip>Meta + Google pixels stripped ({stats.pixels_stripped})</ResultChip>
+                )}
+                {/* Active content the scan disarmed. Silent hardening is
+                    indistinguishable from a scan that did nothing, so every
+                    count the cleaner reports is shown. */}
+                {stats?.handlers_stripped > 0 && (
+                  <ResultChip>{stats.handlers_stripped} inline event handler{stats.handlers_stripped === 1 ? '' : 's'} removed</ResultChip>
+                )}
+                {stats?.unsafe_urls_stripped > 0 && (
+                  <ResultChip>{stats.unsafe_urls_stripped} javascript: link{stats.unsafe_urls_stripped === 1 ? '' : 's'} neutralized</ResultChip>
+                )}
+                {stats?.iframes_removed > 0 && (
+                  <ResultChip>{stats.iframes_removed} non-video iframe{stats.iframes_removed === 1 ? '' : 's'} removed</ResultChip>
+                )}
+                {stats?.forms_neutralized > 0 && (
+                  <ResultChip>{stats.forms_neutralized} off-site form action{stats.forms_neutralized === 1 ? '' : 's'} disarmed</ResultChip>
+                )}
+                {stats?.wrapper_bytes_stripped > 0 && (
+                  <ResultChip>{fmtBytes(stats.wrapper_bytes_stripped)} of stray page wrappers removed</ResultChip>
                 )}
                 <ResultChip>Split into {total} section{total === 1 ? '' : 's'}</ResultChip>
                 {metaRemoved && <ResultChip>Source title &amp; meta removed</ResultChip>}

