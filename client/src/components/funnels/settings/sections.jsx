@@ -15,7 +15,7 @@
 // wrote in the meantime.
 import { useCallback, useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { RefreshCw, Globe, CheckCircle2, AlertTriangle, ChevronDown, ChevronUp, Trash2 } from 'lucide-react';
+import { RefreshCw, Globe, CheckCircle2, AlertTriangle, ChevronDown, ChevronUp, Trash2, Copy, Check } from 'lucide-react';
 import api from '../../../services/api';
 import Button from '../../ui/Button';
 import Input from '../../ui/Input';
@@ -447,8 +447,73 @@ const DOMAIN_ERR = {
   funnel_not_found: 'Funnel not found.',
   confirm_must_match_domain: 'Type the exact domain to confirm.',
   domain_not_found: 'Domain not found.',
+  confirm_required: 'Confirmation required.',
+  funnel_id_required: 'Funnel id missing.',
+  domain_already_on_this_funnel: 'This domain is already attached to this funnel.',
+  reassign_conflict: 'The domain moved to another funnel since this list loaded — refresh and try again.',
+  from_funnel_id_invalid: 'Invalid source funnel.',
 };
 const domainErr = (code) => DOMAIN_ERR[code] || (code ? `Failed (${code})` : 'Request failed');
+
+// Mirrors the server's apex heuristic (dnsInspect.js TWO_PART_SUFFIXES) so a
+// row can show its required-record count WITHOUT expanding: apex = 2 records
+// (A @ + www CNAME), subdomain = 1 (CNAME). The server stays the authority —
+// the expanded records view always shows its exact answer.
+const APEX_TWO_PART_SUFFIXES = new Set([
+  'co.uk', 'org.uk', 'me.uk', 'ac.uk', 'gov.uk',
+  'com.au', 'net.au', 'org.au',
+  'co.nz', 'net.nz', 'org.nz',
+  'com.br', 'com.mx', 'com.ar', 'com.co',
+  'co.jp', 'ne.jp', 'or.jp',
+  'co.in', 'net.in', 'org.in', 'co.za',
+  'com.sg', 'com.hk', 'com.tw', 'com.cn',
+  'co.kr', 'com.tr', 'com.ua', 'com.pl',
+]);
+function requiredRecordCount(domain) {
+  const labels = String(domain || '').toLowerCase().split('.');
+  const apex = labels.length <= 2 ||
+    (labels.length === 3 && APEX_TWO_PART_SUFFIXES.has(labels.slice(-2).join('.')));
+  return apex ? 2 : 1;
+}
+
+function CopyValueButton({ value }) {
+  const [copied, setCopied] = useState(false);
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(String(value ?? ''));
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch { /* clipboard unavailable (http / permissions) — non-fatal */ }
+  };
+  return (
+    <button
+      onClick={copy}
+      title="Copy value"
+      className="inline-flex items-center p-1 rounded text-text-faint hover:text-text-primary hover:bg-bg-hover cursor-pointer shrink-0 transition-colors align-middle"
+    >
+      {copied ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3" />}
+    </button>
+  );
+}
+
+// Card with a chevron header — the shared shell for the tab's collapsibles.
+function CollapsibleCard({ title, subtitle, open, onToggle, children }) {
+  return (
+    <div className="rounded-xl border border-border-default bg-bg-card">
+      <button
+        onClick={onToggle}
+        className="w-full flex items-center justify-between px-4 py-3 cursor-pointer text-left"
+      >
+        <div>
+          <h4 className="text-sm font-semibold text-text-primary">{title}</h4>
+          {subtitle && <p className="text-xs text-text-faint">{subtitle}</p>}
+        </div>
+        {open ? <ChevronUp className="w-4 h-4 text-text-faint shrink-0" /> : <ChevronDown className="w-4 h-4 text-text-faint shrink-0" />}
+      </button>
+      {open && <div className="border-t border-border-subtle">{children}</div>}
+    </div>
+  );
+}
 
 function RecordsView({ data }) {
   if (data === 'loading') return <p className="text-xs text-text-muted px-3 py-2">Loading records…</p>;
@@ -470,7 +535,10 @@ function RecordsView({ data }) {
               <td className="py-1.5 pr-2 font-mono text-text-primary">{r.type}</td>
               <td className="py-1.5 pr-2 font-mono text-text-primary">{r.name}</td>
               <td className="py-1.5">
-                <span className="font-mono text-text-primary break-all">{r.value}</span>
+                <span className="inline-flex items-start gap-1">
+                  <span className="font-mono text-text-primary break-all">{r.value}</span>
+                  <CopyValueButton value={r.value} />
+                </span>
                 {r.note && <div className="text-text-faint mt-0.5">{r.note}</div>}
               </td>
             </tr>
@@ -498,7 +566,7 @@ export function DomainsSection({ funnel, onFunnelUpdated }) {
   const [connecting, setConnecting] = useState(false);
   const [connectErr, setConnectErr] = useState('');
   const [connectResult, setConnectResult] = useState(null); // attach response data
-  const [busyDomain, setBusyDomain] = useState('');   // verify/radio/detach in flight
+  const [busyDomain, setBusyDomain] = useState('');   // verify/radio/detach/reuse in flight
   const [verifyFlash, setVerifyFlash] = useState({}); // domain → text
   const [records, setRecords] = useState({});         // domain → 'loading' | data
   const [recordsOpen, setRecordsOpen] = useState({}); // domain → bool
@@ -506,19 +574,58 @@ export function DomainsSection({ funnel, onFunnelUpdated }) {
   const [detachText, setDetachText] = useState('');
   const [detachErr, setDetachErr] = useState('');
   const [primaryErr, setPrimaryErr] = useState('');
+  const [hub, setHub] = useState(null);               // registrar/status banner data
+  const [addOpen, setAddOpen] = useState(null);       // null until first list load decides
+  const [availOpen, setAvailOpen] = useState(false);  // "Available on your account"
+  const [avail, setAvail] = useState(null);           // rows attached to OTHER funnels
+  const [availErr, setAvailErr] = useState('');
+  const [funnelNames, setFunnelNames] = useState({}); // funnel_id → name (cosmetic)
+  const [reuseArm, setReuseArm] = useState('');       // domain being reuse-confirmed
+  const [reuseText, setReuseText] = useState('');
+  const [reuseErr, setReuseErr] = useState('');
+  const [dnsOpen, setDnsOpen] = useState(false);      // bottom aggregate records
 
   const load = useCallback(async () => {
-    setListErr('');
     try {
       const res = await api.get(`/domain-hub/list`, { params: { funnel_id: funnel.id } });
       setRows(Array.isArray(res.data?.data) ? res.data.data : []);
+      setListErr('');
     } catch (e) {
+      // Keep the last-known rows on a failed poll — clearing them would also
+      // kill the auto-refresh timer (hasInFlight) on one transient error.
+      // The inline listErr notice surfaces the failure; polling continues.
       setListErr(domainErr(e.response?.data?.error));
-      setRows([]);
+      setRows((prev) => (Array.isArray(prev) ? prev : []));
     }
   }, [funnel.id]);
 
   useEffect(() => { load(); }, [load]);
+
+  // Header banner data — one fetch on mount.
+  useEffect(() => {
+    let alive = true;
+    api.get('/domain-hub/registrar/status')
+      .then((res) => { if (alive) setHub(res.data?.data || null); })
+      .catch(() => { if (alive) setHub(null); });
+    return () => { alive = false; };
+  }, []);
+
+  // "Add a domain" starts open only when nothing is attached yet — decided
+  // once, from the first list load; the operator's toggle wins afterwards.
+  useEffect(() => {
+    if (addOpen === null && Array.isArray(rows)) setAddOpen(rows.length === 0);
+  }, [rows, addOpen]);
+
+  // AUTO STATUS REFRESH — while any row is still pending_dns / verifying,
+  // re-poll the list every 15s. ONE timer for the whole section; cleared on
+  // unmount and as soon as every row is terminal (connected / error).
+  const hasInFlight = Array.isArray(rows) &&
+    rows.some((r) => r.status === 'pending_dns' || r.status === 'verifying');
+  useEffect(() => {
+    if (!hasInFlight) return undefined;
+    const timer = setInterval(() => { load(); }, 15_000);
+    return () => clearInterval(timer);
+  }, [hasInFlight, load]);
 
   const connect = async () => {
     const domain = connectInput.trim().toLowerCase();
@@ -550,18 +657,74 @@ export function DomainsSection({ funnel, onFunnelUpdated }) {
     } finally { setBusyDomain(''); }
   };
 
-  const toggleRecords = async (domain) => {
+  const fetchRecords = useCallback(async (domain) => {
+    setRecords((r) => ({ ...r, [domain]: 'loading' }));
+    try {
+      const res = await api.get(`/domain-hub/${encodeURIComponent(domain)}/records`);
+      setRecords((r) => ({ ...r, [domain]: res.data?.data || null }));
+    } catch {
+      setRecords((r) => ({ ...r, [domain]: null }));
+    }
+  }, []);
+
+  const toggleRecords = (domain) => {
     const opening = !recordsOpen[domain];
     setRecordsOpen((o) => ({ ...o, [domain]: opening }));
-    if (opening && !records[domain]) {
-      setRecords((r) => ({ ...r, [domain]: 'loading' }));
-      try {
-        const res = await api.get(`/domain-hub/${encodeURIComponent(domain)}/records`);
-        setRecords((r) => ({ ...r, [domain]: res.data?.data || null }));
-      } catch {
-        setRecords((r) => ({ ...r, [domain]: null }));
+    if (opening && !records[domain]) fetchRecords(domain);
+  };
+
+  // Bottom "DNS records" aggregate — live required + observed records for
+  // every domain on this funnel; loads whatever is not already cached.
+  const toggleDnsAggregate = () => {
+    const opening = !dnsOpen;
+    setDnsOpen(opening);
+    if (opening && Array.isArray(rows)) {
+      for (const r of rows) {
+        if (!records[r.domain]) fetchRecords(r.domain);
       }
     }
+  };
+
+  // "Available on your account" — every attached domain minus this funnel's.
+  const loadAvailable = useCallback(async () => {
+    setAvailErr('');
+    try {
+      const res = await api.get('/domain-hub/list');
+      const all = Array.isArray(res.data?.data) ? res.data.data : [];
+      setAvail(all.filter((r) => r.funnel_id !== funnel.id));
+    } catch (e) {
+      setAvailErr(domainErr(e.response?.data?.error));
+      setAvail([]);
+    }
+    try {
+      const res = await api.get('/funnels', { params: { limit: 200 } });
+      const list = res.data?.data?.funnels || [];
+      setFunnelNames(Object.fromEntries(list.map((f) => [f.id, f.name])));
+    } catch { /* names are cosmetic — rows still render with the funnel id */ }
+  }, [funnel.id]);
+
+  const toggleAvailable = () => {
+    const opening = !availOpen;
+    setAvailOpen(opening);
+    if (opening && avail === null) loadAvailable();
+  };
+
+  const reuse = async (row) => {
+    const domain = row.domain;
+    setBusyDomain(domain);
+    setReuseErr('');
+    try {
+      // from_funnel_id anchors the server's conflict guard to the funnel this
+      // confirm dialog NAMED — if the row moved since this list loaded, the
+      // server refuses (reassign_conflict) instead of chain-moving it.
+      await api.post(`/domain-hub/${encodeURIComponent(domain)}/reassign`, {
+        funnel_id: funnel.id, from_funnel_id: row.funnel_id, confirm: true,
+      });
+      setReuseArm(''); setReuseText('');
+      await Promise.all([load(), loadAvailable()]);
+    } catch (e) {
+      setReuseErr(domainErr(e.response?.data?.error));
+    } finally { setBusyDomain(''); }
   };
 
   const setPrimary = async (domain) => { // domain or null (Default URL)
@@ -599,50 +762,87 @@ export function DomainsSection({ funnel, onFunnelUpdated }) {
         <p className="mt-1 text-sm text-text-muted">Custom domains this funnel serves on.</p>
       </div>
 
-      {/* Connect a domain you already own */}
-      <div className="rounded-xl border border-border-default bg-bg-card p-4 space-y-3">
-        <h4 className="text-sm font-semibold text-text-primary">Connect a domain you already own</h4>
-        <div className="flex items-center gap-2">
-          <input
-            value={connectInput}
-            onChange={(e) => setConnectInput(e.target.value)}
-            onKeyDown={(e) => { if (e.key === 'Enter') connect(); }}
-            placeholder="example.com"
-            spellCheck={false}
-            autoComplete="off"
-            className="flex-1 px-3 py-2 text-sm bg-bg-elevated border border-border-default rounded-lg text-text-primary font-mono focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent"
-          />
-          <button
-            onClick={connect}
-            disabled={connecting || !connectInput.trim()}
-            className="px-4 py-2 text-sm font-medium rounded-lg bg-emerald-600 text-white hover:bg-emerald-500 disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer transition-colors"
-          >
-            {connecting ? 'Connecting…' : 'Connect'}
-          </button>
+      {/* Header banner — domain-automation status from /registrar/status */}
+      {hub && (
+        <div className="flex flex-wrap items-center gap-2">
+          {hub.render_configured ? (
+            <span className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full border border-emerald-500/20 bg-emerald-500/10 text-xs text-emerald-400">
+              <span className="w-2 h-2 rounded-full bg-emerald-400 shrink-0" />
+              Render connected · <span className="font-mono">{hub.render_target_host}</span>
+            </span>
+          ) : (
+            <span className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full border border-amber-500/20 bg-amber-500/10 text-xs text-amber-400">
+              <span className="w-2 h-2 rounded-full bg-amber-400 shrink-0" />
+              Domain automation not configured
+            </span>
+          )}
+          {hub.cloudflare_dns_configured && (
+            <span className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full border border-border-default bg-bg-elevated text-xs text-text-muted">
+              <span className="w-2 h-2 rounded-full bg-emerald-400 shrink-0" />
+              Cloudflare DNS token configured
+            </span>
+          )}
         </div>
-        <p className="text-xs text-text-faint">
-          Keep your existing nameservers and DNS — just add the record(s) shown after
-          connecting at your registrar: a subdomain needs one CNAME; an apex domain an
-          A record (plus a www CNAME). If your DNS is on Cloudflare and a token is
-          configured, the records are created for you automatically. SSL is issued
-          automatically by our host once DNS resolves — usually within minutes.
-        </p>
-        {connectErr && <p className="text-sm text-danger">{connectErr}</p>}
-        {connectResult && (
-          <div className="rounded-lg border border-border-subtle bg-bg-elevated/40">
-            <p className="text-xs text-text-muted px-3 pt-2">
-              {connectResult.resumed ? 'Already attached — resumed.' : 'Attached.'}{' '}
-              {connectResult.cloudflare?.auto?.ok
-                ? 'Cloudflare created the DNS records automatically.'
-                : 'Create these records at your registrar:'}
-              {connectResult.provider && connectResult.provider !== 'unknown' && (
-                <span className="text-text-faint"> (detected DNS provider: {connectResult.provider})</span>
-              )}
-            </p>
-            <RecordsView data={{ required: connectResult.records, observed: {} }} />
+      )}
+
+      {/* Add a domain — buy (Domain Hub) or connect one you already own */}
+      <CollapsibleCard
+        title="Add a domain"
+        subtitle="Buy a new domain or connect one you already own"
+        open={addOpen === true}
+        onToggle={() => setAddOpen((o) => !(o === true))}
+      >
+        <div className="p-4 space-y-3">
+          <div className="flex items-center gap-2">
+            <input
+              value={connectInput}
+              onChange={(e) => setConnectInput(e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Enter') connect(); }}
+              placeholder="example.com"
+              spellCheck={false}
+              autoComplete="off"
+              className="flex-1 px-3 py-2 text-sm bg-bg-elevated border border-border-default rounded-lg text-text-primary font-mono focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent"
+            />
+            <button
+              onClick={connect}
+              disabled={connecting || !connectInput.trim()}
+              className="px-4 py-2 text-sm font-medium rounded-lg bg-emerald-600 text-white hover:bg-emerald-500 disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer transition-colors"
+            >
+              {connecting ? 'Connecting…' : 'Connect'}
+            </button>
           </div>
-        )}
-      </div>
+          <p className="text-xs text-text-faint">
+            Keep your existing nameservers and DNS — just add the record(s) shown after
+            connecting at your registrar: a subdomain needs one CNAME; an apex domain an
+            A record (plus a www CNAME). If your DNS is on Cloudflare and a token is
+            configured, the records are created for you automatically. SSL is issued
+            automatically by our host once DNS resolves — usually within minutes.
+          </p>
+          <p className="text-xs text-text-faint">
+            Need a new domain? Buy one (and manage the WHOIS contact) in the{' '}
+            <Link to="/domains" className="text-accent-text hover:underline">Domain Hub</Link>.
+          </p>
+          {connectErr && <p className="text-sm text-danger">{connectErr}</p>}
+          {connectResult && (
+            <div className="rounded-lg border border-border-subtle bg-bg-elevated/40">
+              <p className="text-xs text-text-muted px-3 pt-2">
+                {connectResult.resumed ? 'Already attached — resumed.' : 'Attached.'}{' '}
+                {connectResult.cloudflare?.auto?.ok
+                  ? 'Cloudflare created the DNS records automatically.'
+                  : 'Create these records at your registrar:'}
+                {connectResult.provider && connectResult.provider !== 'unknown' && (
+                  <span className="text-text-faint"> (detected DNS provider: {connectResult.provider})</span>
+                )}
+              </p>
+              <RecordsView data={{ required: connectResult.records, observed: {} }} />
+              <p className="text-xs text-text-muted px-3 pb-2">
+                DNS propagation can take 5 min – 24 h. Open the domain’s row below to
+                watch it go live (status refreshes automatically).
+              </p>
+            </div>
+          )}
+        </div>
+      </CollapsibleCard>
 
       {/* Active domains */}
       <div className="rounded-xl border border-border-default bg-bg-card">
@@ -688,7 +888,11 @@ export function DomainsSection({ funnel, onFunnelUpdated }) {
             ) : rows.map((r) => {
               const st = DOMAIN_STATUS[r.status] || null;
               const recData = records[r.domain];
-              const nRecords = recData && recData !== 'loading' && Array.isArray(recData.required) ? recData.required.length : null;
+              // Inline count WITHOUT expanding — apex = 2 (A @ + www CNAME),
+              // subdomain = 1; the loaded records view refines it if it differs.
+              const nRecords = recData && recData !== 'loading' && Array.isArray(recData.required)
+                ? recData.required.length
+                : requiredRecordCount(r.domain);
               return (
                 <div key={r.domain} className="px-4 py-3 space-y-2">
                   <div className="flex items-center gap-3">
@@ -776,10 +980,96 @@ export function DomainsSection({ funnel, onFunnelUpdated }) {
       {primaryErr && <p className="text-sm text-danger">{primaryErr}</p>}
       {listErr && <p className="text-sm text-danger">{listErr}</p>}
 
-      <p className="text-xs text-text-faint">
-        Buy new domains and manage the WHOIS contact in the{' '}
-        <Link to="/domains" className="text-accent-text hover:underline">Domain Hub</Link>.
-      </p>
+      {/* Available on your account — reuse a domain from another funnel */}
+      <CollapsibleCard
+        title="Available on your account"
+        subtitle="Reuse a domain you connected on another funnel"
+        open={availOpen}
+        onToggle={toggleAvailable}
+      >
+        <div className="divide-y divide-border-subtle">
+          {avail === null ? (
+            <p className="text-sm text-text-muted px-4 py-3">Loading…</p>
+          ) : avail.length === 0 ? (
+            <p className="text-sm text-text-muted px-4 py-3">No domains attached to other funnels.</p>
+          ) : avail.map((r) => (
+            <div key={r.domain} className="px-4 py-3 space-y-2">
+              <div className="flex items-center gap-3">
+                <Globe className="w-4 h-4 text-text-faint shrink-0" />
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-2 min-w-0">
+                    <span className="text-sm font-mono text-text-primary truncate">{r.domain}</span>
+                    <DomainChip status={r.status} />
+                  </div>
+                  <div className="text-xs text-text-faint truncate">
+                    Currently on: {funnelNames[r.funnel_id] || r.funnel_id}
+                  </div>
+                </div>
+                <button
+                  onClick={() => { setReuseArm(reuseArm === r.domain ? '' : r.domain); setReuseText(''); setReuseErr(''); }}
+                  className="text-xs px-2.5 py-1.5 rounded-lg border border-border-default bg-bg-elevated text-text-primary hover:bg-bg-hover cursor-pointer shrink-0 transition-colors"
+                >
+                  Reuse here
+                </button>
+              </div>
+              {reuseArm === r.domain && (
+                <div className="pl-7 space-y-1.5">
+                  <p className="text-xs text-text-muted">
+                    Moving this domain detaches it from{' '}
+                    {funnelNames[r.funnel_id] || 'its current funnel'}
+                    {r.status === 'connected' ? ' — the live host starts serving THIS funnel immediately' : ''}.
+                    Type the domain to confirm:
+                  </p>
+                  <div className="flex items-center gap-2">
+                    <input
+                      value={reuseText}
+                      onChange={(e) => setReuseText(e.target.value)}
+                      placeholder={r.domain}
+                      spellCheck={false}
+                      className="flex-1 px-2.5 py-1.5 text-xs bg-bg-elevated border border-border-default rounded-lg text-text-primary font-mono focus:outline-none focus:ring-2 focus:ring-accent/40"
+                    />
+                    <button
+                      onClick={() => reuse(r)}
+                      disabled={busyDomain === r.domain || reuseText.trim().toLowerCase() !== r.domain}
+                      className="text-xs px-2.5 py-1.5 rounded-lg bg-emerald-600 text-white hover:bg-emerald-500 disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer transition-colors"
+                    >
+                      {busyDomain === r.domain ? 'Moving…' : 'Move here'}
+                    </button>
+                  </div>
+                  {reuseErr && <p className="text-xs text-danger">{reuseErr}</p>}
+                </div>
+              )}
+            </div>
+          ))}
+          {availErr && <p className="text-sm text-danger px-4 py-3">{availErr}</p>}
+        </div>
+      </CollapsibleCard>
+
+      {/* DNS records — aggregate live view across this funnel's domains */}
+      <CollapsibleCard
+        title="DNS records"
+        subtitle="Live records for domains on this funnel"
+        open={dnsOpen}
+        onToggle={toggleDnsAggregate}
+      >
+        <div className="divide-y divide-border-subtle">
+          {rows === null ? (
+            <p className="text-sm text-text-muted px-4 py-3">Loading…</p>
+          ) : rows.length === 0 ? (
+            <p className="text-sm text-text-muted px-4 py-3">No custom domains attached yet.</p>
+          ) : rows.map((r) => (
+            <div key={r.domain} className="px-4 py-3 space-y-1">
+              <div className="flex items-center gap-2">
+                <span className="text-sm font-mono text-text-primary truncate">{r.domain}</span>
+                <DomainChip status={r.status} />
+              </div>
+              <div className="rounded-lg border border-border-subtle bg-bg-elevated/40">
+                <RecordsView data={records[r.domain]} />
+              </div>
+            </div>
+          ))}
+        </div>
+      </CollapsibleCard>
     </div>
   );
 }

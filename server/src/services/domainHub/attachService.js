@@ -27,7 +27,7 @@
 // attacker attaching a domain they don't control simply parks a pending_dns
 // row that can never progress.
 import { randomBytes } from 'node:crypto';
-import { pgQuery } from '../../db/pg.js';
+import { pgQuery, client as pgClient } from '../../db/pg.js';
 import { ensureDomainTables, logDomainEvent } from './schema.js';
 import { normalizeDomain } from './validate.js';
 import {
@@ -40,10 +40,23 @@ import {
 import { autoCreateRecords, cloudflareConfigured } from './cloudflareDns.js';
 import { invalidateHostCache } from './hostRouting.js';
 
-// After this many failed verify attempts the row parks at `error` (operator
-// can always resume via verify-now, which resets the counter). At the
-// sweep's default 60s tick this is ~4 hours of retrying.
-const MAX_VERIFY_ATTEMPTS = 240;
+// Verify retry budget — a BACKOFF SCHEDULE totalling 24h before the row
+// parks at `error` (operator can always resume via verify-now, which resets
+// the counter): the first hour re-checks every sweep tick (60 attempts @
+// 60s), after that every 5 minutes (276 attempts @ 300s).
+//   60 × 60s + 276 × 300s = 3,600s + 82,800s = 86,400s = 24h exactly.
+// The sweep still ticks every 60s; verifyDomain defers a row whose schedule
+// delay has not yet elapsed (see the gate below), so the slow phase never
+// hammers DNS or the Render API.
+export const FAST_VERIFY_ATTEMPTS = 60;
+export const FAST_VERIFY_DELAY_MS = 60_000;
+export const SLOW_VERIFY_DELAY_MS = 300_000;
+export const MAX_VERIFY_ATTEMPTS = 336; // 60 fast + 276 slow = 24h total exactly
+
+/** Delay to wait AFTER `attempts` spent attempts before the next one runs. */
+export function verifyDelayMs(attempts) {
+  return attempts < FAST_VERIFY_ATTEMPTS ? FAST_VERIFY_DELAY_MS : SLOW_VERIFY_DELAY_MS;
+}
 
 const newId = () => 'dom_' + randomBytes(7).toString('hex');
 const newToken = () => 'puure-verify-' + randomBytes(16).toString('hex');
@@ -193,6 +206,17 @@ export async function verifyDomain(domain, { actor = null, resetAttempts = false
     return { ok: true, row, transition: null }; // parked — operator resumes explicitly
   }
 
+  // Backoff gate: the sweep ticks every minute, but during the slow phase a
+  // row is only re-checked once its schedule delay has elapsed. Manual
+  // verify-now (resetAttempts:true) always runs. 5s grace absorbs tick jitter
+  // so the fast phase does not skip alternate ticks.
+  if (!resetAttempts && row.last_check) {
+    const ageMs = Date.now() - new Date(row.last_check).getTime();
+    if (ageMs < verifyDelayMs(row.verify_attempts) - 5_000) {
+      return { ok: true, row, transition: null, deferred: true };
+    }
+  }
+
   const point = await isPointing(domain);
   await logDomainEvent(domain, 'dns_check', {
     pointing: point.pointing, observed: point.observed,
@@ -285,12 +309,29 @@ export async function verifyDomain(domain, { actor = null, resetAttempts = false
     status = 'verifying';
   }
 
+  // The 24h budget is UNIVERSAL: a pointing-but-never-verified pass (Render
+  // registered, verificationStatus still pending) consumes an attempt like a
+  // not-pointing pass does — otherwise such a row would call the Render API
+  // every 60s forever. Only `connected` (terminal success) resets the
+  // counter; verify-now's explicit resetAttempts:true is the only other reset.
+  let attempts = 0;
+  let exhausted = false;
+  if (status !== 'connected') {
+    attempts = row.verify_attempts + 1;
+    exhausted = attempts >= MAX_VERIFY_ATTEMPTS;
+    if (exhausted) {
+      status = 'error';
+      errorDetail = errorDetail
+        || 'render_never_verified: retries exhausted — DNS points at us but Render never confirmed verification; check the Render dashboard, then Verify now';
+    }
+  }
   await pgQuery(
     `UPDATE lb_domains SET status = $2, render_domain_id = $3,
-       verify_attempts = 0, last_check = NOW(), error_detail = $4, updated_at = NOW()
+       verify_attempts = $5, last_check = NOW(), error_detail = $4, updated_at = NOW()
      WHERE domain = $1`,
-    [domain, status, renderDomainId, errorDetail]
+    [domain, status, renderDomainId, errorDetail, attempts]
   );
+  if (exhausted) await logDomainEvent(domain, 'verify_exhausted', { attempts }, actor);
   if (status === 'connected' && row.status !== 'connected') {
     await logDomainEvent(domain, 'connected', { render_domain_id: renderDomainId }, actor);
   }
@@ -329,6 +370,82 @@ export async function detachDomain(domain, { confirm, actor = null } = {}) {
   await logDomainEvent(row.domain, 'detached', { funnel_id: row.funnel_id }, actor);
   invalidateHostCache(row.domain);
   return { ok: true, domain: row.domain };
+}
+
+/**
+ * Reassign an attached domain to ANOTHER funnel ("Reuse here"). The Render
+ * registration is service-level (one web service hosts every funnel), so no
+ * Render call is involved — only which funnel the host routes to changes.
+ *
+ * Atomic (single transaction): move the lb_domains row AND clear any
+ * funnel's custom_domain pointer to this domain — a reassign must never
+ * leave funnel A "primary on" a domain that now serves funnel B. (Blanket
+ * clear, matching detach's repair: WHERE custom_domain = domain, no funnel
+ * filter.)
+ *
+ * The conflict guard keys the transactional UPDATE's WHERE on the funnel
+ * the CALLER believes owns the domain (`fromFunnelId` — the funnel its
+ * confirm dialog named). A stale value → 0 rows → `reassign_conflict`,
+ * so a row that moved between the caller's list load and this call can
+ * never be silently chain-moved. Without a caller value it falls back to
+ * the row read above, which still refuses a concurrent move mid-flight.
+ *
+ * Refuses without confirm:true — a connected host starts serving the new
+ * funnel immediately.
+ */
+export async function reassignDomain(domain, { funnelId, fromFunnelId, confirm, actor = null } = {}) {
+  await ensureDomainTables();
+  const norm = normalizeDomain(domain);
+  if (!norm.ok) return { ok: false, status: 400, error: norm.error };
+  const row = await getRow(norm.domain);
+  if (!row) return { ok: false, status: 404, error: 'domain_not_found' };
+  if (confirm !== true) {
+    await logDomainEvent(row.domain, 'reassign_refused', { reason: 'confirm_missing' }, actor);
+    return { ok: false, status: 400, error: 'confirm_required' };
+  }
+  if (!funnelId || typeof funnelId !== 'string') {
+    return { ok: false, status: 400, error: 'funnel_id_required' };
+  }
+  if (fromFunnelId != null && typeof fromFunnelId !== 'string') {
+    return { ok: false, status: 400, error: 'from_funnel_id_invalid' };
+  }
+  if (row.funnel_id === funnelId) {
+    return { ok: false, status: 400, error: 'domain_already_on_this_funnel' };
+  }
+  if (!(await funnelExists(funnelId))) {
+    return { ok: false, status: 404, error: 'funnel_not_found' };
+  }
+
+  const expectedFrom = fromFunnelId != null ? fromFunnelId : row.funnel_id;
+  let moved = null;
+  await pgClient.begin(async (tx) => {
+    const rows = await tx`
+      UPDATE lb_domains SET funnel_id = ${funnelId}, updated_at = NOW()
+      WHERE domain = ${row.domain} AND funnel_id = ${expectedFrom}
+      RETURNING *`;
+    moved = rows[0] || null;
+    if (!moved) {
+      // Stale caller view or a concurrent reassign/detach won the race —
+      // abort the whole transaction (nothing, including the pointer clear
+      // below, may land).
+      const err = new Error('reassign_conflict');
+      err.reassignConflict = true;
+      throw err;
+    }
+    await tx`
+      UPDATE funnels SET custom_domain = NULL, updated_at = NOW()
+      WHERE custom_domain = ${row.domain}`;
+  }).catch((err) => {
+    if (err.reassignConflict) { moved = null; return; }
+    throw err; // real DB failure — LET IT THROW to the route's 500
+  });
+  if (!moved) return { ok: false, status: 409, error: 'reassign_conflict' };
+
+  invalidateHostCache(row.domain); // host routes to the NEW funnel — immediately
+  await logDomainEvent(row.domain, 'reassigned', {
+    from_funnel_id: expectedFrom, to_funnel_id: funnelId,
+  }, actor);
+  return { ok: true, row: moved };
 }
 
 /** List rows (optionally per funnel), newest first. */

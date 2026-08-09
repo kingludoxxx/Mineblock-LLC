@@ -18,7 +18,9 @@ import { ensureDomainTables, logDomainEvent } from '../services/domainHub/schema
 import { normalizeDomain } from '../services/domainHub/validate.js';
 import {
   attachDomain, verifyDomain, detachDomain, listDomains, recordsView,
+  reassignDomain,
 } from '../services/domainHub/attachService.js';
+import { renderTargetHost } from '../services/domainHub/dnsInspect.js';
 import { getAdapter, registrarStatus } from '../services/domainHub/registrars/index.js';
 import { autoCreateRecords, cloudflareConfigured } from '../services/domainHub/cloudflareDns.js';
 import { renderConfigured } from '../services/domainHub/renderApi.js';
@@ -37,13 +39,15 @@ const fail = (res, status, error) => res.status(status).json({ error });
 // ── Registrar ───────────────────────────────────────────────────────────────
 
 // GET /registrar/status — which registrar is active + configured (drives the
-// "registrar connected" badge and gates the Buy tab).
+// "registrar connected" badge and gates the Buy tab). render_target_host is
+// the service host DNS must point at — the Domains tab banner shows it.
 router.get('/registrar/status', async (_req, res) => {
   res.json({
     data: {
       ...registrarStatus(),
       cloudflare_dns_configured: cloudflareConfigured(),
       render_configured: renderConfigured(),
+      render_target_host: renderTargetHost(),
     },
   });
 });
@@ -260,6 +264,30 @@ router.post('/:domain/auto-dns', async (req, res) => {
   } catch (err) {
     console.error('[domainHub] auto-dns failed:', err);
     fail(res, 500, 'auto_dns_failed');
+  }
+});
+
+// POST /:domain/reassign { funnel_id, from_funnel_id?, confirm } — move an
+// already-attached domain to another funnel ("Reuse here" in the Domains
+// tab). Atomic: clears any funnel's custom_domain pointer to this domain and
+// moves the row in one transaction. from_funnel_id anchors the conflict
+// guard to the funnel the caller's confirm dialog named — a stale value
+// (row moved since the caller's list load) refuses with reassign_conflict
+// instead of silently chain-moving. confirm:true required — a connected
+// host starts serving the NEW funnel immediately.
+router.post('/:domain/reassign', async (req, res) => {
+  try {
+    const result = await reassignDomain(String(req.params.domain || ''), {
+      funnelId: req.body?.funnel_id,
+      fromFunnelId: req.body?.from_funnel_id,
+      confirm: req.body?.confirm,
+      actor: actorOf(req),
+    });
+    if (!result.ok) return fail(res, result.status || 500, result.error);
+    res.json({ data: result.row });
+  } catch (err) {
+    console.error('[domainHub] reassign failed:', err);
+    fail(res, 500, 'reassign_failed');
   }
 });
 

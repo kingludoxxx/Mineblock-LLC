@@ -8,7 +8,13 @@
 // apex vs subdomain required-records shapes; the primary-domain radio
 // contract (PATCH funnels custom_domain: attached-only, null clears, detach
 // clears a dangling pointer); typed detach confirmation; cross-funnel attach
-// conflict; invalid-domain refusal.
+// conflict; invalid-domain refusal; registrar/status render_target_host;
+// reassign ("Reuse here") happy path + refusals + concurrency race (exactly
+// one 409) + stale-from_funnel_id guard; the 24h verify backoff schedule
+// (math + the sweep-path deferral gate); sweep SQL due-ness (deferred rows
+// never consume batch slots); the UNIVERSAL budget on pointing-but-never-
+// Render-verified rows (via an injected DNS resolver + a local Render API
+// stub that registers but never verifies).
 //
 // Run:  node server/tests/funnel-settings/domains-tab.mjs
 process.env.DATABASE_URL = 'postgres://puure@127.0.0.1:5433/puure_shoporder';
@@ -61,9 +67,13 @@ const req = async (method, path, body) => {
 const SUB = 'fnl-harness.puure-domains-harness.dev';   // 3 labels → subdomain (1 CNAME)
 const APEX = 'puure-domains-harness-apex.dev';         // 2 labels → apex (A + www CNAME)
 const cleanup = async () => {
-  await sql`DELETE FROM lb_domains WHERE domain IN (${SUB}, ${APEX})`;
-  await sql`DELETE FROM domain_events WHERE domain IN (${SUB}, ${APEX})`.catch(() => {});
-  await sql`DELETE FROM funnels WHERE slug IN ('dom-harness-a', 'dom-harness-b')`;
+  await sql`DELETE FROM lb_domains WHERE domain IN (${SUB}, ${APEX})
+            OR domain LIKE 'sweep%.puure-domains-harness.dev'
+            OR domain = 'pointing.puure-domains-harness.dev'`;
+  await sql`DELETE FROM domain_events WHERE domain IN (${SUB}, ${APEX})
+            OR domain LIKE 'sweep%.puure-domains-harness.dev'
+            OR domain = 'pointing.puure-domains-harness.dev'`.catch(() => {});
+  await sql`DELETE FROM funnels WHERE slug IN ('dom-harness-a', 'dom-harness-b', 'dom-harness-c')`;
 };
 await cleanup();
 
@@ -114,11 +124,48 @@ check('setup: two funnels created', Boolean(fA?.id && fB?.id));
   check('list for the other funnel is empty', Array.isArray(rB.j?.data) && rB.j.data.length === 0);
 }
 
+// ── registrar/status carries the Render target host (Domains-tab banner) ────
+{
+  const r = await req('GET', '/domain-hub/registrar/status');
+  const d = r.j?.data;
+  check('registrar/status → render_target_host present',
+    r.status === 200 && typeof d?.render_target_host === 'string' && d.render_target_host.length > 0,
+    JSON.stringify(d));
+  check('registrar/status → config flags still present',
+    typeof d?.render_configured === 'boolean' && typeof d?.cloudflare_dns_configured === 'boolean');
+}
+
 // ── verify now ──────────────────────────────────────────────────────────────
 {
   const r = await req('POST', `/domain-hub/${SUB}/verify`);
   const row = r.j?.data;
   check('verify → 200 row, still pending_dns, attempt counted', r.status === 200 && row?.status === 'pending_dns' && row?.verify_attempts >= 1, JSON.stringify({ s: row?.status, a: row?.verify_attempts }));
+}
+
+// ── backoff schedule (24h budget) ───────────────────────────────────────────
+{
+  const svc = await import('../../src/services/domainHub/attachService.js');
+  const total = Array.from({ length: svc.MAX_VERIFY_ATTEMPTS }, (_, i) => svc.verifyDelayMs(i))
+    .reduce((a, b) => a + b, 0);
+  check('backoff: schedule totals exactly 24h', total === 24 * 60 * 60 * 1000, `total=${total}ms over ${svc.MAX_VERIFY_ATTEMPTS} attempts`);
+  check('backoff: fast phase is 60s per attempt for the first hour',
+    svc.verifyDelayMs(0) === 60_000 && svc.verifyDelayMs(svc.FAST_VERIFY_ATTEMPTS - 1) === 60_000);
+  check('backoff: slow phase is 5min per attempt after the first hour',
+    svc.verifyDelayMs(svc.FAST_VERIFY_ATTEMPTS) === 300_000 && svc.verifyDelayMs(svc.MAX_VERIFY_ATTEMPTS - 1) === 300_000);
+  // Sweep-path deferral gate BY EXECUTION: the row was verified seconds ago,
+  // so a sweep-style call (no resetAttempts) must defer without re-checking.
+  const before = await sql`SELECT verify_attempts FROM lb_domains WHERE domain = ${SUB}`;
+  const defRes = await svc.verifyDomain(SUB);
+  const after = await sql`SELECT verify_attempts FROM lb_domains WHERE domain = ${SUB}`;
+  check('backoff: sweep-path verify DEFERS a freshly-checked row',
+    defRes.ok === true && defRes.deferred === true, JSON.stringify({ ok: defRes.ok, deferred: defRes.deferred }));
+  check('backoff: deferred call did NOT consume an attempt',
+    before[0].verify_attempts === after[0].verify_attempts,
+    `${before[0].verify_attempts} → ${after[0].verify_attempts}`);
+  // Manual verify-now still always runs (resetAttempts path skips the gate).
+  const manual = await req('POST', `/domain-hub/${SUB}/verify`);
+  check('backoff: manual verify-now still runs (never deferred)',
+    manual.status === 200 && manual.j?.data?.verify_attempts >= 1, JSON.stringify(manual.j?.data?.verify_attempts));
 }
 
 // ── records view ────────────────────────────────────────────────────────────
@@ -146,7 +193,56 @@ check('setup: two funnels created', Boolean(fA?.id && fB?.id));
 {
   const r = await req('PATCH', `/funnels/${fA.id}`, { custom_domain: null });
   check('primary = null clears (Default URL)', r.status === 200 && r.j?.data?.custom_domain === null);
-  await req('PATCH', `/funnels/${fA.id}`, { custom_domain: SUB }); // re-set for the detach-repair check
+  await req('PATCH', `/funnels/${fA.id}`, { custom_domain: SUB }); // re-set for the reassign + detach checks
+}
+
+// ── reassign ("Reuse here") ─────────────────────────────────────────────────
+// refusals first — none of these may move the row or touch the pointer
+{
+  const r = await req('POST', `/domain-hub/${SUB}/reassign`, { funnel_id: fB.id });
+  check('reassign without confirm → 400 confirm_required', r.status === 400 && r.j?.error === 'confirm_required', JSON.stringify(r.j));
+}
+{
+  const r = await req('POST', `/domain-hub/never-attached.puure-domains-harness.dev/reassign`, { funnel_id: fB.id, confirm: true });
+  check('reassign unknown domain → 404', r.status === 404 && r.j?.error === 'domain_not_found', JSON.stringify(r.j));
+}
+{
+  const r = await req('POST', `/domain-hub/${SUB}/reassign`, { funnel_id: fA.id, confirm: true });
+  check('reassign to the SAME funnel → 400 no-op refusal', r.status === 400 && r.j?.error === 'domain_already_on_this_funnel', JSON.stringify(r.j));
+}
+{
+  const r = await req('POST', `/domain-hub/${SUB}/reassign`, { confirm: true });
+  check('reassign without funnel_id → 400', r.status === 400 && r.j?.error === 'funnel_id_required', JSON.stringify(r.j));
+}
+{
+  const r = await req('POST', `/domain-hub/${SUB}/reassign`, { funnel_id: 'fnl_does_not_exist', confirm: true });
+  check('reassign to unknown funnel → 404 funnel_not_found', r.status === 404 && r.j?.error === 'funnel_not_found', JSON.stringify(r.j));
+}
+{
+  const still = await sql`SELECT funnel_id FROM lb_domains WHERE domain = ${SUB}`;
+  const fa = await req('GET', `/funnels/${fA.id}`);
+  check('reassign refusals: row untouched + A still primary',
+    still[0]?.funnel_id === fA.id && fa.j?.data?.funnel?.custom_domain === SUB,
+    JSON.stringify({ funnel_id: still[0]?.funnel_id, cd: fa.j?.data?.funnel?.custom_domain }));
+}
+// happy path — B steals SUB from A; A's dangling primary pointer is cleared
+{
+  const r = await req('POST', `/domain-hub/${SUB}/reassign`, { funnel_id: fB.id, confirm: true });
+  check('reassign happy path → 200 + row now on funnel B', r.status === 200 && r.j?.data?.funnel_id === fB.id, JSON.stringify(r.j));
+  const fa = await req('GET', `/funnels/${fA.id}`);
+  check("reassign: A's custom_domain pointer CLEARED", fa.j?.data?.funnel?.custom_domain === null, JSON.stringify(fa.j?.data?.funnel?.custom_domain));
+  const listB = await req('GET', `/domain-hub/list?funnel_id=${fB.id}`);
+  check('reassign: list for B now contains the domain',
+    (listB.j?.data || []).some((x) => x.domain === SUB), JSON.stringify((listB.j?.data || []).map((x) => x.domain)));
+  const n = await sql`SELECT COUNT(*)::int AS n FROM lb_domains WHERE domain = ${SUB}`;
+  check('reassign: still exactly one row', n[0].n === 1);
+}
+// move it back and restore A's primary so the detach block below is unchanged
+{
+  const r = await req('POST', `/domain-hub/${SUB}/reassign`, { funnel_id: fA.id, confirm: true });
+  check('reassign back to A → 200', r.status === 200 && r.j?.data?.funnel_id === fA.id, JSON.stringify(r.j));
+  const p = await req('PATCH', `/funnels/${fA.id}`, { custom_domain: SUB });
+  check('reassign: A primary re-set for the detach checks', p.status === 200 && p.j?.data?.custom_domain === SUB);
 }
 
 // ── detach ──────────────────────────────────────────────────────────────────
@@ -163,8 +259,140 @@ check('setup: two funnels created', Boolean(fA?.id && fB?.id));
   check('detach: dangling custom_domain pointer CLEARED', f.j?.data?.funnel?.custom_domain === null, JSON.stringify(f.j?.data?.funnel?.custom_domain));
 }
 
+// ── reassign concurrency race + stale-from_funnel_id guard ──────────────────
+const fC = (await req('POST', '/funnels', { name: 'Dom Harness C', slug: 'dom-harness-c' })).j?.data;
+{
+  const svc = await import('../../src/services/domainHub/attachService.js');
+  // Re-attach SUB (detached above) to A and make it A's primary again.
+  await req('POST', '/domain-hub/attach', { domain: SUB, funnel_id: fA.id, auto_dns: false });
+  await req('PATCH', `/funnels/${fA.id}`, { custom_domain: SUB });
+  // Two concurrent service-level reassigns of the SAME domain to DIFFERENT
+  // targets, both anchored on A: the transactional WHERE serializes them —
+  // exactly one wins, the other gets 0 rows → 409, never a chained move.
+  const [r1, r2] = await Promise.all([
+    svc.reassignDomain(SUB, { funnelId: fB.id, fromFunnelId: fA.id, confirm: true }),
+    svc.reassignDomain(SUB, { funnelId: fC.id, fromFunnelId: fA.id, confirm: true }),
+  ]);
+  const oks = [r1, r2].filter((r) => r.ok);
+  const conflicts = [r1, r2].filter((r) => !r.ok && r.status === 409 && r.error === 'reassign_conflict');
+  check('race: exactly one winner + exactly one 409 reassign_conflict',
+    oks.length === 1 && conflicts.length === 1,
+    JSON.stringify([r1, r2].map((r) => ({ ok: r.ok, e: r.error }))));
+  const winnerTarget = oks[0]?.row?.funnel_id;
+  const rowsNow = await sql`SELECT funnel_id FROM lb_domains WHERE domain = ${SUB}`;
+  check("race: one row, on the winner's funnel",
+    rowsNow.length === 1 && rowsNow[0].funnel_id === winnerTarget, JSON.stringify(rowsNow));
+  const fa = await req('GET', `/funnels/${fA.id}`);
+  check("race: A's custom_domain pointer cleared", fa.j?.data?.funnel?.custom_domain === null);
+  const loserTarget = winnerTarget === fB.id ? fC.id : fB.id;
+  const loser = await req('GET', `/funnels/${loserTarget}`);
+  check("race: losing target funnel's pointer untouched", loser.j?.data?.funnel?.custom_domain === null);
+  // Stale from_funnel_id through the REAL router — claim the row still lives
+  // on the loser target: deterministic 409, row untouched.
+  const stale = await req('POST', `/domain-hub/${SUB}/reassign`,
+    { funnel_id: fA.id, from_funnel_id: loserTarget, confirm: true });
+  check('stale from_funnel_id via router → 409 reassign_conflict',
+    stale.status === 409 && stale.j?.error === 'reassign_conflict', JSON.stringify(stale.j));
+  const still = await sql`SELECT funnel_id FROM lb_domains WHERE domain = ${SUB}`;
+  check('stale guard: row untouched', still[0]?.funnel_id === winnerTarget, JSON.stringify(still));
+  const good = await req('POST', `/domain-hub/${SUB}/reassign`,
+    { funnel_id: fA.id, from_funnel_id: winnerTarget, confirm: true });
+  check('correct from_funnel_id via router → 200, row back on A',
+    good.status === 200 && good.j?.data?.funnel_id === fA.id, JSON.stringify(good.j));
+  const bad = await req('POST', `/domain-hub/${SUB}/reassign`,
+    { funnel_id: fB.id, from_funnel_id: 42, confirm: true });
+  check('non-string from_funnel_id → 400', bad.status === 400 && bad.j?.error === 'from_funnel_id_invalid', JSON.stringify(bad.j));
+}
+
+// ── sweep due-ness: deferred rows must not consume batch slots ──────────────
+{
+  const { sweepOnce } = await import('../../src/services/domainHub/verifySweep.js');
+  const mk = (i) => `sweep${i}.puure-domains-harness.dev`;
+  await sql`DELETE FROM lb_domains WHERE domain LIKE 'sweep%.puure-domains-harness.dev'`;
+  // 30 slow-phase rows (attempts ≥ 60) checked JUST NOW → none due; more than
+  // the sweep's LIMIT 25, so a due-ness-blind query would starve the fast row.
+  for (let i = 0; i < 30; i++) {
+    await sql`INSERT INTO lb_domains (id, domain, funnel_id, verification_token, status, verify_attempts, last_check)
+      VALUES (${'dom_sweep' + i}, ${mk(i)}, ${fA.id}, ${'tok' + i}, 'pending_dns', 100, NOW())`;
+  }
+  // 1 fast-phase row overdue by 2 minutes → MUST be processed this tick.
+  await sql`INSERT INTO lb_domains (id, domain, funnel_id, verification_token, status, verify_attempts, last_check)
+    VALUES ('dom_sweepfast', 'sweepfast.puure-domains-harness.dev', ${fA.id}, 'tokfast', 'pending_dns', 1, NOW() - interval '2 minutes')`;
+  const stats = await sweepOnce();
+  check('sweep: only the DUE fast row fetched/processed (not-due rows never occupy slots)',
+    stats.checked === 1 && stats.deferred === 0, JSON.stringify(stats));
+  const fastRow = await sql`SELECT verify_attempts, status FROM lb_domains WHERE domain = 'sweepfast.puure-domains-harness.dev'`;
+  check('sweep: due fast row consumed an attempt', fastRow[0]?.verify_attempts === 2 && fastRow[0]?.status === 'pending_dns', JSON.stringify(fastRow));
+  const slow0 = await sql`SELECT verify_attempts FROM lb_domains WHERE domain = ${mk(0)}`;
+  check('sweep: not-due slow rows untouched', slow0[0]?.verify_attempts === 100, JSON.stringify(slow0));
+  await sql`DELETE FROM lb_domains WHERE domain LIKE 'sweep%.puure-domains-harness.dev'`;
+  await sql`DELETE FROM domain_events WHERE domain LIKE 'sweep%.puure-domains-harness.dev'`;
+}
+
+// ── universal 24h budget: pointing but never Render-verified ────────────────
+{
+  const svc = await import('../../src/services/domainHub/attachService.js');
+  const dns = await import('../../src/services/domainHub/dnsInspect.js');
+  const PT = 'pointing.puure-domains-harness.dev';
+  // Local Render API stub: registration succeeds, verification NEVER lands.
+  const stub = express();
+  stub.use(express.json());
+  const stubDomains = [];
+  stub.get('/v1/services/:sid/custom-domains', (_q, s) => s.json(stubDomains.map((d) => ({ customDomain: d }))));
+  stub.post('/v1/services/:sid/custom-domains', (q, s) => {
+    const d = { id: 'cd_stub_1', name: q.body?.name, verificationStatus: 'unverified' };
+    stubDomains.push(d);
+    s.status(201).json({ customDomain: d });
+  });
+  stub.get('/v1/services/:sid/custom-domains/:id', (q, s) => {
+    const d = stubDomains.find((x) => x.id === q.params.id);
+    if (!d) return s.status(404).json({ message: 'not found' });
+    s.json({ customDomain: d });
+  });
+  stub.delete('/v1/services/:sid/custom-domains/:id', (_q, s) => s.status(204).end());
+  const stubSrv = stub.listen(0);
+  process.env.RENDER_API_BASE = `http://127.0.0.1:${stubSrv.address().port}`;
+  process.env.RENDER_API_KEY = 'test-key-stub';
+  process.env.RENDER_SERVICE_ID = 'srv-stub';
+  // Resolver seam: PT "points" at the service host.
+  dns.setResolver({
+    resolveNs: async () => ['ns1.cloudflare.com'],
+    resolveCname: async () => [dns.renderTargetHost()],
+    resolve4: async () => [],
+    resolve6: async () => [],
+  });
+  try {
+    const r = await req('POST', '/domain-hub/attach', { domain: PT, funnel_id: fA.id, auto_dns: false });
+    const d0 = r.j?.data?.domain;
+    check('budget: pointing row lands at verifying with 1 attempt consumed',
+      d0?.status === 'verifying' && d0?.verify_attempts === 1, JSON.stringify({ s: d0?.status, a: d0?.verify_attempts }));
+    await sql`UPDATE lb_domains SET last_check = NOW() - interval '2 minutes' WHERE domain = ${PT}`;
+    const p2 = await svc.verifyDomain(PT);
+    check('budget: next pointing pass ADVANCES the counter (no reset to 0)',
+      p2.row?.status === 'verifying' && p2.row?.verify_attempts === 2, JSON.stringify({ s: p2.row?.status, a: p2.row?.verify_attempts }));
+    await sql`UPDATE lb_domains SET verify_attempts = ${svc.MAX_VERIFY_ATTEMPTS - 1}, last_check = NOW() - interval '10 minutes' WHERE domain = ${PT}`;
+    const p3 = await svc.verifyDomain(PT);
+    check('budget: exhausted pointing row parks at error with render_never_verified',
+      p3.row?.status === 'error' && String(p3.row?.error_detail || '').startsWith('render_never_verified'),
+      JSON.stringify({ s: p3.row?.status, e: p3.row?.error_detail }));
+    const rv = await req('POST', `/domain-hub/${PT}/verify`);
+    check('budget: verify-now revives the parked row (attempts reset, back to verifying)',
+      rv.status === 200 && rv.j?.data?.status === 'verifying' && rv.j?.data?.verify_attempts === 1,
+      JSON.stringify({ s: rv.j?.data?.status, a: rv.j?.data?.verify_attempts }));
+  } finally {
+    dns.resetResolver();
+    delete process.env.RENDER_API_BASE;
+    delete process.env.RENDER_API_KEY;
+    delete process.env.RENDER_SERVICE_ID;
+    stubSrv.close();
+    await sql`DELETE FROM lb_domains WHERE domain = ${PT}`;
+    await sql`DELETE FROM domain_events WHERE domain = ${PT}`;
+  }
+}
+
 // ── cleanup ─────────────────────────────────────────────────────────────────
 await req('DELETE', `/domain-hub/${APEX}`, { confirm: APEX });
+await req('DELETE', `/domain-hub/${SUB}`, { confirm: SUB });
 await cleanup();
 await sql`DELETE FROM user_roles WHERE user_id = 'u_dom_test'`;
 await sql`DELETE FROM users WHERE id = 'u_dom_test'`;
