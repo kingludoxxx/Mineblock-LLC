@@ -10,7 +10,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import {
   ArrowLeft, ExternalLink, Check, Loader2, Undo2, Redo2,
-  Smartphone, Tablet, Monitor, UploadCloud, AlertCircle, X, Bot,
+  Smartphone, Tablet, Monitor, UploadCloud, AlertCircle, X, Bot, History,
 } from 'lucide-react';
 import api from '../../../services/api';
 import Button from '../../../components/ui/Button';
@@ -21,6 +21,7 @@ import LeftPanel from './LeftPanel';
 import RightPanel from './RightPanel';
 import CanvasArea from './CanvasArea';
 import CodeTab from './CodeTab';
+import VersionsDrawer from './VersionsDrawer';
 import AIDeveloperPanel from '../../../components/funnels/ai/AIDeveloperPanel';
 
 const DEVICES = [
@@ -30,6 +31,14 @@ const DEVICES = [
 ];
 
 const SAVE_DEBOUNCE_MS = 800;
+
+// Auto-snapshot rate limit. A burst of AI batches must cost ONE version, not
+// one per batch — the retention window is 30 rows, and a chatty session would
+// otherwise evict every hand-taken snapshot inside a minute.
+const AUTO_SNAP_MIN_MS = 30_000;
+// …and the editor must never wait on the network to apply an edit. If the
+// snapshot has not answered by here, the batch applies anyway.
+const AUTO_SNAP_MAX_WAIT_MS = 4_000;
 
 export default function PageBuilderPage() {
   const { id, pageId } = useParams();
@@ -52,6 +61,7 @@ export default function PageBuilderPage() {
   const [saveError, setSaveError] = useState(null);
   const [publishing, setPublishing] = useState(false);
   const [aiOpen, setAiOpen] = useState(false);
+  const [versionsOpen, setVersionsOpen] = useState(false);
 
   // ---- refs so the debounced flush always sends the LATEST state -----------
   const blocksRef = useRef(blocks);
@@ -63,8 +73,19 @@ export default function PageBuilderPage() {
 
   const dirtyRef = useRef(new Set());
   const timerRef = useRef(null);
-  const inFlightRef = useRef(false);
-  const queuedRef = useRef(false);
+  // Every flush() queues behind the previous one on this chain, so ONE PATCH
+  // is in flight at a time AND every caller awaits the true settle — including
+  // the follow-up write that used to be fired-and-forgotten via setTimeout.
+  // That mattered because autoSnapshot() awaits flush() before snapshotting:
+  // the old version returned immediately whenever a save was already in
+  // flight, so the snapshot could describe the DB as it was BEFORE the
+  // operator's last edit landed, and the deferred write then auto-persisted
+  // the AI batch that was supposed to stay a draft.
+  const flushChainRef = useRef(null);
+  const abortRef = useRef(null);
+  // Bumped by every restore. A PATCH whose epoch is stale must not apply its
+  // response — the page it was describing has been replaced underneath it.
+  const restoreEpochRef = useRef(0);
 
   // ---- load -----------------------------------------------------------------
   const load = useCallback(async () => {
@@ -92,11 +113,15 @@ export default function PageBuilderPage() {
   useEffect(() => { load(); }, [load]);
 
   // ---- autosave engine ------------------------------------------------------
-  const flush = useCallback(async () => {
-    if (inFlightRef.current) { queuedRef.current = true; return; }
+  const writeOnce = useCallback(async () => {
     const keys = Array.from(dirtyRef.current);
     if (!keys.length) return;
     dirtyRef.current = new Set();
+
+    // Pinned BEFORE the request. If a restore lands while this PATCH is in
+    // flight, the response describes a page state the operator has explicitly
+    // thrown away — applying it would silently undo the restore.
+    const epoch = restoreEpochRef.current;
 
     const payload = {};
     for (const k of keys) {
@@ -106,28 +131,41 @@ export default function PageBuilderPage() {
       else payload[k] = metaRef.current[k];
     }
 
-    inFlightRef.current = true;
+    const controller = new AbortController();
+    abortRef.current = controller;
     setSaveState('saving');
     try {
-      const res = await api.patch(`/funnels/${id}/pages/${pageId}`, payload);
+      const res = await api.patch(`/funnels/${id}/pages/${pageId}`, payload, {
+        signal: controller.signal,
+      });
+      if (restoreEpochRef.current !== epoch) return; // superseded — drop it
       setPage(res.data?.data || null);
       setSaveState('saved');
       setSaveError(null);
     } catch (err) {
+      // A save abandoned by a restore is not a failure to report, and its
+      // fields must NOT be re-dirtied: they describe the pre-restore page.
+      if (restoreEpochRef.current !== epoch) return;
       // Re-mark the failed fields dirty so the next edit (or Retry) resends
       // them — a rejected save must never silently drop edits or wedge.
       for (const k of keys) dirtyRef.current.add(k);
       setSaveState('error');
       setSaveError(err.response?.data?.error || err.message || 'Save failed');
     } finally {
-      inFlightRef.current = false;
-      if (queuedRef.current) {
-        queuedRef.current = false;
-        // Another edit landed while saving — persist the newest state.
-        setTimeout(() => { flush(); }, 0);
-      }
+      if (abortRef.current === controller) abortRef.current = null;
     }
   }, [id, pageId]);
+
+  // Serialized, and awaitable to the TRUE settle. A caller that awaits this
+  // has its edits on disk (or has seen them fail), which is the contract
+  // autoSnapshot depends on.
+  const flush = useCallback(async () => {
+    const run = (flushChainRef.current || Promise.resolve())
+      .catch(() => {})
+      .then(() => writeOnce());
+    flushChainRef.current = run;
+    await run;
+  }, [writeOnce]);
 
   const scheduleSave = useCallback((...fields) => {
     for (const f of fields) dirtyRef.current.add(f);
@@ -205,8 +243,40 @@ export default function PageBuilderPage() {
   // use (one undo step per batch). DRAFT SEMANTICS: we mark 'blocks' dirty but
   // do NOT start the autosave timer — the AI change persists only when the
   // operator publishes (flush) or makes a normal edit that autosaves.
-  const applyAiOps = useCallback((ops) => {
-    if (!Array.isArray(ops) || !ops.length) return;
+  // Best-effort version snapshot. Never throws, never blocks an edit.
+  //
+  // The slot is CLAIMED BEFORE the await: two AI batches fired back to back
+  // must not both pass the rate check while the first request is still in
+  // flight (a plain "check the timestamp, then await" reads the same stale
+  // value twice and takes two snapshots).
+  //
+  // flush() runs first because the server snapshots what is IN THE DATABASE.
+  // Skipping it would label the operator's last unsaved paragraph 'before AI
+  // edit' — a snapshot of a state that is not the one being replaced.
+  const lastAutoSnapRef = useRef(0);
+  const autoSnapshot = useCallback(async (label) => {
+    const now = Date.now();
+    if (now - lastAutoSnapRef.current < AUTO_SNAP_MIN_MS) return;
+    const previousSlot = lastAutoSnapRef.current;
+    lastAutoSnapRef.current = now;
+    try {
+      if (timerRef.current) clearTimeout(timerRef.current);
+      await flush();
+      await api.post(`/page-versions/${id}/${pageId}/snapshot`, { label });
+    } catch {
+      // Fail-open by design: a versioning hiccup must never stop the operator
+      // from editing. The drawer's manual Snapshot button surfaces the real
+      // error when they go looking.
+      //
+      // Give the slot BACK. Burning the 30s window on a snapshot that never
+      // happened is the worst of both worlds: the operator gets no version
+      // AND the next AI batch — the one most likely to need a rollback point —
+      // is refused a snapshot too.
+      lastAutoSnapRef.current = previousSlot;
+    }
+  }, [id, pageId, flush]);
+
+  const applyOpsNow = useCallback((ops) => {
     commit((prev) => {
       let next = prev.map((b) => ({ ...b }));
       for (const op of ops) {
@@ -230,6 +300,57 @@ export default function PageBuilderPage() {
     }, `ai_${Date.now()}`);
     dirtyRef.current.add('blocks'); // picked up by the next Save / Publish
   }, [commit]);
+
+  // Declared AFTER applyOpsNow so the dependency is real rather than a
+  // forward reference the linter has to be told to ignore.
+  const applyAiOps = useCallback(async (ops) => {
+    if (!Array.isArray(ops) || !ops.length) return;
+    // Snapshot BEFORE the ops land, bounded so a slow or dead endpoint cannot
+    // hold the batch hostage. `finally` guarantees the commit runs whatever
+    // the snapshot did.
+    try {
+      await Promise.race([
+        autoSnapshot('before AI edit'),
+        new Promise((r) => { setTimeout(r, AUTO_SNAP_MAX_WAIT_MS); }),
+      ]);
+    } finally {
+      applyOpsNow(ops);
+    }
+  }, [autoSnapshot, applyOpsNow]);
+
+  // A restore replaces the SERVER's copy of this page. The editor must adopt
+  // it wholesale — and, critically, DROP every pending dirty field and the
+  // queued autosave first: a timer that fires after the restore would PATCH
+  // the pre-restore blocks straight back over it and silently undo the whole
+  // operation.
+  const onVersionRestored = useCallback((p) => {
+    // FIRST, unconditionally, before anything can await: stop the debounce
+    // timer, drop every dirty field, abort any PATCH already on the wire and
+    // bump the epoch so its response is ignored if it lands anyway. This runs
+    // even when the response carried no page — a restore that succeeded
+    // server-side but returned an unreadable body must still not leave a
+    // pending write pointed at the content it replaced.
+    if (timerRef.current) clearTimeout(timerRef.current);
+    timerRef.current = null;
+    dirtyRef.current = new Set();
+    restoreEpochRef.current += 1;
+    if (abortRef.current) {
+      abortRef.current.abort();
+      abortRef.current = null;
+    }
+    if (!p) {
+      setSaveState('error');
+      setSaveError('Restored, but the updated page did not come back — reload to see it.');
+      return;
+    }
+    setPage(p);
+    setMeta({ title: p.title || '', slug: p.slug || '/', status: p.status || 'draft' });
+    setCode({ custom_css: p.custom_css || '', custom_js: p.custom_js || '' });
+    reset(withIds(p.blocks));
+    setSelectedId(null);
+    setSaveState('saved');
+    setSaveError(null);
+  }, [reset]);
 
   // ---- undo / redo (buttons + keyboard) -------------------------------------
   const doUndo = useCallback(() => {
@@ -411,6 +532,18 @@ export default function PageBuilderPage() {
           {saveChip.text}
         </span>
 
+        {/* Version history */}
+        <button
+          onClick={() => setVersionsOpen((o) => !o)}
+          title="Version history — snapshot, preview and restore this page"
+          className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium cursor-pointer transition-colors border
+            ${versionsOpen
+              ? 'border-sky-400/60 text-sky-400 bg-sky-400/10'
+              : 'border-border-default text-text-muted hover:text-text-primary'}`}
+        >
+          <History className="w-3.5 h-3.5" /> Versions
+        </button>
+
         {/* AI Developer — toggles the Claude chat panel */}
         <button
           onClick={() => setAiOpen((o) => !o)}
@@ -480,6 +613,14 @@ export default function PageBuilderPage() {
           </>
         ) : (
           <CodeTab css={code.custom_css} js={code.custom_js} blocks={blocks} onChange={onCode} />
+        )}
+        {versionsOpen && (
+          <VersionsDrawer
+            funnelId={id}
+            pageId={pageId}
+            onClose={() => setVersionsOpen(false)}
+            onRestored={onVersionRestored}
+          />
         )}
         {aiOpen && (
           <AIDeveloperPanel

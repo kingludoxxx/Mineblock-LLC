@@ -25,6 +25,7 @@ import abandonedRoutes from './abandonedCheckouts.js';
 import checkoutAdminRoutes from './checkoutAdmin.js';
 import funnelsRoutes from './funnels.js';
 import pageCloneRoutes from './pageClone.js';
+import pageVersionsRoutes from './pageVersions.js';
 import aiPageGenerateRoutes from './aiPageGenerate.js';
 import pageThumbnailsRoutes from './pageThumbnails.js';
 import splitTestsRoutes from './splitTests.js';
@@ -64,6 +65,7 @@ const mountRoutes = (app) => {
   app.use('/api/v1/abandoned', abandonedRoutes);
   app.use('/api/v1/funnels', funnelsRoutes);
   app.use('/api/v1/page-clone', pageCloneRoutes); // clone-a-page scan + create (authed, funnels permission)
+  app.use('/api/v1/page-versions', pageVersionsRoutes); // builder page snapshots + restore (authed, funnels permission; owns lb_page_versions)
   app.use('/api/v1/ai-generate', aiPageGenerateRoutes); // Generate-with-AI page build stream (authed, funnels permission; never writes funnel_pages)
   app.use('/api/v1/page-thumbnails', pageThumbnailsRoutes); // canvas node miniatures (authed, funnels permission; fail-open 204)
   app.use('/api/v1/checkout', checkoutAdminRoutes); // authed CRM surface (public /checkout/public mounted earlier in app.js)

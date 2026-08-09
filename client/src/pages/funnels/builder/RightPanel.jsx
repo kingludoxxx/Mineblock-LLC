@@ -4,16 +4,30 @@
 //                     block id) and three tabs:
 //                       Content  — the block's schema-driven prop editors
 //                                  (+ the WIRING section for money blocks)
-//                       Style    — size / z-index / background / typography,
-//                                  persisted into props.style
+//                       Style    — breakpoint switch, alignment, size /
+//                                  z-index / background / typography
 //                       Advanced — margin/padding, custom CSS class,
 //                                  desktop/mobile visibility toggles
+//
+// BREAKPOINTS: the Style and Advanced tabs share ONE Desktop/Mobile switch.
+// Desktop writes props.style (the base); Mobile writes props.mobile_styles,
+// an override bag with the SAME keys, read second at <= MOBILE_MAX_PX. A key
+// absent from mobile_styles inherits — so every mobile field displays what it
+// is inheriting instead of an empty box.
+//
 // props.style is applied on the public page by the server's blockStyleWrap()
 // (sanitized) and mirrored on the canvas via styleUtils.styleToCanvas().
+// props.mobile_styles is honored on the CANVAS today; the public renderer
+// needs the media-query emitter documented in the delivery report (only the
+// integrator edits funnelRender.js).
 import { useEffect, useRef, useState } from 'react';
 import { Trash2, Copy, ShieldAlert, AlertTriangle, Info } from 'lucide-react';
 import { BLOCK_DEFS } from './blockRegistry';
-import { FONT_FAMILIES, FONT_WEIGHTS } from './styleUtils';
+import {
+  FONT_FAMILIES, FONT_WEIGHTS, MOBILE_MAX_PX,
+  bagForBreakpoint, styleBag, effectiveStyle, hasMobileOverrides,
+} from './styleUtils';
+import { BreakpointSwitch, MobileScopeNote, AlignmentControls } from './BreakpointControls';
 
 const inputCls =
   'w-full px-2.5 py-1.5 text-sm bg-bg-elevated border border-border-default rounded-md text-text-primary placeholder:text-text-faint focus:outline-none focus:border-border-strong';
@@ -165,7 +179,11 @@ function FieldList({ fields, props, onProp, onFieldFocus }) {
 // stay byte-identical on the server).
 // ---------------------------------------------------------------------------
 
-function StyleSlider({ label, value, min, max, step, unit, defaultValue, onChange }) {
+// `unsetLabel` is what an unwritten field reads as. On the base bag that is
+// 'default'; on mobile it is 'inherit' — a mobile field with no value is NOT
+// unstyled, it is taking the desktop value, and saying 'default' there sends
+// operators hunting for a value that is already correct.
+function StyleSlider({ label, value, min, max, step, unit, defaultValue, onChange, unsetLabel = 'default' }) {
   const set = value != null && value !== '';
   const num = set ? Number(value) : defaultValue;
   return (
@@ -173,7 +191,7 @@ function StyleSlider({ label, value, min, max, step, unit, defaultValue, onChang
       <div className="flex items-center justify-between mb-1">
         <label className={`${labelCls} mb-0`}>{label}</label>
         <span className={`text-[11px] font-mono ${set ? 'text-text-primary' : 'text-text-faint'}`}>
-          {set ? `${num}${unit || ''}` : 'default'}
+          {set ? `${num}${unit || ''}` : unsetLabel}
           {set && (
             <button
               onClick={() => onChange(undefined)}
@@ -200,12 +218,21 @@ function StyleSlider({ label, value, min, max, step, unit, defaultValue, onChang
 
 const HEX_RE = /^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/;
 
-function ColorField({ label, value, onChange }) {
+function ColorField({ label, value, onChange, inherited }) {
   const v = value ?? '';
-  const swatch = HEX_RE.test(String(v)) ? String(v) : '#ffffff';
+  // The swatch falls back to the INHERITED colour, not to white — a mobile
+  // picker that opens on white when the block is actually navy invites the
+  // operator to write an override they did not want.
+  const shown = v || (inherited ?? '');
+  const swatch = HEX_RE.test(String(shown)) ? String(shown) : '#ffffff';
   return (
     <div>
-      <label className={labelCls}>{label}</label>
+      <label className={labelCls}>
+        {label}
+        {!v && inherited && (
+          <span className="ml-1.5 normal-case tracking-normal text-text-faint/80">inheriting {String(inherited)}</span>
+        )}
+      </label>
       <div className="flex items-center gap-2">
         <input
           type="color"
@@ -217,7 +244,7 @@ function ColorField({ label, value, onChange }) {
         <input
           value={v}
           onChange={(e) => onChange(e.target.value || undefined)}
-          placeholder="#ffffff / transparent"
+          placeholder={inherited ? `inherit: ${inherited}` : '#ffffff / transparent'}
           spellCheck={false}
           className={`${inputCls} font-mono text-xs`}
         />
@@ -241,25 +268,45 @@ function SizeInput({ label, value, onChange, placeholder }) {
   );
 }
 
-function StyleTab({ style, onStyle }) {
-  const s = style && typeof style === 'object' && !Array.isArray(style) ? style : {};
+function StyleTab({ bp, setBp, props, onStyle }) {
+  const isMobile = bp === 'mobile';
+  const s = styleBag(props, bp);               // RAW bag for this breakpoint
+  const inh = effectiveStyle(props, 'desktop'); // what a blank mobile field inherits
   const set = (key) => (v) => onStyle(key, v);
+  // On mobile a field shows its OWN value; the inherited value becomes the
+  // placeholder / slider origin so the control starts where the page is.
+  const ph = (key, fallback) => (isMobile && inh[key] != null && inh[key] !== '' ? `inherit: ${inh[key]}` : fallback);
+  const slideDefault = (key, fallback) => {
+    const n = Number(inh[key]);
+    return Number.isFinite(n) ? n : fallback;
+  };
+  const unset = isMobile ? 'inherit' : 'default';
+  const overrideCount = Object.keys(styleBag(props, 'mobile')).length;
+
   return (
     <div className="space-y-3.5">
-      <div className="text-[10px] uppercase tracking-widest text-text-faint font-semibold">Size</div>
+      <BreakpointSwitch value={bp} onChange={setBp} hasMobile={hasMobileOverrides(props)} />
+      {isMobile && (
+        <MobileScopeNote overrideCount={overrideCount} onReset={() => onStyle('__clear_bag__')} />
+      )}
+
+      <AlignmentControls style={s} inherit={inh} onStyle={onStyle} isMobile={isMobile} />
+
+      <div className="pt-1 text-[10px] uppercase tracking-widest text-text-faint font-semibold">Size</div>
       <div className="grid grid-cols-2 gap-2">
-        <SizeInput label="Width" value={s.width} onChange={set('width')} placeholder="auto / 100%" />
-        <SizeInput label="Height" value={s.height} onChange={set('height')} />
-        <SizeInput label="Min W" value={s.min_width} onChange={set('min_width')} />
-        <SizeInput label="Min H" value={s.min_height} onChange={set('min_height')} />
-        <SizeInput label="Max W" value={s.max_width} onChange={set('max_width')} />
-        <SizeInput label="Max H" value={s.max_height} onChange={set('max_height')} />
+        <SizeInput label="Width" value={s.width} onChange={set('width')} placeholder={ph('width', 'auto / 100%')} />
+        <SizeInput label="Height" value={s.height} onChange={set('height')} placeholder={ph('height', 'auto')} />
+        <SizeInput label="Min W" value={s.min_width} onChange={set('min_width')} placeholder={ph('min_width', 'auto')} />
+        <SizeInput label="Min H" value={s.min_height} onChange={set('min_height')} placeholder={ph('min_height', 'auto')} />
+        <SizeInput label="Max W" value={s.max_width} onChange={set('max_width')} placeholder={ph('max_width', 'auto')} />
+        <SizeInput label="Max H" value={s.max_height} onChange={set('max_height')} placeholder={ph('max_height', 'auto')} />
       </div>
       <div>
         <label className={labelCls}>Z-index</label>
         <input
           type="number"
           value={s.z_index ?? ''}
+          placeholder={ph('z_index', '')}
           onChange={(e) => {
             const n = parseInt(e.target.value, 10);
             set('z_index')(Number.isFinite(n) ? n : undefined);
@@ -269,58 +316,82 @@ function StyleTab({ style, onStyle }) {
       </div>
 
       <div className="pt-1 text-[10px] uppercase tracking-widest text-text-faint font-semibold">Background</div>
-      <ColorField label="Background color" value={s.bg} onChange={set('bg')} />
+      <ColorField label="Background color" value={s.bg} inherited={isMobile ? inh.bg : undefined} onChange={set('bg')} />
 
       <div className="pt-1 text-[10px] uppercase tracking-widest text-text-faint font-semibold">Typography</div>
       <div>
-        <label className={labelCls}>Font family</label>
+        <label className={labelCls}>
+          Font family
+          {isMobile && s.font_family == null && inh.font_family && (
+            <span className="ml-1.5 normal-case tracking-normal text-text-faint/80">inheriting</span>
+          )}
+        </label>
         <select value={s.font_family ?? ''} onChange={(e) => set('font_family')(e.target.value || undefined)} className={inputCls}>
           {FONT_FAMILIES.map((f) => <option key={f.label} value={f.value}>{f.label}</option>)}
         </select>
       </div>
       <div>
-        <label className={labelCls}>Weight</label>
+        <label className={labelCls}>
+          Weight
+          {isMobile && s.font_weight == null && inh.font_weight && (
+            <span className="ml-1.5 normal-case tracking-normal text-text-faint/80">inheriting</span>
+          )}
+        </label>
         <select value={s.font_weight ?? ''} onChange={(e) => set('font_weight')(e.target.value || undefined)} className={inputCls}>
           {FONT_WEIGHTS.map((w) => <option key={w.label} value={w.value}>{w.label}</option>)}
         </select>
       </div>
-      <StyleSlider label="Font size" value={s.font_size} min={8} max={96} step={1} unit="px" defaultValue={16} onChange={set('font_size')} />
-      <StyleSlider label="Line height" value={s.line_height} min={0.5} max={3} step={0.05} unit="" defaultValue={1.6} onChange={set('line_height')} />
-      <StyleSlider label="Letter spacing" value={s.letter_spacing} min={-5} max={20} step={0.5} unit="px" defaultValue={0} onChange={set('letter_spacing')} />
-      <ColorField label="Text color" value={s.text_color} onChange={set('text_color')} />
+      <StyleSlider label="Font size" value={s.font_size} min={8} max={96} step={1} unit="px" defaultValue={slideDefault('font_size', 16)} unsetLabel={unset} onChange={set('font_size')} />
+      <StyleSlider label="Line height" value={s.line_height} min={0.5} max={3} step={0.05} unit="" defaultValue={slideDefault('line_height', 1.6)} unsetLabel={unset} onChange={set('line_height')} />
+      <StyleSlider label="Letter spacing" value={s.letter_spacing} min={-5} max={20} step={0.5} unit="px" defaultValue={slideDefault('letter_spacing', 0)} unsetLabel={unset} onChange={set('letter_spacing')} />
+      <ColorField label="Text color" value={s.text_color} inherited={isMobile ? inh.text_color : undefined} onChange={set('text_color')} />
     </div>
   );
 }
 
-function AdvancedTab({ style, onStyle }) {
-  const s = style && typeof style === 'object' && !Array.isArray(style) ? style : {};
+function AdvancedTab({ bp, setBp, props, onStyle, onBaseStyle }) {
+  const isMobile = bp === 'mobile';
+  const s = styleBag(props, bp);                // spacing follows the breakpoint
+  const base = styleBag(props, 'desktop');      // css_class + visibility are base-only
+  const inh = effectiveStyle(props, 'desktop');
   const set = (key) => (v) => onStyle(key, v);
+  const setBase = (key) => (v) => onBaseStyle(key, v);
+  const ph = (key, fallback) => (isMobile && inh[key] != null && inh[key] !== '' ? `inherit: ${inh[key]}` : fallback);
+
   return (
     <div className="space-y-3.5">
-      <div className="text-[10px] uppercase tracking-widest text-text-faint font-semibold">Spacing</div>
-      <SizeInput label="Margin (CSS shorthand)" value={s.margin} onChange={set('margin')} placeholder="16px 0" />
-      <SizeInput label="Padding (CSS shorthand)" value={s.padding} onChange={set('padding')} placeholder="24px" />
+      <BreakpointSwitch value={bp} onChange={setBp} hasMobile={hasMobileOverrides(props)} />
+
+      <div className="pt-1 text-[10px] uppercase tracking-widest text-text-faint font-semibold">Spacing</div>
+      <SizeInput label="Margin (CSS shorthand)" value={s.margin} onChange={set('margin')} placeholder={ph('margin', '16px 0')} />
+      <SizeInput label="Padding (CSS shorthand)" value={s.padding} onChange={set('padding')} placeholder={ph('padding', '24px')} />
 
       <div className="pt-1 text-[10px] uppercase tracking-widest text-text-faint font-semibold">CSS</div>
       <div>
         <label className={labelCls}>Custom CSS class</label>
         <input
-          value={s.css_class ?? ''}
-          onChange={(e) => set('css_class')(e.target.value || undefined)}
+          value={base.css_class ?? ''}
+          onChange={(e) => setBase('css_class')(e.target.value || undefined)}
           placeholder="my-class"
           spellCheck={false}
           className={`${inputCls} font-mono text-xs`}
         />
-        <p className="mt-1 text-[11px] text-text-faint">Added to the block wrapper — style it from the page CSS (Code tab).</p>
+        <p className="mt-1 text-[11px] text-text-faint">
+          Added to the block wrapper — style it from the page CSS (Code tab).
+          One class for the block, not per breakpoint: write the media query in your CSS.
+        </p>
       </div>
 
       <div className="pt-1 text-[10px] uppercase tracking-widest text-text-faint font-semibold">Visibility</div>
-      {[['hide_desktop', 'Hide on desktop (≥768px)'], ['hide_mobile', 'Hide on mobile (<768px)']].map(([key, label]) => (
+      {/* Base-only on purpose: "hide on mobile" is ALREADY a breakpoint
+          statement. A per-breakpoint copy would be a second switch on the
+          same wire, and the two could disagree. */}
+      {[['hide_desktop', `Hide on desktop (≥${MOBILE_MAX_PX + 1}px)`], ['hide_mobile', `Hide on mobile (≤${MOBILE_MAX_PX}px)`]].map(([key, label]) => (
         <label key={key} className="flex items-center gap-2 text-xs text-text-muted cursor-pointer">
           <input
             type="checkbox"
-            checked={s[key] === true}
-            onChange={(e) => set(key)(e.target.checked ? true : undefined)}
+            checked={base[key] === true}
+            onChange={(e) => setBase(key)(e.target.checked ? true : undefined)}
             className="accent-sky-500"
           />
           {label}
@@ -341,15 +412,29 @@ function BlockProps({ block, onProp, onDelete, onDuplicate }) {
   const props = block.props && typeof block.props === 'object' ? block.props : {};
   const [tab, setTab] = useState('content');
   const [subEl, setSubEl] = useState(null);
+  // ONE breakpoint for the whole inspector: switching it on the Style tab and
+  // then editing spacing on Advanced must not silently write to the other bag.
+  const [bp, setBp] = useState('desktop');
 
-  // Merge-write into props.style; an emptied object removes props.style.
-  const onStyle = (key, value) => {
-    const cur = props.style && typeof props.style === 'object' && !Array.isArray(props.style) ? props.style : {};
+  // Merge-write into ONE style bag (props.style or props.mobile_styles).
+  // An emptied bag removes its prop entirely, so a block that carries no
+  // overrides stays byte-identical on the server — the same posture the base
+  // bag already had, extended to the mobile bag. That is what makes "clear
+  // the last mobile override" leave no residue for the renderer to walk.
+  const writeBag = (bagKey, key, value) => {
+    const cur = props[bagKey] && typeof props[bagKey] === 'object' && !Array.isArray(props[bagKey]) ? props[bagKey] : {};
+    // Sentinel from the mobile scope note's Clear button.
+    if (key === '__clear_bag__') return onProp(bagKey, undefined);
     const next = { ...cur };
     if (value === undefined || value === '') delete next[key];
     else next[key] = value;
-    onProp('style', Object.keys(next).length ? next : undefined);
+    onProp(bagKey, Object.keys(next).length ? next : undefined);
   };
+
+  // Breakpoint-routed write (Style tab fields, Advanced spacing).
+  const onStyle = (key, value) => writeBag(bagForBreakpoint(bp), key, value);
+  // Always-base write (css_class, visibility toggles).
+  const onBaseStyle = (key, value) => writeBag('style', key, value);
 
   return (
     <div className="p-3 space-y-3.5">
@@ -428,8 +513,10 @@ function BlockProps({ block, onProp, onDelete, onDuplicate }) {
         </div>
       )}
 
-      {tab === 'style' && <StyleTab style={props.style} onStyle={onStyle} />}
-      {tab === 'advanced' && <AdvancedTab style={props.style} onStyle={onStyle} />}
+      {tab === 'style' && <StyleTab bp={bp} setBp={setBp} props={props} onStyle={onStyle} />}
+      {tab === 'advanced' && (
+        <AdvancedTab bp={bp} setBp={setBp} props={props} onStyle={onStyle} onBaseStyle={onBaseStyle} />
+      )}
     </div>
   );
 }
