@@ -27,6 +27,7 @@ import funnelPublicRoutes from './routes/funnelPublic.js';
 import gatewayWebhookRoutes from './routes/gatewayWebhooks.js';
 import checkoutPublicRoutes from './routes/checkoutPublic.js';
 import optinPublicRoutes from './routes/optinPublic.js';
+import mediaRoutes from './routes/media.js';
 import { customDomainMiddleware } from './services/domainHub/hostRouting.js';
 import trackingPublicRoutes from './routes/trackingPublic.js';
 
@@ -89,6 +90,10 @@ app.use('/api/v1/checkout/public', checkoutPublicRoutes);
 // Public opt-in lead intake — same reasoning: its own 64kb cap only applies
 // ahead of the global parser.
 app.use('/api/v1/optin/public', optinPublicRoutes);
+
+// Media library — parses its OWN body (7mb cap) so uploads can't buffer 50mb
+// through the global parser; must sit ahead of it like the intakes above.
+app.use('/api/v1/media', mediaRoutes);
 
 // Body parsing
 app.use(express.json({ limit: '50mb' }));
