@@ -401,6 +401,33 @@ const settleArgs = (id, payId) => ({
   check('T14 opted in → order created', mock.calls.length === 1 && ordOn?.shopify_status === 'created' && Boolean(ordOn?.shopify_order_id), JSON.stringify({ calls: mock.calls.length, ordOn }));
 }
 
+// ══ TEST 15 — the Shopify order carries BOTH shipping and billing addresses ══
+// The first real order (#1121) showed "No shipping/billing address provided"
+// because the checkout never sent the buyer's details to the session. This
+// asserts that once session.customer.shipping is populated, the emitted order
+// payload carries shipping_address AND billing_address (billing mirrors
+// shipping when the buyer keeps "same as shipping").
+{
+  mock.mode = 'ok'; mock.calls.length = 0;
+  const id = await seedSession({ id: 'co_addr', total: 42, customerOverride: {
+    email: 'buyer@puure.co', first_name: 'Ludo', last_name: 'Apollonio', phone: '+391112223',
+    shipping: { address1: 'Via Roma 12', address2: 'Interno 3', city: 'Milano', state: 'MI', zip: '20121', country: 'IT' },
+  } });
+  const lineItems = [{ variant_id: '58222941077807', quantity: 1, price: 42, currency: 'USD' }];
+  await sql`UPDATE co_sessions SET line_items = ${sql.json(lineItems)}, total = 42, subtotal = 42 WHERE id = ${id}`;
+  await settleSessionPaid({ sessionId: id, gateway: 'whop', gatewayId: 'pay_addr', idempotencyKey: 'wh_pay_addr', amount: 42, currency: 'USD' });
+  const o = mock.calls.length ? mock.calls[mock.calls.length - 1].body : {};
+  check('T15 shipping_address present with the buyer address',
+    o.shipping_address?.address1 === 'Via Roma 12' && o.shipping_address?.city === 'Milano'
+    && o.shipping_address?.zip === '20121' && o.shipping_address?.country === 'IT',
+    JSON.stringify(o.shipping_address));
+  check('T15 billing_address present (mirrors shipping)',
+    o.billing_address?.address1 === 'Via Roma 12' && o.billing_address?.city === 'Milano',
+    JSON.stringify(o.billing_address));
+  check('T15 first/last name on the address', o.shipping_address?.first_name === 'Ludo' && o.shipping_address?.last_name === 'Apollonio', JSON.stringify(o.shipping_address));
+  check('T15 email on the order', o.email === 'buyer@puure.co', JSON.stringify(o.email));
+}
+
 console.log(`\nRESULT: ${pass} passed, ${fail} failed`);
 mockServer.close();
 await sql.end();
