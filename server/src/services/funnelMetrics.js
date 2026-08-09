@@ -90,6 +90,24 @@
 //    there, so the number cannot be asked for either.
 //
 // ═══════════════════════════════════════════════════════════════════════════
+// SCOPE — WHERE THIS ENGINE KNOWINGLY DISAGREES WITH ITS SIBLINGS
+// ═══════════════════════════════════════════════════════════════════════════
+// Three divergences. Each is deliberate, each puts this engine on the side I
+// believe is correct, and each means a number here can differ from the
+// same-named number on another Puure screen. They ship on every response as
+// `meta.reconciliation` (see RECONCILIATION) so an operator who spots the
+// difference can find out WHY instead of losing trust in both screens.
+//
+//  1. REPORT TIMEZONE — this engine buckets on Madrid calendar days. The
+//     funnel-analytics page and the funnel-costs P&L still bucket on UTC.
+//  2. REFUNDED UPSELL LEG — counted at GROSS here with the reversal netted
+//     from the void ledger; funnelCosts v1 reverses the whole leg. The two
+//     differ on a PARTIAL upsell refund.
+//  3. UPSELL WINDOWING — a leg books on its OWN settle day here (as
+//     funnelCosts M4 does); funnelAnalytics books it on the parent order's
+//     paid_at. Daily series diverge; wide windows agree.
+//
+// ═══════════════════════════════════════════════════════════════════════════
 // WHAT IS DELIBERATELY NOT HERE
 // ═══════════════════════════════════════════════════════════════════════════
 //  • `device` is a REGISTERED dimension that answers {unavailable:true} and
@@ -190,8 +208,8 @@ export const METRIC_META = Object.freeze({
   rev_per_session: { label: '$/session', format: 'money', rate: true },
   upsell_revenue: { label: 'Upsell revenue', format: 'money' },
   upsell_take_pct: { label: 'Upsell take rate', format: 'pct', rate: true },
-  new_customers: { label: 'New customers', format: 'int' },
-  returning_customers: { label: 'Returning customers', format: 'int' },
+  new_customers: { label: 'Orders from new customers', format: 'int' },
+  returning_customers: { label: 'Orders from returning customers', format: 'int' },
   abandoned: { label: 'Abandoned checkouts', format: 'int' },
   abandoned_rate: { label: 'Abandoned rate', format: 'pct', rate: true },
   cogs: { label: 'COGS', format: 'money' },
@@ -358,11 +376,171 @@ export function basisLabelFor(basis, metrics = []) {
   return `${METRIC_META[primary].label} — ${population}`;
 }
 
-/** The metric a breakdown's scalar `total` reports (and its footer names). */
+/**
+ * Metrics denominated in CURRENCY. `orders` is money-SHAPED (a basis describes
+ * it) but it is a COUNT, and a footer that prints "Top 5 of 12 · 47" where the
+ * operator expects "· $4,700" is a units error on the most-read line of the
+ * card.
+ */
+const CURRENCY_METRICS = Object.freeze(new Set([
+  'gross_sales', 'net_sales', 'refunds', 'aov', 'aov_pre_upsell', 'upsell_revenue',
+  'cogs', 'ship_cost', 'fees', 'net_after_cogs', 'spend', 'cpa', 'net_profit',
+]));
+
+/**
+ * The metric a breakdown's scalar `total` reports (and its footer names).
+ *
+ * Preference order: net_sales (the figure an operator means by "sales"), then
+ * whichever CURRENCY metric was actually asked for, and only then the first
+ * metric of any kind. Counts are deliberately last — `sales_by_product` asks
+ * for [orders, gross_sales], and preferring `orders` there put a bare count
+ * under a currency label.
+ */
 export function primaryMetricOf(metrics = []) {
   if (metrics.includes('net_sales')) return 'net_sales';
-  return metrics.find((m) => MONEY_SHAPED.has(m)) ?? metrics[0] ?? null;
+  return metrics.find((m) => CURRENCY_METRICS.has(m))
+    ?? metrics.find((m) => MONEY_SHAPED.has(m))
+    ?? metrics[0]
+    ?? null;
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// FILTER × FOLD LEGALITY — the rule that stops a confidently wrong ratio
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// A filter only narrows the folds it can actually be pushed into. `gateway`
+// lives on co_sessions, so it narrows MONEY — but `lb_touches` has no gateway,
+// so it cannot narrow TRAFFIC. Serving `conv_pct` under a gateway filter
+// therefore divides ONE gateway's orders by EVERY gateway's sessions, and the
+// answer is not approximately right, it is a different quantity wearing the
+// right label. Measured on the fixture: a real 50% rendered as 0%.
+//
+// The fix is not to guess the missing half. It is to REFUSE THE RATIO: any
+// metric whose folds cannot all be narrowed by every active filter is withheld
+// (null) and named in `meta.withheld` plus a warning. A dash the operator can
+// interrogate beats a number they cannot.
+const FOLD_FILTERS = Object.freeze({
+  // co_sessions carries all four (source via the last-touch lateral).
+  money: Object.freeze(new Set(['funnel_id', 'gateway', 'country', 'source'])),
+  // lb_touches carries funnel_id and the UTM; it has no gateway and no
+  // shipping country (Puure captures no geo on the traffic spine at all).
+  traffic: Object.freeze(new Set(['funnel_id', 'source'])),
+  // Upsell-page views are counted off lb_touches joined to funnel_pages.
+  upsell_views: Object.freeze(new Set(['funnel_id'])),
+  // Abandoned checkouts are co_sessions rows that never paid — they have a
+  // gateway, but no last touch to attribute and often no shipping country.
+  abandoned: Object.freeze(new Set(['funnel_id', 'gateway'])),
+  // lb_ad_spend_daily binds to FUNNELS via lb_campaign_map. There is no
+  // per-gateway or per-country ad budget, so a filtered `spend` would report
+  // the whole account's budget under a narrowed label.
+  spend: Object.freeze(new Set(['funnel_id'])),
+  // The cost fold reads the same co_sessions rows as `money`.
+  costs: Object.freeze(new Set(['funnel_id', 'gateway', 'country', 'source'])),
+});
+
+/** Which folds each metric is computed from — its numerator AND denominator. */
+const METRIC_FOLDS = Object.freeze({
+  orders: ['money'],
+  gross_sales: ['money'],
+  net_sales: ['money'],
+  refunds: ['money'],
+  aov: ['money'],
+  aov_pre_upsell: ['money'],
+  upsell_revenue: ['money'],
+  sessions: ['traffic'],
+  pageviews: ['traffic'],
+  conv_pct: ['money', 'traffic'],
+  rev_per_session: ['money', 'traffic'],
+  upsell_take_pct: ['money', 'upsell_views'],
+  new_customers: ['money'],
+  returning_customers: ['money'],
+  abandoned: ['abandoned'],
+  abandoned_rate: ['abandoned', 'money'],
+  cogs: ['costs'],
+  ship_cost: ['costs'],
+  fees: ['costs'],
+  net_after_cogs: ['costs', 'money'],
+  margin_pct: ['costs', 'money'],
+  cost_coverage_pct: ['costs'],
+  spend: ['spend'],
+  roas: ['spend', 'money'],
+  cpa: ['spend', 'money'],
+  net_profit: ['spend', 'costs', 'money'],
+});
+
+/**
+ * Which metrics cannot be served honestly under the active filters.
+ * @returns {Map<string, string[]>} metric → the filters that could not be pushed
+ */
+export function unservableUnderFilters(metrics, filters) {
+  const active = Object.entries(filters || {})
+    .filter(([, v]) => v !== null && v !== undefined && v !== '')
+    .map(([k]) => k);
+  const out = new Map();
+  if (!active.length) return out;
+  for (const m of metrics) {
+    const bad = new Set();
+    for (const fold of METRIC_FOLDS[m] || []) {
+      for (const f of active) if (!FOLD_FILTERS[fold].has(f)) bad.add(f);
+    }
+    if (bad.size) out.set(m, [...bad]);
+  }
+  return out;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// RECONCILIATION — where this engine KNOWINGLY disagrees with its siblings
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// Three divergences exist. Each is a deliberate choice, each puts this engine
+// on the side I believe is correct, and each means a number here can differ
+// from the same-named number on another Puure screen. An operator who finds
+// two screens disagreeing and CANNOT find out why stops trusting both — so
+// the disagreements ship WITH the numbers, on `meta.reconciliation`, rather
+// than living in a commit message nobody reads.
+export const RECONCILIATION = Object.freeze({
+  // (a) TIMEZONE
+  utc_surfaces: Object.freeze([
+    'funnel-analytics (the per-funnel Analytics page and the funnels-list feed)',
+    'funnel-costs /pnl/* (COGS + P&L day keys)',
+  ]),
+  notes: Object.freeze([
+    Object.freeze({
+      id: 'report_timezone',
+      severity: 'expected',
+      summary: `This engine buckets on ${REPORT_TZ} calendar days; the surfaces listed in `
+        + 'utc_surfaces still bucket on UTC days.',
+      why: 'Meta reports spend on the ad account\'s timezone, so lb_ad_spend_daily already '
+        + 'holds Madrid days. Dividing UTC-day revenue by Madrid-day spend makes ROAS '
+        + 'disagree with Ads Manager by whatever crossed midnight.',
+      impact: 'Daily figures can differ by the orders that fall between 22:00/23:00 UTC and '
+        + 'local midnight. Window TOTALS over the same span agree except at the two edges.',
+    }),
+    Object.freeze({
+      id: 'refunded_upsell_leg',
+      severity: 'expected',
+      summary: 'A refunded upsell leg is counted at GROSS here, with the reversal netted from '
+        + 'the lb_split_credits void ledger; funnelCosts v1 treats the whole leg as reversed.',
+      why: 'co_upsell_charges has no refunded_total column, so the gateway flips the WHOLE '
+        + 'leg to \'refunded\' for any refund — including a $5 partial on a $200 leg. Taking '
+        + 'the leg at gross and subtracting the measured void amount is the only arithmetic '
+        + 'that survives a partial.',
+      impact: 'On a PARTIALLY refunded upsell, net_sales here is higher than funnelCosts\' '
+        + 'revenue by the unreversed remainder. On a full refund the two agree.',
+    }),
+    Object.freeze({
+      id: 'upsell_windowing',
+      severity: 'expected',
+      summary: 'An upsell leg is windowed on the CHARGE\'s own settle day here (matching '
+        + 'funnelCosts M4); funnelAnalytics windows it on the PARENT session\'s paid_at.',
+      why: 'Cost must book with its own revenue, and the revenue clock must match the spend '
+        + 'clock for ROAS. An upsell recovered days after the order belongs to the day its '
+        + 'money actually landed.',
+      impact: 'A leg settled on a later day than its parent order lands on a DIFFERENT day '
+        + 'than funnelAnalytics puts it. Wide windows agree; daily series diverge.',
+    }),
+  ]),
+});
 
 export const GRANULARITIES = Object.freeze(['day', 'hour', 'week', 'month']);
 
@@ -732,11 +910,22 @@ function moneyKeyExpr(dimension) {
   }
 }
 
-/** The lateral joins a money query needs for the requested dimension. */
-function moneyJoins(dimension) {
-  if (!TOUCH_DIMS.has(dimension)) return '';
+/**
+ * The lateral joins a money query needs.
+ *
+ * The last-touch lateral is emitted for the last-touch DIMENSIONS *and*
+ * whenever a `source` FILTER is active — on any dimension. Without that second
+ * condition a `source` filter on, say, dimension=funnel silently did not
+ * narrow the money at all, so the response reported EVERY source's orders
+ * under the label of one. `landing_page` + a source filter legitimately needs
+ * BOTH laterals (first touch for the key, last touch for the filter).
+ */
+function moneyJoins(dimension, { source = null } = {}) {
+  const needLast = (TOUCH_DIMS.has(dimension) && dimension !== 'landing_page') || Boolean(source);
+  const needFirst = dimension === 'landing_page';
+  if (!needLast && !needFirst) return '';
   const bits = [];
-  if (dimension !== 'landing_page') {
+  if (needLast) {
     // LAST touch at or before payment — the click that closed the sale.
     bits.push(`
       LEFT JOIN LATERAL (
@@ -746,7 +935,8 @@ function moneyJoins(dimension) {
         ORDER BY t.ts DESC
         LIMIT 1
       ) lt ON s.vid IS NOT NULL AND s.vid <> ''`);
-  } else {
+  }
+  if (needFirst) {
     // FIRST touch — the page they ARRIVED on, which is what "landing page"
     // means. Using the last touch here would report the checkout page as the
     // landing page on every single order.
@@ -813,7 +1003,7 @@ const windowBounds = (w) => [w.fromTs, w.toTs];
  * never a silent no-op: a filter the operator typed that did nothing is a
  * wrong number with a confident label on it).
  */
-function moneyFilters(filters, params, { hasLastTouch }) {
+function moneyFilters(filters, params) {
   const bits = [];
   const unapplied = [];
   if (filters.funnel_id) { params.push(filters.funnel_id); bits.push(`AND s.funnel_id = $${params.length}`); }
@@ -823,12 +1013,12 @@ function moneyFilters(filters, params, { hasLastTouch }) {
     bits.push(`AND UPPER(TRIM(COALESCE(s.customer->'shipping'->>'country', ''))) = UPPER($${params.length})`);
   }
   if (filters.source) {
-    if (hasLastTouch) {
-      params.push(filters.source);
-      bits.push(`AND COALESCE(NULLIF(lt.utm->>'utm_source', ''), '(direct)') = $${params.length}`);
-    } else {
-      unapplied.push('source');
-    }
+    // Always applicable now: `moneyJoins` emits the last-touch lateral whenever
+    // this filter is set, on ANY dimension. It used to be silently skipped off
+    // the last-touch dimensions, which meant a source-filtered read returned
+    // every source's money under one source's label.
+    params.push(filters.source);
+    bits.push(`AND COALESCE(NULLIF(lt.utm->>'utm_source', ''), '(direct)') = $${params.length}`);
   }
   return { sql: bits.join('\n       '), unapplied };
 }
@@ -848,7 +1038,13 @@ const emptyAtoms = () => ({
 });
 
 function slotFor(map, bucket, key) {
-  const k = `${bucket} ${key}`;
+  // The separator is an ESCAPED NUL, written as the six-character source
+  // escape rather than pasted as a raw byte. A literal control character in
+  // source survives copy, diff and review INVISIBLY — and if it is ever lost
+  // in transit the two halves concatenate and two different buckets silently
+  // merge into one. NUL is the chosen separator because it cannot occur in a
+  // funnel id, a UTM value, a country code or a day key.
+  const k = `${bucket}\u0000${key}`;
   let v = map.get(k);
   if (!v) { v = { bucket, key, ...emptyAtoms() }; map.set(k, v); }
   return v;
@@ -878,8 +1074,8 @@ export function neededFolds(metrics) {
 async function readOrders(query, q, stats) {
   const { window: w, dimension, granularity, filters } = q;
   const params = windowParams(w);
-  const joins = moneyJoins(dimension);
-  const { sql: fsql, unapplied } = moneyFilters(filters, params, { hasLastTouch: TOUCH_DIMS.has(dimension) && dimension !== 'landing_page' });
+  const joins = moneyJoins(dimension, filters);
+  const { sql: fsql, unapplied } = moneyFilters(filters, params);
   const key = moneyKeyExpr(dimension);
   const rows = await query(
     `SELECT ${bucketExpr('s.paid_at', granularity)} AS bkt,
@@ -898,6 +1094,16 @@ async function readOrders(query, q, stats) {
   );
   stats.rows_scanned += rows.length;
   stats.unapplied_filters = unapplied;
+  // ── CURRENCY. Already read, previously discarded. Every money figure in
+  //    this file is a BARE SUM: mixing USD and EUR rows produces a number that
+  //    is in no currency at all, and the client has to render "$" from
+  //    something. So the observed set travels with the numbers — one currency
+  //    ⇒ name it; more than one ⇒ `currency: null` + `mixed_currency: true`,
+  //    LOUDLY, and never a silently blended total.
+  for (const r of rows) {
+    if (r.currency) stats.currencies.add(String(r.currency));
+    if (int(r.currency_count) > 1) stats.mixed_currency = true;
+  }
   return rows;
 }
 
@@ -914,7 +1120,8 @@ async function readOrders(query, q, stats) {
 async function readProductOrders(query, q, stats) {
   const { window: w, granularity, filters } = q;
   const params = windowParams(w);
-  const { sql: fsql, unapplied } = moneyFilters(filters, params, { hasLastTouch: false });
+  const joins = moneyJoins('product', filters);
+  const { sql: fsql, unapplied } = moneyFilters(filters, params);
   const rows = await query(
     `SELECT ${bucketExpr('s.paid_at', granularity)} AS bkt,
             COALESCE(NULLIF(TRIM(COALESCE(li->>'product_title', li->>'title', '')), ''), '(untitled)') AS k,
@@ -922,6 +1129,7 @@ async function readProductOrders(query, q, stats) {
             COALESCE(SUM(COALESCE((li->>'price')::numeric, 0)
                          * GREATEST(COALESCE((li->>'quantity')::int, 1), 0)), 0) AS base_revenue
      FROM co_sessions s
+     ${joins}
      CROSS JOIN LATERAL jsonb_array_elements(s.line_items) li
      WHERE s.paid_at >= $2 AND s.paid_at < $3
        AND ${MONEY_MOVED_SQL}
@@ -942,10 +1150,12 @@ async function readProductOrders(query, q, stats) {
 async function readDistinctOrders(query, q) {
   const { window: w, filters } = q;
   const params = windowBounds(w);
-  const { sql: fsql } = moneyFilters(filters, params, { hasLastTouch: false });
+  const joins = moneyJoins('product', filters);
+  const { sql: fsql } = moneyFilters(filters, params);
   const [row] = await query(
     `SELECT COUNT(*)::bigint AS n, COALESCE(SUM(s.total), 0) AS base_revenue
      FROM co_sessions s
+     ${joins}
      WHERE s.paid_at >= $1 AND s.paid_at < $2 AND ${MONEY_MOVED_SQL} ${fsql}`,
     params
   );
@@ -964,15 +1174,18 @@ async function readDistinctOrders(query, q) {
 async function readUpsells(query, q, stats) {
   const { window: w, dimension, granularity, filters } = q;
   const params = windowParams(w);
-  const { sql: fsql } = moneyFilters(filters, params, { hasLastTouch: false });
+  const joins = moneyJoins(dimension, filters);
+  const { sql: fsql } = moneyFilters(filters, params);
   const key = moneyKeyExpr(dimension);
   const rows = await query(
     `SELECT ${bucketExpr('c.created_at', granularity)} AS bkt,
             ${key}                                     AS k,
             COUNT(*)::bigint                           AS upsell_legs,
+            COUNT(*) FILTER (WHERE c.status = 'refunded')::bigint AS upsell_refunded_legs,
             COALESCE(SUM(c.amount), 0)                 AS upsell_revenue
      FROM co_upsell_charges c
      JOIN co_sessions s ON s.id = c.session_id
+     ${joins}
      WHERE c.created_at >= $2 AND c.created_at < $3
        AND c.status IN ('settled', 'refunded')
        AND c.amount > 0
@@ -1001,8 +1214,8 @@ async function readUpsells(query, q, stats) {
 async function readRefunds(query, q, hasLedger, stats) {
   const { window: w, dimension, granularity, filters } = q;
   const params = windowParams(w);
-  const joins = moneyJoins(dimension);
-  const { sql: fsql } = moneyFilters(filters, params, { hasLastTouch: TOUCH_DIMS.has(dimension) && dimension !== 'landing_page' });
+  const joins = moneyJoins(dimension, filters);
+  const { sql: fsql } = moneyFilters(filters, params);
   const key = moneyKeyExpr(dimension);
   const dedupe = hasLedger
     ? `AND NOT EXISTS (
@@ -1044,7 +1257,8 @@ async function readRefunds(query, q, hasLedger, stats) {
 async function readUpsellRefunds(query, q, stats) {
   const { window: w, dimension, granularity, filters } = q;
   const params = windowParams(w);
-  const { sql: fsql } = moneyFilters(filters, params, { hasLastTouch: false });
+  const joins = moneyJoins(dimension, filters);
+  const { sql: fsql } = moneyFilters(filters, params);
   const key = moneyKeyExpr(dimension);
   const rows = await query(
     `WITH v AS (
@@ -1059,6 +1273,7 @@ async function readUpsellRefunds(query, q, stats) {
      FROM v
      JOIN co_upsell_charges c ON c.id = v.charge_id AND c.session_id = v.session_id
      JOIN co_sessions s        ON s.id = v.session_id
+     ${joins}
      WHERE v.ts >= $2 AND v.ts < $3
        AND ${MONEY_MOVED_SQL}
        ${fsql}
@@ -1160,8 +1375,8 @@ async function readUpsellViews(query, q, stats) {
 async function readCustomers(query, q, stats) {
   const { window: w, dimension, granularity, filters } = q;
   const params = windowParams(w);
-  const joins = moneyJoins(dimension);
-  const { sql: fsql } = moneyFilters(filters, params, { hasLastTouch: TOUCH_DIMS.has(dimension) && dimension !== 'landing_page' });
+  const joins = moneyJoins(dimension, filters);
+  const { sql: fsql } = moneyFilters(filters, params);
   const key = moneyKeyExpr(dimension);
   const rows = await query(
     `WITH firsts AS (
@@ -1240,34 +1455,93 @@ async function readAbandoned(query, q, stats) {
  * connection (analyticsDb.js). resolveCosts itself is PURE, so reusing it
  * costs nothing.
  */
-async function readCosts(query, q, stats) {
-  const { window: w, dimension, granularity, filters } = q;
-  const params = windowParams(w);
-  const { sql: fsql } = moneyFilters(filters, params, { hasLastTouch: false });
-  const key = moneyKeyExpr(dimension);
+// ── The cost REFERENCE data: rate ledger, variant catalog, fee settings ────
+//
+// These three are read UNBOUNDED (every rate ever entered, every variant) and
+// they are re-read by every cost fold — the dashboard composite alone runs two
+// of them, and a page with several cards multiplies that. They are also tiny
+// and slow-moving: an operator types a cost rate a few times a week.
+//
+// So they are cached for 15 SECONDS, which is short enough that a rate edit is
+// visible on the operator's next refresh (they cannot navigate faster than
+// that) and long enough that one page load reads them once rather than five
+// times. Deliberately NOT longer: a stale rate silently re-prices history, and
+// this build exists to stop numbers being quietly wrong.
+//
+// The cache key includes the handle so an injected test handle never reads a
+// production-pool cache entry (and vice versa).
+const COST_REF_TTL_MS = 15_000;
+const _costRefCache = new Map();
 
-  const [rates, catalogRows, feeRows, sessions, charges] = await Promise.all([
+async function costReference(query) {
+  const now = Date.now();
+  const hit = _costRefCache.get(query);
+  if (hit && hit.expires > now) return hit.value;
+  const [rates, catalogRows, feeRows] = await Promise.all([
     query(`SELECT id, scope, variant_id, cost_item_id,
                   to_char(effective_from, 'YYYY-MM-DD') AS effective_from,
                   unit_cogs, ship, currency, source, created_at
            FROM lb_cost_rates ORDER BY effective_from, created_at, id`),
     query(`SELECT variant_id, pays_shipping, kind_auto, kind_override, cost_item_id FROM lb_variant_costs`),
     query(`SELECT default_pct, default_fixed, gateways FROM lb_fee_settings WHERE id = 1`),
+  ]);
+  const value = { rates, catalogRows, feeRows };
+  // One entry per handle; handles are long-lived (the pool, or a harness fn),
+  // so this map cannot grow without bound in a server process.
+  _costRefCache.set(query, { value, expires: now + COST_REF_TTL_MS });
+  return value;
+}
+
+/** Drop the cost-reference cache (tests, and after a rate write elsewhere). */
+export function resetCostReferenceCache() {
+  _costRefCache.clear();
+}
+
+async function readCosts(query, q, stats) {
+  const { window: w, dimension, granularity, filters } = q;
+  const params = windowParams(w);
+  const joins = moneyJoins(dimension, filters);
+  const { sql: fsql } = moneyFilters(filters, params);
+  const key = moneyKeyExpr(dimension);
+
+  const [{ rates, catalogRows, feeRows }, sessions, charges] = await Promise.all([
+    costReference(query),
     query(
-      `SELECT s.id, s.funnel_id, s.page_id, s.gateway, s.line_items, s.total, s.refunds, s.paid_at,
+      // ⚠️ THE jsonb_typeof COERCION IS LOAD-BEARING, and it is the one guard
+      // this read was missing while readRefunds and readProductOrders both had
+      // it. `line_items` is JSONB, so a corrupt row can hold a STRING SCALAR;
+      // the driver then hands JavaScript a plain string, funnelCosts.parseJson
+      // calls JSON.parse on it, and one such row throws
+      // `Unexpected token 'g', "garbage" is not valid JSON` — 500ing /query,
+      // /dashboard and (once a corrupt row lands inside 48h) /band. Verified by
+      // execution before this guard was written.
+      //
+      // COERCED, NOT DROPPED: the session still HAPPENED and its capture still
+      // paid a processing fee, so it keeps its base transaction and simply
+      // contributes no legs (exactly like a genuinely empty cart). Dropping the
+      // row would silently understate `fees`. `refunds` gets the same
+      // treatment for the same reason.
+      `SELECT s.id, s.funnel_id, s.page_id, s.gateway, s.total, s.paid_at,
+              CASE WHEN jsonb_typeof(s.line_items) = 'array' THEN s.line_items ELSE '[]'::jsonb END AS line_items,
+              CASE WHEN jsonb_typeof(s.refunds)    = 'array' THEN s.refunds    ELSE '[]'::jsonb END AS refunds,
+              (jsonb_typeof(s.line_items) IS DISTINCT FROM 'array') AS line_items_malformed,
               ${key} AS k,
               ${bucketExpr('s.paid_at', granularity)} AS bkt
        FROM co_sessions s
+       ${joins}
        WHERE s.paid_at >= $2 AND s.paid_at < $3 AND ${MONEY_MOVED_SQL} ${fsql}`,
       params
     ),
     query(
-      `SELECT c.id, c.session_id, c.amount, c.status, c.line_items, c.created_at,
+      `SELECT c.id, c.session_id, c.amount, c.status, c.created_at,
+              CASE WHEN jsonb_typeof(c.line_items) = 'array' THEN c.line_items ELSE '[]'::jsonb END AS line_items,
+              (jsonb_typeof(c.line_items) IS DISTINCT FROM 'array') AS line_items_malformed,
               s.gateway,
               ${key} AS k,
               ${bucketExpr('c.created_at', granularity)} AS bkt
        FROM co_upsell_charges c
        JOIN co_sessions s ON s.id = c.session_id
+       ${joins}
        WHERE c.created_at >= $2 AND c.created_at < $3
          AND c.status IN ('settled', 'refunded')
          AND ${MONEY_MOVED_SQL} ${fsql}`,
@@ -1275,6 +1549,11 @@ async function readCosts(query, q, stats) {
     ),
   ]);
   stats.rows_scanned += sessions.length + charges.length;
+  // Counted, not swallowed: the number rides out as a named warning so a
+  // corrupt row is visible as a DATA problem rather than as a quietly smaller
+  // COGS figure.
+  stats.malformed_line_items = sessions.filter((r) => r.line_items_malformed).length
+    + charges.filter((r) => r.line_items_malformed).length;
 
   const rateIndex = buildRateIndex(rates);
   const catalog = {};
@@ -1371,7 +1650,25 @@ export function computeMetrics(a, metrics) {
     conv_pct: rateable ? pct(orders, int(a.sessions)) : null,
     rev_per_session: rateable ? money(netSales / int(a.sessions)) : null,
     upsell_revenue: money(a.upsell_revenue),
-    upsell_take_pct: int(a.upsell_views) > 0 ? pct(int(a.upsell_legs), int(a.upsell_views)) : null,
+    // ⚠️ A TAKE RATE ABOVE 100% IS PROOF THE DENOMINATOR IS INCOMPLETE, so it
+    // is WITHHELD rather than published with a caveat.
+    //
+    // The denominator is a DOCUMENTED APPROXIMATION: Puure emits no
+    // "offer shown" event, so views on pages typed upsell/downsell stand in for
+    // offers presented. When a page never fires its touch beacon (ad-blocked,
+    // an in-flow redirect, a page not typed as an upsell) the legs are still
+    // counted and the views are not — measured on a real fixture at 104,125%.
+    //
+    // A number that large is not "a bit high", it is a category error, and no
+    // caveat rescues it: whoever reads the tile reads the digits. Below 100%
+    // the same erosion exists but is bounded and directionally usable, which is
+    // why the metric survives at all — labelled a proxy everywhere it appears.
+    upsell_take_pct: (() => {
+      const views = int(a.upsell_views);
+      if (views <= 0) return null;
+      const v = pct(int(a.upsell_legs), views);
+      return v === null || v > 100 ? null : v;
+    })(),
     new_customers: int(a.new_customers),
     returning_customers: int(a.returning_customers),
     abandoned: int(a.abandoned),
@@ -1395,6 +1692,20 @@ export function computeMetrics(a, metrics) {
   return out;
 }
 
+/**
+ * Did anything actually HAPPEN in this fold?
+ *
+ * `spend` is excluded on purpose — a forward-dated budget row is a PLAN, not
+ * an observation, and it must not be able to make an unstarted day look
+ * measured. Everything else here is evidence that the day occurred.
+ */
+function hasRealObservation(a) {
+  return ['orders', 'base_revenue', 'upsell_revenue', 'upsell_legs', 'base_refunds',
+    'upsell_refunds', 'sessions', 'pageviews', 'upsell_views', 'new_customers',
+    'returning_customers', 'abandoned', 'known_legs', 'missing_legs']
+    .some((k) => num(a[k]) !== 0);
+}
+
 /** Add every atom of `src` into `dst` (sums; `unknown` flags OR together). */
 function foldInto(dst, src) {
   for (const k of ['orders', 'base_revenue', 'upsell_revenue', 'upsell_legs',
@@ -1411,6 +1722,24 @@ function foldInto(dst, src) {
 // ═══════════════════════════════════════════════════════════════════════════
 // THE QUERY
 // ═══════════════════════════════════════════════════════════════════════════
+
+/**
+ * The per-read accumulator. One factory so a new field (currency, malformed
+ * counts, truncation flags) cannot be added to one call site and forgotten at
+ * the four others — which is how a warning ends up firing on /query and
+ * silently not on /dashboard.
+ */
+function newStats() {
+  return {
+    rows_scanned: 0,
+    unapplied_filters: [],
+    currencies: new Set(),
+    mixed_currency: false,
+    malformed_line_items: 0,
+    funnels_truncated: false,
+    refunded_upsell_legs: 0,
+  };
+}
 
 /**
  * Gather every needed atom for one window into a Map keyed (bucket, dim key).
@@ -1453,6 +1782,9 @@ async function gatherAtoms(query, q, folds, stats) {
           const s = slotFor(map, bucketOf(r.bkt, granularity), r.k);
           s.upsell_legs += int(r.upsell_legs);
           s.upsell_revenue += num(r.upsell_revenue);
+          // Drives the reconciliation warning: a refunded leg in the fold is
+          // exactly where this engine and funnelCosts v1 can disagree.
+          stats.refunded_upsell_legs += int(r.upsell_refunded_legs);
         }
       });
     }
@@ -1526,30 +1858,58 @@ async function gatherAtoms(query, q, folds, stats) {
   //    the funnel dimension and on the timeseries; DIM_METRICS refuses it
   //    everywhere else, which is why no other branch exists here.
   if (folds.spend && (!dimension || dimension === 'funnel')) {
-    const fids = dimension === 'funnel'
-      ? [...new Set([...map.values()].map((v) => v.key).filter((k) => k && k !== '(none)'))]
-      : (q.filters.funnel_id ? [q.filters.funnel_id] : await allFunnelIds(query));
+    let truncated = false;
+    let fids;
+    if (dimension === 'funnel') {
+      fids = [...new Set([...map.values()].map((v) => v.key).filter((k) => k && k !== '(none)'))];
+    } else if (q.filters.funnel_id) {
+      fids = [q.filters.funnel_id];
+    } else {
+      const all = await allFunnelIds(query);
+      fids = all.ids;
+      truncated = all.truncated;
+    }
     if (fids.length) {
-      const spend = await funnelSpendByDay(fids, w.from, w.to);
+      // Rides the ISOLATED analytics pool like every other read here — a
+      // reporting fold must not be able to hold a money-path connection.
+      const spend = await funnelSpendByDay(fids, w.from, w.to, { query });
+
+      // ⚠️ AGGREGATE spend_known IS AN **AND**, NOT AN OR — mirroring
+      // funnelCosts.pnlOverview, which sets `totalSpendKnown = false` the
+      // moment any funnel's spend is unknown.
+      //
+      // ORing it was a real, measured wrong number: with one bound funnel and
+      // one unbound, the account tile reported "known" spend that summed only
+      // the BOUND budget, so a true 1.0x ROAS rendered as 10.0x — the single
+      // most dangerous direction for a number budget decisions rest on. A
+      // truncated funnel list is the same failure and is treated the same way.
+      const aggregateKnown = !truncated && fids.length > 0
+        && fids.every((f) => Boolean(spend.known[f]));
+
       for (const fid of fids) {
-        const known = Boolean(spend.known[fid]);
+        const known = dimension === 'funnel' ? Boolean(spend.known[fid]) : aggregateKnown;
+        const slotKey = dimension === 'funnel' ? fid : '';
         for (const [day, amount] of Object.entries(spend.days[fid] || {})) {
           if (day < w.from || day > w.to) continue;
           // Always a day-or-coarser bucket: `spend` is refused at hourly
           // granularity by validateQuery, because lb_ad_spend_daily's grain IS
           // a day and there is no hourly figure to place.
-          const s = slotFor(map, bucketOf(day, granularity), dimension === 'funnel' ? fid : '');
+          const s = slotFor(map, bucketOf(day, granularity), slotKey);
           s.spend += num(amount);
           s.spend_known = s.spend_known || known;
+          // Marks the slot as spend-only so a FORWARD-DATED budget row cannot
+          // make an unstarted day look like a measured one (see seriesPoints).
+          s.spend_only = s.spend_only === undefined ? true : s.spend_only;
         }
         if (known) {
           // A funnel whose feed HAS synced but spent nothing in-window must
           // still read "spend $0.00 (known)", not "—". Seed the flag on a
           // bucket even when no spend row landed.
-          const s = slotFor(map, bucketsFor(w, granularity)[0], dimension === 'funnel' ? fid : '');
+          const s = slotFor(map, bucketsFor(w, granularity)[0], slotKey);
           s.spend_known = true;
         }
       }
+      if (truncated) stats.funnels_truncated = true;
     }
   }
 
@@ -1574,9 +1934,29 @@ function ttlEdgeDay() {
   return dayInTz(new Date(Date.now() - TOUCH_TTL_DAYS * DAY_MS));
 }
 
+/**
+ * Every non-archived funnel, for the account-wide spend fold.
+ *
+ * ORDER BY id, because an unordered LIMIT is a NON-DETERMINISTIC SAMPLE: two
+ * identical requests could pick different 500 funnels and report different
+ * account spend, which is unreproducible and therefore un-debuggable.
+ *
+ * And the cap is REPORTED. Summing 500 funnels' budgets and labelling the
+ * result "account spend" when there are 600 is exactly the class of confident
+ * wrong number this engine exists to refuse — so `truncated` propagates into
+ * `spend_known: false` and a named warning, and every spend-derived figure
+ * dashes rather than under-reporting.
+ */
+const FUNNEL_SCAN_LIMIT = 500;
+
 async function allFunnelIds(query) {
-  const rows = await query(`SELECT id FROM funnels WHERE NOT archived LIMIT 500`);
-  return rows.map((r) => String(r.id)).filter(Boolean);
+  const rows = await query(
+    `SELECT id FROM funnels WHERE NOT archived ORDER BY id LIMIT $1`,
+    [FUNNEL_SCAN_LIMIT + 1]
+  );
+  const ids = rows.map((r) => String(r.id)).filter(Boolean);
+  const truncated = ids.length > FUNNEL_SCAN_LIMIT;
+  return { ids: truncated ? ids.slice(0, FUNNEL_SCAN_LIMIT) : ids, truncated };
 }
 
 /** Does the window's LEFT edge reach past the lb_touches retention? */
@@ -1664,13 +2044,17 @@ export async function runQuery(body, { query = analyticsQuery } = {}) {
   const t0 = Date.now();
   const q = validateQuery(body);
   const folds = neededFolds(q.metrics);
-  const stats = { rows_scanned: 0, unapplied_filters: [] };
+  const stats = newStats();
   const warnings = [];
 
   const basis = q.dimension ? BREAKDOWN_BASES[q.dimension] : 'gross';
   // Describes the METRIC ACTUALLY FOLDED, not just the dimension — see
   // basisLabelFor. A net_sales breakdown never says "Gross sales".
   const basisLabel = basisLabelFor(basis, q.metrics);
+
+  // THE FILTER × FOLD GATE. Computed BEFORE the reads so the withheld set is
+  // known regardless of what the folds return.
+  const withheld = unservableUnderFilters(q.metrics, q.filters);
 
   const map = await gatherAtoms(query, q, folds, stats);
   // Surfaced on the wire: the TTL clamp is invisible in the numbers (a
@@ -1682,7 +2066,7 @@ export async function runQuery(body, { query = analyticsQuery } = {}) {
   if (q.compare) {
     const prevW = previousWindow(q.window);
     const prevQ = { ...q, window: prevW };
-    const prevStats = { rows_scanned: 0, unapplied_filters: [] };
+    const prevStats = newStats();
     const prevMap = await gatherAtoms(query, prevQ, folds, prevStats);
     stats.rows_scanned += prevStats.rows_scanned;
     previous = { map: prevMap, window: prevW, q: prevQ };
@@ -1715,6 +2099,18 @@ export async function runQuery(body, { query = analyticsQuery } = {}) {
         days: q.window.days,
         timezone: REPORT_TIMEZONE,
       },
+      // Every money figure below is a BARE SUM, so the currency it is in has
+      // to travel with it. One observed currency ⇒ name it; more than one ⇒
+      // null + mixed_currency, loudly.
+      currency: stats.mixed_currency || stats.currencies.size > 1
+        ? null
+        : ([...stats.currencies][0] ?? 'USD'),
+      mixed_currency: stats.mixed_currency || stats.currencies.size > 1,
+      // The three places this engine knowingly disagrees with its siblings.
+      reconciliation: RECONCILIATION,
+      // Metrics blanked because a filter could not be pushed into every fold
+      // they are computed from (see unservableUnderFilters).
+      withheld: Object.fromEntries(withheld),
       warnings,
     },
   };
@@ -1729,10 +2125,6 @@ export async function runQuery(body, { query = analyticsQuery } = {}) {
     out.meta.rows_total = stats.rows_total ?? out.rows.length;
     out.meta.rows_truncated = out.meta.rows_total > out.rows.length;
     out.totals = totalsOf(map, q, { product: q.dimension === 'product' });
-    // The scalar the "Top N of M · $total" footer prints, plus the name of the
-    // metric it IS — so the footer cannot claim one number and show another.
-    out.meta.total_metric = primaryMetricOf(q.metrics);
-    out.meta.total = out.meta.total_metric ? out.totals[out.meta.total_metric] ?? null : null;
     if (q.dimension === 'funnel') await attachFunnelNames(query, out.rows);
     if (q.dimension === 'product') {
       // The product fold counts a session once PER LINE, so its rows sum to
@@ -1743,26 +2135,38 @@ export async function runQuery(body, { query = analyticsQuery } = {}) {
       pushWarning(out.meta.warnings, 'product_dimension',
         'rows count a session once per line; totals.orders is the DISTINCT session count');
     }
+    for (const r of out.rows) applyWithholding(r, withheld);
+    applyWithholding(out.totals, withheld);
+    // ⚠️ COMPUTED **AFTER** the product override and the withholding, not
+    // before. Reading it earlier took `totals.orders` while that key was still
+    // the deliberately-zeroed product placeholder, so the shipped
+    // `sales_by_product` preset rendered a footer of "0" over rows that summed
+    // to real money.
+    out.meta.total_metric = primaryMetricOf(q.metrics);
+    out.meta.total = out.meta.total_metric ? out.totals[out.meta.total_metric] ?? null : null;
     if (previous) {
-      const prevRows = breakdownRows(previous.map, previous.q, { rows_scanned: 0 });
+      const prevRows = breakdownRows(previous.map, previous.q, newStats());
       if (q.dimension === 'funnel') await attachFunnelNames(query, prevRows);
+      for (const r of prevRows) applyWithholding(r, withheld);
       out.previous = {
         rows: prevRows,
-        totals: totalsOf(previous.map, previous.q, { product: q.dimension === 'product' }),
+        totals: applyWithholding(
+          totalsOf(previous.map, previous.q, { product: q.dimension === 'product' }), withheld
+        ),
         window: { start_day: previous.window.from, end_day: previous.window.to },
       };
     }
   } else {
-    out.series = seriesPoints(map, q);
-    out.totals = totalsOf(map, q, {});
+    out.series = seriesPoints(map, q).map((p) => applyWithholding(p, withheld));
+    out.totals = applyWithholding(totalsOf(map, q, {}), withheld);
     if (previous) {
-      const prevSeries = seriesPoints(previous.map, previous.q);
+      const prevSeries = seriesPoints(previous.map, previous.q).map((p) => applyWithholding(p, withheld));
       out.previous = {
         // ALIGNED BY INDEX. `series[i]` and `previous.series[i]` are the same
         // ordinal position in their own windows — a Feb/Mar comparison must
         // pair day 1 with day 1, not 2026-02-29 with nothing.
         series: prevSeries,
-        totals: totalsOf(previous.map, previous.q, {}),
+        totals: applyWithholding(totalsOf(previous.map, previous.q, {}), withheld),
         window: { start_day: previous.window.from, end_day: previous.window.to },
         aligned_by: 'index',
       };
@@ -1772,6 +2176,43 @@ export async function runQuery(body, { query = analyticsQuery } = {}) {
   if (stats.unapplied_filters.length) {
     pushWarning(out.meta.warnings, 'filters',
       `filter(s) ${stats.unapplied_filters.join(', ')} could not be applied on dimension '${q.dimension ?? 'none'}'`);
+  }
+  // ── THE WITHHELD RATIOS. One warning per metric, naming the filter that
+  //    could not reach its denominator, because "why is this a dash" is the
+  //    first question and the payload should already answer it.
+  for (const [metric, blockedBy] of withheld) {
+    pushWarning(out.meta.warnings, 'filters',
+      `'${metric}' is withheld: the ${blockedBy.map((f) => `'${f}'`).join(' and ')} filter `
+      + `cannot be applied to every fold it is computed from `
+      + `(${(METRIC_FOLDS[metric] || []).join(' + ')}), so the number would divide a narrowed `
+      + `figure by an unnarrowed one`,
+      { metric, blocked_by: blockedBy });
+  }
+  if (stats.malformed_line_items > 0) {
+    pushWarning(out.meta.warnings, 'malformed_line_items',
+      `${stats.malformed_line_items} row(s) carry a line_items value that is not a JSON array; `
+      + 'their cart lines could not be costed, so COGS and shipping cost are understated for them '
+      + '(their capture and its processing fee are still counted)',
+      { count: stats.malformed_line_items });
+  }
+  if (stats.funnels_truncated) {
+    pushWarning(out.meta.warnings, 'funnels_truncated',
+      `more than ${FUNNEL_SCAN_LIMIT} non-archived funnels exist; the account-wide spend fold `
+      + 'cannot see them all, so spend and every figure derived from it are withheld',
+      { limit: FUNNEL_SCAN_LIMIT });
+  }
+  if (q.metrics.includes('upsell_take_pct') && takeRateOverflow(map)) {
+    pushWarning(out.meta.warnings, 'upsell_take_pct',
+      'take rate exceeded 100%, which proves the view denominator is incomplete (Puure emits no '
+      + '"offer shown" event, so upsell-page views stand in for offers presented). The value is '
+      + 'WITHHELD rather than published with a caveat');
+  }
+  if (stats.refunded_upsell_legs > 0) {
+    pushWarning(out.meta.warnings, 'reconciliation',
+      `${stats.refunded_upsell_legs} refunded upsell leg(s) are in this window. They are counted at `
+      + 'GROSS here with the reversal netted from the void ledger; funnelCosts v1 reverses the whole '
+      + 'leg, so the two engines can differ on a PARTIAL upsell refund (see meta.reconciliation)',
+      { count: stats.refunded_upsell_legs, note_id: 'refunded_upsell_leg' });
   }
   if (ttlRisk(q.window) && folds.traffic) {
     pushWarning(out.meta.warnings, 'lb_touches',
@@ -1820,16 +2261,44 @@ function seriesPoints(map, q) {
     // as a collapse in sales, and it drags every trend line the operator is
     // about to make a spend decision on.
     //
-    // Gated on the bucket being EMPTY on purpose: if a future bucket somehow
-    // carries rows, that is a clock or a data anomaly, and blanking it would
-    // hide exactly the thing worth seeing.
-    if (!byBucket.has(key) && isFutureBucket(key, q.granularity)) {
+    // ⚠️ THE TEST IS THE CALENDAR, NOT "did a slot get minted". A FORWARD-DATED
+    // BUDGET ROW in lb_ad_spend_daily (an operator scheduling next week's
+    // spend) mints a slot for a day that has not happened — so keying off slot
+    // existence handed that day back as measured zeros for orders and sales,
+    // which is precisely the cliff this rule removes. Only a REAL observation
+    // (money, traffic, customers, cost legs — never spend alone) can make a
+    // future bucket render as data, because that would be a genuine clock or
+    // ingest anomaly and blanking it would hide the thing worth seeing.
+    if (isFutureBucket(key, q.granularity) && !hasRealObservation(a)) {
       const nulls = {};
       for (const m of q.metrics) nulls[m] = null;
       return { key, future: true, ...nulls };
     }
     return { key, future: false, ...computeMetrics(a, q.metrics) };
   });
+}
+
+/**
+ * Blank the metrics that cannot be served honestly under the active filters.
+ *
+ * Applied to EVERY shape — series points, breakdown rows and totals — so a
+ * withheld metric cannot survive on one surface and vanish on another.
+ * Deliberately post-hoc rather than skipping the fold: the fold still runs for
+ * the metrics that ARE servable, and blanking is the only step that has to be
+ * exhaustive.
+ */
+function applyWithholding(obj, withheld) {
+  if (!withheld || withheld.size === 0) return obj;
+  for (const m of withheld.keys()) if (m in obj) obj[m] = null;
+  return obj;
+}
+
+/** True when a fold's take rate exceeds 100% — proof the denominator is short. */
+function takeRateOverflow(map) {
+  for (const s of map.values()) {
+    if (int(s.upsell_views) > 0 && int(s.upsell_legs) > int(s.upsell_views)) return true;
+  }
+  return false;
 }
 
 /** Ranked breakdown rows, folded over the whole window. */
@@ -1847,11 +2316,21 @@ function breakdownRows(map, q, stats) {
     foldInto(b, slot);
   }
   if (ttlUnknown) for (const b of byKey.values()) b.sessions_unknown = true;
-  const sortBy = q.metrics[0];
+  // Ranked by the first metric unless the caller names another. The funnel
+  // performance table leads with `sessions` (its left-most column) but must
+  // rank by MONEY — the operator reads the table top-down looking for revenue,
+  // not for traffic.
+  const sortBy = q.sort_by && q.metrics.includes(q.sort_by) ? q.sort_by : q.metrics[0];
+  // `spend_known` is not a metric — it is the TRI-STATE FLAG that says whether
+  // a null `spend` means "zero" or "we cannot see it". It rides along whenever
+  // a spend-derived metric was asked for, because a client rendering "—" has
+  // to know which of the two it is looking at.
+  const withSpend = q.metrics.some((m) => SPEND.includes(m));
   const rows = [...byKey.entries()].map(([key, a]) => ({
     key,
     label: key,
     ...computeMetrics(a, q.metrics),
+    ...(withSpend ? { spend_known: Boolean(a.spend_known) } : {}),
   }));
   rows.sort((x, y) => {
     const a = x[sortBy]; const b = y[sortBy];
@@ -2017,9 +2496,34 @@ export function reportPresets(startDay, endDay) {
 // ═══════════════════════════════════════════════════════════════════════════
 
 const DASHBOARD_SERIES_METRICS = ['gross_sales', 'net_sales', 'orders', 'sessions', 'conv_pct'];
+
+// ⚠️ THESE LISTS DELIBERATELY EXCEED `MAX_METRICS` (8), and that is not an
+// oversight — it is the documented bypass.
+//
+// `MAX_METRICS` bounds CALLER-DRIVEN fan-out: an arbitrary body must not be
+// able to ask for 26 metrics and make the server run every fold. The composite
+// is not caller-driven. Its metric lists are FIXED, audited here, and each one
+// resolves to a SINGLE `gatherAtoms` pass whose reads are chosen by
+// `neededFolds` — so a longer list costs projection, not queries. It goes
+// through `gatherAtoms` directly rather than `validateQuery` for exactly this
+// reason, and the harness pins that these lists are legal on their dimension.
 const DASHBOARD_KPIS = ['orders', 'gross_sales', 'net_sales', 'refunds', 'sessions', 'conv_pct',
   'aov', 'new_customers', 'returning_customers'];
 const DASHBOARD_KPIS_COST = ['net_after_cogs', 'margin_pct', 'cost_coverage_pct', 'spend', 'roas', 'cpa', 'net_profit'];
+
+// THE FUNNEL PERFORMANCE TABLE — the dashboard's first-priority surface.
+//
+// Every column it draws, folded in ONE pass. The atoms already exist in the
+// money / traffic / cost / spend folds; adding them here is COMPOSITION, not
+// new reads — `gatherAtoms` runs each fold once for the whole dimension, so
+// this is one extra query per fold family, NOT one per funnel. (Eighteen
+// separate `runOne` calls would have been eighteen passes over the same rows
+// on a max-2 connection pool.)
+const DASHBOARD_FUNNEL_TABLE = [
+  'sessions', 'orders', 'conv_pct', 'gross_sales', 'net_sales', 'aov', 'rev_per_session',
+  'refunds', 'cogs', 'ship_cost', 'fees', 'net_after_cogs', 'margin_pct', 'cost_coverage_pct',
+  'spend', 'net_profit', 'roas', 'cpa',
+];
 const MOVERS_LIMIT = 3;
 
 /**
@@ -2155,7 +2659,7 @@ export async function runBand({ funnel_id: funnelId } = {}, { query = analyticsQ
     granularity: 'day',
     limit: DEFAULT_BREAKDOWN_LIMIT,
   };
-  const stats = { rows_scanned: 0, unapplied_filters: [] };
+  const stats = newStats();
   const [live, map] = await Promise.all([
     dashboardBand(query, fid),
     gatherAtoms(query, q, neededFolds(metrics), stats),
@@ -2186,6 +2690,12 @@ export async function runBand({ funnel_id: funnelId } = {}, { query = analyticsQ
       computed_ms: Date.now() - t0,
       rows_scanned: stats.rows_scanned,
       timezone: REPORT_TIMEZONE,
+      // The same window echo every sibling carries, so a client reading
+      // `meta.window` never has to special-case this endpoint.
+      window: {
+        start: yesterday, end: today, days: 2, timezone: REPORT_TIMEZONE,
+      },
+      reconciliation: RECONCILIATION,
       warnings: [],
     },
   };
@@ -2218,10 +2728,16 @@ export async function runDashboard({ start, end, funnel_id: funnelId } = {}, { q
 
   const runOne = async (metrics, over = {}) => {
     const q = { ...base, ...over, metrics, dimension: over.dimension ?? null };
-    const stats = { rows_scanned: 0, unapplied_filters: [] };
+    const stats = newStats();
     const map = await gatherAtoms(query, q, neededFolds(metrics), stats);
     return { q, map, stats };
   };
+  // The composite only ever filters by funnel_id, which every fold can push —
+  // so this is empty in practice. It is computed anyway so the composite can
+  // never quietly diverge from /query if that ever changes.
+  const withheld = unservableUnderFilters(
+    [...new Set([...DASHBOARD_KPIS, ...DASHBOARD_KPIS_COST, ...DASHBOARD_FUNNEL_TABLE])], filters
+  );
 
   const [
     band, kpiCur, kpiPrev, costCur, costPrev, upsellCur, seriesCur, seriesPrev,
@@ -2238,7 +2754,8 @@ export async function runDashboard({ start, end, funnel_id: funnelId } = {}, { q
     runOne(upsellMetrics),
     runOne(DASHBOARD_SERIES_METRICS),
     runOne(DASHBOARD_SERIES_METRICS, { window: prevW }),
-    runOne(['net_sales', 'orders', 'aov'], { dimension: 'funnel' }),
+    // The FULL funnel-performance fold — one pass, every column.
+    runOne(DASHBOARD_FUNNEL_TABLE, { dimension: 'funnel', limit: MAX_BREAKDOWN_LIMIT, sort_by: 'net_sales' }),
     runOne(['gross_sales', 'orders'], { dimension: 'product' }),
     runOne(['net_sales', 'orders'], { dimension: 'source' }),
     runOne(['net_sales', 'orders'], { dimension: 'campaign' }),
@@ -2351,6 +2868,12 @@ export async function runDashboard({ start, end, funnel_id: funnelId } = {}, { q
       basis_metric: primaryMetricOf(DASHBOARD_SERIES_METRICS),
       timezone: REPORT_TIMEZONE,
       sessions_unknown: ttlRisk(w0) || bandTotals.sessions === null,
+      currency: kpiCur.stats.mixed_currency || kpiCur.stats.currencies.size > 1
+        ? null
+        : ([...kpiCur.stats.currencies][0] ?? 'USD'),
+      mixed_currency: kpiCur.stats.mixed_currency || kpiCur.stats.currencies.size > 1,
+      reconciliation: RECONCILIATION,
+      withheld: Object.fromEntries(withheld),
       series_aligned_by: 'index',
       // The same window echo every other response carries, so a client reading
       // `meta.window` never has to special-case this endpoint. NOTE: the
@@ -2374,6 +2897,36 @@ export async function runDashboard({ start, end, funnel_id: funnelId } = {}, { q
     pushWarning(out.meta.warnings, 'window',
       `window extends past today (${today} in ${REPORT_TZ}); buckets that have not begun report null, never 0`);
   }
+  // Same disclosures the /query door carries — a composite that stayed silent
+  // about a corrupt row or a refunded leg would be the quiet surface an
+  // operator trusts most.
+  const compositeStats = [kpiCur, costCur, upsellCur, seriesCur, brFunnels];
+  const malformed = compositeStats.reduce((t, r) => t + (r.stats.malformed_line_items || 0), 0);
+  if (malformed > 0) {
+    pushWarning(out.meta.warnings, 'malformed_line_items',
+      `${malformed} row read(s) carry a line_items value that is not a JSON array; their cart lines `
+      + 'could not be costed, so COGS and shipping cost are understated for them',
+      { count: malformed });
+  }
+  if (compositeStats.some((r) => r.stats.funnels_truncated)) {
+    pushWarning(out.meta.warnings, 'funnels_truncated',
+      `more than ${FUNNEL_SCAN_LIMIT} non-archived funnels exist; the account-wide spend fold cannot `
+      + 'see them all, so spend and every figure derived from it are withheld',
+      { limit: FUNNEL_SCAN_LIMIT });
+  }
+  const refundedLegs = compositeStats.reduce((t, r) => t + (r.stats.refunded_upsell_legs || 0), 0);
+  if (refundedLegs > 0) {
+    pushWarning(out.meta.warnings, 'reconciliation',
+      `${refundedLegs} refunded upsell leg(s) are in this window. They are counted at GROSS here with `
+      + 'the reversal netted from the void ledger; funnelCosts v1 reverses the whole leg, so the two '
+      + 'engines can differ on a PARTIAL upsell refund (see meta.reconciliation)',
+      { count: refundedLegs, note_id: 'refunded_upsell_leg' });
+  }
+  if (takeRateOverflow(upsellCur.map)) {
+    pushWarning(out.meta.warnings, 'upsell_take_pct',
+      'take rate exceeded 100%, which proves the view denominator is incomplete; the value is WITHHELD '
+      + 'rather than published with a caveat');
+  }
   out.meta.computed_ms = Date.now() - t0;
   return out;
 }
@@ -2383,6 +2936,7 @@ export default {
   BREAKDOWN_BASES, BREAKDOWN_BASIS_LABELS, UNAVAILABLE_DIMENSIONS,
   GRANULARITIES, MetricsError, validateQuery, previousWindow, computeMetrics,
   runQuery, runDashboard, runBand, reportPresets, toCsv, csvCell, neededFolds,
+  RECONCILIATION, unservableUnderFilters, resetCostReferenceCache,
   bucketOf, bucketsFor, weekKey, monthKey, ttlRisk, isFutureBucket,
   basisLabelFor, primaryMetricOf,
   REPORT_TZ, REPORT_TIMEZONE, zonedDayStart, dayInTz, todayInTz,

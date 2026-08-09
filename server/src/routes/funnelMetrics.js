@@ -27,6 +27,7 @@
 import { Router } from 'express';
 import { authenticate } from '../middleware/auth.js';
 import { requirePermission } from '../middleware/rbac.js';
+import { checkRateLimit } from '../middleware/rateLimiter.js';
 import {
   runQuery,
   runDashboard,
@@ -49,12 +50,55 @@ import {
   MAX_METRICS,
   MAX_BREAKDOWN_LIMIT,
   MAX_WINDOW_DAYS,
+  RECONCILIATION,
   REPORT_TZ,
   todayInTz,
 } from '../services/funnelMetrics.js';
 
 const router = Router();
 router.use(authenticate, requirePermission('funnels', 'access'));
+
+// ── RATE LIMIT ─────────────────────────────────────────────────────────────
+// Reporting reads are the most expensive thing an authed user can ask this
+// server for: an unbounded loop over /dashboard runs both cost folds and every
+// breakdown, on a pool of TWO connections. That cannot take the money path
+// down (analyticsDb is isolated by design) but it can make every other
+// operator's Analytics page hang.
+//
+// 30/min per user is roughly ten times the fastest a human can drive the page
+// (the band re-polls every 15s = 4/min, plus a page load) while still bounding
+// a runaway client or a stuck retry loop. Keyed per USER, not per IP, so one
+// office behind one NAT is not one budget.
+//
+// FAILS OPEN, on purpose: if Redis is down, `checkRateLimit` already falls back
+// to memory, and if even that throws, a reporting page should degrade to
+// "unlimited" rather than to "broken" — this limiter protects against runaway
+// clients, it is not a security control.
+// Read at CALL time, not at import, so the ceiling is tunable without a deploy
+// (and so a harness can drive both sides of it). One Number() per request.
+const READ_LIMIT = () => {
+  const n = Number(process.env.METRICS_READ_LIMIT);
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : 30;
+};
+const READ_WINDOW_SEC = 60;
+
+async function limit(req, res) {
+  const max = READ_LIMIT();
+  const key = `funnel-metrics:${req.user?.id || req.ip}`;
+  const { allowed, remaining, retryAfter } = await checkRateLimit(key, max, READ_WINDOW_SEC)
+    .catch(() => ({ allowed: true, remaining: max, retryAfter: 0 }));
+  res.set('X-RateLimit-Remaining', String(remaining ?? 0));
+  if (!allowed) {
+    res.set('Retry-After', String(retryAfter));
+    res.status(429).json({
+      error: 'rate_limited',
+      message: `too many analytics reads — ${max} per ${READ_WINDOW_SEC}s`,
+      retry_after: retryAfter,
+    });
+    return false;
+  }
+  return true;
+}
 
 /**
  * Turn a service refusal into a status code.
@@ -81,6 +125,14 @@ const dayParam = (v) => {
 };
 
 /**
+ * Shift a YYYY-MM-DD day by n calendar days.
+ * Anchored at UTC noon so a ±1h DST shift can never move it onto a different
+ * calendar date — the same reason the engine's own `dayAdd` does it.
+ */
+const shiftDay = (day, n) =>
+  new Date(new Date(`${day}T12:00:00Z`).getTime() + n * 86_400_000).toISOString().slice(0, 10);
+
+/**
  * POST /api/v1/funnel-metrics/query
  *
  * Body = MetricsQueryBody: {metrics[1..8], dimension?, filters{funnel_id,
@@ -94,6 +146,7 @@ const dayParam = (v) => {
  */
 router.post('/query', async (req, res, next) => {
   try {
+    if (!(await limit(req, res))) return;
     res.json(await runQuery(req.body));
   } catch (err) {
     fail(res, err, next);
@@ -114,6 +167,7 @@ router.post('/query', async (req, res, next) => {
  */
 router.get('/query.csv', async (req, res, next) => {
   try {
+    if (!(await limit(req, res))) return;
     const raw = String(req.query.q ?? '');
     if (raw.length < 2 || raw.length > 8000) {
       throw new MetricsError('bad_q', 'q must be a URL-encoded JSON object (2..8000 chars)');
@@ -153,6 +207,7 @@ router.get('/query.csv', async (req, res, next) => {
  */
 router.get('/dashboard', async (req, res, next) => {
   try {
+    if (!(await limit(req, res))) return;
     res.json(await runDashboard({
       start: dayParam(req.query.start),
       end: dayParam(req.query.end),
@@ -179,6 +234,7 @@ router.get('/dashboard', async (req, res, next) => {
  */
 router.get('/band', async (req, res, next) => {
   try {
+    if (!(await limit(req, res))) return;
     res.json(await runBand({ funnel_id: req.query.funnel_id }));
   } catch (err) {
     fail(res, err, next);
@@ -195,12 +251,27 @@ router.get('/band', async (req, res, next) => {
  * `unservable` names the reference reports that did NOT survive the port, with
  * the reason. A missing report with no explanation reads as an oversight; a
  * named one reads as a decision.
+ *
+ * ⚠️ BOTH PARAMS GO THROUGH THE REAL WINDOW VALIDATOR. This endpoint EMITS
+ * bodies that the client POSTs verbatim, so an unvalidated `start`/`end` here
+ * is laundered straight into every preset — `?end=nope` used to mint sixteen
+ * un-POSTable reports and 500 on the date arithmetic instead of refusing once,
+ * cheaply, with a 422. The guarantee "every preset is POSTable" is only true
+ * if the window they carry is one /query would accept.
  */
-router.get('/presets', (req, res, next) => {
+router.get('/presets', async (req, res, next) => {
   try {
+    if (!(await limit(req, res))) return;
     const end = dayParam(req.query.end) || todayInTz();
-    const start = dayParam(req.query.start)
-      || new Date(new Date(`${end}T12:00:00Z`).getTime() - 29 * 86_400_000).toISOString().slice(0, 10);
+    // ⚠️ `end` IS VALIDATED ON ITS OWN, FIRST. `start` is DERIVED from it, and
+    // deriving a day from a malformed string throws a RangeError out of
+    // `toISOString` — a 500 — BEFORE the real validator ever sees the pair.
+    // Order of operations is the whole fix here.
+    validateQuery({ metrics: ['orders'], window: { start_day: end, end_day: end } });
+    const start = dayParam(req.query.start) || shiftDay(end, -29);
+    // Then the pair, through the SAME code path /query uses — one refusal, one
+    // vocabulary, so a window this endpoint accepts is one /query accepts.
+    validateQuery({ metrics: ['orders'], window: { start_day: start, end_day: end } });
     const presets = reportPresets(start, end);
     res.json({
       presets,
@@ -233,8 +304,10 @@ router.get('/presets', (req, res, next) => {
  * case) so a client can intersect directly; `hour_only_exclusions` is the
  * day-only metric list, which is refused hourly regardless of dimension.
  */
-router.get('/definitions', (_req, res) => {
-  res.json({
+router.get('/definitions', async (req, res, next) => {
+  try {
+    if (!(await limit(req, res))) return;
+    res.json({
     metrics: METRICS.map((m) => ({ id: m, ...METRIC_META[m] })),
     dimensions: DIMENSIONS.map((d) => ({
       id: d,
@@ -263,7 +336,14 @@ router.get('/definitions', (_req, res) => {
       // and both are wrong.
       hour_requires_single_day: true,
     },
-  });
+    // The three places this engine knowingly disagrees with its siblings —
+    // served here too, so a client can render the caveat without having to run
+    // a query first.
+    reconciliation: RECONCILIATION,
+    });
+  } catch (err) {
+    fail(res, err, next);
+  }
 });
 
 export default router;

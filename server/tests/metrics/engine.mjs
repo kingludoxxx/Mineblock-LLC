@@ -742,6 +742,238 @@ const expect422 = async (body, code, msg) => {
     'BND18 every dashboard warning carries a string reason');
 }
 
+// ═══ ADVERSARIAL-REVIEW FIXES ═══════════════════════════════════════════════
+// BLOCKER 1 — a corrupt line_items row must not 500 the cost fold.
+{
+  // A jsonb STRING SCALAR. Verified before the fix: funnelCosts.parseJson
+  // throws `Unexpected token 'g', "garbage" is not valid JSON` on this row.
+  await q(`INSERT INTO co_sessions (id, funnel_id, page_id, status, line_items, total, currency,
+                                    customer, gateway, vid, refunds, paid_at, created_at)
+           VALUES ('corrupt','f1','p1','paid','"garbage"'::jsonb,60,'USD',$1,'whop','v1','[]'::jsonb,$2,$2)`,
+  [{ email: 'corrupt@x.com', shipping: { country: 'ES' } }, at(D(2), 14)]);
+  await q(`INSERT INTO co_upsell_charges (id, session_id, offer_id, charge_id, amount, currency, status, line_items, created_at)
+           VALUES ('cc1','s1','off_cc1','cc1',15,'USD','settled','"nope"'::jsonb,$1)`, [at(D(3), 10.3)]);
+
+  const costMetrics = ['net_sales', 'cogs', 'fees', 'net_after_cogs', 'cost_coverage_pct'];
+  let threw = null;
+  let r = null;
+  try { r = await run({ metrics: costMetrics, filters: F1, window: W }); } catch (e) { threw = e; }
+  ok(threw === null, 'BK1 a corrupt line_items row no longer throws the whole cost fold', String(threw?.message));
+  ok(r && typeof r.totals.cogs === 'number', 'BK1b …the fold still answers with numbers');
+  const mw = r.meta.warnings.find((w) => w.source === 'malformed_line_items');
+  ok(Boolean(mw), 'BK1c …and the skipped rows are NAMED in a warning', JSON.stringify(r.meta.warnings.map((w) => w.source)));
+  ok(mw && mw.count === 2, 'BK1d …counting both the session and the charge', mw?.count);
+  ok(/understated/.test(mw?.reason || ''), 'BK1e …and saying which figures are understated');
+  // The capture still paid a processing fee — coerced, not dropped.
+  const withCorrupt = await run({ metrics: ['orders', 'fees'], filters: F1, window: W });
+  ok(withCorrupt.totals.orders === 5, 'BK1f the corrupt row is still COUNTED as an order', withCorrupt.totals.orders);
+  ok(withCorrupt.totals.fees > 34.2, 'BK1g …and its capture still bills a fee (coerced, not dropped)', withCorrupt.totals.fees);
+  // Clean up so later arithmetic assertions keep their fixture.
+  await q(`DELETE FROM co_upsell_charges WHERE id = 'cc1'`);
+  await q(`DELETE FROM co_sessions WHERE id = 'corrupt'`);
+  M.resetCostReferenceCache();
+}
+
+// BLOCKER 2 — a filter that cannot reach a ratio's denominator WITHHOLDS it.
+{
+  const base = await run({ metrics: ['orders', 'sessions', 'conv_pct'], filters: F1, window: W });
+  ok(near(base.totals.conv_pct, 40), 'BK2 baseline: unfiltered conv on f1 is 40%', base.totals.conv_pct);
+
+  // gateway narrows money but NOT lb_touches → conv_pct/sessions withheld.
+  const gw = await run({ metrics: ['orders', 'sessions', 'conv_pct'], filters: { funnel_id: 'f1', gateway: 'stripe' }, window: W });
+  ok(gw.totals.orders === 1, 'BK2a the money side IS narrowed by gateway', gw.totals.orders);
+  ok(gw.totals.conv_pct === null, 'BK2b …and conv_pct is WITHHELD, not served as a wrong ratio', gw.totals.conv_pct);
+  ok(gw.totals.sessions === null, 'BK2c …and so is sessions itself (no per-gateway traffic exists)');
+  ok(gw.meta.withheld.conv_pct?.includes('gateway'), 'BK2d meta.withheld names the metric and the filter', JSON.stringify(gw.meta.withheld));
+  ok(gw.meta.warnings.some((w) => /conv_pct/.test(w.reason) && /gateway/.test(w.reason)),
+    'BK2e …and a warning explains WHY it is a dash');
+  ok(gw.series.every((p) => p.conv_pct === null), 'BK2f the withholding reaches every series point too');
+
+  // country narrows money but NOT the abandoned fold → abandoned_rate withheld.
+  const ctry = await run({ metrics: ['orders', 'abandoned', 'abandoned_rate'], filters: { funnel_id: 'f1', country: 'ES' }, window: W });
+  ok(ctry.totals.abandoned_rate === null, 'BK2g abandoned_rate is withheld under a country filter', ctry.totals.abandoned_rate);
+  ok(ctry.totals.abandoned === null, 'BK2h …and so is the abandoned count it is built from');
+  ok(ctry.totals.orders > 0, 'BK2i …while the money side, which CAN be narrowed, still answers', ctry.totals.orders);
+
+  // spend cannot be split by country/gateway at all.
+  const sp = await run({ metrics: ['net_sales', 'spend', 'roas'], filters: { funnel_id: 'f1', country: 'ES' }, window: W });
+  ok(sp.totals.spend === null && sp.totals.roas === null,
+    'BK2j spend and ROAS are withheld under a country filter (no per-country ad budget exists)');
+  ok(sp.totals.net_sales !== null, 'BK2k …while net_sales, which the filter CAN narrow, still answers');
+
+  // funnel_id reaches every fold, so nothing is withheld.
+  ok(Object.keys(base.meta.withheld).length === 0, 'BK2l a funnel_id filter withholds NOTHING — it reaches every fold');
+
+  // A source filter is now genuinely PUSHED into the money fold.
+  const src = await run({ metrics: ['orders', 'sessions', 'conv_pct'], filters: { funnel_id: 'f1', source: 'google' }, window: W });
+  ok(Object.keys(src.meta.withheld).length === 0, 'BK2m a source filter is servable — the last-touch join is emitted for it');
+  ok(src.totals.orders < base.totals.orders, 'BK2n …and it really narrows the money', `${src.totals.orders} vs ${base.totals.orders}`);
+}
+
+// BLOCKER 3 — aggregate spend_known is an AND, not an OR.
+{
+  // f1 has manual spend (known); f2 has none (unknown).
+  const agg = await run({ metrics: ['net_sales', 'spend', 'roas', 'net_profit'], window: W });
+  ok(agg.totals.spend === null, 'BK3 one unbound funnel makes ACCOUNT spend unknown (AND, not OR)', agg.totals.spend);
+  ok(agg.totals.roas === null && agg.totals.net_profit === null,
+    'BK3a …so account ROAS and net profit dash rather than dividing by a partial budget');
+  const perFunnel = await run({ metrics: ['net_sales', 'spend', 'roas'], dimension: 'funnel', window: W });
+  const f1row = perFunnel.rows.find((r) => r.key === 'f1');
+  const f2row = perFunnel.rows.find((r) => r.key === 'f2');
+  ok(near(f1row.spend, 150) && f1row.spend_known === true, 'BK3b …while the BOUND funnel keeps its own known spend', f1row.spend);
+  ok(f2row.spend === null && f2row.spend_known === false, 'BK3c …and the unbound one is honestly null');
+  // Scope to the bound funnel alone and the aggregate is known again.
+  const scoped = await run({ metrics: ['net_sales', 'spend', 'roas'], filters: F1, window: W });
+  ok(near(scoped.spend ?? scoped.totals.spend, 150), 'BK3d scoping to the bound funnel makes spend known again', scoped.totals.spend);
+}
+
+// BLOCKER 4 — the product footer prints the currency figure, not 0.
+{
+  const preset = reportPresets(D(3), D(0)).find((p) => p.id === 'sales_by_product');
+  const r = await run(preset.query);
+  ok(r.meta.total_metric === 'gross_sales',
+    'BK4 the product footer names a CURRENCY metric, not the order count', r.meta.total_metric);
+  ok(r.meta.total > 0, 'BK4a …and the scalar is real money, not the zeroed order placeholder', r.meta.total);
+  ok(near(r.meta.total, r.totals.gross_sales), 'BK4b …equal to the pre-truncation fold');
+  ok(r.totals.orders > 0, 'BK4c the DISTINCT order override still lands on totals', r.totals.orders);
+  ok(M.primaryMetricOf(['orders', 'gross_sales']) === 'gross_sales', 'BK4d primaryMetricOf prefers currency over a count');
+  ok(M.primaryMetricOf(['orders']) === 'orders', 'BK4e …but still answers when a count is all there is');
+}
+
+// #5/#6/#7 — the reconciliation disclosure
+{
+  const r = await run({ metrics: ['net_sales'], filters: F1, window: W });
+  const rec = r.meta.reconciliation;
+  ok(Array.isArray(rec?.utc_surfaces) && rec.utc_surfaces.length === 2,
+    'RC1 meta.reconciliation names the surfaces still on UTC', rec?.utc_surfaces?.length);
+  ok(Array.isArray(rec.notes) && rec.notes.length === 3, 'RC2 …and all THREE divergences', rec.notes?.length);
+  const ids = rec.notes.map((x) => x.id).sort();
+  ok(JSON.stringify(ids) === JSON.stringify(['refunded_upsell_leg', 'report_timezone', 'upsell_windowing']),
+    'RC3 …by id: timezone, refunded upsell leg, upsell windowing', JSON.stringify(ids));
+  ok(rec.notes.every((x) => x.summary && x.why && x.impact),
+    'RC4 …each with a summary, a reason and a stated impact');
+  // The fixture HAS a refunded upsell leg (c2), so the warning must fire.
+  const w = r.meta.warnings.find((x) => x.source === 'reconciliation');
+  ok(Boolean(w) && w.note_id === 'refunded_upsell_leg',
+    'RC5 a refunded upsell leg IN THE FOLD fires its own warning', JSON.stringify(r.meta.warnings.map((x) => x.source)));
+  ok(w && w.count === 1, 'RC6 …counting the legs', w?.count);
+  const d = await runDashboard({ start: D(3), end: D(0) }, { query: q });
+  ok(d.meta.reconciliation?.notes?.length === 3, 'RC7 the dashboard carries it too');
+  const b = await M.runBand({}, { query: q });
+  ok(b.meta.reconciliation?.notes?.length === 3, 'RC8 …and so does the band');
+}
+
+// #8 — funnelSpendByDay rides the injected (analytics) handle
+{
+  let used = 0;
+  const spy = async (...a) => { used += 1; return q(...a); };
+  const r = await runQuery({ metrics: ['net_sales', 'spend'], dimension: 'funnel', window: W }, { query: spy });
+  ok(used > 0 && r.rows.length > 0, 'SP1 the spend fold ran through the INJECTED handle', used);
+  const { funnelSpendByDay } = await import('../../src/services/funnelSpend.js');
+  let direct = 0;
+  const spy2 = async (...a) => { direct += 1; return q(...a); };
+  await funnelSpendByDay(['f1'], D(3), D(0), { query: spy2 });
+  ok(direct > 0, 'SP2 funnelSpendByDay accepts and uses an injected query handle', direct);
+  const dflt = await funnelSpendByDay(['f1'], D(3), D(0));
+  ok(dflt && typeof dflt.days === 'object', 'SP3 …and the default still works for existing callers (funnelCosts)');
+}
+
+// #9 — a FORWARD-DATED budget row must not defeat the future-day nulling
+{
+  const fwd2 = dayFwd(2);
+  await q(`INSERT INTO lb_ad_spend_daily (source, ref_id, day, spend) VALUES ('manual','fwd',$1,250)`, [fwd2]);
+  await q(`INSERT INTO funnels (id, slug, name, status) VALUES ('fwd','fwd','Forward','live')`);
+  const r = await run({ metrics: ['orders', 'net_sales', 'spend'], filters: { funnel_id: 'fwd' },
+    window: { start_day: T0, end_day: dayFwd(3) } });
+  const p = r.series.find((x) => x.key === fwd2);
+  ok(p.future === true, 'FB1 a day with ONLY a forward-dated budget row is still FUTURE', p.future);
+  ok(p.orders === null && p.net_sales === null,
+    'FB2 …so its money is null, not a measured zero (the cliff stays closed)', JSON.stringify(p));
+  ok(r.series.filter((x) => x.key > T0).every((x) => x.future === true),
+    'FB3 every unstarted bucket is future, decided by the CALENDAR not by slot existence');
+}
+
+// #10 — currency on the wire
+{
+  const r = await run({ metrics: ['net_sales'], filters: F1, window: W });
+  ok(r.meta.currency === 'USD' && r.meta.mixed_currency === false,
+    'CU1 a single-currency window names its currency', `${r.meta.currency}/${r.meta.mixed_currency}`);
+  await mkSession({ id: 'eur1', funnel_id: 'fcur', total: 40, customer: cust('eur@x.com', 'ES'),
+    line_items: [], paid_at: at(D(2), 12) });
+  await q(`UPDATE co_sessions SET currency = 'EUR' WHERE id = 'eur1'`);
+  await q(`INSERT INTO funnels (id, slug, name, status) VALUES ('fcur','cur','Cur','live')`);
+  const mixed = await run({ metrics: ['net_sales'], window: W });
+  ok(mixed.meta.mixed_currency === true && mixed.meta.currency === null,
+    'CU2 a mixed-currency window refuses to name one — loudly, never a blended total',
+    `${mixed.meta.currency}/${mixed.meta.mixed_currency}`);
+}
+
+// #11/#14 — source hygiene and honest labels
+{
+  const fs2 = await import('fs');
+  const src = fs2.readFileSync(new URL('../../src/services/funnelMetrics.js', import.meta.url), 'utf8');
+  ok(!src.includes(String.fromCharCode(0)), 'HY1 no raw NUL byte survives in the source');
+  ok(src.includes('\\u0000'), 'HY2 …the separator is the six-character escape instead');
+  ok(M.METRIC_META.new_customers.label === 'Orders from new customers',
+    'HY3 new_customers is labelled as ORDERS, not people', M.METRIC_META.new_customers.label);
+  ok(M.METRIC_META.returning_customers.label === 'Orders from returning customers',
+    'HY4 …and so is returning_customers');
+}
+
+// take_pct > 100% is WITHHELD (found by the dashboard lane at 104,125%)
+{
+  // 2 legs against 4 views = 50%; now delete the views so legs exceed them.
+  const before = await run({ metrics: ['upsell_revenue', 'upsell_take_pct'], filters: F1, window: W });
+  ok(near(before.totals.upsell_take_pct, 50), 'TK1 baseline take rate is 50%', before.totals.upsell_take_pct);
+  await q(`DELETE FROM lb_touches WHERE page_id = 'p2' AND vid IN ('v5','v6','v7')`);
+  const after = await run({ metrics: ['upsell_revenue', 'upsell_take_pct'], filters: F1, window: W });
+  ok(after.totals.upsell_take_pct === null,
+    'TK2 legs > views proves the denominator is short ⇒ WITHHELD, never >100%', after.totals.upsell_take_pct);
+  ok(after.meta.warnings.some((w) => w.source === 'upsell_take_pct' && /incomplete/.test(w.reason)),
+    'TK3 …and the refusal explains that the view denominator is incomplete');
+  ok(after.totals.upsell_revenue > 0, 'TK4 …while the upsell REVENUE beside it is unaffected');
+  // restore
+  for (const [i, v] of ['v5', 'v6', 'v7'].entries()) await mkTouch(v, 'f1', 'p2', at(D(3), 10.05 + i * 0.01), { utm_source: 'meta' });
+}
+
+// The dashboard's funnel-performance table folds every column in ONE pass
+{
+  const d = await runDashboard({ start: D(3), end: D(0) }, { query: q });
+  const row = d.breakdown_summary.funnels.rows.find((r) => r.key === 'f1');
+  const need = ['sessions', 'orders', 'conv_pct', 'gross_sales', 'net_sales', 'aov', 'rev_per_session',
+    'refunds', 'cogs', 'ship_cost', 'fees', 'net_after_cogs', 'margin_pct', 'cost_coverage_pct',
+    'spend', 'net_profit', 'roas', 'cpa'];
+  const missing = need.filter((k) => !(k in row));
+  ok(missing.length === 0, 'FT1 the funnel table row carries all 18 columns', missing.join(','));
+  ok('name' in row && 'spend_known' in row, 'FT2 …plus name and the spend tri-state flag');
+  ok(near(row.net_sales, 535) && near(row.cogs, 50) && near(row.spend, 150),
+    'FT3 …and the values match the same figures /query computes', `${row.net_sales}/${row.cogs}/${row.spend}`);
+  ok(row.spend_known === true, 'FT4 spend_known says whether a null spend means zero or unknown');
+  const f2 = d.breakdown_summary.funnels.rows.find((r) => r.key === 'f2');
+  ok(f2.spend === null && f2.spend_known === false, 'FT5 …and an unbound funnel is honestly null in the table');
+  ok(d.breakdown_summary.funnels.rows[0].net_sales >= d.breakdown_summary.funnels.rows[1].net_sales,
+    'FT6 the table ranks by MONEY even though its first column is sessions');
+}
+
+// #21 — the cost-reference cache
+{
+  M.resetCostReferenceCache();
+  let refReads = 0;
+  const spy = async (text, ...rest) => {
+    if (/lb_cost_rates|lb_variant_costs|lb_fee_settings/.test(text)) refReads += 1;
+    return q(text, ...rest);
+  };
+  const body = { metrics: ['net_sales', 'cogs'], filters: F1, window: W };
+  await runQuery(body, { query: spy });
+  const afterFirst = refReads;
+  await runQuery(body, { query: spy });
+  ok(afterFirst === 3, 'CA1 the first cost fold reads rates + catalog + fee settings once each', afterFirst);
+  ok(refReads === afterFirst, 'CA2 …and the second fold inside the TTL re-reads none of them', refReads);
+  M.resetCostReferenceCache();
+  await runQuery(body, { query: spy });
+  ok(refReads === afterFirst + 3, 'CA3 …while an explicit reset re-reads them (a rate edit is never stale for long)', refReads);
+}
+
 // ═══ PRESETS ════════════════════════════════════════════════════════════════
 {
   const presets = reportPresets(D(3), D(0));
@@ -899,6 +1131,37 @@ console.log('\n--- seeding the 50K-session performance fixture ---');
   }
   console.log(`  dashboard composite: ${dashRuns.map((v) => `${v}ms`).join(' ')}`);
   ok(true, `P3 dashboard composite timing recorded: ${dashRuns.join('/')}ms`);
+
+  // ── #15: does the band's cost/spend fold actually drag the 15s poll? ──────
+  // The work order pins the band block as {orders, revenue, spend, net}, so
+  // dropping two of those four is a contract change and needs EVIDENCE, not a
+  // hunch. Its window is [yesterday, today] — two days, not ninety — so the
+  // fold it runs is a tiny fraction of the composite's. Measured against the
+  // full 50K fixture:
+  const bandRuns = [];
+  for (let i = 0; i < 5; i += 1) {
+    bandRuns.push((await M.runBand({ funnel_id: 'fperf' }, { query: q })).meta.computed_ms);
+  }
+  const bandMax = Math.max(...bandRuns);
+  console.log(`  band on the 50K fixture: ${bandRuns.map((v) => `${v}ms`).join(' ')} (max ${bandMax}ms)`);
+  ok(bandMax < 250, `P4 the band stays cheap on 50K sessions WITH spend + net_profit (max ${bandMax}ms)`, `${bandMax}ms`);
+  ok(true, `P5 band timing recorded: ${bandRuns.join('/')}ms vs composite ${dashRuns.join('/')}ms`);
+
+  // ── #13: the funnel scan cap is REPORTED, not silently applied ───────────
+  await q(`INSERT INTO funnels (id, slug, name, status)
+           SELECT 'bulk_' || lpad(g::text, 4, '0'), 'b' || g, 'Bulk ' || g, 'live'
+           FROM generate_series(1, 520) g`);
+  const many = await run({ metrics: ['net_sales', 'spend', 'roas', 'net_profit'], window: { start_day: D(3), end_day: D(0) } });
+  ok(many.totals.spend === null, 'P6 past the funnel scan cap, spend is WITHHELD, not summed from a partial list', many.totals.spend);
+  ok(many.totals.roas === null && many.totals.net_profit === null, 'P7 …and every figure derived from it dashes with it');
+  const tw = many.meta.warnings.find((w) => w.source === 'funnels_truncated');
+  ok(Boolean(tw) && tw.limit === 500, 'P8 …and the cap is NAMED in a warning', JSON.stringify(tw));
+  // Determinism: an unordered LIMIT is a non-reproducible sample.
+  const a1 = await q(`SELECT id FROM funnels WHERE NOT archived ORDER BY id LIMIT 501`);
+  const a2 = await q(`SELECT id FROM funnels WHERE NOT archived ORDER BY id LIMIT 501`);
+  ok(JSON.stringify(a1.map((r) => r.id)) === JSON.stringify(a2.map((r) => r.id)),
+    'P9 the scan is ORDER BY id, so two identical requests read the same funnels');
+  await q(`DELETE FROM funnels WHERE id LIKE 'bulk_%'`);
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

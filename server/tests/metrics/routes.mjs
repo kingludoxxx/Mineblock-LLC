@@ -17,6 +17,9 @@ process.env.DATABASE_URL = DB;
 process.env.NODE_ENV = 'development';
 process.env.REPORT_TZ = 'Europe/Madrid';
 process.env.JWT_ACCESS_SECRET = process.env.JWT_ACCESS_SECRET || 'dev-access-secret-change-me';
+// The harness makes far more reads than a human ever would; the limiter's own
+// behaviour is exercised in its dedicated block below by lowering this.
+process.env.METRICS_READ_LIMIT = '100000';
 
 let pass = 0; let fail = 0;
 const ok = (c, m, x = '') => { if (c) { pass++; console.log('PASS ', m); } else { fail++; console.log('FAIL ', m, x); } };
@@ -360,6 +363,113 @@ const W = { start_day: D(3), end_day: D(0) };
   ok(d.j.meta.window.timezone === 'Europe/Madrid', 'CT6 the dashboard carries the same meta.window echo');
   ok(Object.values(d.j.breakdown_summary).every((s) => typeof s.rows_total === 'number'),
     'CT7 every composite breakdown ships rows_total');
+}
+
+// ═══ ADVERSARIAL-REVIEW FIXES, over HTTP ════════════════════════════════════
+{
+  // BLOCKER 1 — a corrupt line_items row must be a 200 with a warning, not a 500.
+  await q(
+    `INSERT INTO co_sessions (id, funnel_id, page_id, status, line_items, total, currency, customer, gateway, vid, refunds, paid_at, created_at)
+     VALUES ('bad1','=cmd|calc!A1','p1','paid','"garbage"'::jsonb,90,'USD',$1,'whop','v9','[]'::jsonb,$2,$2)`,
+    [{ email: 'bad@x.com', shipping: { country: 'ES' } }, at(D(1), 12)]
+  );
+  const r = await req('POST', '/query', { metrics: ['net_sales', 'cogs', 'net_after_cogs'], window: W });
+  ok(r.status === 200, 'FX1 a corrupt line_items row returns 200, not 500', `${r.status} ${r.text.slice(0, 160)}`);
+  ok(r.j.meta.warnings.some((w) => w.source === 'malformed_line_items'),
+    'FX2 …with malformed_line_items named in the warnings',
+    JSON.stringify(r.j.meta.warnings.map((w) => w.source)));
+  const d = await req('GET', `/dashboard?start=${W.start_day}&end=${W.end_day}`);
+  ok(d.status === 200 && d.j.meta.warnings.some((w) => w.source === 'malformed_line_items'),
+    'FX3 …and the dashboard survives it too, with the same disclosure', d.status);
+  const b = await req('GET', '/band');
+  ok(b.status === 200, 'FX4 …and so does the band (the row is inside its 48h window)', b.status);
+
+  // BLOCKER 2 — withheld ratios over the wire.
+  const gw = await req('POST', '/query', {
+    metrics: ['orders', 'sessions', 'conv_pct'],
+    filters: { gateway: 'whop' }, window: W,
+  });
+  ok(gw.j.totals.conv_pct === null && gw.j.totals.sessions === null,
+    'FX5 a gateway filter withholds conv_pct and sessions', JSON.stringify(gw.j.totals));
+  ok(gw.j.meta.withheld?.conv_pct?.includes('gateway'), 'FX6 …and meta.withheld names why', JSON.stringify(gw.j.meta.withheld));
+  ok(gw.j.totals.orders !== null, 'FX7 …while the fold the filter CAN narrow still answers');
+
+  // BLOCKER 3 / #10 / #5-7 — wire keys.
+  ok(typeof r.j.meta.currency === 'string' || r.j.meta.currency === null, 'FX8 meta.currency is published');
+  ok(typeof r.j.meta.mixed_currency === 'boolean', 'FX9 meta.mixed_currency is published');
+  ok(r.j.meta.reconciliation?.notes?.length === 3, 'FX10 meta.reconciliation names all three divergences');
+  ok(Array.isArray(r.j.meta.reconciliation.utc_surfaces), 'FX11 …and the surfaces still on UTC');
+  ok(b.j.meta.window?.timezone === 'Europe/Madrid' && b.j.meta.window.days === 2,
+    'FX12 /band ships meta.window like its siblings', JSON.stringify(b.j.meta?.window));
+  ok(b.j.meta.reconciliation?.notes?.length === 3, 'FX13 …and the reconciliation block');
+
+  // BLOCKER 4 — the shipped preset's footer, verbatim, through the door.
+  const pres = await req('GET', '/presets');
+  const sbp = pres.j.presets.find((p) => p.id === 'sales_by_product');
+  const prodRes = await req('POST', '/query', sbp.query);
+  ok(prodRes.status === 200 && prodRes.j.meta.total_metric === 'gross_sales',
+    'FX14 sales_by_product footers on a CURRENCY metric', prodRes.j.meta?.total_metric);
+  ok(prodRes.j.meta.total > 0, 'FX15 …and the scalar is real money, not 0', prodRes.j.meta?.total);
+
+  // #12 — /presets validates BOTH params through the real window validator.
+  const badEnd = await req('GET', '/presets?end=nope');
+  ok(badEnd.status === 422 && badEnd.j?.error === 'invalid_date_format',
+    'FX16 /presets refuses a malformed end (422, not 500)', `${badEnd.status} ${badEnd.j?.error}`);
+  const badRange = await req('GET', `/presets?start=${D(400)}&end=${D(0)}`);
+  ok(badRange.status === 422 && badRange.j?.error === 'window_too_large',
+    'FX17 …and a window past the cap', `${badRange.status} ${badRange.j?.error}`);
+  const goodPresets = await req('GET', `/presets?start=${D(3)}&end=${D(0)}`);
+  let unpostable = 0;
+  for (const p of goodPresets.j.presets) {
+    const x = await req('POST', '/query', p.query);
+    if (x.status !== 200) unpostable += 1;
+  }
+  ok(unpostable === 0, 'FX18 …so every EMITTED preset is still POSTable', `${unpostable} failed`);
+
+  // #14 — honest metric labels on /definitions
+  const defs = await req('GET', '/definitions');
+  const nc = defs.j.metrics.find((m) => m.id === 'new_customers');
+  ok(nc.label === 'Orders from new customers', 'FX19 new_customers is labelled as ORDERS, not people', nc.label);
+  ok(defs.j.reconciliation?.notes?.length === 3, 'FX20 /definitions carries the reconciliation block too');
+
+  // The 18-column funnel table, over HTTP.
+  const cols = ['sessions', 'orders', 'conv_pct', 'gross_sales', 'net_sales', 'aov', 'rev_per_session',
+    'refunds', 'cogs', 'ship_cost', 'fees', 'net_after_cogs', 'margin_pct', 'cost_coverage_pct',
+    'spend', 'net_profit', 'roas', 'cpa'];
+  const frow = d.j.breakdown_summary.funnels.rows[0];
+  ok(cols.every((c) => c in frow), 'FX21 the dashboard funnel table ships all 18 columns',
+    cols.filter((c) => !(c in frow)).join(','));
+  ok('name' in frow && 'spend_known' in frow, 'FX22 …plus name and spend_known');
+
+  await q(`DELETE FROM co_sessions WHERE id = 'bad1'`);
+}
+
+// ═══ #19 — RATE LIMIT ═══════════════════════════════════════════════════════
+{
+  process.env.METRICS_READ_LIMIT = '3';
+  // A fresh user so the earlier blocks' requests are not in this budget.
+  await sql`INSERT INTO users (id, email, first_name, last_name) VALUES ('u_rl','rl@local.test','R','L')`;
+  await sql`INSERT INTO user_roles (user_id, role_id) VALUES ('u_rl','r_m')`;
+  const H2 = { Authorization: `Bearer ${tokenFor('u_rl')}`, 'Content-Type': 'application/json' };
+  const codes = [];
+  for (let i = 0; i < 5; i += 1) {
+    const x = await req('GET', '/definitions', undefined, H2);
+    codes.push(x.status);
+  }
+  ok(codes.slice(0, 3).every((c) => c === 200), 'RL1 the first three reads are allowed', codes.join(','));
+  ok(codes.slice(3).every((c) => c === 429), 'RL2 …and the rest are 429', codes.join(','));
+  const last = await req('GET', '/definitions', undefined, H2);
+  ok(last.j?.error === 'rate_limited' && typeof last.j.retry_after === 'number',
+    'RL3 the refusal is a named JSON error with a retry hint', JSON.stringify(last.j));
+  // Per USER, not global: a different operator is unaffected. Uses a THIRD
+  // fresh user — the default harness user has already spent a few hundred
+  // reads in the blocks above, so it is not a valid control.
+  await sql`INSERT INTO users (id, email, first_name, last_name) VALUES ('u_rl2','rl2@local.test','R','L')`;
+  await sql`INSERT INTO user_roles (user_id, role_id) VALUES ('u_rl2','r_m')`;
+  const H3 = { Authorization: `Bearer ${tokenFor('u_rl2')}`, 'Content-Type': 'application/json' };
+  const other = await req('GET', '/definitions', undefined, H3);
+  ok(other.status === 200, 'RL4 the limit is per-user — another operator is not collateral', other.status);
+  process.env.METRICS_READ_LIMIT = '100000';
 }
 
 // ═══ APP BOOT — the one mount line must not break the whole server ══════════
