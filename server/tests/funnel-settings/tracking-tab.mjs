@@ -70,6 +70,35 @@ const req = async (method, path, body, headers = H) => {
   return { status: r.status, j };
 };
 
+// Every check below is expected to RUN — a silently skipped block must fail
+// the suite (review F8), so a green tally can never hide unexecuted seams.
+const EXPECTED_PASS = 19;
+
+let FID;
+try {
+
+// ── 0. unit: the client's save-serialization queue (review MAJOR F3) ────────
+// GeneralPanel routes every settings.tracking save through makeSerialQueue so
+// overlapping read-merge-write PATCHes can never interleave. Prove FIFO order
+// under inverted timing, and that a failed job rejects without wedging.
+{
+  const { makeSerialQueue } = await import('../../../client/src/components/funnels/settings/serialQueue.js');
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const enqueue = makeSerialQueue();
+  const order = [];
+  // Job A is SLOW, job B is instant — without the queue B would finish first.
+  const a = enqueue(async () => { await sleep(40); order.push('A'); });
+  const b = enqueue(async () => { order.push('B'); });
+  await Promise.all([a, b]);
+  check('unit: serial queue keeps FIFO order under inverted timing', order.join('') === 'AB', order.join(''));
+  const results = [];
+  const c = enqueue(async () => { throw new Error('boom'); }).catch((e) => { results.push(`rej:${e.message}`); });
+  const d = enqueue(async () => { results.push('D'); });
+  await Promise.all([c, d]);
+  check('unit: a failed job rejects its own promise and does not wedge the queue',
+    results.join(',') === 'rej:boom,D', results.join(','));
+}
+
 // ── 1. GENERAL panel persistence (settings.tracking via funnels PATCH) ──────
 // This is the exact payload GeneralPanel writes.
 const TRACKING_SETTINGS = {
@@ -87,7 +116,7 @@ check('unit: validateFunnelSettings accepts a tracking key (no whitelist gap)',
 await sql`DELETE FROM funnels WHERE slug = 'trk-tab-harness'`;
 const created = await req('POST', '/funnels', { name: 'Tracking Tab Harness', slug: 'trk-tab-harness' });
 check('route: funnel created', created.status === 201 && created.j?.data?.id, JSON.stringify(created.j));
-const FID = created.j?.data?.id;
+FID = created.j?.data?.id;
 
 {
   const r = await req('PATCH', `/funnels/${FID}`, { settings: { tracking: TRACKING_SETTINGS } });
@@ -197,13 +226,23 @@ if (!trackingAdminRouter) {
   }
 }
 
-// ── cleanup ─────────────────────────────────────────────────────────────────
-await sql`DELETE FROM funnels WHERE id = ${FID}`;
-await sql`DELETE FROM user_roles WHERE user_id = 'u_trk_test'`;
-await sql`DELETE FROM users WHERE id = 'u_trk_test'`;
-await sql`DELETE FROM roles WHERE id = 'r_trk_test'`;
-await sql.end();
-server.close();
+// The pass-count gate: fails loudly if any block above was skipped (or a new
+// check was added without bumping EXPECTED_PASS — deliberate, keeps the
+// expectation explicit).
+if (pass !== EXPECTED_PASS && fail === 0) {
+  fail++;
+  console.log(`FAIL  meta: expected ${EXPECTED_PASS} passing checks, got ${pass} — a block was skipped${skip ? ` (${skip} skip recorded)` : ''}`);
+}
 
-console.log(`\n${pass} passed, ${fail} failed${skip ? `, ${skip} block skipped (activates post-merge)` : ''}`);
+} finally {
+  // ── cleanup — always runs, even when a check or request threw ─────────────
+  if (FID) await sql`DELETE FROM funnels WHERE id = ${FID}`.catch(() => {});
+  await sql`DELETE FROM user_roles WHERE user_id = 'u_trk_test'`.catch(() => {});
+  await sql`DELETE FROM users WHERE id = 'u_trk_test'`.catch(() => {});
+  await sql`DELETE FROM roles WHERE id = 'r_trk_test'`.catch(() => {});
+  await sql.end().catch(() => {});
+  server.close();
+}
+
+console.log(`\n${pass} passed, ${fail} failed${skip ? `, ${skip} block skipped` : ''}`);
 process.exit(fail ? 1 : 0);

@@ -21,18 +21,7 @@ import Button from '../../ui/Button';
 import Input from '../../ui/Input';
 import { GATEWAY_META } from './gatewayMeta';
 import { StatusPill, ScaffoldPanel, Toggle } from './ui';
-
-export const isObj = (v) => v != null && typeof v === 'object' && !Array.isArray(v);
-
-// Fetch the freshest funnel row, merge, PATCH. `build(fresh)` returns the
-// PATCH body. Returns the updated funnel row. (Shared with TrackingSection.)
-export async function saveFunnelPatch(funnelId, build) {
-  const res = await api.get(`/funnels/${funnelId}`);
-  const fresh = res.data?.data?.funnel || {};
-  const body = build(fresh);
-  const patched = await api.patch(`/funnels/${funnelId}`, body);
-  return patched.data?.data || null;
-}
+import { isObj, saveFunnelPatch } from './settingsPatch';
 
 // Set key to a trimmed string, or delete it when empty — keeps the stored
 // blobs free of dangling '' keys.

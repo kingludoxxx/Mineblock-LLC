@@ -76,7 +76,7 @@ export function GatewayLogo({ name, accent, size = 'md' }) {
 // Write-only secret / plain field. Secrets that are already stored render as
 // masked with a "SET" marker and a Clear affordance; typing replaces, blank
 // keeps. Plain identifiers render their current value in clear.
-export function CredentialField({ field, currentSet, currentValue, value, onChange, onClear }) {
+export function CredentialField({ field, currentSet, currentValue, value, onChange, onClear, autoComplete = 'off' }) {
   const [reveal, setReveal] = useState(false);
   const isSecret = field.kind === 'secret';
   const typing = value !== undefined && value !== null && value !== '';
@@ -113,7 +113,7 @@ export function CredentialField({ field, currentSet, currentValue, value, onChan
           value={isSecret ? (value ?? '') : (value ?? currentValue ?? '')}
           onChange={(e) => onChange(e.target.value)}
           placeholder={placeholder}
-          autoComplete="off"
+          autoComplete={autoComplete}
           spellCheck={false}
           className="w-full px-3 py-2 pr-9 text-sm bg-bg-elevated border border-border-default rounded-lg
             text-text-primary placeholder:text-text-faint font-mono

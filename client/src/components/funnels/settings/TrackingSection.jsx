@@ -13,12 +13,13 @@
 //      the server never echoes it back in any state)
 //   GENERAL event options     → funnels.settings.tracking (JSONB) via the
 //     existing funnels PATCH, read-merge-write like the sibling sections.
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { ArrowLeft, RefreshCw, Copy, Check, ChevronRight } from 'lucide-react';
 import api from '../../../services/api';
 import Button from '../../ui/Button';
-import { Toggle, GatewayLogo, CredentialField } from './ui';
-import { isObj, saveFunnelPatch } from './sections';
+import { GatewayLogo, CredentialField } from './ui';
+import { isObj, saveFunnelPatch } from './settingsPatch';
+import { makeSerialQueue } from './serialQueue';
 
 // ── static client registry (directory cards) ────────────────────────────────
 // `kind` present = wired to the server registry; absent = directory stub.
@@ -120,6 +121,13 @@ function CheckboxRow({ label, checked, onChange, disabled = false }) {
 // ── GENERAL panel — event options persisted to settings.tracking ────────────
 // Optimistic: the checkbox flips immediately, the PATCH runs read-merge-write
 // (saveFunnelPatch), and a failure reverts the flip + shows inline prose.
+//
+// CONCURRENCY (review MAJOR F3): the funnels PATCH is a whole-object replace,
+// so two overlapping saves can interleave GET/PATCH and silently drop one
+// flip. Saves therefore run through ONE promise chain (each save's fresh GET
+// happens only after the previous PATCH committed), every control is disabled
+// while any save is in flight, and a failure reverts against a ref of the
+// last SERVER-CONFIRMED state — never a render-closure snapshot.
 const GENERAL_DEFAULTS = {
   fire_purchase: 'checkout_server',
   send_external_id: false,
@@ -136,25 +144,45 @@ function GeneralPanel({ funnel, onFunnelUpdated }) {
   };
   const [vals, setVals] = useState(stored);
   const [err, setErr] = useState('');
-  const [savingKey, setSavingKey] = useState('');
+  const [busy, setBusy] = useState(false);
+  const confirmedRef = useRef(vals);            // last server-confirmed tracking state
+  const enqueueRef = useRef(makeSerialQueue()); // serializes saves (unit-tested)
+  const pendingRef = useRef(0);
 
-  useEffect(() => { setVals(stored()); }, [funnel]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    // Reseed from the funnel prop only when no save is in flight — a mid-queue
+    // reseed would wipe a queued optimistic flip with a stale server echo.
+    if (pendingRef.current === 0) {
+      const s = stored();
+      setVals(s);
+      confirmedRef.current = s;
+    }
+  }, [funnel]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const saveKey = async (key, value) => {
-    const prev = vals;
-    const next = { ...vals, [key]: value };
-    setVals(next); setErr(''); setSavingKey(key);
-    try {
-      const updated = await saveFunnelPatch(funnel.id, (fresh) => {
-        const settings = { ...(isObj(fresh.settings) ? fresh.settings : {}) };
-        settings.tracking = { ...(isObj(settings.tracking) ? settings.tracking : {}), [key]: value };
-        return { settings };
-      });
-      onFunnelUpdated?.(updated);
-    } catch (e) {
-      setVals(prev); // revert the optimistic flip
-      setErr(e.response?.data?.error || 'Failed to save — the change was reverted');
-    } finally { setSavingKey(''); }
+  const saveKey = (key, value) => {
+    setVals((v) => ({ ...v, [key]: value })); // optimistic flip
+    setErr('');
+    pendingRef.current += 1;
+    setBusy(true);
+    enqueueRef.current(async () => {
+      try {
+        const updated = await saveFunnelPatch(funnel.id, (fresh) => {
+          const settings = { ...(isObj(fresh.settings) ? fresh.settings : {}) };
+          settings.tracking = { ...(isObj(settings.tracking) ? settings.tracking : {}), [key]: value };
+          return { settings };
+        });
+        // Confirm from the server's echo, not our own draft.
+        const echo = isObj(updated?.settings) && isObj(updated.settings.tracking) ? updated.settings.tracking : {};
+        confirmedRef.current = { ...GENERAL_DEFAULTS, ...echo };
+        onFunnelUpdated?.(updated);
+      } catch (e) {
+        setVals({ ...confirmedRef.current }); // revert to last confirmed server state
+        setErr(e.response?.data?.error || 'Failed to save — the change was reverted');
+      } finally {
+        pendingRef.current -= 1;
+        if (pendingRef.current === 0) setBusy(false);
+      }
+    });
   };
 
   return (
@@ -167,21 +195,23 @@ function GeneralPanel({ funnel, onFunnelUpdated }) {
         <label className="text-sm text-text-primary shrink-0">Fire Purchase</label>
         <select
           value={vals.fire_purchase}
+          disabled={busy}
           onChange={(e) => saveKey('fire_purchase', e.target.value)}
-          className="px-3 py-2 text-sm bg-bg-elevated border border-border-default rounded-lg text-text-primary focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent cursor-pointer"
+          className="px-3 py-2 text-sm bg-bg-elevated border border-border-default rounded-lg text-text-primary focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed"
         >
           <option value="checkout_server">right after checkout (server)</option>
         </select>
+        {busy && <span className="text-xs text-text-faint">Saving…</span>}
       </div>
       <div className="space-y-2 pt-1">
         <CheckboxRow label="Send hashed external id" checked={vals.send_external_id === true}
-          disabled={savingKey === 'send_external_id'} onChange={(v) => saveKey('send_external_id', v)} />
+          disabled={busy} onChange={(v) => saveKey('send_external_id', v)} />
         <CheckboxRow label="Fire AddToCart at checkout" checked={vals.fire_addtocart_checkout === true}
-          disabled={savingKey === 'fire_addtocart_checkout'} onChange={(v) => saveKey('fire_addtocart_checkout', v)} />
+          disabled={busy} onChange={(v) => saveKey('fire_addtocart_checkout', v)} />
         <CheckboxRow label="Fire ViewContent on lead" checked={vals.fire_viewcontent_lead === true}
-          disabled={savingKey === 'fire_viewcontent_lead'} onChange={(v) => saveKey('fire_viewcontent_lead', v)} />
+          disabled={busy} onChange={(v) => saveKey('fire_viewcontent_lead', v)} />
         <CheckboxRow label="Unique txn id per upsell" checked={vals.unique_txn_per_upsell === true}
-          disabled={savingKey === 'unique_txn_per_upsell'} onChange={(v) => saveKey('unique_txn_per_upsell', v)} />
+          disabled={busy} onChange={(v) => saveKey('unique_txn_per_upsell', v)} />
       </div>
       {err && <p className="text-sm text-danger">{err}</p>}
     </div>
@@ -197,7 +227,7 @@ const MODES = [
 const EVT_STATUS_CLS = {
   sent: 'text-emerald-400',
   error: 'text-red-400',
-  skipped: 'text-red-400',
+  skipped: 'text-orange-400', // terminal like error, but a guard refusal — distinct color
   deduped: 'text-text-faint',
   queued: 'text-amber-400',
 };
@@ -215,7 +245,8 @@ function MetaDetail({ funnel, network, summary, onBack, onSaved }) {
   const [modeErr, setModeErr] = useState('');
   const [modeSaving, setModeSaving] = useState('');
   const [mode, setMode] = useState(network?.mode || 'hybrid');
-  const [events, setEvents] = useState(null);    // null=loading, 'error', or []
+  const [events, setEvents] = useState(null);    // null=first load, 'error', or []
+  const [eventsLoading, setEventsLoading] = useState(false);
   const [eventsErr, setEventsErr] = useState('');
 
   useEffect(() => {
@@ -226,30 +257,50 @@ function MetaDetail({ funnel, network, summary, onBack, onSaved }) {
     setToken(''); setTokenCleared(false);
   }, [network]);
 
+  // Refresh keeps the previous rows on screen (review F7) — the list only
+  // clears on the very first load; a failed refresh keeps last-known rows and
+  // surfaces the error inline instead.
   const loadEvents = useCallback(async () => {
-    setEvents(null); setEventsErr('');
+    setEventsLoading(true);
     try {
       const res = await api.get(`/tracking-admin/${encodeURIComponent(funnel.id)}/events`, { params: { limit: 50 } });
       const all = Array.isArray(res.data?.data?.events) ? res.data.data.events : [];
       // lb_tracking_events.platform is the kind minus '_pixel' (server comment).
       setEvents(all.filter((e) => e.platform === 'meta'));
+      setEventsErr('');
     } catch (e) {
-      setEvents('error');
+      setEvents((prev) => (Array.isArray(prev) ? prev : 'error'));
       setEventsErr(trkErr(e.response?.data?.error?.code, 'Failed to load deliveries'));
-    }
+    } finally { setEventsLoading(false); }
   }, [funnel.id]);
 
   useEffect(() => { loadEvents(); }, [loadEvents]);
 
+  // Baseline = the masked server view this form was seeded from. Only fields
+  // the operator actually changed go in the PUT body (review MAJOR F4):
+  // an omitted field keeps its stored value server-side, so a form seeded
+  // from a stale read can never clear config it never displayed.
+  const baseline = {
+    pixel_id: network?.pixel_id || '',
+    test_event_code: network?.test_event_code || '',
+    enabled: network ? network.enabled === true : true,
+  };
+  const credsDirty = pixelId.trim() !== baseline.pixel_id
+    || testCode.trim() !== baseline.test_event_code
+    || enabled !== baseline.enabled
+    || token.trim() !== '' || tokenCleared;
+
   const save = async () => {
     setSaving(true); setSaveErr('');
     try {
-      const body = { pixel_id: pixelId.trim(), enabled, test_event_code: testCode.trim() };
-      // Write-only token semantics (server contract): '' keeps the stored
-      // token, null clears it, a typed value replaces it.
+      const body = {};
+      if (pixelId.trim() !== baseline.pixel_id) body.pixel_id = pixelId.trim();
+      if (testCode.trim() !== baseline.test_event_code) body.test_event_code = testCode.trim();
+      if (enabled !== baseline.enabled) body.enabled = enabled;
+      // Write-only token semantics (server contract): omitted keeps the
+      // stored token, null clears it, a typed value replaces it.
       if (tokenCleared) body.capi_token = null;
       else if (token.trim() !== '') body.capi_token = token.trim();
-      else body.capi_token = '';
       await api.put(`/tracking-admin/${encodeURIComponent(funnel.id)}/networks/meta_pixel`, body);
       setSavedFlash(true); setTimeout(() => setSavedFlash(false), 2000);
       setToken(''); setTokenCleared(false);
@@ -328,6 +379,7 @@ function MetaDetail({ funnel, network, summary, onBack, onSaved }) {
           value={token}
           onChange={(v) => { setToken(v); if (v !== '') setTokenCleared(false); }}
           onClear={tokenSet ? () => { setTokenCleared(true); setToken(''); } : undefined}
+          autoComplete="new-password"
         />
         {tokenCleared && (
           <p className="text-xs text-amber-400">The stored token will be cleared when you save credentials.</p>
@@ -346,8 +398,9 @@ function MetaDetail({ funnel, network, summary, onBack, onSaved }) {
         <CheckboxRow label="Enabled" checked={enabled} onChange={setEnabled} />
         {saveErr && <p className="text-sm text-danger">{saveErr}</p>}
         <div className="flex items-center gap-3 pt-1">
-          <Button onClick={save} loading={saving}>Save credentials</Button>
+          <Button onClick={save} loading={saving} disabled={!credsDirty}>Save credentials</Button>
           {savedFlash && <span className="text-sm text-success">Saved</span>}
+          {credsDirty && !savedFlash && <span className="text-xs text-text-faint">Unsaved changes</span>}
         </div>
       </div>
 
@@ -428,10 +481,16 @@ function MetaDetail({ funnel, network, summary, onBack, onSaved }) {
       <div className="rounded-xl border border-border-default bg-bg-card p-4 space-y-2">
         <div className="flex items-center justify-between">
           <div className="text-sm font-semibold text-text-primary">Recent deliveries</div>
-          <button onClick={loadEvents} className="flex items-center gap-1.5 text-xs text-text-muted hover:text-text-primary cursor-pointer">
-            <RefreshCw className="w-3.5 h-3.5" /> Refresh
+          <button
+            onClick={loadEvents}
+            disabled={eventsLoading}
+            className="flex items-center gap-1.5 text-xs text-text-muted hover:text-text-primary cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            <RefreshCw className={`w-3.5 h-3.5 ${eventsLoading ? 'animate-spin' : ''}`} /> Refresh
           </button>
         </div>
+        {/* A failed refresh keeps the last-known rows below and reports here. */}
+        {eventsErr && Array.isArray(events) && <p className="text-sm text-danger">{eventsErr}</p>}
         {events === null ? (
           <p className="text-sm text-text-muted">Loading deliveries…</p>
         ) : events === 'error' ? (
@@ -447,7 +506,9 @@ function MetaDetail({ funnel, network, summary, onBack, onSaved }) {
                 <div className="min-w-0">
                   <span className="text-text-primary font-medium">{e.event_name || '—'}</span>
                   {e.value != null && e.value !== '' && (
-                    <span className="ml-2 text-text-muted">${Number(e.value).toFixed(2)}</span>
+                    <span className="ml-2 text-text-muted">
+                      {Number.isFinite(Number(e.value)) ? `$${Number(e.value).toFixed(2)}` : '—'}
+                    </span>
                   )}
                   {e.error && <div className="text-xs text-red-400 truncate max-w-md">{e.error}</div>}
                 </div>
@@ -527,8 +588,13 @@ export default function TrackingSection({ funnel, onFunnelUpdated }) {
         api.get(`/tracking-admin/${encodeURIComponent(funnel.id)}/networks`),
         api.get(`/tracking-admin/${encodeURIComponent(funnel.id)}/tracking/summary`),
       ]);
-      setNetworks(Array.isArray(nRes.data?.data?.networks) ? nRes.data.data.networks : []);
-      setSummary(Array.isArray(sRes.data?.data?.networks) ? sRes.data.data.networks : []);
+      const nets = nRes.data?.data?.networks;
+      const sums = sRes.data?.data?.networks;
+      // A 200 with a malformed body is the ERROR path (review F5) — never
+      // coerce it to [] and paint a confident NOT CONNECTED chip off garbage.
+      if (!Array.isArray(nets) || !Array.isArray(sums)) throw new Error('malformed_tracking_response');
+      setNetworks(nets);
+      setSummary(sums);
       setLoadErr('');
     } catch (e) {
       setNetworks((prev) => (Array.isArray(prev) ? prev : 'error'));
@@ -562,8 +628,9 @@ export default function TrackingSection({ funnel, onFunnelUpdated }) {
   }
   if (view.page === 'gtm') return <GtmDetail onBack={() => setView({ page: 'directory' })} />;
   if (view.page === 'stub') {
-    const net = AD_NETWORKS.find((n) => n.key === view.key);
-    return <StubDetail net={net || AD_NETWORKS[1]} onBack={() => setView({ page: 'directory' })} />;
+    const net = AD_NETWORKS.find((n) => n.key === view.key)
+      || { key: 'unknown', name: 'Unknown network', method: '—', accent: '#52525b' };
+    return <StubDetail net={net} onBack={() => setView({ page: 'directory' })} />;
   }
 
   return (
@@ -613,11 +680,18 @@ export default function TrackingSection({ funnel, onFunnelUpdated }) {
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
         {AD_NETWORKS.map((net) => {
           const wired = Boolean(net.kind);
+          // A wired card opens a credential form seeded from /networks — it
+          // stays unclickable until that read RESOLVED to real data (review
+          // MAJOR F4), so a form can never seed empty off a pending/failed
+          // read and then clear stored config on save.
+          const wiredBlocked = wired && !Array.isArray(networks);
           return (
             <button
               key={net.key}
+              disabled={wiredBlocked}
+              title={wiredBlocked ? 'Waiting for the network config to load…' : undefined}
               onClick={() => setView(wired ? { page: 'meta' } : { page: 'stub', key: net.key })}
-              className="flex items-center justify-between gap-3 rounded-xl border border-border-default bg-bg-card p-4 text-left cursor-pointer hover:bg-bg-hover/40 transition-colors"
+              className="flex items-center justify-between gap-3 rounded-xl border border-border-default bg-bg-card p-4 text-left cursor-pointer hover:bg-bg-hover/40 transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
             >
               <div className="flex items-center gap-3 min-w-0">
                 <GatewayLogo name={net.name} accent={net.accent} size="sm" />
