@@ -20,13 +20,15 @@ import {
   AlertTriangle, Check, FileUp, Info, Loader2, Upload,
 } from 'lucide-react';
 import Button from '../../../components/ui/Button';
+import ApplyPlanTable from './ApplyPlanTable';
 import { EM_DASH, formatCost, variantLabel } from '../costTargets';
 import {
   MATCH_LABELS, RULE_LABELS, applyPlan, documentFindings, draftErrors,
   isEdited, moneyDraftError, parseMoneyDraft, rowState, selectedProposals, toDrafts,
 } from '../quoteMatrix';
 import {
-  MAX_UPLOAD_BYTES, applyProposals, assistantError, fileToBase64, postQuoteScan, MODELS,
+  MAX_UPLOAD_BYTES, applyFailure, applyProposals, assistantError, fileToBase64,
+  postQuoteScan, skipReason, MODELS,
 } from '../assistantApi';
 
 export default function QuoteScanPanel({ canEdit, catalogRows, onApplied }) {
@@ -138,6 +140,12 @@ export default function QuoteScanPanel({ canEdit, catalogRows, onApplied }) {
         <p className="text-[11px] text-text-faint">
           PNG, JPEG, WebP, GIF or PDF · up to {MAX_UPLOAD_BYTES / 1048576} MB.
           The file is read once and never stored — only the extracted table and a checksum are kept.
+        </p>
+        {/* Known product gap, said plainly rather than discovered at the apply
+            door: the cost engine books USD and there is no FX anywhere. */}
+        <p className="text-[11px] text-text-faint">
+          Quotes must be in USD — convert to USD before applying. Automatic currency conversion is
+          not built, so a sheet priced in another currency is read but cannot be applied.
         </p>
         <div className="mt-3 flex items-center justify-center gap-2">
           <Button variant="secondary" size="sm" onClick={() => inputRef.current?.click()} disabled={!canEdit}>
@@ -258,6 +266,8 @@ export default function QuoteScanPanel({ canEdit, catalogRows, onApplied }) {
                         draft={d}
                         field="unit_cost"
                         freeField="unitKnownFree"
+                        clearField="clearUnit"
+                        current={entry ? entry.unit_cogs ?? null : null}
                         canEdit={canEdit}
                         demoted={d.unit_cost_demoted}
                         onPatch={(n) => patch(d.row_id, n)}
@@ -267,6 +277,8 @@ export default function QuoteScanPanel({ canEdit, catalogRows, onApplied }) {
                         draft={d}
                         field="shipping"
                         freeField="shipKnownFree"
+                        clearField="clearShip"
+                        current={entry ? (entry.ship?.default ?? entry.ship?.main ?? null) : null}
                         canEdit={canEdit}
                         demoted={d.shipping_demoted}
                         onPatch={(n) => patch(d.row_id, n)}
@@ -312,8 +324,15 @@ export default function QuoteScanPanel({ canEdit, catalogRows, onApplied }) {
                 <Check className="w-3.5 h-3.5 shrink-0 mt-px" /> {result.summary}
               </p>
               {(result.failed || []).map((f) => (
-                <p key={f.index} className="text-[11px] text-danger mt-1">
-                  Row {f.index + 1}: {f.code}
+                <p key={`f${f.index}`} className="text-[11px] text-danger mt-1">
+                  Row {f.index + 1}: {applyFailure(f.code)}
+                </p>
+              ))}
+              {/* Skips are reported, not hidden: "nothing happened, on
+                  purpose" is a different fact from "nothing happened". */}
+              {(result.skipped || []).map((s) => (
+                <p key={`s${s.index}`} className="text-[11px] text-text-muted mt-1">
+                  Row {s.index + 1}: {skipReason(s.reason)}
                 </p>
               ))}
             </div>
@@ -323,85 +342,85 @@ export default function QuoteScanPanel({ canEdit, catalogRows, onApplied }) {
 
       {/* ── the confirm ────────────────────────────────────────────────── */}
       {confirming && (
-        <div className="rounded-xl border border-accent/40 bg-bg-card p-4 space-y-3">
-          <p className="text-sm text-text-primary font-medium">
-            These {plan.length} rate row(s) will be written
-          </p>
-          <div className="overflow-x-auto">
-            <table className="w-full text-xs">
-              <thead className="text-text-muted">
-                <tr>
-                  <th className="p-1.5 text-left font-medium">Variant</th>
-                  <th className="p-1.5 text-left font-medium">Cost</th>
-                  <th className="p-1.5 text-left font-medium">Shipping</th>
-                  <th className="p-1.5 text-left font-medium">From the quote</th>
-                </tr>
-              </thead>
-              <tbody>
-                {plan.map((p) => (
-                  <tr key={p.row_id} className="border-t border-border-subtle/60">
-                    <td className="p-1.5 text-text-primary">{p.label}</td>
-                    <td className="p-1.5 tabular-nums">
-                      {formatCost(p.current_unit_cogs).text} → <span className="text-text-primary">{p.unit_text}</span>
-                    </td>
-                    <td className="p-1.5 tabular-nums text-text-primary">{p.ship_text}</td>
-                    <td className="p-1.5 text-text-faint">
-                      {p.quote_label}{p.qty_break ? ` · qty ${p.qty_break}` : ''}{p.edited ? ' · edited' : ''}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-          <p className="text-[11px] text-text-muted">
-            Each of these appends a new row to the cost history — nothing is overwritten, and a first
-            cost for a variant backdates to its first sale so past reports stop showing 100% margin.
-          </p>
-          <div className="flex justify-end gap-2">
-            <Button variant="ghost" size="sm" onClick={() => setConfirming(false)}>Cancel</Button>
-            <Button size="sm" loading={applying} onClick={apply}>Write {plan.length} rate row(s)</Button>
-          </div>
-        </div>
+        <ApplyPlanTable
+          plan={plan}
+          busy={applying}
+          onCancel={() => setConfirming(false)}
+          onConfirm={apply}
+        />
       )}
     </div>
   );
 }
 
-// One editable money field. Blank means UNKNOWN; a real $0.00 requires the
-// explicit toggle — the same rule the manual rate drawer enforces.
-function MoneyCell({ draft, field, freeField, canEdit, demoted, onPatch, err }) {
+// One editable money field.
+//
+// THREE STATES, and the difference between them is money:
+//   a value    → written
+//   BLANK      → unknown. The value already in force is CARRIED onto the new
+//                row by the server, so leaving this empty does NOT erase a
+//                cost. The cell says so, because "blank" reading as "erase"
+//                was a shipped bug on this exact path.
+//   known free → an explicit $0.00, the same toggle the manual rate drawer
+//                uses. Never inferred from a typed 0.
+// And, only when there IS something to remove, a fourth: "remove the current
+// value", which is the ONLY way a null overwrites a real cost.
+function MoneyCell({ draft, field, freeField, clearField, current, canEdit, demoted, onPatch, err }) {
   const known = draft[freeField];
+  const clearing = draft[clearField];
   const parsed = parseMoneyDraft(draft[field], { knownFree: known });
+  const hasCurrent = current !== null && current !== undefined;
+  const blank = parsed.value === null && !known;
+
   return (
-    <td className="p-2 align-top min-w-[130px]">
+    <td className="p-2 align-top min-w-[140px]">
       <input
         type="text"
         inputMode="decimal"
         value={known ? '0.00' : draft[field]}
-        disabled={!canEdit || known}
+        disabled={!canEdit || known || clearing}
         onChange={(e) => onPatch({ [field]: e.target.value })}
         placeholder="unknown"
         aria-label={field}
         className={`w-full bg-bg-elevated border rounded px-1.5 py-1 text-[11px] tabular-nums text-text-primary
-          ${err ? 'border-danger' : 'border-border-default'}`}
+          ${err ? 'border-danger' : clearing ? 'border-danger/50' : 'border-border-default'}`}
       />
       <label className="mt-0.5 flex items-center gap-1 text-[10px] text-text-faint cursor-pointer">
         <input
           type="checkbox"
           checked={known}
-          disabled={!canEdit}
+          disabled={!canEdit || clearing}
           onChange={(e) => onPatch({ [freeField]: e.target.checked })}
           className="cursor-pointer"
         />
         known free
       </label>
+
+      {hasCurrent && blank && !clearing && (
+        <p className="text-[10px] text-text-muted mt-0.5">
+          keeps {formatCost(current).text}
+        </p>
+      )}
+      {hasCurrent && (
+        <label className="mt-0.5 flex items-center gap-1 text-[10px] text-danger cursor-pointer">
+          <input
+            type="checkbox"
+            checked={clearing}
+            disabled={!canEdit}
+            onChange={(e) => onPatch({ [clearField]: e.target.checked, ...(e.target.checked ? { [freeField]: false } : {}) })}
+            className="cursor-pointer"
+          />
+          remove {formatCost(current).text}
+        </label>
+      )}
+
       {err && <p className="text-[10px] text-danger mt-0.5">{moneyDraftError(err.code)}</p>}
       {demoted && (
         <p className="text-[10px] text-warning mt-0.5">
           The model read a 0 here. Recorded as unknown — type it if the sheet really says free.
         </p>
       )}
-      {!err && parsed.value === null && !known && (
+      {!err && blank && !hasCurrent && !clearing && (
         <p className="text-[10px] text-text-faint mt-0.5">unknown</p>
       )}
     </td>

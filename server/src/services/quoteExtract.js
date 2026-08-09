@@ -16,6 +16,11 @@
 // file_base64 — this repo carries no multipart parser and a supplier quote is
 // not the place to add one to the money-path service.
 import { ExtractError } from './quoteVerify.js';
+// ONE allowlist for the lane (review NIT) — re-exported here so existing
+// importers of this module keep working, but there is only one definition.
+import { MODEL_ALLOWLIST, DEFAULT_MODEL } from './cogsAssistant.js';
+
+export { MODEL_ALLOWLIST, DEFAULT_MODEL };
 
 // ── limits ────────────────────────────────────────────────────────────────
 // 10 MB DECODED, per the work order. Checked against the base64 LENGTH first
@@ -27,9 +32,6 @@ export const MAX_BASE64_CHARS = Math.ceil((MAX_UPLOAD_BYTES / 3) * 4) + 4096;
 
 export const ALLOWED_IMAGE_TYPES = Object.freeze(['image/png', 'image/jpeg', 'image/webp', 'image/gif']);
 export const ALLOWED_TYPES = Object.freeze([...ALLOWED_IMAGE_TYPES, 'application/pdf']);
-
-export const MODEL_ALLOWLIST = Object.freeze(['claude-fable-5', 'claude-opus-5', 'claude-sonnet-5']);
-export const DEFAULT_MODEL = 'claude-fable-5';
 
 const PNG_SIG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 

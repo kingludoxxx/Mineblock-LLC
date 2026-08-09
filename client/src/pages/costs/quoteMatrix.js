@@ -12,7 +12,7 @@
 //     apart. The server refuses it at the door; refusing it here too means the
 //     operator finds out while they are still looking at the sheet.
 //  3. A ROW THE VERIFY PASS BLOCKED CANNOT BE TICKED. `rowState` folds the
-//     server's findings into the row, and `selectableRows` filters on it —
+//     server's findings into the row, and the table disables the checkbox —
 //     the checkbox is disabled rather than silently ignored, because a
 //     disabled box with a reason beside it is the only honest version.
 import { EM_DASH, formatCost, variantLabel } from './costTargets';
@@ -30,7 +30,10 @@ export const RULE_LABELS = {
   SHIP_MONOTONIC: 'Shipping direction',
   MODEL_ZERO: 'A zero cost',
   EMPTY_ROW: 'Nothing priced',
-  INJECTION: 'Quarantined text',
+  // "Screened", not "quarantined": the check is a keyword tripwire, not a
+  // boundary. It is a prompt to read the line, and the label should not
+  // promise the operator more than that.
+  INJECTION: 'Screened text',
 };
 
 export const MATCH_LABELS = {
@@ -130,6 +133,12 @@ export function toDraft(row) {
     shipping: moneyToDraft(row.shipping_per_unit),
     unitKnownFree: false,
     shipKnownFree: false,
+    // A blank field means UNKNOWN, and the server carries the value already in
+    // force rather than erasing it. These two say "no, actually remove it" —
+    // the only thing that lets a null overwrite a real cost, and the reason
+    // the plan table renders such a row in red.
+    clearUnit: false,
+    clearShip: false,
     notes: row.notes || '',
     // Extraction facts kept beside the draft so the table can show what the
     // model said next to what the operator changed it to.
@@ -175,11 +184,19 @@ export function draftErrors(drafts) {
 export function draftToProposal(draft, { scanId } = {}) {
   const u = parseMoneyDraft(draft.unit_cost, { knownFree: draft.unitKnownFree });
   const s = parseMoneyDraft(draft.shipping, { knownFree: draft.shipKnownFree });
+  const clear = [];
+  if (draft.clearUnit) clear.push('unit_cogs');
+  if (draft.clearShip) clear.push('ship');
   return {
     scope: 'variant',
+    // MANDATORY on a quote apply: it is what the server's re-run of the
+    // verifier keys its refusal on. A row the verifier blocked stays blocked
+    // however this table feels about it.
+    row_id: draft.row_id,
     variant_id: draft.variant_id,
     unit_cogs: u.value,
     ship: { default: s.value },
+    explicit_clear: clear,
     currency: 'USD',
     note: [
       scanId ? `quote ${scanId}` : 'quote scan',
@@ -195,20 +212,35 @@ export function selectedProposals(drafts, { scanId } = {}) {
   return drafts.filter((d) => d.selected).map((d) => draftToProposal(d, { scanId }));
 }
 
-/** Rows that may be ticked at all. */
-export function selectableRows(drafts, verify) {
-  return drafts.filter((d) => rowState(d, verify).selectable);
-}
-
 /**
  * The confirm table. "Apply 12 proposals?" is not a confirm — this spells out
- * every rate row that will be written, with the variant it lands on.
+ * every rate row that will be written, with the variant it lands on and what
+ * happens to each field.
+ *
+ * THREE OUTCOMES PER FIELD, and the table must not blur them:
+ *   set     — a value is being written
+ *   kept    — the field is blank, so the value already in force is CARRIED
+ *             onto the new row (a rate row replaces, it does not patch)
+ *   cleared — the operator ticked "remove", so a null IS written and the
+ *             field becomes unknown. Rendered red, because clearing a cost
+ *             withholds profit for every leg that used it.
  */
+export function fieldOutcome({ value, cleared, current }) {
+  if (cleared && current !== null && current !== undefined) return 'cleared';
+  if (value !== null && value !== undefined) return 'set';
+  if (current !== null && current !== undefined) return 'kept';
+  return 'unknown';
+}
+
 export function applyPlan(drafts, catalogById, { scanId } = {}) {
   return drafts.filter((d) => d.selected).map((d) => {
     const entry = catalogById?.get?.(d.variant_id) || null;
     const u = parseMoneyDraft(d.unit_cost, { knownFree: d.unitKnownFree });
     const s = parseMoneyDraft(d.shipping, { knownFree: d.shipKnownFree });
+    const currentCogs = entry ? entry.unit_cogs ?? null : null;
+    const currentShip = entry ? (entry.ship?.default ?? entry.ship?.main ?? null) : null;
+    const cogsOutcome = fieldOutcome({ value: u.value, cleared: d.clearUnit, current: currentCogs });
+    const shipOutcome = fieldOutcome({ value: s.value, cleared: d.clearShip, current: currentShip });
     return {
       row_id: d.row_id,
       variant_id: d.variant_id,
@@ -219,9 +251,47 @@ export function applyPlan(drafts, catalogById, { scanId } = {}) {
       unit_text: formatCost(u.value).text,
       ship: s.value,
       ship_text: formatCost(s.value).text,
-      current_unit_cogs: entry ? entry.unit_cogs ?? null : null,
+      current_unit_cogs: currentCogs,
+      current_ship: currentShip,
+      cogs_outcome: cogsOutcome,
+      ship_outcome: shipOutcome,
+      destructive: cogsOutcome === 'cleared' || shipOutcome === 'cleared',
       edited: isEdited(d),
       note: draftToProposal(d, { scanId }).note,
+    };
+  });
+}
+
+/**
+ * The same plan, built from CHAT proposals so the Apply-all confirm reads
+ * identically to the quote one (review M10). The server has already run
+ * carry-forward on these, so `carried_cogs` / `carried_ship` tell us a field
+ * was kept rather than set, without re-deriving it here.
+ */
+export function chatApplyPlan(proposals) {
+  return proposals.map((p) => {
+    const currentShip = p.current_ship?.default ?? p.current_ship?.main ?? null;
+    const nextShip = p.ship?.default ?? p.ship?.main ?? null;
+    return {
+      row_id: p.variant_id || p.cost_item_id,
+      variant_id: p.variant_id,
+      label: [p.product_title, p.variant_title].filter(Boolean).join(' — ')
+        || p.variant_id || p.cost_item_id || EM_DASH,
+      quote_label: p.reason || '',
+      qty_break: null,
+      unit_cogs: p.unit_cogs,
+      unit_text: formatCost(p.unit_cogs).text,
+      ship: nextShip,
+      ship_text: formatCost(nextShip).text,
+      current_unit_cogs: p.current_unit_cogs ?? null,
+      current_ship: currentShip,
+      cogs_outcome: p.clears_cogs ? 'cleared' : p.carried_cogs ? 'kept'
+        : (p.unit_cogs === null ? 'unknown' : 'set'),
+      ship_outcome: p.clears_ship ? 'cleared' : (p.carried_ship || []).length ? 'kept'
+        : (nextShip === null ? 'unknown' : 'set'),
+      destructive: Boolean(p.clears_cogs || p.clears_ship),
+      edited: false,
+      note: p.note || '',
     };
   });
 }
@@ -245,7 +315,10 @@ export function chatProposalToWire(p) {
     cost_item_id: p.cost_item_id || null,
     unit_cogs: p.unit_cogs === undefined ? null : p.unit_cogs,
     ship: p.ship || {},
-    only_from_today: Boolean(p.only_from_today),
+    // A real boolean: the server refuses a truthy string rather than reading
+    // "no" as yes and quietly losing a backdate.
+    only_from_today: p.only_from_today === true,
+    explicit_clear: Array.isArray(p.explicit_clear) ? p.explicit_clear : [],
     currency: 'USD',
     note: String(p.note || '').slice(0, 500),
     reason: String(p.reason || '').slice(0, 300),
@@ -282,19 +355,6 @@ export function proposalChanges(p) {
     }
   }
   return rows;
-}
-
-/** Roll-up for the panel header. */
-export function proposalStats(proposals, results) {
-  const applied = new Set(Object.entries(results || {}).filter(([, v]) => v === 'applied').map(([k]) => k));
-  const failed = new Set(Object.entries(results || {}).filter(([, v]) => v && v !== 'applied').map(([k]) => k));
-  return {
-    total: proposals.length,
-    applied: applied.size,
-    failed: failed.size,
-    noChange: proposals.filter((p) => p.no_change).length,
-    pending: proposals.filter((p, i) => !applied.has(String(i)) && !failed.has(String(i))).length,
-  };
 }
 
 export const confidenceText = (c) => (

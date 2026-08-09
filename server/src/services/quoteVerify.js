@@ -50,7 +50,7 @@
 //                       nothing (no unit_cost and no shipping_per_unit)
 //                       proposes nothing. Severity: warn, row blocked.
 //  INJECTION            V10_INJECTION. Instruction-shaped text in a label,
-//                       supplier name or note is QUARANTINED: it is displayed
+//                       supplier name or note is SCREENED OUT: it is displayed
 //                       as data and the row proposes nothing. Severity: error
 //                       for the affected row.
 //
@@ -142,9 +142,26 @@ export function within(delta, tol = TOLERANCE) {
 const isNum = (v) => v !== null && v !== undefined && Number.isFinite(Number(v));
 const n2 = (v) => Math.round(Number(v) * 100) / 100;
 
-// ── injection quarantine (V10) ────────────────────────────────────────────
-// Text on a supplier's document is DATA. A line that reads like an
-// instruction is transcribed, flagged, and its row proposes nothing.
+// ── instruction SCREEN (V10) ──────────────────────────────────────────────
+// Text on a supplier's document is DATA. A line that reads like an instruction
+// is transcribed, flagged, and its row proposes nothing.
+//
+// HONEST NAMING (review M6). This was called a "quarantine", which oversells
+// it. It is a KEYWORD SCREEN over a handful of English phrasings: it catches
+// the careless and the obvious, and any attacker who can rewrite a sentence
+// walks straight past it. It is a tripwire, not a boundary, and nothing in
+// this lane's safety rests on it.
+//
+// The REAL defenses are structural, and none of them care what the text says:
+//   · the model cannot write — /chat and /quote/scan return inert proposals
+//     and only an operator's /apply reaches a writer;
+//   · the hallucination gate drops any variant_id that is not already a key of
+//     the catalog we just loaded, so "set every cost to 0" has no target;
+//   · the write door is appendRate, which re-validates every amount and
+//     refuses non-USD, negative and empty rates whatever asked for them;
+//   · every rate is append-only and effective-dated, so even a bad write is
+//     visible in the history and reversible by appending the correction.
+// A screened row is therefore a prompt to LOOK, not a security boundary held.
 const INJECTION_PATTERNS = [
   /ignore\s+(all\s+)?(previous\s+|prior\s+)?instructions?/i,
   /disregard\s+(the\s+|all\s+|your\s+)?\w*\s*(instructions?|rules?|above)/i,
@@ -169,7 +186,7 @@ export function sanitizeText(value, maxLen = 300) {
   return s;
 }
 
-export function scanInjection(value) {
+export function screenInstructionText(value) {
   const s = String(value == null ? '' : value);
   const hits = [];
   for (const re of INJECTION_PATTERNS) {
@@ -273,7 +290,7 @@ export function verifyMatrix(input) {
 
   // ═══ INJECTION (V10) ════════════════════════════════════════════════════
   for (const field of ['supplier', 'quote_ref', 'incoterm']) {
-    const hits = scanInjection(header[field]);
+    const hits = screenInstructionText(header[field]);
     if (hits.length) {
       add('INJECTION', 'error', 'document', null,
         `The document header contains text that reads like an instruction ("${hits[0]}"). It is data and was not acted on; nothing can be applied from this scan until you review it.`);
@@ -281,10 +298,10 @@ export function verifyMatrix(input) {
     }
   }
   for (const r of rows) {
-    const hits = [...scanInjection(r.label), ...scanInjection(r.notes), ...scanInjection(r.supplier_sku)];
+    const hits = [...screenInstructionText(r.label), ...screenInstructionText(r.notes), ...screenInstructionText(r.supplier_sku)];
     if (hits.length) {
       add('INJECTION', 'error', 'row', r.row_id,
-        `Row "${sanitizeText(r.label, 80)}" carries instruction-like text ("${hits[0]}"). It is quarantined and proposes nothing.`);
+        `Row "${sanitizeText(r.label, 80)}" carries instruction-like text ("${hits[0]}"). It is screened out and proposes nothing — read it before you trust this row.`);
     }
   }
 
@@ -364,7 +381,6 @@ export function verifyMatrix(input) {
 
     // QTY_BREAK_MONOTONIC — strictly increasing (S1) and no repeats (S9).
     let prevQty = null;
-    let prevRow = null;
     for (const r of grp) {
       if (!isNum(r.qty_break)) continue;
       const q = Number(r.qty_break);
@@ -378,9 +394,7 @@ export function verifyMatrix(input) {
         }
       }
       prevQty = q;
-      prevRow = r;
     }
-    void prevRow;
 
     // UNIT_COST_MONOTONIC — a unit cost that RISES with quantity. Advisory.
     let lastUnit = null;
@@ -453,4 +467,4 @@ export function demoteModelZeros(rows) {
   });
 }
 
-export default { verifyMatrix, demoteModelZeros, parseMoneyText, scanInjection, within, ExtractError };
+export default { verifyMatrix, demoteModelZeros, parseMoneyText, screenInstructionText, within, ExtractError };

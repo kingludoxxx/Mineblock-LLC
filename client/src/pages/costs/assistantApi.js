@@ -76,6 +76,7 @@ const ERRORS = {
   too_many_proposals: 'Too many rows in one batch — apply them in smaller groups.',
   nothing_applicable: 'None of those rows could be applied. See the reasons listed against them.',
   unknown_quote_scan: 'That scan is no longer available — re-scan the document.',
+  quote_scan_id_required: 'That scan is no longer open — re-scan the document before applying.',
   bad_batch_id: 'That batch id is not valid.',
   bad_kind: 'Unknown tab.',
   rate_limited: 'Too many AI requests in a short time — wait a few minutes.',
@@ -103,9 +104,23 @@ export const DROP_REASONS = {
   bad_amount: 'the amount could not be read as money (a "12,50" is refused rather than guessed)',
   empty_rate: 'it set neither a cost nor a shipping figure',
   bad_effective_from: 'the date was not YYYY-MM-DD',
-  currency_not_convertible: 'it was quoted in another currency, and the engine performs no conversion',
-  injected_text: 'its note contained instruction-shaped text and was quarantined',
+  effective_from_in_future: 'it was dated in the future — a cost cannot start applying before it exists',
+  effective_from_before_first_sale: 'it was dated before this variant ever sold, which would restate a period it did not exist in',
+  bad_only_from_today: '"only from today" was not a yes/no value',
+  currency_not_convertible:
+    'it was quoted in another currency — convert it to USD before applying, as automatic conversion is not built',
+  injected_text: 'its note read like an instruction rather than a note, so it was screened out',
+  row_id_required: 'it could not be traced back to a line on the scanned sheet, so it could not be re-checked',
+  verify_blocked: 'the checks on the scanned sheet failed for that line',
 };
+
+/** Why an op was deliberately NOT written. Not a failure — an outcome. */
+export const SKIP_REASONS = {
+  already_applied: 'already applied — this exact change is in the history from an earlier click',
+  no_change: 'already the cost in force — writing it again would only add a duplicate row',
+};
+
+export const skipReason = (code) => SKIP_REASONS[code] || 'it was already up to date';
 
 export function assistantError(err) {
   const data = err?.response?.data;
@@ -144,13 +159,11 @@ export function postQuoteScan(body) {
   return api.post(ASSISTANT_ROUTES.quoteScan, body).then(unwrap);
 }
 
-export function fetchQuoteScan(id) {
-  return api.get(ASSISTANT_ROUTES.quote(id)).then(unwrap);
-}
-
-export function fetchLimits() {
-  return api.get(ASSISTANT_ROUTES.limits).then(unwrap);
-}
+// NOTE: GET /quote/:id and GET /limits exist on the server (and are covered by
+// the harness) but have NO client caller yet — re-opening a stored scan and
+// reading the caps back are follow-ups. Their paths stay in ASSISTANT_ROUTES
+// above so this module remains the one place the surface is named; no unused
+// fetch wrapper is kept for them.
 
 // ── file → wire ────────────────────────────────────────────────────────────
 /** Reads a File into a base64 data URL. Rejects oversize BEFORE reading, so a

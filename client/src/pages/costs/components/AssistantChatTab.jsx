@@ -13,7 +13,8 @@ import { AlertTriangle, HelpCircle, Info } from 'lucide-react';
 import Button from '../../../components/ui/Button';
 import AssistantComposer from './AssistantComposer';
 import ProposalCard from './ProposalCard';
-import { chatProposalToWire } from '../quoteMatrix';
+import ApplyPlanTable from './ApplyPlanTable';
+import { chatApplyPlan, chatProposalToWire } from '../quoteMatrix';
 import {
   applyProposals, assistantError, dropReason, postChat,
 } from '../assistantApi';
@@ -61,13 +62,20 @@ export default function AssistantChatTab({ canEdit, onApplied }) {
         model: turn.model,
         source_text: turn.sourceText,
       });
+      // Three outcomes, not two. A SKIP is the server saying "this is already
+      // in the ledger" — rendering it as a failure would send the operator
+      // looking for a problem that does not exist, and rendering it as a fresh
+      // write would claim something happened that did not.
       const failed = (out.failed || [])[0];
+      const skipped = (out.skipped || [])[0];
+      const status = failed ? 'failed' : skipped ? 'skipped' : 'applied';
       setTurns((prev) => prev.map((t) => (t.id === turnId ? {
         ...t,
-        results: { ...t.results, [index]: failed ? 'failed' : 'applied' },
-        errors: failed ? { ...t.errors, [index]: failed.code } : t.errors,
+        results: { ...t.results, [index]: status },
+        errors: failed ? { ...t.errors, [index]: failed.code }
+          : skipped ? { ...t.errors, [index]: skipped.reason } : t.errors,
       } : t)));
-      if (!failed) onApplied?.();
+      if (out.applied_count > 0) onApplied?.();
     } catch (err) {
       setTurns((prev) => prev.map((t) => (t.id === turnId ? {
         ...t,
@@ -78,7 +86,13 @@ export default function AssistantChatTab({ canEdit, onApplied }) {
     }
   }, [turns, onApplied]);
 
+  // Apply-all goes through the SAME plan table the quote scan confirms with
+  // (review M10) — a bulk write is exactly the case where "apply all 12"
+  // hides which twelve.
+  const [confirming, setConfirming] = useState(null);
+
   const applyAll = useCallback(async (turnId) => {
+    setConfirming(null);
     const turn = turns.find((t) => t.id === turnId);
     if (!turn) return;
     const pending = turn.data.proposals
@@ -96,17 +110,20 @@ export default function AssistantChatTab({ canEdit, onApplied }) {
         model: turn.model,
         source_text: turn.sourceText,
       });
-      // The server reports failures by the index WITHIN THE LIST WE SENT —
-      // map it back onto the card, never assume position equality.
+      // The server reports failures and skips by the index WITHIN THE LIST WE
+      // SENT — map them back onto the card, never assume position equality.
       const failedAt = new Map((out.failed || []).map((f) => [f.index, f.code]));
+      const skippedAt = new Map((out.skipped || []).map((s) => [s.index, s.reason]));
       setTurns((prev) => prev.map((t) => {
         if (t.id !== turnId) return t;
         const results = { ...t.results };
         const errors = { ...t.errors };
         pending.forEach(({ i }, sentIdx) => {
           const code = failedAt.get(sentIdx);
-          results[i] = code ? 'failed' : 'applied';
+          const skip = skippedAt.get(sentIdx);
+          results[i] = code ? 'failed' : skip ? 'skipped' : 'applied';
           if (code) errors[i] = code;
+          else if (skip) errors[i] = skip;
         });
         return { ...t, results, errors };
       }));
@@ -142,10 +159,25 @@ export default function AssistantChatTab({ canEdit, onApplied }) {
             turn={turn}
             canEdit={canEdit}
             onApply={(i) => applyOne(turn.id, i)}
-            onApplyAll={() => applyAll(turn.id)}
+            onApplyAll={() => setConfirming(turn.id)}
           />
         )))}
       </div>
+
+      {confirming && (() => {
+        const turn = turns.find((t) => t.id === confirming);
+        if (!turn) return null;
+        const pending = turn.data.proposals
+          .filter((p, i) => !p.no_change && turn.results[i] !== 'applied');
+        return (
+          <ApplyPlanTable
+            plan={chatApplyPlan(pending)}
+            onCancel={() => setConfirming(null)}
+            onConfirm={() => applyAll(turn.id)}
+            sourceHeading="Why this variant"
+          />
+        );
+      })()}
 
       <AssistantComposer
         busy={busy}

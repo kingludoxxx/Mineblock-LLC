@@ -14,9 +14,10 @@
 // with no tool call is the clarifying question. That is a legitimate no-op
 // turn, not an error, and it never fabricates a proposal.
 import { ExtractError } from './quoteVerify.js';
+// ONE allowlist for the lane (review NIT) — re-exported for existing importers.
+import { MODEL_ALLOWLIST, DEFAULT_MODEL } from './cogsAssistant.js';
 
-export const MODEL_ALLOWLIST = Object.freeze(['claude-fable-5', 'claude-opus-5', 'claude-sonnet-5']);
-export const DEFAULT_MODEL = 'claude-fable-5';
+export { MODEL_ALLOWLIST, DEFAULT_MODEL };
 
 // One proposal is roughly 230 characters ≈ 70 output tokens. 200 proposals is
 // the batch cap, so the ceiling is sized to it — the reference's 8000 silently

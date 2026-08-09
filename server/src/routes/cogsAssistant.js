@@ -25,6 +25,16 @@
 // reaches appendRate, and it only ever applies proposals the client sent
 // back. An Anthropic failure fails the request honestly — 503 with prose —
 // and never returns a fabricated extraction.
+//
+// READ SCOPE (review M8). GET /audit and GET /quote/:id are NOT scoped to the
+// requesting user. This deployment is single-org — funnelCostsSchema is
+// explicitly "single-tenant", and every sibling surface in the costs lane
+// (/funnel-costs/rates, /rates/history, /pnl/*) already shows one operator the
+// costs another entered. Per-user scoping HERE and nowhere else would be
+// security theatre: the same rate rows, the same amounts and the same
+// created_by are one call away on a route this lane does not own. If the app
+// ever grows tenants, the fence belongs at the costs lane's edge as a whole,
+// not on these two handlers. Stated as a posture, not an oversight.
 import { Router, json } from 'express';
 import { authenticate } from '../middleware/auth.js';
 import { requirePermission } from '../middleware/rbac.js';
@@ -35,11 +45,10 @@ import { CostError } from '../services/funnelCosts.js';
 import {
   loadCatalogContext, membershipFor, cleanProposals, applyProposals, listAudit,
   saveQuoteScan, getQuoteScan, priorScansOf, matchVariant, sha256, newBatchId,
-  MAX_OPS_PER_BATCH, MAX_MESSAGE_CHARS,
+  quoteBlockedRows, MAX_OPS_PER_BATCH, MAX_MESSAGE_CHARS,
+  MODEL_ALLOWLIST, DEFAULT_MODEL,
 } from '../services/cogsAssistant.js';
-import {
-  runChat, validateImages, MODEL_ALLOWLIST, DEFAULT_MODEL,
-} from '../services/cogsAssistantChat.js';
+import { runChat, validateImages } from '../services/cogsAssistantChat.js';
 import {
   decodeUpload, extractQuoteMatrix, MAX_UPLOAD_BYTES,
 } from '../services/quoteExtract.js';
@@ -111,11 +120,24 @@ const pickModel = (v) => {
 // Per-user limits on the two endpoints that spend money upstream. Keyed on
 // the user, not the IP — this surface is authenticated and a whole office
 // shares one egress IP. Fail-open, like the rest of the repo's limiter use.
-const AI_LIMIT = parseInt(process.env.COGS_ASSISTANT_RATE_LIMIT, 10) || 20;
+const DEFAULT_RATE_LIMIT = 20;
 const AI_WINDOW_SEC = 5 * 60;
+
+// Read at CALL time, not module load — the same reason media.js does it: an
+// operator raising the ceiling mid-session should not need a redeploy, and the
+// harness needs to drive both sides of the limit in one process. Garbage falls
+// back to the default rather than disabling the limit.
+function rateLimit() {
+  const raw = process.env.COGS_ASSISTANT_RATE_LIMIT;
+  if (raw === undefined || String(raw).trim() === '') return DEFAULT_RATE_LIMIT;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n < 1) return DEFAULT_RATE_LIMIT;
+  return Math.trunc(n);
+}
+
 async function rateLimited(req, res, bucket) {
   const who = req.user?.id || req.ip || 'unknown';
-  const { allowed, retryAfter } = await checkRateLimit(`cogs-asst:${bucket}:${who}`, AI_LIMIT, AI_WINDOW_SEC)
+  const { allowed, retryAfter } = await checkRateLimit(`cogs-asst:${bucket}:${who}`, rateLimit(), AI_WINDOW_SEC)
     .catch(() => ({ allowed: true }));
   if (allowed) return false;
   res.set('Retry-After', String(retryAfter || AI_WINDOW_SEC));
@@ -188,6 +210,10 @@ router.post('/chat', guard('chat', async (req, res) => {
 // Re-validates against a FRESHLY read catalog: the proposals have made a
 // round trip through a browser and the sweep may have moved under them.
 router.post('/apply', guard('apply', async (req, res) => {
+  // Rate-limited too (review M5). It writes to the money path and its own
+  // bucket, so a runaway client cannot burn the AI budget and the ledger with
+  // one loop. Fail-open, like the rest of the repo's limiter use.
+  if (await rateLimited(req, res, 'apply')) return;
   const b = req.body || {};
   const raw = b.proposals;
   if (!Array.isArray(raw) || !raw.length) {
@@ -203,13 +229,30 @@ router.post('/apply', guard('apply', async (req, res) => {
     return fail(res, 422, 'bad_batch_id', 'batch_id must be 1-64 chars of [A-Za-z0-9_-]');
   }
   const quoteScanId = b.quote_scan_id ? String(b.quote_scan_id).slice(0, 64) : null;
-  if (quoteScanId && !(await getQuoteScan(quoteScanId))) {
+
+  // THE VERIFIER RE-RUNS SERVER-SIDE FOR QUOTE-SOURCED OPS (review M3).
+  // A quote apply must name its scan, because the scan is the only copy of the
+  // matrix the client cannot edit. quoteBlockedRows re-runs verifyMatrix over
+  // that stored matrix and unions the result with the findings recorded at scan
+  // time, so a row the verifier blocked stays blocked whatever the browser
+  // sends. The client can never overrule the verifier.
+  let verifyBlocked = null;
+  if (kind === 'quote') {
+    if (!quoteScanId) {
+      return fail(res, 422, 'quote_scan_id_required',
+        'a quote apply must name the scan it came from');
+    }
+    const scan = await getQuoteScan(quoteScanId);
+    if (!scan) return fail(res, 422, 'unknown_quote_scan', 'that scan id does not exist');
+    verifyBlocked = quoteBlockedRows(scan);
+  } else if (quoteScanId && !(await getQuoteScan(quoteScanId))) {
     return fail(res, 422, 'unknown_quote_scan', 'that scan id does not exist');
   }
 
   // Membership for exactly the refs in this request — not the whole grid,
   // which clamps and would reject a legitimate proposal for a low-revenue
-  // variant that fell off the propose-time page.
+  // variant that fell off the propose-time page. It carries the RESOLVED
+  // unit_cogs/ship, which is what carry-forward reads.
   const refs = raw
     .filter((p) => p && typeof p === 'object')
     .map((p) => ({
@@ -218,15 +261,19 @@ router.post('/apply', guard('apply', async (req, res) => {
     }));
   const live = await membershipFor(refs);
 
-  // carry:false — the proposals the client sends back already carry whatever
-  // the propose pass carried, visible on the card the operator confirmed.
-  // Re-carrying here would silently fold in values that changed since.
+  // carry:TRUE (review B2). It was false here, and that was the bug: a quote
+  // row whose cost was unreadable — or whose 0 MODEL_ZERO had just demoted to
+  // null — wrote `unit_cogs: null` straight over a real cost. Carrying against
+  // the state we just read means a null NEVER overwrites a non-null resolved
+  // value; only an explicit_clear does, and that is a deliberate act the plan
+  // table shows in red.
   // dedupe:false — two entries for one variant are a legitimate "set the cost,
   // and also the ship" assembled across turns; applyProposals' groupWrites
   // MERGES them into one row rather than dropping the second.
   const { proposals, dropped } = cleanProposals(raw, {
-    byId: live.byId, itemIds: live.items, source: kind === 'quote' ? 'image' : 'chat',
-    carry: false, dedupe: false,
+    byId: live.byId, itemIds: live.itemIds, items: live.items,
+    source: kind === 'quote' ? 'image' : 'chat',
+    carry: true, dedupe: false, verifyBlocked,
   });
   if (!proposals.length) {
     return res.status(422).json({

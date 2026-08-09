@@ -30,6 +30,9 @@ process.env.NODE_ENV = 'development';
 process.env.JWT_ACCESS_SECRET = process.env.JWT_ACCESS_SECRET || 'dev-access-secret-change-me';
 process.env.ANTHROPIC_API_KEY = 'test-key-not-real';
 process.env.MONEY_SWEEP_DISABLED = '1';
+// The suite makes far more than the default 20 calls per bucket. Raised here
+// and driven DOWN at the end (block C-RL) so the limit itself is still proved.
+process.env.COGS_ASSISTANT_RATE_LIMIT = '10000';
 
 let pass = 0;
 let fail = 0;
@@ -251,6 +254,62 @@ console.log('\n── A. verify rules (pass + fail each) ──');
   ok(ca.cleanConfidence('abc') === null, 'A14 garbage confidence is null, not 0');
 }
 
+// A15 idempotency comparison (review B1 / M5)
+{
+  ok(ca.moneyEq(4.2, '4.2000') === true, 'A15 moneyEq absorbs a NUMERIC(12,4) round trip');
+  ok(ca.moneyEq(null, null) === true && ca.moneyEq(0, null) === false && ca.moneyEq(null, 0) === false,
+    'A15 moneyEq keeps null and 0 DIFFERENT — the whole lane depends on it');
+  const shipA = { default: 1, main: null, upsell: null, addon: null, bump: null };
+  ok(ca.sameFieldSet({ unit_cogs: 4.2, ship: shipA }, { unit_cogs: '4.2000', ship: { ...shipA } }) === true,
+    'A15 sameFieldSet matches an equal field-set');
+  ok(ca.sameFieldSet({ unit_cogs: 4.2, ship: shipA }, { unit_cogs: 4.2, ship: { ...shipA, main: 0 } }) === false,
+    'A15 and separates one that differs only by a 0 where a null was');
+}
+
+// A16 effective_from bounds (review M4)
+{
+  const state = { first_sold: '2026-06-01' };
+  ok(ca.effectiveFromError('2026-06-15', state) === null, 'A16 a date inside the window passes');
+  ok(ca.effectiveFromError('2026-05-31', state) === 'effective_from_before_first_sale',
+    'A16 one day before the first sale is refused');
+  ok(ca.effectiveFromError('2099-01-01', state) === 'effective_from_in_future', 'A16 a future date is refused');
+  ok(ca.effectiveFromError('nonsense', state) === 'bad_effective_from', 'A16 a non-date is refused');
+  ok(ca.effectiveFromBounds({ first_sold: '' }).floor === '2000-01-01',
+    'A16 with no known first sale the floor is the epoch, not today');
+}
+
+// A17 carryForward — explicit_clear and item scope (review B2)
+{
+  const shipNull = { default: null, main: null, upsell: null, addon: null, bump: null };
+  const base = {
+    index: 0, scope: 'variant', variant_id: '111111111111', cost_item_id: null,
+    unit_cogs: null, ship: { ...shipNull, default: 2 }, effective_from: null,
+    only_from_today: false, currency: 'USD', note: '', reason: '', explicit_clear: [],
+  };
+  const state = { unit_cogs: 3.9, cogs_source: 'variant', ship: { ...shipNull, main: 1 } };
+  const carried = ca.carryForward(base, state);
+  ok(carried.unit_cogs === 3.9 && carried.carried_cogs === true, 'A17 a ship-only proposal carries the cost');
+
+  const cleared = ca.carryForward({ ...base, explicit_clear: ['unit_cogs'] }, state);
+  ok(cleared.unit_cogs === null && cleared.carried_cogs === false && cleared.clears_cogs === true,
+    'A17 explicit_clear writes the null AND flags itself as a clear');
+
+  const shipCleared = ca.carryForward(
+    { ...base, ship: { ...shipNull }, unit_cogs: 5, explicit_clear: ['ship'] }, state);
+  ok(shipCleared.ship.main === null && shipCleared.clears_ship === true,
+    'A17 explicit_clear on ship stops the ship carry too');
+
+  const itemState = { unit_cogs: 3.3, cogs_source: 'item', ship: { ...shipNull } };
+  const itemProp = {
+    ...base, scope: 'item', variant_id: null, cost_item_id: 'ci_group1',
+    ship: { ...shipNull, default: 0.9 },
+  };
+  ok(ca.carryForward(itemProp, itemState).unit_cogs === 3.3,
+    'A17 an ITEM-scoped proposal carries the item\'s own cost (invariant 4 does not apply to it)');
+  ok(ca.carryForward(base, itemState).unit_cogs === null,
+    'A17 while a VARIANT-scoped one still refuses to freeze a group cost onto itself');
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // PART B — the route, against embedded PG + a mock Anthropic
 // ═══════════════════════════════════════════════════════════════════════════
@@ -335,6 +394,38 @@ const mock = http.createServer((req, res) => {
         rows: [{ label: 'Glow Serum Single', qty_break: 100, unit_cost: 0, shipping_per_unit: null, line_total: null }],
       })));
     }
+    // review B1: two cards, one turn, one batch id
+    if (MODE === 'chat_pair') {
+      return send(200, msg(tool('propose_cost_rates', {
+        proposals: [
+          { variant_id: MOCK.pairA, unit_cogs: 1.11, confidence: 0.9, reason: 'card one' },
+          { variant_id: MOCK.pairB, unit_cogs: 2.22, confidence: 0.9, reason: 'card two' },
+        ],
+        summary: 'Two cards.',
+      })));
+    }
+    // review B2: a quote line that prices SHIPPING ONLY, against a variant
+    // that already has a real cost. The cost must survive.
+    if (MODE === 'scan_ship_only') {
+      return send(200, msg(tool('emit_quote_matrix', {
+        header: { supplier: 'Freight Co', currency: 'USD' },
+        rows: [{
+          label: 'Carry Test Widget', qty_break: 200, unit_cost: null,
+          shipping_per_unit: 2, line_total: null, notes: 'freight only',
+        }],
+      })));
+    }
+    // review B2: the same, but the cost arrives as an exact 0 that MODEL_ZERO
+    // demotes to null. The demotion must not become an erasure.
+    if (MODE === 'scan_zero_ship') {
+      return send(200, msg(tool('emit_quote_matrix', {
+        header: { supplier: 'Freight Co', currency: 'USD' },
+        rows: [{
+          label: 'Carry Test Widget', qty_break: 300, unit_cost: 0,
+          shipping_per_unit: 3, line_total: null, notes: '',
+        }],
+      })));
+    }
     return send(500, { error: 'unmapped mock mode ' + MODE });
   });
 });
@@ -344,6 +435,10 @@ process.env.ANTHROPIC_BASE_URL = `http://127.0.0.1:${mock.address().port}`;
 const MOCK = {
   vA: '111111111111', vB: '222222222222', vC: '333333333333',
   twinA: '444444444444', twinM: '555555555555', grouped: '666666666666',
+  // review B1: two cards from ONE chat turn, applied one at a time
+  pairA: '777777777777', pairB: '787878787878',
+  // review B2: a variant that ALREADY has a cost, for the carry-forward cases
+  costed: '121212121212',
 };
 
 // ── auth seed ───────────────────────────────────────────────────────────────
@@ -362,7 +457,7 @@ const cogsRouter = (await import('../../src/routes/cogsAssistant.js')).default;
 const costsRouter = (await import('../../src/routes/funnelCosts.js')).default;
 const { ensureCheckoutTables } = await import('../../src/services/checkoutSchema.js');
 const { ensureTrackingTables } = await import('../../src/services/trackingSchema.js');
-const { reportDayKey } = await import('../../src/services/reportTz.js');
+const { reportDayKey, reportDaysAgo } = await import('../../src/services/reportTz.js');
 await ensureCheckoutTables();
 await ensureTrackingTables();
 const { ensureFunnelCostsTables } = await import('../../src/services/funnelCostsSchema.js');
@@ -385,6 +480,9 @@ await mkVariant(MOCK.vC, 'Night Cream', 'Single', { revenue: 3000 });
 await mkVariant(MOCK.twinA, 'Twin Product', 'Assistant Side', { revenue: 2000 });
 await mkVariant(MOCK.twinM, 'Twin Product', 'Manual Side', { revenue: 1900 });
 await mkVariant(MOCK.grouped, 'Grouped Product', 'Single', { revenue: 1800, cost_item_id: 'ci_group1' });
+await mkVariant(MOCK.pairA, 'Pair Product', 'Card One', { revenue: 1700 });
+await mkVariant(MOCK.pairB, 'Pair Product', 'Card Two', { revenue: 1600 });
+await mkVariant(MOCK.costed, 'Carry Test', 'Widget', { revenue: 1500 });
 
 const app = express();
 app.use(express.json({ limit: '20mb' }));
@@ -402,7 +500,7 @@ const req = async (method, path, body, headers = H) => {
   let j = null;
   let text = '';
   try { text = await r.text(); j = JSON.parse(text); } catch { /* non-JSON */ }
-  return { status: r.status, j, text };
+  return { status: r.status, j, text, retryAfter: r.headers.get('retry-after') };
 };
 
 // ── B1 auth gate ────────────────────────────────────────────────────────────
@@ -440,7 +538,7 @@ let chatBatchId = '';
   ok(d.dropped.find((x) => x.reason === 'unknown_variant').ref === '999999999999',
     'B2 THE HALLUCINATION GATE: a well-formed id not in the catalog is dropped');
   ok(d.questions.length === 1 && d.unmatched.length === 1, 'B2 questions + unmatched surface');
-  ok(d.catalog_count === 6 && d.catalog_truncated === false, `B2 catalog count reported (${d.catalog_count})`);
+  ok(d.catalog_count === 9 && d.catalog_truncated === false, `B2 catalog count reported (${d.catalog_count})`);
   const after = await sql`SELECT COUNT(*)::int AS n FROM lb_cost_rates`;
   ok(before[0].n === after[0].n && after[0].n === 0, 'B2 A PROPOSAL IS INERT — /chat wrote no lb_cost_rates row');
 }
@@ -684,6 +782,9 @@ let scanId = '';
   const r = await req('POST', '/cogs-assistant/apply', {
     kind: 'quote', quote_scan_id: scanId, model: 'claude-fable-5',
     proposals: [{
+      // row_id is mandatory on a quote apply (review M3) — it is what the
+      // server-side re-verification keys its refusal on.
+      row_id: good.row_id,
       scope: 'variant', variant_id: good.variant_id, unit_cogs: good.unit_cost,
       ship: { default: good.shipping_per_unit }, note: `quote ${scanId} qty ${good.qty_break}`,
     }],
@@ -699,6 +800,38 @@ let scanId = '';
     kind: 'quote', quote_scan_id: 'qs_ghost', proposals: [{ variant_id: MOCK.vA, unit_cogs: 1 }],
   });
   ok(badScan.status === 422 && badScan.j.error.code === 'unknown_quote_scan', 'B16 an unknown scan id is refused');
+  const noScan = await req('POST', '/cogs-assistant/apply', {
+    kind: 'quote', proposals: [{ row_id: 'r1', variant_id: MOCK.vA, unit_cogs: 1 }],
+  });
+  ok(noScan.status === 422 && noScan.j.error.code === 'quote_scan_id_required',
+    `B16 a quote apply MUST name its scan — the matrix is the only copy the client cannot edit (${noScan.j?.error?.code})`);
+}
+
+// ═══ REVIEW M3: the verifier re-runs at the APPLY door ══════════════════════
+// Row r2 of the B14 scan failed V3_ARITHMETIC. The client is free to tick it;
+// the server is not free to write it.
+{
+  const [scan] = await sql`SELECT matrix FROM lb_quote_scans WHERE id = ${scanId}`;
+  const blockedRow = scan.matrix.find((m) => m.row_id === 'r2');
+  const r = await req('POST', '/cogs-assistant/apply', {
+    kind: 'quote', quote_scan_id: scanId,
+    proposals: [{
+      row_id: 'r2', scope: 'variant', variant_id: blockedRow.variant_id,
+      unit_cogs: 4.2, ship: { default: 1.1 },
+    }],
+  });
+  ok(r.status === 422 && r.j.error.code === 'nothing_applicable',
+    `M3 a verifier-blocked row cannot be applied however the client feels (${r.status} ${r.j?.error?.code})`);
+  const drop = r.j.data.dropped[0];
+  ok(drop.reason === 'verify_blocked' && Array.isArray(drop.rules) && drop.rules.length > 0,
+    `M3 and the refusal NAMES the findings (${drop?.reason}: ${(drop?.rules || []).join(',')})`);
+  ok(drop.rules.includes('V3_ARITHMETIC'), `M3 by rule id (${(drop.rules || []).join(',')})`);
+  const noRowId = await req('POST', '/cogs-assistant/apply', {
+    kind: 'quote', quote_scan_id: scanId,
+    proposals: [{ scope: 'variant', variant_id: MOCK.vA, unit_cogs: 4.2 }],
+  });
+  ok(noRowId.status === 422 && noRowId.j.data.dropped[0].reason === 'row_id_required',
+    'M3 a quote op with no row_id cannot be verified, so it is refused');
 }
 
 // ── B17 quote scan: MODEL_ZERO demotion end to end ─────────────────────────
@@ -761,12 +894,309 @@ let scanId = '';
 // ── B22 the existing costs surface still answers (regression) ──────────────
 {
   const r = await req('GET', '/funnel-costs/variants');
-  ok(r.status === 200 && r.j.data.total === 6, `B22 GET /funnel-costs/variants unchanged (${r.j?.data?.total})`);
+  ok(r.status === 200 && r.j.data.total === 9, `B22 GET /funnel-costs/variants unchanged (${r.j?.data?.total})`);
   const hist = await req('GET', `/funnel-costs/rates/history/${MOCK.twinA}`);
   ok(hist.status === 200 && hist.j.data.count === 1,
     `B22 the assistant's rate appears in the EXISTING history endpoint (${hist.j?.data?.count})`);
   ok(hist.j.data.items[0].source === 'import', 'B22 and is labelled import there');
   ok(TODAY.length === 10, 'B22 report-tz day key available for fixtures');
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// REVIEW FIXES
+// ═══════════════════════════════════════════════════════════════════════════
+console.log('\n── C. review fixes ──');
+
+// ═══ B1: two cards, one chat turn, one batch id ════════════════════════════
+// The reviewer's exact flow. Before the fix the SECOND apply wrote its rate,
+// hit a UNIQUE violation on the audit insert, 500'd, and rendered "Not
+// applied" for a cost that WAS in the ledger.
+let pairBatch = '';
+{
+  MODE = 'chat_pair';
+  const chat = await req('POST', '/cogs-assistant/chat', { message: 'pair product: card one 1.11, card two 2.22' });
+  ok(chat.j.data.proposals.length === 2, `B1 chat turn produced two cards (${chat.j.data.proposals.length})`);
+  pairBatch = chat.j.data.batch_id;
+  const [c1, c2] = chat.j.data.proposals;
+
+  const a1 = await req('POST', '/cogs-assistant/apply', {
+    proposals: [c1], kind: 'chat', batch_id: pairBatch, model: 'claude-fable-5', source_text: 'card one',
+  });
+  ok(a1.status === 200 && a1.j.data.applied_count === 1, `B1 card 1 applies → 200 (${a1.status} ${a1.text.slice(0, 120)})`);
+
+  const a2 = await req('POST', '/cogs-assistant/apply', {
+    proposals: [c2], kind: 'chat', batch_id: pairBatch, model: 'claude-fable-5', source_text: 'card two',
+  });
+  ok(a2.status === 200 && a2.j.data.applied_count === 1,
+    `B1 card 2 applies → 200, NOT a 500 on the audit key (${a2.status} ${a2.text.slice(0, 160)})`);
+  ok(a1.j.data.event_id !== a2.j.data.event_id, 'B1 each apply EVENT has its own id');
+  ok(a1.j.data.batch_id === a2.j.data.batch_id, 'B1 while both stay under one batch id');
+
+  const audits = await sql`SELECT event_id, applied_count FROM lb_cogs_assistant_audit WHERE batch_id = ${pairBatch}`;
+  ok(audits.length === 2, `B1 BOTH applies are audited — a partial apply is still a fact (${audits.length})`);
+  ok(audits.every((a) => a.applied_count === 1), 'B1 each audit row records its own one write');
+
+  const rates = await sql`SELECT variant_id FROM lb_cost_rates WHERE batch_id = ${pairBatch}`;
+  ok(rates.length === 2, `B1 rate rows for the batch: exactly 2 (${rates.length})`);
+}
+
+// ═══ B1: three same-batch retries write nothing more ═══════════════════════
+{
+  const chatRows = await sql`SELECT id FROM lb_cost_rates WHERE batch_id = ${pairBatch}`;
+  const before = chatRows.length;
+  const results = [];
+  for (let i = 0; i < 3; i++) {
+    const r = await req('POST', '/cogs-assistant/apply', {
+      proposals: [{ scope: 'variant', variant_id: MOCK.pairA, unit_cogs: 1.11 }],
+      kind: 'chat', batch_id: pairBatch,
+    });
+    results.push(r);
+  }
+  ok(results.every((r) => r.status === 200), `B1 three retries all answer 200 (${results.map((r) => r.status).join(',')})`);
+  ok(results.every((r) => r.j.data.applied_count === 0), 'B1 and apply NOTHING');
+  ok(results.every((r) => r.j.data.skipped[0]?.reason === 'already_applied'),
+    `B1 each says already_applied (${results[0].j.data.skipped[0]?.reason})`);
+  const after = await sql`SELECT id FROM lb_cost_rates WHERE batch_id = ${pairBatch}`;
+  ok(after.length === before && after.length === 2,
+    `B1 THE LEDGER IS UNCHANGED — still exactly 2 rate rows (${after.length})`);
+  ok(results[0].j.data.skipped[0].rate_id > 0, 'B1 the skip names the row that already carries the value');
+}
+
+// ═══ B2: a quote row that prices SHIPPING ONLY must not erase the cost ═════
+{
+  // Give the variant a real cost first, by hand.
+  const seed = await req('POST', '/funnel-costs/rates', {
+    variant_id: MOCK.costed, unit_cogs: 6.5, ship: { main: 1 },
+  });
+  ok(seed.status === 200, `B2 seeded a real cost on the carry-test variant (${seed.status})`);
+
+  MODE = 'scan_ship_only';
+  const scan = await req('POST', '/cogs-assistant/quote/scan', { file: PNG, filename: 'freight.png' });
+  ok(scan.status === 200, `B2 ship-only quote scanned (${scan.status} ${scan.text.slice(0, 140)})`);
+  const qrow = scan.j.data.rows[0];
+  ok(qrow.unit_cost === null && qrow.shipping_per_unit === 2, 'B2 the row prices freight and nothing else');
+  ok(qrow.variant_id === MOCK.costed, `B2 matched to the costed variant (${qrow.variant_id})`);
+
+  const applied = await req('POST', '/cogs-assistant/apply', {
+    kind: 'quote', quote_scan_id: scan.j.data.scan_id,
+    proposals: [{
+      row_id: qrow.row_id, scope: 'variant', variant_id: qrow.variant_id,
+      unit_cogs: null, ship: { default: 2 },
+    }],
+  });
+  ok(applied.status === 200 && applied.j.data.applied_count === 1,
+    `B2 it applies (${applied.status} ${applied.text.slice(0, 160)})`);
+  const [rate] = await sql`
+    SELECT unit_cogs, ship FROM lb_cost_rates WHERE variant_id = ${MOCK.costed} ORDER BY id DESC LIMIT 1`;
+  ok(Number(rate.unit_cogs) === 6.5,
+    `B2 THE COST SURVIVED — carried forward onto the new row, not erased (${rate.unit_cogs})`);
+  ok(Number(rate.ship.default) === 2, `B2 and the freight landed (${JSON.stringify(rate.ship)})`);
+
+  // And the grid still resolves it, which is the thing the operator sees.
+  const grid = await req('GET', `/funnel-costs/variants?q=Carry`);
+  const gridRow = grid.j.data.items.find((x) => x.variant_id === MOCK.costed);
+  ok(gridRow.unit_cogs === 6.5, `B2 the resolved COGS on the grid is unchanged (${gridRow.unit_cogs})`);
+  ok(gridRow.coverage === 'ready', `B2 coverage stays ready (${gridRow.coverage})`);
+}
+
+// ═══ B2: the same, when MODEL_ZERO manufactured the null ═══════════════════
+{
+  MODE = 'scan_zero_ship';
+  const scan = await req('POST', '/cogs-assistant/quote/scan', { file: PNG, filename: 'zeroship.png' });
+  const qrow = scan.j.data.rows[0];
+  ok(qrow.unit_cost === null && qrow.unit_cost_demoted === true,
+    'B2 MODEL_ZERO demoted the 0 to null, as designed');
+  ok(qrow.variant_id === MOCK.costed, 'B2 matched to the costed variant');
+  const applied = await req('POST', '/cogs-assistant/apply', {
+    kind: 'quote', quote_scan_id: scan.j.data.scan_id,
+    proposals: [{
+      row_id: qrow.row_id, scope: 'variant', variant_id: qrow.variant_id,
+      unit_cogs: null, ship: { default: 3 },
+    }],
+  });
+  ok(applied.status === 200 && applied.j.data.applied_count === 1, `B2 it applies (${applied.status})`);
+  const [rate] = await sql`
+    SELECT unit_cogs, ship FROM lb_cost_rates WHERE variant_id = ${MOCK.costed} ORDER BY id DESC LIMIT 1`;
+  ok(Number(rate.unit_cogs) === 6.5,
+    `B2 A DEMOTED ZERO IS NOT AN ERASURE — the cost is still 6.5 (${rate.unit_cogs})`);
+  ok(Number(rate.ship.default) === 3, 'B2 the new freight landed');
+}
+
+// ═══ B2: explicit_clear is the ONLY way a null overwrites ══════════════════
+{
+  const r = await req('POST', '/cogs-assistant/apply', {
+    kind: 'chat',
+    proposals: [{
+      scope: 'variant', variant_id: MOCK.costed, unit_cogs: null,
+      ship: { default: 4 }, explicit_clear: ['unit_cogs'],
+    }],
+  });
+  ok(r.status === 200 && r.j.data.applied_count === 1, `B2 an explicit clear applies (${r.status})`);
+  const [rate] = await sql`
+    SELECT unit_cogs FROM lb_cost_rates WHERE variant_id = ${MOCK.costed} ORDER BY id DESC LIMIT 1`;
+  ok(rate.unit_cogs === null, `B2 and it DOES write NULL — the operator said so (${rate.unit_cogs})`);
+  const grid = await req('GET', `/funnel-costs/variants?q=Carry`);
+  const gridRow = grid.j.data.items.find((x) => x.variant_id === MOCK.costed);
+  ok(gridRow.unit_cogs === null && gridRow.coverage === 'needs_cost',
+    `B2 the grid reflects the clear (${gridRow.unit_cogs} / ${gridRow.coverage})`);
+}
+
+// ═══ B2: the item-scope ship-only path carries too ═════════════════════════
+{
+  const seed = await req('POST', '/funnel-costs/rates', {
+    scope: 'item', cost_item_id: 'ci_group1', unit_cogs: 3.3,
+  });
+  ok(seed.status === 200, `B2 seeded a cost-group rate (${seed.status} ${seed.text.slice(0, 120)})`);
+  const r = await req('POST', '/cogs-assistant/apply', {
+    kind: 'chat',
+    proposals: [{ scope: 'item', cost_item_id: 'ci_group1', ship: { default: 0.9 } }],
+  });
+  ok(r.status === 200 && r.j.data.applied_count === 1, `B2 item-scope ship-only applies (${r.status} ${r.text.slice(0, 160)})`);
+  const [rate] = await sql`
+    SELECT unit_cogs, ship FROM lb_cost_rates WHERE cost_item_id = 'ci_group1' ORDER BY id DESC LIMIT 1`;
+  ok(Number(rate.unit_cogs) === 3.3,
+    `B2 the GROUP's cost carried onto its own new row (${rate.unit_cogs})`);
+  ok(Number(rate.ship.default) === 0.9, 'B2 with the new freight');
+}
+
+// ═══ M4: effective_from is bounded, only_from_today is a boolean ═══════════
+{
+  const future = reportDaysAgo(-2);
+  const r1 = await req('POST', '/cogs-assistant/apply', {
+    kind: 'chat',
+    proposals: [{ scope: 'variant', variant_id: MOCK.vC, unit_cogs: 5, effective_from: future }],
+  });
+  ok(r1.status === 422 && r1.j.data.dropped[0].reason === 'effective_from_in_future',
+    `M4 a future date is refused by name (${r1.j?.data?.dropped?.[0]?.reason})`);
+  ok(r1.j.data.dropped[0].ceiling === TODAY, `M4 and the refusal states the ceiling (${r1.j.data.dropped[0].ceiling})`);
+
+  const tooEarly = reportDaysAgo(400);
+  const r2 = await req('POST', '/cogs-assistant/apply', {
+    kind: 'chat',
+    proposals: [{ scope: 'variant', variant_id: MOCK.vC, unit_cogs: 5, effective_from: tooEarly }],
+  });
+  ok(r2.status === 422 && r2.j.data.dropped[0].reason === 'effective_from_before_first_sale',
+    `M4 a date before the variant's first sale is refused by name (${r2.j?.data?.dropped?.[0]?.reason})`);
+  ok(r2.j.data.dropped[0].floor === FIRST_SOLD, `M4 and states the floor (${r2.j.data.dropped[0].floor})`);
+
+  const r3 = await req('POST', '/cogs-assistant/apply', {
+    kind: 'chat',
+    proposals: [{ scope: 'variant', variant_id: MOCK.vC, unit_cogs: 5, only_from_today: 'yes' }],
+  });
+  ok(r3.status === 422 && r3.j.data.dropped[0].reason === 'bad_only_from_today',
+    `M4 only_from_today must be a real boolean, not a truthy string (${r3.j?.data?.dropped?.[0]?.reason})`);
+
+  const inRange = reportDaysAgo(10);
+  const r4 = await req('POST', '/cogs-assistant/apply', {
+    kind: 'chat',
+    proposals: [{ scope: 'variant', variant_id: MOCK.vC, unit_cogs: 5.55, effective_from: inRange }],
+  });
+  ok(r4.status === 200 && r4.j.data.applied_count === 1, `M4 a date inside the window applies (${r4.status})`);
+  const [rate] = await sql`
+    SELECT to_char(effective_from, 'YYYY-MM-DD') AS ef FROM lb_cost_rates
+    WHERE variant_id = ${MOCK.vC} ORDER BY id DESC LIMIT 1`;
+  ok(rate.ef === inRange, `M4 dated exactly as asked (${rate.ef} vs ${inRange})`);
+}
+
+// ═══ M5: an identical row is not written twice ═════════════════════════════
+{
+  const before = await sql`SELECT COUNT(*)::int AS n FROM lb_cost_rates WHERE variant_id = ${MOCK.vB}`;
+  const r = await req('POST', '/cogs-assistant/apply', {
+    kind: 'chat',
+    // A DIFFERENT batch — so this is not the already_applied path, it is the
+    // "identical to the rate already in force" path.
+    batch_id: 'cab_m5_distinct',
+    proposals: [{ scope: 'variant', variant_id: MOCK.vB, unit_cogs: 7.5, ship: { main: 2.25 } }],
+  });
+  ok(r.status === 200 && r.j.data.applied_count === 0, `M5 identical field-set → applied 0 (${r.status} ${r.text.slice(0, 140)})`);
+  ok(r.j.data.skipped[0]?.reason === 'no_change', `M5 reported as no_change (${r.j.data.skipped[0]?.reason})`);
+  const after = await sql`SELECT COUNT(*)::int AS n FROM lb_cost_rates WHERE variant_id = ${MOCK.vB}`;
+  ok(after[0].n === before[0].n, `M5 no duplicate appended to the ledger (${before[0].n} → ${after[0].n})`);
+  const [audit] = await sql`SELECT skipped_count, applied_count FROM lb_cogs_assistant_audit WHERE batch_id = 'cab_m5_distinct'`;
+  ok(audit && audit.skipped_count === 1 && audit.applied_count === 0,
+    'M5 "nothing happened, on purpose" is still audited');
+}
+
+// ═══ B1: the transaction is real — a mid-batch fault rolls the whole thing ═
+// Driven at the SERVICE, because the route's gate now strips the control
+// character that causes the fault (which is the right place for it to die).
+// Op 1 is clean and inserts; op 2 carries a NUL, which Postgres refuses in a
+// text column. Nothing may survive.
+{
+  const batch = 'cab_atomic_test';
+  const blankShip = { default: null, main: null, upsell: null, addon: null, bump: null };
+  const base = {
+    scope: 'variant', cost_item_id: null, ship: { ...blankShip }, effective_from: null,
+    only_from_today: false, currency: 'USD', reason: '', explicit_clear: [],
+  };
+  const ratesBefore = await sql`SELECT COUNT(*)::int AS n FROM lb_cost_rates`;
+  const auditBefore = await sql`SELECT COUNT(*)::int AS n FROM lb_cogs_assistant_audit`;
+  let threw = '';
+  try {
+    await ca.applyProposals({
+      proposals: [
+        { ...base, index: 0, variant_id: MOCK.pairA, unit_cogs: 41.41, note: 'clean' },
+        { ...base, index: 1, variant_id: MOCK.pairB, unit_cogs: 42.42, note: ['bad', 'note'].join(String.fromCharCode(0)) },
+      ],
+      kind: 'chat', batchId: batch, createdBy: 'asst@local.test',
+    });
+  } catch (err) {
+    threw = err?.message || String(err);
+  }
+  ok(Boolean(threw), `B1 a real DB fault mid-batch THROWS rather than half-succeeding (${threw.slice(0, 80)})`);
+  const orphan = await sql`SELECT id FROM lb_cost_rates WHERE batch_id = ${batch}`;
+  ok(orphan.length === 0, `B1 op 1's rate was ROLLED BACK — no orphan in the ledger (${orphan.length})`);
+  const orphanAudit = await sql`SELECT id FROM lb_cogs_assistant_audit WHERE batch_id = ${batch}`;
+  ok(orphanAudit.length === 0, `B1 and no audit row claims otherwise (${orphanAudit.length})`);
+  const ratesAfter = await sql`SELECT COUNT(*)::int AS n FROM lb_cost_rates`;
+  const auditAfter = await sql`SELECT COUNT(*)::int AS n FROM lb_cogs_assistant_audit`;
+  ok(ratesAfter[0].n === ratesBefore[0].n && auditAfter[0].n === auditBefore[0].n,
+    `B1 both tables are byte-for-byte where they started (${ratesBefore[0].n}/${auditBefore[0].n} → ${ratesAfter[0].n}/${auditAfter[0].n})`);
+  // And the gate that keeps this out of the route in the first place.
+  const viaRoute = await req('POST', '/cogs-assistant/apply', {
+    kind: 'chat',
+    proposals: [{ scope: 'variant', variant_id: MOCK.pairB, unit_cogs: 43.43, note: ['bad', 'note'].join(String.fromCharCode(0)) }],
+  });
+  ok(viaRoute.status === 200 && viaRoute.j.data.applied_count === 1,
+    `B1 through the ROUTE the same note is sanitized and the write succeeds (${viaRoute.status})`);
+  const [saved] = await sql`SELECT note FROM lb_cost_rates WHERE variant_id = ${MOCK.pairB} ORDER BY id DESC LIMIT 1`;
+  ok(!saved.note.includes(String.fromCharCode(0)) && saved.note.includes('bad'),
+    `B1 with the control character stripped, not the text (${JSON.stringify(saved.note)})`);
+}
+
+// ═══ M5: /apply is rate limited too ════════════════════════════════════════
+// Driven at the very end, and on its OWN bucket, so lowering the ceiling
+// cannot starve the cases above.
+{
+  process.env.COGS_ASSISTANT_RATE_LIMIT = '1';
+  const hits = [];
+  for (let i = 0; i < 3; i++) {
+    hits.push(await req('POST', '/cogs-assistant/apply', {
+      kind: 'chat', batch_id: `cab_rl_${i}`,
+      proposals: [{ scope: 'variant', variant_id: MOCK.vC, unit_cogs: 6 + i }],
+    }));
+  }
+  const limited = hits.filter((h) => h.status === 429);
+  ok(limited.length >= 1, `M5 /apply is rate limited (${hits.map((h) => h.status).join(',')})`);
+  ok(limited[0].j.error.code === 'rate_limited', 'M5 with a named code');
+  ok(Number(limited[0].retryAfter) > 0,
+    `M5 and a Retry-After header the client can obey (${limited[0].retryAfter})`);
+  process.env.COGS_ASSISTANT_RATE_LIMIT = '10000';
+  const after = await req('POST', '/cogs-assistant/apply', {
+    kind: 'chat', batch_id: 'cab_rl_reopen',
+    proposals: [{ scope: 'variant', variant_id: MOCK.vC, unit_cogs: 6.75 }],
+  });
+  ok(after.status !== 429, `M5 the ceiling is read at CALL time, so raising it takes effect at once (${after.status})`);
+}
+
+// ═══ NIT: one model allowlist for the whole lane ═══════════════════════════
+{
+  const chatSvc = await import('../../src/services/cogsAssistantChat.js');
+  const extractSvc = await import('../../src/services/quoteExtract.js');
+  ok(chatSvc.MODEL_ALLOWLIST === ca.MODEL_ALLOWLIST && extractSvc.MODEL_ALLOWLIST === ca.MODEL_ALLOWLIST,
+    'NIT the chat service, the extractor and the core share ONE frozen allowlist object');
+  ok(chatSvc.DEFAULT_MODEL === ca.DEFAULT_MODEL && extractSvc.DEFAULT_MODEL === ca.DEFAULT_MODEL,
+    'NIT and one default model');
 }
 
 server.close();
