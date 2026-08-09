@@ -1473,19 +1473,54 @@ async function readAbandoned(query, q, stats) {
 const COST_REF_TTL_MS = 15_000;
 const _costRefCache = new Map();
 
+// The membership ledger, or [] when the costs lane has never ensured its
+// tables on this database. See the call site for why empty is the CORRECT
+// answer there and not a silent degradation.
+async function loadMemberships(query) {
+  const reg = await query(`SELECT to_regclass('public.lb_cost_item_members') AS t`);
+  if (!reg.length || !reg[0].t) return [];
+  return query(`SELECT id, variant_id, cost_item_id, units_per,
+                       to_char(effective_from, 'YYYY-MM-DD') AS effective_from,
+                       created_at
+                FROM lb_cost_item_members ORDER BY effective_from, created_at, id`);
+}
+
 async function costReference(query) {
   const now = Date.now();
   const hit = _costRefCache.get(query);
   if (hit && hit.expires > now) return hit.value;
-  const [rates, catalogRows, feeRows] = await Promise.all([
+  const [rates, memberships, catalogRows, feeRows] = await Promise.all([
     query(`SELECT id, scope, variant_id, cost_item_id,
                   to_char(effective_from, 'YYYY-MM-DD') AS effective_from,
                   unit_cogs, ship, currency, source, created_at
            FROM lb_cost_rates ORDER BY effective_from, created_at, id`),
-    query(`SELECT variant_id, pays_shipping, kind_auto, kind_override, cost_item_id FROM lb_variant_costs`),
+    // THE MEMBERSHIP LEDGER — the second half of a cost group's price.
+    //
+    // A member's COGS is the group rate × units_per, and BOTH are
+    // effective-dated (lb_cost_item_members). Loading only the rates here
+    // made this surface resolve membership "as of now": it restated closed
+    // periods on every pack-size edit, and — because the P&L reads the
+    // ledger — the two surfaces reported DIFFERENT cogs for the SAME day.
+    //
+    // funnelCosts.loadCostIndex() is the canonical loader, but it goes
+    // through the shared pgQuery pool. This module deliberately reads its
+    // own small analytics pool so a slow report can never starve the money
+    // path, so the ledgers are loaded through THIS handle instead. The
+    // ordering below is the one buildRateIndex expects.
+    //
+    // PROBED, not assumed: this module never runs ensureFunnelCostsTables,
+    // so on a deploy where the costs router has not been hit yet the table
+    // may not exist and an unguarded read would 42P01 every metrics call.
+    // The empty fallback is CORRECT rather than merely safe — the group
+    // tables are created together, so no membership table means no groups
+    // exist at all, and buildRateIndex's current-column fallback is then the
+    // right answer by construction. (Same probe-first pattern as
+    // funnelCosts.funnelNames.)
+    loadMemberships(query),
+    query(`SELECT variant_id, pays_shipping, kind_auto, kind_override, cost_item_id, units_per FROM lb_variant_costs`),
     query(`SELECT default_pct, default_fixed, gateways FROM lb_fee_settings WHERE id = 1`),
   ]);
-  const value = { rates, catalogRows, feeRows };
+  const value = { rates, memberships, catalogRows, feeRows };
   // One entry per handle; handles are long-lived (the pool, or a harness fn),
   // so this map cannot grow without bound in a server process.
   _costRefCache.set(query, { value, expires: now + COST_REF_TTL_MS });
@@ -1504,7 +1539,7 @@ async function readCosts(query, q, stats) {
   const { sql: fsql } = moneyFilters(filters, params);
   const key = moneyKeyExpr(dimension);
 
-  const [{ rates, catalogRows, feeRows }, sessions, charges] = await Promise.all([
+  const [{ rates, memberships, catalogRows, feeRows }, sessions, charges] = await Promise.all([
     costReference(query),
     query(
       // ⚠️ THE jsonb_typeof COERCION IS LOAD-BEARING, and it is the one guard
@@ -1555,7 +1590,8 @@ async function readCosts(query, q, stats) {
   stats.malformed_line_items = sessions.filter((r) => r.line_items_malformed).length
     + charges.filter((r) => r.line_items_malformed).length;
 
-  const rateIndex = buildRateIndex(rates);
+  // Both ledgers, so this surface prices a closed day exactly as the P&L does.
+  const rateIndex = buildRateIndex(rates, memberships);
   const catalog = {};
   for (const r of catalogRows) catalog[String(r.variant_id)] = r;
   // ⚠️ THE NESTED SHAPE IS THE CONTRACT. `resolveFeeRate` reads

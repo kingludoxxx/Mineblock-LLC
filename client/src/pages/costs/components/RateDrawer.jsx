@@ -24,7 +24,7 @@ import {
   CONTEXT_KEYS, EM_DASH, costInputError, fmtDateTime, formatCost, hasShipMap,
   parseCostInput, paysShipping, resolveFanOutTargets, resolveShip, todayIso, variantLabel,
 } from '../costTargets';
-import { costApiError, fetchRateHistory, postRate, rowsOf } from '../costsApi';
+import { costApiError, fetchCostGroup, fetchRateHistory, postRate, rowsOf } from '../costsApi';
 
 const BLANK_SHIP = { default: '', main: '', upsell: '', addon: '', bump: '' };
 const SHIP_KEYS = ['default', ...CONTEXT_KEYS];
@@ -156,9 +156,41 @@ export default function RateDrawer({ open, row, rows = [], canEdit = false, onOp
     if (!dateTouched) setEffectiveFrom(defaultFrom);
   }, [defaultFrom, dateTouched]);
 
+  /**
+   * THE GROUP'S REAL MEMBERS, FROM THE SERVER.
+   *
+   * `rows` is the variant page this screen happens to have loaded. Deriving
+   * a group's membership from it under-reports every member that did not fit
+   * on the page — and this preview is the operator's only warning about how
+   * many variants, and which funnels, a group rate is about to move. So an
+   * item-scope save reads the membership from GET /:id and refuses to render
+   * a count until it has it.
+   */
+  const [groupMembers, setGroupMembers] = useState(null);
+  const [groupError, setGroupError] = useState(null);
+  useEffect(() => {
+    if (!open || scope !== 'item' || !itemId) { setGroupMembers(null); setGroupError(null); return; }
+    let live = true;
+    setGroupMembers(null);
+    setGroupError(null);
+    fetchCostGroup(itemId)
+      .then((data) => { if (live) setGroupMembers(data?.group?.members || []); })
+      .catch((e) => { if (live) setGroupError(costApiError(e, 'Could not read this cost group')); });
+    return () => { live = false; };
+  }, [open, scope, itemId]);
+
+  // Until the real list arrives, an item-scope save has no honest preview —
+  // the button below is disabled on `groupPending` rather than showing a
+  // number derived from the page.
+  const groupPending = scope === 'item' && Boolean(itemId) && groupMembers === null && !groupError;
+
   const fanOut = useMemo(
-    () => resolveFanOutTargets({ row, rows, scope }),
-    [row, rows, scope],
+    () => resolveFanOutTargets({
+      row,
+      rows: scope === 'item' && groupMembers ? groupMembers : rows,
+      scope,
+    }),
+    [row, rows, scope, groupMembers],
   );
 
   if (!open || !row) return null;
@@ -407,11 +439,25 @@ export default function RateDrawer({ open, row, rows = [], canEdit = false, onOp
             />
           </div>
 
-          {/* Target preview — the exact rows this save touches, before saving. */}
+          {/* Target preview — the exact rows this save touches, before saving.
+              For an item-scope save the membership comes from the SERVER, so
+              the count is the group's real reach and not a page artefact. */}
           <div className="rounded-lg border border-border-default bg-bg-elevated/40 p-3 space-y-2" data-testid="costs-targets">
+            {groupPending && (
+              <p className="text-[11px] text-text-muted flex items-center gap-1.5">
+                <Loader2 className="w-3 h-3 animate-spin" />
+                Reading this cost group&rsquo;s members from the server…
+              </p>
+            )}
+            {groupError && (
+              <p className="text-[11px] text-danger flex items-center gap-1.5">
+                <AlertTriangle className="w-3 h-3" />
+                {groupError} — the group&rsquo;s reach cannot be shown, so this save is blocked.
+              </p>
+            )}
             <div className="flex items-center justify-between gap-2">
               <p className="text-[11px] font-medium text-text-primary">
-                This save writes to <span className="tabular-nums">{fanOut.affected.length}</span>{' '}
+                This save writes to <span className="tabular-nums">{groupPending ? '…' : fanOut.affected.length}</span>{' '}
                 variant{fanOut.affected.length === 1 ? '' : 's'}
               </p>
               {fanOut.crossFunnel && (
@@ -482,13 +528,15 @@ export default function RateDrawer({ open, row, rows = [], canEdit = false, onOp
             <button
               type="button"
               onClick={save}
-              disabled={!canEdit || saving}
+              disabled={!canEdit || saving || groupPending || Boolean(groupError)}
               data-testid="costs-save-rate"
               className="inline-flex items-center gap-1.5 h-9 px-4 rounded-lg bg-accent text-white text-sm
                          font-medium disabled:opacity-50 transition-colors"
             >
-              {saving && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
-              {saving ? 'Saving…' : `Append rate (${fanOut.affected.length})`}
+              {(saving || groupPending) && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+              {saving ? 'Saving…'
+                : groupPending ? 'Reading the group…'
+                  : `Append rate (${fanOut.affected.length})`}
             </button>
           </div>
         </div>
