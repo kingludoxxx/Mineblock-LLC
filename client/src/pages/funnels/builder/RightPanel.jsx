@@ -454,9 +454,10 @@ function DateTimeField({ value, onChange }) {
   const [dst, setDst] = useState(null);
   const raw = value == null ? '' : String(value);
   const local = localInputFromIso(raw);
-  // The PAGE cannot read it if Date.parse says NaN — which is what
-  // countdownPreview now reports, whitespace and all.
-  const { state, text, padded } = countdownPreview(raw, now);
+  // The PAGE cannot read it only when Date.parse says NaN on the TRIMMED
+  // value — the renderer trims at emission, so surrounding whitespace is no
+  // longer a failure mode and must not be reported as one.
+  const { state, text } = countdownPreview(raw, now);
   const unreadable = state === 'invalid';
 
   const pick = (typed) => {
@@ -481,19 +482,8 @@ function DateTimeField({ value, onChange }) {
         <p className="flex items-start gap-1.5 text-[11px] text-danger leading-snug">
           <AlertTriangle className="w-3 h-3 mt-0.5 shrink-0" />
           <span>
-            {padded ? (
-              <>
-                The saved deadline has stray spaces around it
-                (<code className="font-mono">{JSON.stringify(raw)}</code>) and the page reads it
-                character for character, so its clock stays blank forever. Pick a date above to
-                store a clean one.
-              </>
-            ) : (
-              <>
-                The saved deadline <code className="font-mono">{raw}</code> is not a date the page can
-                read, so the clock stays blank there. Pick one above to replace it.
-              </>
-            )}
+            The saved deadline <code className="font-mono">{raw}</code> is not a date the page can
+            read, so the clock stays blank there. Pick one above to replace it.
           </span>
         </p>
       ) : (

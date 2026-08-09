@@ -8,6 +8,11 @@
 // without throwing — a render pass that throws white-screens the builder.
 //
 // Run:  node server/tests/builder/builder-model.mjs
+//
+// One case reads funnelRender.js as TEXT (never imports it): the countdown
+// preview mirrors a contract that lives in the renderer's emission line, and
+// pinning that line is what stops the two drifting apart silently.
+import { readFileSync } from 'node:fs';
 import {
   buildOutline, defaultLabel, blockCodeSections, editableCount, safeJson,
   parseInlineMarkup, bumpHeadline, bumpUnconfigured, blockNameAttr,
@@ -809,19 +814,17 @@ ok(Object.isFrozen(WIRING_KEYS), 'F4: the floor is frozen — a caller cannot wi
   // MIRRORS countdownRuntimeScript() IN funnelRender.js: same formatting,
   // same 'Offer expired' literal, same <= 0 boundary.
   const t0 = Date.parse('2026-01-01T00:00:00Z');
-  // `padded` rides on every result so the panel can name whitespace as the
-  // cause; it is false for these clean instants.
   const at = (ms) => countdownPreview('2026-01-01T00:00:00Z', t0 - ms);
-  eq(at(1000), { state: 'live', text: '00:00:01', padded: false }, 'countdown: one second out formats zero-padded');
-  eq(at(61000), { state: 'live', text: '00:01:01', padded: false }, 'countdown: minutes and seconds pad');
-  eq(at(3600000), { state: 'live', text: '01:00:00', padded: false }, 'countdown: a whole hour');
-  eq(at(86400000), { state: 'live', text: '1d 00:00:00', padded: false }, 'countdown: a day prefixes "1d "');
-  eq(at(90061000), { state: 'live', text: '1d 01:01:01', padded: false }, 'countdown: days + padded clock');
-  eq(at(10 * 3600000), { state: 'live', text: '10:00:00', padded: false }, 'countdown: a two-digit hour is not double-padded');
+  eq(at(1000), { state: 'live', text: '00:00:01' }, 'countdown: one second out formats zero-padded');
+  eq(at(61000), { state: 'live', text: '00:01:01' }, 'countdown: minutes and seconds pad');
+  eq(at(3600000), { state: 'live', text: '01:00:00' }, 'countdown: a whole hour');
+  eq(at(86400000), { state: 'live', text: '1d 00:00:00' }, 'countdown: a day prefixes "1d "');
+  eq(at(90061000), { state: 'live', text: '1d 01:01:01' }, 'countdown: days + padded clock');
+  eq(at(10 * 3600000), { state: 'live', text: '10:00:00' }, 'countdown: a two-digit hour is not double-padded');
   // The boundary is the runtime's: `if(ms<=0)`. Exactly ON the deadline is
   // EXPIRED, not a live 00:00:00.
-  eq(at(0), { state: 'expired', text: 'Offer expired', padded: false }, 'countdown: the deadline instant itself reads expired');
-  eq(at(-5000), { state: 'expired', text: 'Offer expired', padded: false }, 'countdown: a past deadline reads expired');
+  eq(at(0), { state: 'expired', text: 'Offer expired' }, 'countdown: the deadline instant itself reads expired');
+  eq(at(-5000), { state: 'expired', text: 'Offer expired' }, 'countdown: a past deadline reads expired');
 }
 
 {
@@ -840,38 +843,69 @@ ok(Object.isFrozen(WIRING_KEYS), 'F4: the floor is frozen — a caller cannot wi
 }
 
 {
-  // F3. THE PREVIEW MUST PARSE WHAT THE RUNTIME PARSES — NO TRIM.
+  // F3 (REWORKED — the renderer now trims at EMISSION).
   //
-  // funnelRender's emitted runtime does `Date.parse(node.getAttribute(...))`
-  // on the raw attribute, and V8 answers NaN for a padded instant (verified by
-  // execution, not assumed). A preview that trimmed first showed a
-  // PERMANENTLY DEAD countdown as a healthy ticking clock — reachable through
-  // legacy free-text deadlines and AI replace_props.
+  // funnelRender.js emits
+  //   data-deadline='${esc(String(p.deadline || '').trim())}'
+  // so the runtime never sees surrounding whitespace. A padded-but-valid
+  // deadline is therefore LIVE on the page, and a preview calling it dead
+  // would be false in the opposite direction to the bug this replaces.
+  //
+  // THE TRIM IS PINNED AGAINST THE RENDERER SOURCE, not just described. If the
+  // integrator ever drops it, this assertion fails here rather than the
+  // builder silently going back to lying about legacy deadlines.
+  const renderSrc = readFileSync(
+    new URL('../../src/services/funnelRender.js', import.meta.url), 'utf8'
+  );
+  const emitLine = renderSrc.split('\n').find((l) => l.includes("data-deadline='"));
+  ok(!!emitLine, 'F3 contract: the countdown emission line was located in funnelRender.js');
+  ok(/\.trim\(\)/.test(String(emitLine)),
+    `F3 contract: the renderer TRIMS the deadline at emission — the shared contract this preview mirrors\n      emit ${String(emitLine).trim()}`);
+
+  // A faithful model of the shipped pipeline: emission, then the runtime's own
+  // two guards. countdownPreview must agree with this for every input.
+  const emit = (p) => String(p == null ? '' : p).trim();           // funnelRender block
+  const runtimeIsDead = (attr) => !attr || !Number.isFinite(Date.parse(attr)); // if(!raw)return; Date.parse
   const good = '2026-01-01T00:00:00Z';
   const t0 = Date.parse(good);
-  ok(Number.isFinite(t0), 'F3 countdown: the clean instant parses (control)');
-  ok(!Number.isFinite(Date.parse(` ${good} `)), 'F3 countdown: NEGATIVE CONTROL — the runtime\'s own parse rejects a padded instant');
 
-  for (const [pad, what] of [[` ${good} `, 'spaces'], [`\t${good}`, 'a tab'], [`${good}\n`, 'a newline'], [` ${good}`, 'a leading space']]) {
-    const r = countdownPreview(pad, t0 - 60000);
-    eq(r.state, 'invalid', `F3 countdown: a deadline padded with ${what} previews as DEAD, never live`);
-    eq(r.padded, true, `F3 countdown: ...and the whitespace is named as the cause (${what})`);
-    ok(r.text !== '00:01:00', `F3 countdown: ...and no clock is drawn for it (${what})`);
+  // NEGATIVE CONTROL, now mirroring the renderer: the parse is applied to the
+  // EMITTED (trimmed) attribute, which is what actually reaches the page.
+  ok(Number.isFinite(Date.parse(emit(` ${good} `))),
+    'F3 countdown: NEGATIVE CONTROL — the EMITTED (trimmed) attribute parses, so the page ticks');
+  ok(!Number.isFinite(Date.parse(` ${good} `)),
+    'F3 countdown: ...while the untrimmed string still would not — which is exactly what the emission trim fixes');
+
+  for (const [padVal, what] of [[` ${good} `, 'spaces'], [`\t${good}`, 'a tab'], [`${good}\n`, 'a newline'], [` ${good}`, 'a leading space']]) {
+    const r = countdownPreview(padVal, t0 - 60000);
+    eq(r.state, 'live', `F3 countdown: a deadline padded with ${what} previews LIVE — the renderer trimmed it`);
+    eq(r.text, '00:01:00', `F3 countdown: ...and draws the same clock the page draws (${what})`);
+    eq(runtimeIsDead(emit(padVal)), false, `F3 countdown: ...and the modelled page pipeline agrees it is alive (${what})`);
+    ok(!('padded' in r), `F3 countdown: ...and no stale padded flag is reported (${what})`);
   }
-  // Whitespace-only is likewise NOT "unset": the runtime's `if(!raw)` guard
-  // passes it through to Date.parse, where it dies.
-  eq(countdownPreview('   ', 0).state, 'invalid', 'F3 countdown: a whitespace-ONLY deadline is invalid, not unset');
-  eq(countdownPreview('   ', 0).padded, true, 'F3 countdown: whitespace-only is flagged as padded');
-  // A clean value must not be mislabelled.
-  eq(countdownPreview(good, t0 - 60000).state, 'live', 'F3 countdown: the clean instant still ticks');
-  eq(countdownPreview(good, t0 - 60000).padded, false, 'F3 countdown: a clean instant is not flagged as padded');
-  eq(countdownPreview('', 0).padded, false, 'F3 countdown: an absent deadline is not flagged as padded');
 
-  // THE WRITE PATH STILL CLEANS. isoFromLocalInput trims its input and emits a
-  // canonical ISO, so anything this editor stores is readable by the page —
-  // which is what makes the read-path strictness safe to ship.
+  // Whitespace-ONLY trims to '', so the attribute is empty and the runtime's
+  // `if(!raw) return` fires — indistinguishable from having no deadline.
+  eq(emit('   '), '', 'F3 countdown: a whitespace-only deadline emits an EMPTY attribute');
+  eq(countdownPreview('   ', 0).state, 'unset', 'F3 countdown: ...so it previews as unset, matching the runtime\'s !raw branch');
+  eq(runtimeIsDead(emit('   ')), true, 'F3 countdown: ...and the modelled pipeline agrees the clock stays blank');
+
+  // A genuinely unparseable value is still invalid AFTER trimming.
+  eq(countdownPreview('  next tuesday  ', 0).state, 'invalid', 'F3 countdown: trimming does not rescue an unparseable deadline');
+  eq(runtimeIsDead(emit('  next tuesday  ')), true, 'F3 countdown: ...and the modelled pipeline agrees it is dead');
+
+  // FULL AGREEMENT TABLE — preview vs the modelled emission+runtime pipeline.
+  const cases = ['', '   ', good, ` ${good} `, `\t${good}\n`, 'next tuesday', '  next tuesday  ', '2026-01-01', null, undefined];
+  const disagreements = cases.filter((v) => {
+    const previewDead = countdownPreview(v, t0 - 60000).state !== 'live';
+    return previewDead !== runtimeIsDead(emit(v));
+  });
+  eq(disagreements, [], 'F3 countdown: the preview agrees with the modelled emission+runtime pipeline on EVERY case');
+
+  // THE WRITE PATH STILL CLEANS — a second, independent guarantee that does
+  // not depend on the renderer continuing to trim.
   const written = isoFromLocalInput('  2026-12-31T23:59  ');
-  ok(Number.isFinite(Date.parse(written)), 'F3 countdown: the WRITE path trims, so stored values always parse');
+  ok(Number.isFinite(Date.parse(written)), 'F3 countdown: the WRITE path trims, so stored values parse even untrimmed');
   eq(written, written.trim(), 'F3 countdown: a stored value never carries whitespace');
   eq(countdownPreview(written, 0).state, 'live', 'F3 countdown: a value this editor wrote always previews live');
 }

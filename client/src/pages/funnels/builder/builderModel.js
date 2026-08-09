@@ -672,16 +672,22 @@ export function comparisonDefaultRow(rows, feature) {
 // panel stores a full ISO instant rather than the browser's zone-less
 // `datetime-local` string.
 //
-// THE WRITE PATH TRIMS; THE READ PATH MUST NOT. That asymmetry is deliberate
-// and was a live bug. The emitted runtime does `Date.parse(raw)` on the
-// attribute verbatim, and V8 returns NaN for a padded instant — verified:
-//   Date.parse(' 2026-01-01T00:00:00Z ') === NaN
-// so a deadline carrying stray whitespace (legacy free-text values, an AI
-// `replace_props`) is DEAD on the public page forever. A preview that trimmed
-// before parsing showed that same block as a healthy ticking clock. The
-// preview now parses exactly what the runtime parses, and names the whitespace
-// as the reason; only isoFromLocalInput — the WRITE — trims, so new data is
-// always clean.
+// THE TRIM IS THE SHARED CONTRACT, AND IT LIVES AT EMISSION.
+// funnelRender.js renders the attribute as
+//   data-deadline='${esc(String(p.deadline || '').trim())}'
+// so the runtime never sees the padding: it reads an already-trimmed value and
+// runs `if(!raw) return;` then `Date.parse(raw)`. Everything here is measured
+// against THAT — the trimmed value — because that is what reaches the page.
+//
+// This used to be the other way round. Before the renderer trimmed, a padded
+// deadline was genuinely dead on the page (V8 answers NaN for
+// `Date.parse(' 2026-01-01T00:00:00Z ')`), and this preview had to refuse to
+// draw a clock for it. The renderer now trims at emission, which revived every
+// legacy padded value — so a preview that still called them dead would state
+// the falsehood in the opposite direction. It trims again, in step.
+//
+// isoFromLocalInput — the WRITE — also trims, so values this editor stores are
+// clean at rest as well as at emission. Two independent guarantees, both kept.
 //
 // ZONE HANDLING IS NOT UNIFORM, and the doc used to claim it was. Per the ES
 // spec, a DATE-ONLY string is UTC while a date-TIME string without a zone is
@@ -774,11 +780,13 @@ export function localInputAnomaly(value) {
 /**
  * What the countdown clock reads, for the canvas preview.
  *
- * MIRRORS countdownRuntimeScript() IN funnelRender.js CHARACTER FOR CHARACTER:
- * `Date.parse` for the deadline, `(d>0?d+'d ':'')+pad(h)+':'+pad(m)+':'+pad(s)`
- * for the clock, and the literal 'Offer expired' once the instant is past. A
- * preview that formatted it differently would be a preview of a page that does
- * not exist — which is exactly what the old hard-coded `23:59:59` was.
+ * MIRRORS THE WHOLE PIPELINE funnelRender.js SHIPS — emission AND runtime:
+ * the block's `.trim()` at emission, then countdownRuntimeScript()'s
+ * `if(!raw) return`, its `Date.parse`, its
+ * `(d>0?d+'d ':'')+pad(h)+':'+pad(m)+':'+pad(s)` clock, and the literal
+ * 'Offer expired' once the instant is past. A preview that formatted it
+ * differently would be a preview of a page that does not exist — which is
+ * exactly what the old hard-coded `23:59:59` was.
  *
  * `state` lets the canvas distinguish the three NON-TICKING cases the runtime
  * treats as one silent no-op: no deadline, an unparseable deadline, and a real
@@ -787,29 +795,28 @@ export function localInputAnomaly(value) {
  * @returns {{state:'unset'|'invalid'|'expired'|'live', text:string}}
  */
 export function countdownPreview(deadline, nowMs) {
-  // NO TRIM — see the section header. The runtime does `if(!raw) return;` on
-  // the raw attribute and then parses it verbatim, so a whitespace-only value
-  // is NOT "unset" (it is truthy, gets parsed, and dies as NaN) and a padded
-  // instant is NOT live. Trimming here is what made a permanently dead
-  // countdown preview as a healthy clock.
-  const raw = deadline == null ? '' : String(deadline);
-  // `padded` is reported alongside every state so the panel can name the
-  // actual cause instead of leaving the operator staring at a valid-looking
-  // date that the page refuses.
-  const padded = raw !== '' && raw !== raw.trim();
-  if (!raw) return { state: 'unset', text: '—', padded: false };
+  // TRIMMED, because the RENDERER trims at emission — `String(p.deadline ||
+  // '').trim()` — so the trimmed value is what the attribute carries and what
+  // the runtime parses. Two consequences follow directly from that expression
+  // and are asserted against it in the harness:
+  //   · a padded but otherwise valid instant reaches the page intact → LIVE
+  //   · a whitespace-ONLY value trims to '', so the attribute is empty and the
+  //     runtime's `if(!raw) return` fires → indistinguishable from unset, and
+  //     reported as unset rather than as a separate broken state
+  const raw = deadline == null ? '' : String(deadline).trim();
+  if (!raw) return { state: 'unset', text: '—' };
   const end = Date.parse(raw);
-  if (!Number.isFinite(end)) return { state: 'invalid', text: '—', padded };
+  if (!Number.isFinite(end)) return { state: 'invalid', text: '—' };
   const now = Number.isFinite(nowMs) ? nowMs : Date.now();
   const ms = end - now;
-  if (ms <= 0) return { state: 'expired', text: 'Offer expired', padded };
+  if (ms <= 0) return { state: 'expired', text: 'Offer expired' };
   const total = Math.floor(ms / 1000);
   const d = Math.floor(total / 86400);
   const h = Math.floor((total % 86400) / 3600);
   const m = Math.floor((total % 3600) / 60);
   const s = total % 60;
   const pad = (n) => (n < 10 ? '0' : '') + n;
-  return { state: 'live', text: `${d > 0 ? `${d}d ` : ''}${pad(h)}:${pad(m)}:${pad(s)}`, padded };
+  return { state: 'live', text: `${d > 0 ? `${d}d ` : ''}${pad(h)}:${pad(m)}:${pad(s)}` };
 }
 
 // ---------------------------------------------------------------------------
