@@ -21,15 +21,16 @@
 //
 // ⚠️ The country limit is ADMIN CONFIG ONLY today — nothing refuses a checkout
 // for an unlisted country yet. The exact enforcement point is documented in the
-// header of server/src/routes/funnelCommerce.js. The copy below says so rather
-// than implying a protection that does not exist.
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+// header of server/src/routes/funnelCommerce.js. EVERY string in this file that
+// touches the country list says "saved" and never "limited"/"blocked": copy
+// that asserts a protection which does not exist is worse than no copy, because
+// an operator reads it and stops checking.
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { RefreshCw, Plus, Trash2, X, Check, Search, Globe, Info, AlertTriangle } from 'lucide-react';
 import api from '../../../services/api';
 import Button from '../../ui/Button';
 import { SettingsCard, Toggle } from './ui';
 import { isObj, saveFunnelPatch } from './settingsPatch';
-import { makeSerialQueue } from './serialQueue';
 
 // The full country list, generated at runtime from Intl.DisplayNames over every
 // ISO 3166-1 alpha-2 code — so ANY country is searchable without a hardcoded
@@ -88,15 +89,21 @@ function countryLine(zone) {
   return line || '—';
 }
 
+// US is a UI STARTING POINT for the picker, never a stored value. Seeding it
+// into state and then persisting it wrote a US-only allow-list onto funnels
+// whose operator only ever toggled the switch on and off — a selection they
+// never made. `seeded` marks it so the save path can tell the two apart.
 const readCommerce = (funnel) => {
   const st = isObj(funnel?.settings) ? funnel.settings : {};
   const c = isObj(st.commerce) ? st.commerce : {};
+  const stored = Array.isArray(c.allowed_countries)
+    ? c.allowed_countries.map((x) => String(x).toUpperCase()).filter(Boolean)
+    : [];
   return {
     mode: c.shipping_mode === 'manual' ? 'manual' : 'shopify',
     restrict: c.restrict_countries === true,
-    allowed: Array.isArray(c.allowed_countries) && c.allowed_countries.length
-      ? c.allowed_countries.map((x) => String(x).toUpperCase())
-      : ['US'], // the reference tool's default selection
+    allowed: stored.length ? stored : ['US'],
+    seeded: stored.length === 0,
     rates: Array.isArray(c.flat_rates) ? c.flat_rates : [],
   };
 };
@@ -109,7 +116,6 @@ export default function ShippingSection({ funnel, onFunnelUpdated }) {
   const [err, setErr] = useState('');
   const [note, setNote] = useState('');
   const [ccQuery, setCcQuery] = useState('');
-  const enqueueRef = useRef(makeSerialQueue()); // the funnels PATCH is a whole-object replace
 
   // Re-seed when the funnel prop changes (modal reopened / parent refreshed).
   useEffect(() => { setState(readCommerce(funnel)); }, [funnel]);
@@ -118,25 +124,33 @@ export default function ShippingSection({ funnel, onFunnelUpdated }) {
   const [zStatus, setZStatus] = useState('idle'); // idle | loading | ok | error
   const [zones, setZones] = useState([]);
   const [uncovered, setUncovered] = useState([]);
+  const [zTruncated, setZTruncated] = useState(false);
   const [zErr, setZErr] = useState('');
   const [zRetryable, setZRetryable] = useState(true);
 
   const loadZones = useCallback(async () => {
     if (!funnelId) return;
+    const askedFor = funnelId;
     setZStatus('loading');
     try {
-      const res = await api.get(`/funnel-commerce/${funnelId}/shipping/zones`);
+      const res = await api.get(`/funnel-commerce/${askedFor}/shipping/zones`);
+      // Discard a response for a funnel we are no longer showing.
+      if (askedFor !== funnelId) return;
       const d = res.data?.data || {};
       setZones(d.zones || []);
       setUncovered(d.uncovered_countries || []);
+      setZTruncated(d.truncated === true);
       setZErr('');
       setZStatus('ok');
     } catch (e) {
+      if (askedFor !== funnelId) return;
       const error = e?.response?.data?.error || {};
-      // An outage is NOT "you have no zones" — the empty list is never shown
-      // on this path.
+      // An outage is NOT "you have no zones" — zStatus 'error' is what gates
+      // the empty-state copy, so the empty list below is never rendered as a
+      // claim about the store.
       setZones([]);
       setUncovered([]);
+      setZTruncated(false);
       setZErr(ZONE_ERR[error.hint] || ZONE_ERR[error.code] || error.message || 'Could not load your Shopify shipping zones.');
       setZRetryable(error.retryable !== false);
       setZStatus('error');
@@ -148,7 +162,11 @@ export default function ShippingSection({ funnel, onFunnelUpdated }) {
   }, [state.mode, zStatus, loadZones]);
 
   // ── saves ──
-  const persist = (build, setBusy, successMsg) => enqueueRef.current(async () => {
+  // No local queue: saveFunnelPatch runs every settings save through the ONE
+  // module-level queue in serialQueue.js, which is what actually stops a save
+  // from another SECTION interleaving with this one. Wrapping it in a second
+  // copy of that same queue here would deadlock.
+  const persist = async (build, setBusy, successMsg) => {
     setBusy(true); setErr(''); setNote('');
     try {
       const updated = await saveFunnelPatch(funnelId, (fresh) => {
@@ -165,7 +183,7 @@ export default function ShippingSection({ funnel, onFunnelUpdated }) {
     } finally {
       setBusy(false);
     }
-  });
+  };
 
   const saveShipping = (mode) => persist(
     (c) => ({
@@ -177,21 +195,36 @@ export default function ShippingSection({ funnel, onFunnelUpdated }) {
     mode === 'shopify' ? 'Shipping set to live Shopify rates.' : 'Flat rates saved.'
   );
 
-  const saveCountries = () => persist(
-    (c) => ({
-      ...c,
-      restrict_countries: state.restrict,
-      allowed_countries: state.restrict ? state.allowed : (c.allowed_countries || state.allowed),
-    }),
-    setSavingCC,
-    state.restrict
-      ? `Checkout limited to ${state.allowed.length} countr${state.allowed.length === 1 ? 'y' : 'ies'}.`
-      : 'Checkout open to all countries.'
-  );
+  const saveCountries = () => {
+    const n = state.allowed.length;
+    // An empty list with the switch ON is a misconfiguration, not a policy —
+    // the server reads it as unrestricted (checkoutCountries.readCommerceSettings).
+    // Saying "limited to 0 countries" would describe a state that does not
+    // exist on either side.
+    const msg = !state.restrict
+      ? 'Saved — no country list is applied.'
+      : n === 0
+        ? 'Saved, but no countries are selected, so no list is applied. Add at least one.'
+        : `Saved — ${n} countr${n === 1 ? 'y' : 'ies'} on the list. This is configuration only until checkout enforcement ships.`;
+    return persist(
+      (c) => ({
+        ...c,
+        restrict_countries: state.restrict,
+        // Never persist the UI's US placeholder. If the switch is off and the
+        // operator never picked anything, leave whatever was stored alone.
+        allowed_countries: state.restrict
+          ? state.allowed
+          : (Array.isArray(c.allowed_countries) ? c.allowed_countries : (state.seeded ? [] : state.allowed)),
+      }),
+      setSavingCC,
+      msg
+    );
+  };
 
   const setMode = (mode) => setState((s) => ({ ...s, mode }));
   const toggleCC = (code) => setState((s) => ({
     ...s,
+    seeded: false, // the operator has now made a real selection
     allowed: s.allowed.includes(code) ? s.allowed.filter((c) => c !== code) : [...s.allowed, code],
   }));
   const setRate = (i, patch) => setState((s) => ({
@@ -306,14 +339,22 @@ export default function ShippingSection({ funnel, onFunnelUpdated }) {
 
       <SettingsCard
         title="Checkout countries"
-        description="Which countries the checkout offers. Off = every supported country. On = only the ones you pick (United States is the default)."
+        description="The country list this funnel is configured with. Saved on the funnel today — the checkout does not consult it yet."
       >
+        <div className="flex items-start gap-2 rounded-lg border border-amber-500/25 bg-amber-500/10 px-3 py-2.5">
+          <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5 text-amber-400" />
+          <p className="text-xs text-amber-400 leading-relaxed">
+            <span className="font-semibold">Configuration only, not yet enforced.</span> Saving this list
+            records your choice on the funnel. The public checkout still accepts every country until the
+            checkout gate ships — do not rely on this to block a market.
+          </p>
+        </div>
+
         <div className="flex items-center justify-between gap-4">
           <div>
-            <div className="text-sm text-text-primary">Limit checkout to specific countries</div>
+            <div className="text-sm text-text-primary">Restrict this funnel to specific countries</div>
             <div className="text-xs text-text-faint max-w-md">
-              Saved as funnel configuration. Enforcement in the public checkout is a separate,
-              single-writer change — see the note below.
+              Off means no list is applied. On records the list below.
             </div>
           </div>
           <Toggle checked={state.restrict} onChange={(v) => setState((s) => ({ ...s, restrict: v }))} />
@@ -372,13 +413,13 @@ export default function ShippingSection({ funnel, onFunnelUpdated }) {
               </div>
             ) : (
               <p className="text-xs text-text-faint">
-                No countries selected — add at least one, or the limit is ignored (a funnel that sells to nobody is never what you meant).
+                No countries selected — the switch is on but the list is empty, so no list is applied. Add at least one.
               </p>
             )}
           </div>
         ) : (
           <p className="text-xs text-text-faint">
-            The checkout offers every supported country. Turn this on to sell to a specific set only.
+            No country list is applied to this funnel. Turn this on to record one.
           </p>
         )}
 
@@ -388,10 +429,12 @@ export default function ShippingSection({ funnel, onFunnelUpdated }) {
       <div className="flex items-start gap-2 rounded-xl border border-border-default bg-bg-elevated/40 px-4 py-3">
         <Info className="w-4 h-4 shrink-0 mt-0.5 text-text-faint" />
         <p className="text-xs text-text-muted leading-relaxed">
-          In Shopify mode the checkout offers each buyer the options for THEIR address and
+          <span className="text-text-primary">Shipping prices</span> in Shopify mode come from your live
+          Shopify setup: the checkout offers each buyer the options for THEIR address and
           <span className="text-text-primary"> re-verifies the price server-side before charging</span> —
-          nothing shown in a browser is ever trusted as the amount. The overview below is a read-only
-          copy of your live Shopify setup; change it in Shopify and it applies here automatically.
+          nothing shown in a browser is ever trusted as the amount. That server-side re-verification
+          covers PRICES only; it is unrelated to the country list above, which nothing enforces yet.
+          The overview below is a read-only copy of your Shopify zones.
         </p>
       </div>
 
@@ -424,17 +467,31 @@ export default function ShippingSection({ funnel, onFunnelUpdated }) {
             </div>
           )}
 
-          {zStatus === 'ok' && zones.length === 0 && (
+          {/* Only claimable on a COMPLETE read. zStatus 'ok' means the fetch
+              succeeded, and `truncated` means we did not see every page — an
+              empty list under either doubt is not evidence about the store. */}
+          {zStatus === 'ok' && zones.length === 0 && !zTruncated && (
             <div className="rounded-lg border border-dashed border-border-default px-3 py-6 text-center text-sm text-text-muted">
-              No shipping zones configured in Shopify yet — buyers are charged no shipping anywhere.
-              Add zones in Shopify shipping settings and refresh.
+              Shopify returned no shipping zones for this store. Add zones in Shopify shipping settings
+              and refresh.
             </div>
           )}
 
-          {zStatus === 'ok' && uncovered.length > 0 && (
-            <p className="text-xs text-amber-400">
-              You allow checkout from {uncovered.join(', ')} but no Shopify zone covers{' '}
-              {uncovered.length === 1 ? 'it' : 'them'}.
+          {zStatus === 'ok' && zTruncated && (
+            <p className="flex items-start gap-2 text-xs text-amber-400">
+              <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+              Partial view — Shopify paginates zones across several delivery profiles and this query can
+              only advance one at a time, so some zones are not shown. Coverage warnings are suppressed
+              because an unseen zone could cover the country.
+            </p>
+          )}
+
+          {zStatus === 'ok' && !zTruncated && uncovered.length > 0 && (
+            <p className="flex items-start gap-2 text-xs text-amber-400">
+              <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+              {uncovered.join(', ')} {uncovered.length === 1 ? 'is' : 'are'} on this funnel&apos;s country
+              list, but no Shopify zone offers a shipping option there — a buyer from{' '}
+              {uncovered.length === 1 ? 'that country' : 'those countries'} cannot complete checkout.
             </p>
           )}
 
@@ -463,10 +520,22 @@ export default function ShippingSection({ funnel, onFunnelUpdated }) {
                             <span className="ml-1.5 text-xs text-text-faint">({r.conditions.join('; ')})</span>
                           ) : null}
                         </span>
-                        <span className="shrink-0 text-sm font-medium tabular-nums text-text-primary">
-                          {/* A carrier-calculated option has no fixed price —
-                              the buyer's address decides it at quote time. */}
-                          {r.carrier ? `${r.carrier} (live)` : (Number(r.price) === 0 ? 'FREE' : money(r.price, r.currency))}
+                        <span className={`shrink-0 text-sm font-medium tabular-nums ${
+                          !r.carrier && r.price == null ? 'text-amber-400' : 'text-text-primary'}`}
+                        >
+                          {/* Order matters. A carrier-calculated option has no
+                              fixed price (the buyer's address decides it). A
+                              NULL price on a non-carrier option means Shopify
+                              did not give us an amount — `Number(null) === 0`
+                              used to render that as FREE, i.e. it advertised a
+                              shipping charge we do not know as no charge. */}
+                          {r.carrier
+                            ? `${r.carrier} (live)`
+                            : r.price == null
+                              ? 'Price unavailable'
+                              : r.price === 0
+                                ? 'FREE'
+                                : money(r.price, r.currency)}
                         </span>
                       </div>
                     ))}

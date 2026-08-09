@@ -2607,3 +2607,68 @@ enforced; the exact enforcement point (checkoutPublic.js, before pricing) is
 documented in the funnelCommerce.js header.
 STATUS: COMPLETE
 ---
+
+---
+TIMESTAMP: 2026-08-09 23:05
+TASK: feat/settings-commerce — adversarial review remediation (11 gating findings)
+BUILT: Server. walkCatalog() now returns a proven `complete` flag and the PRUNE
+is gated on it — a hasNextPage:true with a null cursor, a page-cap exit and a
+throttle stop all report truncated:true and delete NOTHING, and a 200 whose body
+carries no products connection now throws as an outage instead of reading as an
+empty catalog (it used to delete the whole snapshot). Pruned products now take
+their orphaned Whop mapping rows with them. listWhopProducts pages on the RAW
+page length (a dropped id-less row made a full page look short, stopped the walk,
+and made the mapper create a duplicate live product) and reports {complete,
+dropped}; the route REFUSES to create against an incomplete catalog. POST
+/whop/map is wrapped in a pg_try_advisory_lock on a reserved connection, so two
+simultaneous runs cannot both create — the loser gets 409 map_in_progress.
+Create failures are isolated per row and the response carries planned_match /
+planned_create so a shortfall is detectable; a fatal class stops further CALLS
+but still accounts for every remaining product. Zone prices: an absent amount
+stays null instead of coercing to 0 (the UI rendered that as FREE) and an unknown
+rateProvider yields null too. uncoveredCountries requires a zone to have at least
+one RATE before it counts as coverage. The zones walk detects two profiles paging
+against one shared cursor and reports truncated instead of using an unrelated
+cursor. The rate limiter is keyed SHOP+FUNNEL rather than per user and fails
+CLOSED for the two admin jobs (injectable `check` seam so that branch is covered
+by execution). Both upstream-spending handlers require the funnel row to exist
+(404) before any Whop write. Client: truthful country copy throughout (config
+only, not enforced), Retry repeats the action that failed instead of firing a
+full sync, mapped count renders as unknown rather than 0 on an outage, the US
+placeholder is no longer persisted, stale-funnel guards discard late responses,
+and one SHARED module-level settings queue replaces the per-section queues.
+TESTED: server/tests/funnel-settings/commerce.mjs 312/312, exit 0, run 3x
+identical. New coverage: all three destructive prune inputs (each asserted to
+leave the live rows intact), truncation flags + reasons, concurrent double map,
+Whop short-batch paging, a 5-product batch with one failure, a fatal-code batch,
+funnel 404, limiter fail-closed/fail-open/scope, zone price nulls, zero-rate
+coverage, cost + throttle units. The cross-section queue test carries a CONTROL
+that proves the OLD per-section shape really loses a write. Neighbours unchanged:
+variant-search 94/94, tracking-tab 19/19, patch-settings 22/22. vite build exit 0.
+eslint 0 errors on every file this branch owns. Real app booted against the
+scratch DB: all seven endpoints 401 unauthenticated.
+OUTPUT: 312 passed, 0 failed (x3) · 94/94 · 19/19 · 22/22 · VITE_EXIT=0.
+SHOPIFY COST PROBE (read-only, live store 17cca0-2.myshopify.com, API 2024-01,
+token in X-Shopify-Access-Token header only): the shipped PRODUCTS_QUERY at
+products(first:N)/variants(first:50) measured requestedQueryCost 35 (N=5), 101
+(N=100, the shipped size), 123 (N=250); with variants(first:25): 32/62/92/112 at
+N=5/25/100/250. All 200, no GraphQL errors, throttleStatus max 2000 restore 100.
+DECISIONS: (1) The review's cost claim is EMPIRICALLY REFUTED — requested cost
+grows sublinearly for this shape, so even Shopify's maximum page (250) costs 123,
+not ~5.2k, and no page size was ever a MAX_COST_EXCEEDED hazard. I measured
+before choosing rather than shrinking on the estimate, and settled on first:100 /
+variants:50 because a larger page is strictly CHEAPER in total (10x101 for 1000
+products vs 40x62 at N=25) and halves the truncation risk. The throttle backoff
+and cost plumbing the finding asked for are in regardless. (2) Session advisory
+lock on a reserved connection rather than pg_advisory_xact_lock: the critical
+section makes outbound Whop calls and an xact lock would hold a transaction open
+across seconds of third-party I/O; try_ rather than blocking so a second click
+gets an honest 409. (3) create_returned_no_id was re-coded whop_create_no_id —
+as a generic outage code it wrongly aborted the whole batch. (4) The shared
+settings queue lives inside saveFunnelPatch so all five call sites are covered
+with no call-site churn; callers must NOT re-wrap it (documented — nesting the
+same queue deadlocks). (5) Declined: AbortController on client fetches — the
+stale-funnel guards already prevent the observable bug (wrong funnel's data
+painting) and aborting is an optimisation, not a correctness fix.
+STATUS: COMPLETE
+---

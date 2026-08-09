@@ -42,7 +42,7 @@
 //             the dropdown is a courtesy.
 import { Router } from 'express';
 import crypto from 'crypto';
-import { pgQuery } from '../db/pg.js';
+import { pgQuery, client } from '../db/pg.js';
 import { authenticate } from '../middleware/auth.js';
 import { requirePermission } from '../middleware/rbac.js';
 import { checkRateLimit } from '../middleware/rateLimiter.js';
@@ -57,8 +57,14 @@ const router = Router();
 
 // ── bounds ─────────────────────────────────────────────────────────────────
 // A catalog sync and a Whop map both walk a whole catalog and share the
-// Shopify Admin bucket with LIVE CHECKOUT PRICING, so both are capped per
-// user, well below the typeahead's 30/min (shopifyVariants.SEARCH_RATE_MAX).
+// Shopify Admin bucket with LIVE CHECKOUT PRICING.
+//
+// THE LIMITER IS KEYED PER SHOP + FUNNEL, NOT PER USER. The budget being
+// protected is the SHOP's Shopify leaky bucket, which is a property of the
+// store — three operators each getting their own per-user allowance is three
+// times the load on one shared bucket, i.e. exactly the starvation the cap
+// exists to prevent. Per-user keying would also let a second admin account
+// walk straight past the cap.
 export const SYNC_RATE_MAX = 6;
 export const SYNC_RATE_WINDOW_SEC = 300;
 export const MAP_RATE_MAX = 6;
@@ -67,10 +73,41 @@ export const ZONES_RATE_MAX = 20;
 export const ZONES_RATE_WINDOW_SEC = 60;
 
 export const FETCH_TIMEOUT_MS = 8_000;
-export const PRODUCT_PAGE_SIZE = 100;   // Shopify caps products(first:) at 250
+
+// QUERY COST — MEASURED, not estimated. Shopify rejects a single query whose
+// requested cost exceeds 1000 and debits a 2000-point bucket that refills at
+// 100/s on this shop. This query shape was run read-only against the live
+// store (17cca0-2.myshopify.com, API 2024-01) at four page sizes:
+//
+//   products(first:N) with variants(first:50)   requestedQueryCost
+//     N=5                                          35
+//     N=100                                       101   <- the shipped query
+//     N=250                                       123
+//   (with variants(first:25) for comparison: 32 / 62 / 92 / 112 at N=5/25/100/250)
+//
+// Requested cost grows SUBLINEARLY here — a nested connection is charged at
+// its declared size, not once per parent node, so the "N × M ≈ 5k" model is
+// simply wrong for this shape. Even Shopify's maximum page (250) costs 115,
+// under a tenth of the cap. Nothing about page size was ever a cost hazard.
+//
+// Given that, a LARGER page is strictly better: fewer round trips, fewer
+// chances to hit the page cap, and lower TOTAL cost for a big catalog
+// (10 × 101 = 1010 for 1000 products, versus 40 × 62 = 2480 at N=25). 100 it is.
+//
+// VARIANT_PAGE_SIZE is a real truncation bound: a product with more variants
+// than this reports only the ones fetched. 50 is far above anything the live
+// catalog carries (its widest product has 3) and is the size the cost above
+// was measured with.
+export const PRODUCT_PAGE_SIZE = 100;
+export const VARIANT_PAGE_SIZE = 50;
 export const PRODUCT_MAX_PAGES = 10;    // hard stop: 1000 products
 export const ZONE_PAGE_SIZE = 15;       // keeps the zones query under the cost cap
 export const ZONE_MAX_PAGES = 12;
+
+// Back off when the shop's leaky bucket is nearly drained. Continuing to walk
+// pages at that point is how an admin sync starves the LIVE checkout re-pricer
+// that shares the same bucket.
+export const THROTTLE_FLOOR_POINTS = 200;
 
 function shopifyCreds() {
   // Read at CALL time, never module-cached — same posture as
@@ -104,7 +141,7 @@ query funnelCatalog($first: Int!, $after: String) {
         status
         vendor
         featuredImage { url }
-        variants(first: 50) {
+        variants(first: ${VARIANT_PAGE_SIZE}) {
           edges {
             node { id title price sku availableForSale }
           }
@@ -196,10 +233,54 @@ async function postGraphql(query, variables) {
     const detail = JSON.stringify(payload.errors);
     const err = new ShopifyUnavailableError('graphql_errors');
     if (/ACCESS_DENIED|read_shipping/i.test(detail)) err.hint = 'missing_read_shipping_scope';
+    // THROTTLED / MAX_COST_EXCEEDED are cost problems, not availability
+    // problems, and they need different human action: back off vs shrink the
+    // query. Naming them is the difference between an operator retrying
+    // forever and an operator (or us) fixing the page size.
+    if (/MAX_COST_EXCEEDED/i.test(detail)) err.hint = 'query_cost_exceeded';
+    else if (/THROTTLED/i.test(detail)) err.hint = 'shopify_throttled';
     throw err;
   }
-  return payload?.data || {};
+  // `extensions.cost` is how the shop tells us how much bucket is left. It is
+  // ABSENT on some proxies and on older API versions — absent must read as
+  // "unknown", never as "empty", or a missing field would stall every sync.
+  return { data: payload?.data || {}, extensions: payload?.extensions || null };
 }
+
+/**
+ * Pure. extensions.cost -> { requested, actual, available, restoreRate } with
+ * nulls for anything the shop did not report. Total: never throws.
+ */
+export function readCostStatus(extensions) {
+  const cost = extensions && typeof extensions === 'object' ? extensions.cost : null;
+  const t = cost && typeof cost === 'object' ? cost.throttleStatus : null;
+  const num = (v) => (Number.isFinite(Number(v)) && v != null ? Number(v) : null);
+  return {
+    requested: num(cost?.requestedQueryCost),
+    actual: num(cost?.actualQueryCost),
+    available: num(t?.currentlyAvailable),
+    maximum: num(t?.maximumAvailable),
+    restoreRate: num(t?.restoreRate),
+  };
+}
+
+/**
+ * How long to wait before the next page, given what the shop just told us.
+ * Unknown cost (no extensions) -> 0: we cannot invent a budget, and stalling
+ * on a missing field would break every sync against a proxy that strips it.
+ */
+export function throttleDelayMs(costStatus, nextCost) {
+  const available = costStatus?.available;
+  const rate = costStatus?.restoreRate;
+  if (available == null || rate == null || rate <= 0) return 0;
+  const need = Math.max(Number(nextCost) || 0, THROTTLE_FLOOR_POINTS);
+  if (available >= need) return 0;
+  // Wait only long enough to get back over the floor, capped so a pathological
+  // reading can never park a request for minutes.
+  return Math.min(Math.ceil(((need - available) / rate) * 1000), 5_000);
+}
+
+const sleep = (ms) => new Promise((r) => { const t = setTimeout(r, ms); if (t.unref) t.unref(); });
 
 // ── pure shapers ───────────────────────────────────────────────────────────
 
@@ -318,12 +399,20 @@ export function shapeZones(payloads) {
             let currency = '';
             let carrier = '';
             if (provider.__typename === 'DeliveryRateDefinition') {
-              const amt = Number((provider.price || {}).amount);
+              const raw = (provider.price || {}).amount;
+              // Number(null) is 0 and Number('') is 0. Coercing here turned an
+              // ABSENT amount into a rate the UI rendered as "FREE" — the worst
+              // possible lie about a shipping charge. An amount that is not
+              // present stays null and renders as unknown.
+              const amt = raw == null || raw === '' ? NaN : Number(raw);
               price = Number.isFinite(amt) ? Math.round(amt * 100) / 100 : null;
               currency = (provider.price || {}).currencyCode || '';
             } else if (provider.__typename === 'DeliveryParticipant') {
               carrier = ((provider.carrierService || {}).formattedName) || 'carrier';
             }
+            // Any OTHER __typename (a provider kind Shopify adds later) leaves
+            // price null AND carrier '' — the client must render that as
+            // "price unknown", never as free.
             const conditions = (Array.isArray(m.methodConditions) ? m.methodConditions : [])
               .map(describeCondition).filter(Boolean);
             rates.push({ name: m.name || 'Shipping', price, currency, carrier, conditions });
@@ -344,21 +433,29 @@ export function shapeZones(payloads) {
 
 /**
  * Pure: which of the operator's allowed checkout countries NO zone covers.
- * A `rest_of_world` zone covers everything, so it empties the list. This is
- * the "you sell to BD but ship nowhere near it" signal — the single most
- * useful thing the zones view can tell an operator.
+ *
+ * A ZONE WITH ZERO RATE OPTIONS COVERS NOTHING. Shopify happily holds a zone
+ * that lists countries but offers no shipping method — a buyer there gets no
+ * rate and cannot complete checkout. The first cut treated any `rest_of_world`
+ * zone as blanket coverage and returned a clean bill of health for a store
+ * that could not ship anywhere, which is precisely the failure this signal
+ * exists to catch. Coverage now requires at least one rate option.
  */
 export function uncoveredCountries(zones, allowed) {
   const wanted = Array.isArray(allowed) ? allowed : [];
   if (!wanted.length) return [];
   const covered = new Set();
+  let restOfWorldShips = false;
   for (const z of Array.isArray(zones) ? zones : []) {
     if (!z || typeof z !== 'object') continue;
-    if (z.rest_of_world) return [];
+    const ships = Array.isArray(z.rates) && z.rates.length > 0;
+    if (!ships) continue;
+    if (z.rest_of_world) { restOfWorldShips = true; continue; }
     for (const c of Array.isArray(z.countries) ? z.countries : []) {
       if (c && c.code) covered.add(String(c.code).toUpperCase());
     }
   }
+  if (restOfWorldShips) return [];
   return wanted.filter((c) => !covered.has(String(c).toUpperCase()));
 }
 
@@ -370,9 +467,11 @@ const SHOPIFY_MESSAGES = {
   shopify_unavailable: 'Shopify is temporarily unavailable — try again.',
 };
 const WHOP_MESSAGES = {
+  whop_catalog_incomplete: 'Could not read the whole Whop catalog — mapping stopped rather than risk creating duplicates.',
   whop_not_configured: 'Whop is not configured for this funnel — add the API key and company ID in Payments first.',
   whop_auth_error: 'Whop rejected our credentials — the API key is missing, expired or revoked. This needs operator attention; retrying will not help.',
   whop_invalid_name: 'That product has no name, so it cannot be created in Whop.',
+  whop_create_no_id: 'Whop accepted the product but returned no id for it, so it could not be linked.',
   whop_unavailable: 'Whop is temporarily unavailable — try again.',
 };
 
@@ -397,12 +496,47 @@ function sendUpstreamError(res, err, tag) {
   });
 }
 
-async function limited(req, res, key, max, windowSec) {
-  // Fail-OPEN on a limiter outage: a Redis blip must not take Settings down.
-  // The upstream's own budget is the real backstop.
-  const rl = await checkRateLimit(`${key}:${req.user?.id || req.ip}`, max, windowSec)
-    .catch(() => ({ allowed: true }));
+/**
+ * Rate gate.
+ *
+ * SCOPE: the key is SHOP + FUNNEL, never the user. The budget being defended
+ * is the SHOP's Shopify leaky bucket — a property of the store, not of whoever
+ * clicked. Per-user keying multiplied the allowance by the number of admins
+ * and let a second account walk straight past the cap.
+ *
+ * FAILURE POSTURE: `failClosed` callers (the admin catalog sync and the Whop
+ * map) REFUSE when the limiter store is unreachable. That is the opposite of
+ * the serving path's posture and deliberately so: serving must never go down
+ * with Redis, but an ADMIN button is not serving — the cost of refusing it is
+ * one operator clicking again, and the cost of allowing it is an unmetered
+ * catalog walk against the same bucket live checkout pricing needs.
+ */
+// NOTE ON REACHABILITY: middleware/rateLimiter.js (Platform-owned, not ours to
+// edit) already degrades a Redis outage to an in-process Map and therefore
+// rarely rejects. The failClosed branch is defence-in-depth for the case where
+// it DOES — a limiter that cannot answer must not be read as "allowed" for a
+// job that spends the shop's Shopify budget. `check` is injectable so that
+// branch is covered by execution rather than by assertion-free hope.
+export async function limited(
+  req, res, key, max, windowSec,
+  { failClosed = false, check = checkRateLimit } = {}
+) {
+  const scope = `${shopifyCreds().store || 'no-shop'}:${funnelIdOf(req)}`;
+  const rl = await check(`${key}:${scope}`, max, windowSec)
+    .catch((err) => ({ allowed: !failClosed, storeDown: true, reason: err.message }));
   if (rl.allowed) return false;
+  if (rl.storeDown) {
+    console.error('[funnelCommerce] rate-limit store unreachable, refusing admin job:', rl.reason);
+    res.status(503).json({
+      success: false,
+      error: {
+        code: 'rate_limiter_unavailable',
+        retryable: true,
+        message: 'The rate limiter is unavailable, so this job is held back to protect live checkout pricing. Try again shortly.',
+      },
+    });
+    return true;
+  }
   res.status(429).json({
     success: false,
     error: { code: 'rate_limited', message: 'Too many requests — wait a moment and try again', retry_after: rl.retryAfter },
@@ -410,11 +544,33 @@ async function limited(req, res, key, max, windowSec) {
   return true;
 }
 
-const funnelIdOf = (req) => String(req.params.funnelId || '').trim();
+function funnelIdOf(req) { return String(req.params.funnelId || '').trim(); }
 
 async function loadFunnel(funnelId) {
   const rows = await pgQuery(`SELECT id, settings FROM funnels WHERE id = $1`, [funnelId]);
   return rows.length ? rows[0] : null;
+}
+
+// A funnel id that does not exist must never reach an UPSTREAM WRITE. Without
+// this gate a typo'd id fell through to the PLATFORM env Whop credentials and
+// minted real products against the company account for a funnel that does not
+// exist. Read-only handlers may stay lenient; anything that spends money,
+// quota or creates remote objects goes through here first.
+async function requireFunnel(req, res) {
+  const funnelId = funnelIdOf(req);
+  if (!funnelId) {
+    res.status(400).json({ success: false, error: { code: 'funnel_required', message: 'A funnel id is required' } });
+    return null;
+  }
+  const funnel = await loadFunnel(funnelId);
+  if (!funnel) {
+    res.status(404).json({
+      success: false,
+      error: { code: 'funnel_not_found', message: 'That funnel does not exist.' },
+    });
+    return null;
+  }
+  return funnel;
 }
 
 // jsonb round-trips as an OBJECT from postgres.js but as a STRING if it was
@@ -517,26 +673,66 @@ export async function listProductsHandler(req, res) {
   }
 }
 
-// POST /:funnelId/products/sync -> 200 { data: { synced, removed, products } }
-// Walks the Shopify catalog and REPLACES this funnel's snapshot. Products that
-// vanished from Shopify are deleted here too — a catalog readout that keeps
-// showing a deleted product is worse than an empty one.
+/**
+ * Walk the whole Shopify catalog. Returns { products, complete, reason, cost }.
+ *
+ * `complete` is the ONLY thing that may authorize a prune, and it is true in
+ * exactly one case: a page came back saying hasNextPage is falsy. Every other
+ * exit — a page cap, a hasNextPage:true with no cursor, a throttle stop — sets
+ * complete:false, because in all of them the set we hold is a PREFIX of the
+ * catalog and "not in my prefix" does not mean "deleted from Shopify".
+ *
+ * A 200 whose body has no `products` connection is an OUTAGE, not an empty
+ * catalog. That distinction is the whole ballgame: read as empty, it produced
+ * a 200 that deleted every row the funnel had.
+ */
+export async function walkCatalog() {
+  const products = [];
+  let after = null;
+  let cost = null;
+  for (let page = 0; page < PRODUCT_MAX_PAGES; page += 1) {
+    const { data, extensions } = await postGraphql(PRODUCTS_QUERY, { first: PRODUCT_PAGE_SIZE, after });
+    const conn = data?.products;
+    if (!conn || typeof conn !== 'object' || !Array.isArray(conn.edges)) {
+      throw new ShopifyUnavailableError('missing_products_connection');
+    }
+    products.push(...mapProductNodes(conn.edges));
+    cost = readCostStatus(extensions);
+
+    const info = conn.pageInfo && typeof conn.pageInfo === 'object' ? conn.pageInfo : {};
+    if (!info.hasNextPage) return { products, complete: true, reason: '', cost };
+    // Shopify says there IS more but gave us no cursor: we cannot ask for it,
+    // so what we hold is a prefix. Breaking here USED to look identical to a
+    // finished walk and pruned everything beyond it.
+    if (!info.endCursor) return { products, complete: false, reason: 'cursor_missing', cost };
+    after = info.endCursor;
+
+    const wait = throttleDelayMs(cost, cost?.requested);
+    if (wait > 0) {
+      // The bucket is nearly dry. Pause rather than push — the same bucket
+      // prices real carts.
+      if (wait >= 5_000) return { products, complete: false, reason: 'throttled', cost };
+      await sleep(wait);
+    }
+  }
+  return { products, complete: false, reason: 'page_cap', cost };
+}
+
+// POST /:funnelId/products/sync
+//   -> 200 { data: { synced, removed, truncated, truncated_reason, cost, products } }
+// Walks the Shopify catalog and refreshes this funnel's snapshot. Products that
+// vanished from Shopify are pruned — but ONLY when the walk provably reached
+// the end of the catalog (see walkCatalog). A truncated walk upserts what it
+// saw and prunes NOTHING.
 export async function syncProductsHandler(req, res) {
-  if (await limited(req, res, 'funnel-commerce-sync', SYNC_RATE_MAX, SYNC_RATE_WINDOW_SEC)) return undefined;
+  if (await limited(req, res, 'funnel-commerce-sync', SYNC_RATE_MAX, SYNC_RATE_WINDOW_SEC, { failClosed: true })) return undefined;
+  if (!(await requireFunnel(req, res))) return undefined;
   const funnelId = funnelIdOf(req);
   try {
     await ensureCommerceTables();
 
-    const seen = [];
-    let after = null;
-    for (let page = 0; page < PRODUCT_MAX_PAGES; page += 1) {
-      const data = await postGraphql(PRODUCTS_QUERY, { first: PRODUCT_PAGE_SIZE, after });
-      const conn = data?.products || {};
-      seen.push(...mapProductNodes(conn.edges));
-      const info = conn.pageInfo || {};
-      if (!info.hasNextPage || !info.endCursor) break;
-      after = info.endCursor;
-    }
+    const walk = await walkCatalog();
+    const seen = walk.products;
 
     for (const p of seen) {
       await pgQuery(
@@ -557,21 +753,42 @@ export async function syncProductsHandler(req, res) {
       );
     }
 
-    // Prune what Shopify no longer has. An EMPTY sync result is only reachable
-    // through a 200 with zero edges (an outage threw above), so this cannot
-    // wipe the snapshot on a blip.
-    const keep = seen.map((p) => p.shopify_product_id);
-    const removed = await pgQuery(
-      `DELETE FROM co_funnel_products
-        WHERE funnel_id = $1 AND NOT (shopify_product_id = ANY($2::text[]))
-        RETURNING shopify_product_id`,
-      [funnelId, keep]
-    );
+    // ── PRUNE — gated on a PROVEN-COMPLETE walk ──
+    // "Not in the set I fetched" only means "deleted from Shopify" if the set
+    // I fetched IS the catalog. On a truncated walk it means "past my cursor",
+    // and deleting on that is data loss dressed up as a 200.
+    let removed = [];
+    if (walk.complete) {
+      const keep = seen.map((p) => p.shopify_product_id);
+      removed = await pgQuery(
+        `DELETE FROM co_funnel_products
+          WHERE funnel_id = $1 AND NOT (shopify_product_id = ANY($2::text[]))
+          RETURNING shopify_product_id`,
+        [funnelId, keep]
+      );
+      // A pruned product's Whop mapping is orphaned — it points at a Shopify
+      // product this funnel no longer sells, and leaving it behind inflates
+      // mapped_count above the number of products that exist.
+      if (removed.length) {
+        await pgQuery(
+          `DELETE FROM co_whop_product_map
+            WHERE funnel_id = $1 AND shopify_product_id = ANY($2::text[])`,
+          [funnelId, removed.map((r) => r.shopify_product_id)]
+        );
+      }
+    }
 
     const products = await readProducts(funnelId);
     return res.json({
       success: true,
-      data: { synced: seen.length, removed: removed.length, products },
+      data: {
+        synced: seen.length,
+        removed: removed.length,
+        truncated: !walk.complete,
+        truncated_reason: walk.complete ? '' : walk.reason,
+        cost: walk.cost,
+        products,
+      },
     });
   } catch (err) {
     const sent = sendUpstreamError(res, err, 'products sync');
@@ -601,11 +818,50 @@ export async function listMappingsHandler(req, res) {
 // product with the same name; if none exists, create one with that name.
 // The Whop catalog is read ONCE up front — an outage there throws before a
 // single create, so a blip can never mint duplicates.
+// Errors that will fail IDENTICALLY for every remaining product — a dead key
+// does not become alive on product #4. Hitting one stops further CALLS, but
+// every remaining product is still accounted for in `failed`: an operator must
+// never read a short report as a clean one.
+const FATAL_WHOP_CODES = new Set(['whop_auth_error', 'whop_not_configured', 'whop_unavailable']);
+
 export async function mapToWhopHandler(req, res) {
-  if (await limited(req, res, 'funnel-commerce-whopmap', MAP_RATE_MAX, MAP_RATE_WINDOW_SEC)) return undefined;
+  if (await limited(req, res, 'funnel-commerce-whopmap', MAP_RATE_MAX, MAP_RATE_WINDOW_SEC, { failClosed: true })) return undefined;
+  // A nonexistent funnel must not reach a Whop WRITE (it used to fall through
+  // to the PLATFORM env credentials and mint real company products).
+  if (!(await requireFunnel(req, res))) return undefined;
   const funnelId = funnelIdOf(req);
+
+  // ── MUTUAL EXCLUSION ──
+  // read-plan-create is not atomic: two operators clicking "Map to Whop" at
+  // the same moment both read "Serum is unmapped" and both CREATE it, leaving
+  // two live Whop products for one Shopify product. The advisory lock makes
+  // the whole plan+create one critical section per funnel.
+  //
+  // DECISION MADE — a SESSION lock on a reserved connection, not
+  // pg_advisory_xact_lock: the critical section makes outbound Whop calls, and
+  // an xact lock would hold a database transaction open across seconds of
+  // third-party network I/O. try_ rather than blocking so the second click
+  // gets an immediate, honest 409 instead of silently queueing behind a job it
+  // cannot see.
+  const lockKey = `funnel-commerce:whop-map:${funnelId}`;
+  let reserved = null;
+  let held = false;
   try {
     await ensureCommerceTables();
+    reserved = await client.reserve();
+    const [lock] = await reserved`SELECT pg_try_advisory_lock(hashtext(${lockKey})) AS ok`;
+    held = lock?.ok === true;
+    if (!held) {
+      return res.status(409).json({
+        success: false,
+        error: {
+          code: 'map_in_progress',
+          retryable: true,
+          message: 'A Whop mapping run is already in progress for this funnel — wait for it to finish.',
+        },
+      });
+    }
+
     const products = await readProducts(funnelId);
     if (!products.length) {
       return res.status(400).json({
@@ -620,41 +876,61 @@ export async function mapToWhopHandler(req, res) {
     const creds = await resolveGatewayCreds(funnelId, 'whop', { mode: 'live' });
     const catalog = await listWhopProducts(creds, { mode: 'live' });
 
-    const plan = planWhopMapping(products, existing, catalog);
-    const written = [];
+    // A PARTIAL Whop catalog cannot prove a name is absent — the product we
+    // are about to "create" may be sitting on a page we never fetched. Refuse
+    // rather than mint a duplicate live product.
+    if (!catalog.complete) {
+      return res.status(503).json({
+        success: false,
+        error: {
+          code: 'whop_catalog_incomplete',
+          retryable: true,
+          message: 'Could not read the whole Whop catalog, so mapping was stopped before it could create a duplicate product. Try again shortly.',
+        },
+      });
+    }
+
+    const plan = planWhopMapping(products, existing, catalog.products);
     const failed = [];
+    let matched = 0;
+    let created = 0;
 
     for (const { product, whop } of plan.match) {
-      written.push(await upsertMapping(funnelId, {
+      await upsertMapping(funnelId, {
         shopify_product_id: product.shopify_product_id,
         shopify_title: product.title,
         shopify_price: product.price,
         whop_product_id: whop.id,
         whop_product_name: whop.name,
         source: 'matched',
-      }));
+      });
+      matched += 1;
     }
 
+    let fatal = '';
     for (const product of plan.create) {
+      if (fatal) {
+        // Stop CALLING, keep COUNTING. The old code `break`-ed here and the
+        // remaining products vanished from the report entirely, so a run that
+        // mapped 1 of 40 rendered as "1 created" with no failures.
+        failed.push({ shopify_product_id: product.shopify_product_id, title: product.title, code: fatal });
+        continue;
+      }
       try {
         const made = await createWhopProduct(creds, { name: product.title, mode: 'live' });
-        written.push(await upsertMapping(funnelId, {
+        await upsertMapping(funnelId, {
           shopify_product_id: product.shopify_product_id,
           shopify_title: product.title,
           shopify_price: product.price,
           whop_product_id: made.id,
           whop_product_name: made.name,
           source: 'created',
-        }));
+        });
+        created += 1;
       } catch (err) {
-        // ONE product failing must not abandon the rest, but it must be
-        // REPORTED — a partial run that claims success is how an operator
-        // ships a funnel with an unmapped product.
         if (!(err instanceof WhopUnavailableError)) throw err;
         failed.push({ shopify_product_id: product.shopify_product_id, title: product.title, code: err.code });
-        // A dead key or a hard outage will fail identically for every
-        // remaining product — stop hammering Whop.
-        if (err.code !== 'whop_invalid_name') break;
+        if (FATAL_WHOP_CODES.has(err.code)) fatal = err.code;
       }
     }
 
@@ -662,11 +938,16 @@ export async function mapToWhopHandler(req, res) {
     return res.json({
       success: true,
       data: {
-        matched: plan.match.length,
-        created: written.length - plan.match.length,
+        matched,
+        created,
         already: plan.already.length,
         skipped: plan.skipped.length,
         failed,
+        // PLAN TOTALS. `created < planned_create` is the client's only reliable
+        // shortfall signal — counting outcomes alone cannot distinguish "there
+        // was nothing to do" from "we gave up".
+        planned_match: plan.match.length,
+        planned_create: plan.create.length,
         mappings,
         mapped_count: mappings.filter((m) => m.status === 'mapped').length,
       },
@@ -676,6 +957,16 @@ export async function mapToWhopHandler(req, res) {
     if (sent) return sent;
     console.error('[funnelCommerce] whop map failed:', err.message);
     return res.status(500).json({ success: false, error: { code: 'map_failed', message: 'Whop mapping failed' } });
+  } finally {
+    // Release before returning the connection to the pool — a session lock
+    // survives on a pooled connection and would wedge every later run.
+    if (reserved) {
+      if (held) {
+        await reserved`SELECT pg_advisory_unlock(hashtext(${lockKey}))`
+          .catch((e) => console.error('[funnelCommerce] advisory unlock failed:', e.message));
+      }
+      reserved.release();
+    }
   }
 }
 
@@ -724,30 +1015,57 @@ export async function deleteMappingHandler(req, res) {
   }
 }
 
-// GET /:funnelId/shipping/zones -> 200 { data: { zones, allowed_countries, uncovered_countries } }
+/**
+ * Pure. Every zone connection in a payload that still has a next page, as
+ * cursors. `$zonesAfter` is ONE variable shared by every profile's connection,
+ * so it can only advance them in lockstep — if two connections are still
+ * paging, this query shape cannot page both and the overview is necessarily
+ * partial. Returning the whole set (not the last one seen) is what lets the
+ * caller detect that and say so instead of quietly using an unrelated
+ * profile's cursor.
+ */
+export function pendingZoneCursors(payload) {
+  const out = [];
+  const nodes = payload?.deliveryProfiles?.nodes;
+  for (const prof of Array.isArray(nodes) ? nodes : []) {
+    for (const grp of Array.isArray(prof?.profileLocationGroups) ? prof.profileLocationGroups : []) {
+      const info = grp?.locationGroupZones?.pageInfo;
+      if (info && info.hasNextPage && info.endCursor) out.push(String(info.endCursor));
+    }
+  }
+  return [...new Set(out)];
+}
+
+// GET /:funnelId/shipping/zones
+//   -> 200 { data: { zones, truncated, truncated_reason, allowed_countries, uncovered_countries } }
 // READ-ONLY. An outage answers 503 — never {zones:[]}, which would read as
 // "you have configured no shipping anywhere" and send an operator to fix a
 // setting that is not broken.
 export async function shippingZonesHandler(req, res) {
+  // Read-only and cheap: this one stays FAIL-OPEN on a limiter outage. It
+  // creates nothing and its worst case is one extra Shopify read.
   if (await limited(req, res, 'funnel-commerce-zones', ZONES_RATE_MAX, ZONES_RATE_WINDOW_SEC)) return undefined;
   const funnelId = funnelIdOf(req);
   try {
     const payloads = [];
     let zonesAfter = null;
+    let truncated = false;
+    let truncatedReason = '';
     for (let page = 0; page < ZONE_MAX_PAGES; page += 1) {
-      const data = await postGraphql(ZONES_QUERY, { zonesAfter });
+      const { data } = await postGraphql(ZONES_QUERY, { zonesAfter });
       payloads.push(data);
-      // Zones are a paged connection — walk every page or the overview
-      // silently hides countries.
-      let cursor = null;
-      for (const prof of data?.deliveryProfiles?.nodes || []) {
-        for (const grp of prof?.profileLocationGroups || []) {
-          const info = grp?.locationGroupZones?.pageInfo || {};
-          if (info.hasNextPage && info.endCursor) cursor = info.endCursor;
-        }
+      const cursors = pendingZoneCursors(data);
+      if (!cursors.length) break;
+      if (cursors.length > 1) {
+        // Two profiles still paging, one cursor variable. Advancing on either
+        // one would silently skip zones in the other, so stop and SAY the view
+        // is partial rather than present a lie as complete.
+        truncated = true;
+        truncatedReason = 'multiple_profile_pages';
+        break;
       }
-      if (!cursor) break;
-      zonesAfter = cursor;
+      zonesAfter = cursors[0];
+      if (page === ZONE_MAX_PAGES - 1) { truncated = true; truncatedReason = 'page_cap'; }
     }
     const zones = shapeZones(payloads);
 
@@ -761,8 +1079,12 @@ export async function shippingZonesHandler(req, res) {
       success: true,
       data: {
         zones,
+        truncated,
+        truncated_reason: truncatedReason,
         allowed_countries: allowed,
-        uncovered_countries: uncoveredCountries(zones, allowed),
+        // A partial zone list cannot prove a country is UNCOVERED — the zone
+        // that covers it may be on a page we never fetched.
+        uncovered_countries: truncated ? [] : uncoveredCountries(zones, allowed),
       },
     });
   } catch (err) {

@@ -56,18 +56,28 @@ function productsPath() {
 }
 
 /**
- * Pure. Whop list payloads have appeared as {data:[…]}, {products:[…]} and a
- * bare array across API generations — read all three, and DROP anything
- * without a usable id (an unaddressable product cannot be a mapping target).
- * Total: never throws, never returns null.
+ * Pure. The RAW list a Whop page carries, before any filtering. Whop list
+ * payloads have appeared as {data:[…]}, {products:[…]} and a bare array across
+ * API generations — read all three. Total: never throws.
+ *
+ * This exists SEPARATELY from extractWhopProducts because paging must be
+ * decided on how many rows the SHOP SENT, not on how many survived our
+ * filtering — see listWhopProducts.
+ */
+export function rawWhopList(payload) {
+  if (Array.isArray(payload)) return payload;
+  if (!payload || typeof payload !== 'object') return [];
+  if (Array.isArray(payload.data)) return payload.data;
+  if (Array.isArray(payload.products)) return payload.products;
+  return [];
+}
+
+/**
+ * Pure. The raw list, minus anything without a usable id (an unaddressable
+ * product cannot be a mapping target). Total: never throws, never returns null.
  */
 export function extractWhopProducts(payload) {
-  const raw = Array.isArray(payload)
-    ? payload
-    : (payload && typeof payload === 'object'
-      ? (Array.isArray(payload.data) ? payload.data
-        : (Array.isArray(payload.products) ? payload.products : []))
-      : []);
+  const raw = rawWhopList(payload);
   const out = [];
   for (const p of raw) {
     if (!p || typeof p !== 'object') continue;
@@ -191,20 +201,36 @@ function requireCreds(creds) {
 /**
  * Every product on the company, paged. An outage THROWS — it must never
  * degrade to [] (that would make the mapper create duplicates).
+ *
+ * Returns { products, complete, dropped }:
+ *   complete  the walk provably reached the last page. FALSE means the caller
+ *             is holding a PREFIX of the catalog and must not conclude that a
+ *             name is absent from it.
+ *   dropped   rows the shop sent that carried no addressable id.
+ *
+ * PAGING IS DECIDED ON THE RAW PAGE LENGTH. Deciding it on the FILTERED length
+ * was a live-duplicate bug: one id-less row in a full 50-row page made the
+ * batch 49, "49 < 50" read as "last page", the walk stopped early, and a
+ * product sitting on page 2 looked absent — so the mapper CREATED a second
+ * live Whop product for something that already existed.
  */
 export async function listWhopProducts(creds, { mode = 'live' } = {}) {
   const { apiKey, companyId } = requireCreds(creds);
   const base = whopBase(mode).replace(/\/+$/, '');
-  const out = [];
+  const products = [];
+  let dropped = 0;
   for (let page = 1; page <= WHOP_MAX_PAGES; page += 1) {
     const url = `${base}${productsPath()}?company_id=${encodeURIComponent(companyId)}`
       + `&per=${WHOP_PAGE_SIZE}&page=${page}`;
     const payload = await whopFetch(url, { apiKey });
+    const raw = rawWhopList(payload);
     const batch = extractWhopProducts(payload);
-    out.push(...batch);
-    if (batch.length < WHOP_PAGE_SIZE) break;
+    dropped += raw.length - batch.length;
+    products.push(...batch);
+    if (raw.length < WHOP_PAGE_SIZE) return { products, complete: true, dropped };
   }
-  return out;
+  // Ran out of pages with a full page in hand: there is very likely more.
+  return { products, complete: false, dropped };
 }
 
 /**
@@ -225,7 +251,12 @@ export async function createWhopProduct(creds, { name, mode = 'live' } = {}) {
     body: { name: clean, company_id: companyId, visibility: 'hidden' },
   });
   const created = extractWhopProduct(payload);
-  if (!created) throw new WhopUnavailableError('create_returned_no_id');
+  // PER-ROW, not fatal. A 2xx whose body carries no addressable id is an
+  // anomaly about THIS product (a validation quirk, a name Whop rejected) —
+  // the next product may well succeed. Giving it the generic
+  // 'whop_unavailable' code made the caller treat it as a shop-wide outage and
+  // abandon every remaining product in the batch.
+  if (!created) throw new WhopUnavailableError('create_returned_no_id', 'whop_create_no_id');
   // Whop may normalise the name; keep OURS as the fallback so the mapping row
   // is never nameless.
   return { id: created.id, name: created.name || clean };
@@ -234,6 +265,7 @@ export async function createWhopProduct(creds, { name, mode = 'live' } = {}) {
 export default {
   listWhopProducts,
   createWhopProduct,
+  rawWhopList,
   extractWhopProducts,
   extractWhopProduct,
   findWhopByName,

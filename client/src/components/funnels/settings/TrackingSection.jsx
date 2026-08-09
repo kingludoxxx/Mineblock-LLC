@@ -146,7 +146,12 @@ function GeneralPanel({ funnel, onFunnelUpdated }) {
   const [err, setErr] = useState('');
   const [busy, setBusy] = useState(false);
   const confirmedRef = useRef(vals);            // last server-confirmed tracking state
-  const enqueueRef = useRef(makeSerialQueue()); // serializes saves (unit-tested)
+  // Serializes THIS panel's optimistic flips + their pendingRef bookkeeping.
+  // Cross-SECTION ordering is no longer its job: saveFunnelPatch now runs every
+  // settings save through one module-level queue (serialQueue.enqueueSettingsSave),
+  // so a General save can no longer interleave with a tracking save. These are
+  // two distinct queue instances, so nesting them cannot deadlock.
+  const enqueueRef = useRef(makeSerialQueue());
   const pendingRef = useRef(0);
 
   useEffect(() => {

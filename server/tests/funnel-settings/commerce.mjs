@@ -30,13 +30,15 @@ const {
   mapToWhopHandler, upsertMappingHandler, deleteMappingHandler,
   shippingZonesHandler,
   mapProductNodes, shapeZones, describeCondition, numericId, uncoveredCountries,
-  SYNC_RATE_MAX, FETCH_TIMEOUT_MS,
+  readCostStatus, throttleDelayMs, pendingZoneCursors,
+  SYNC_RATE_MAX, FETCH_TIMEOUT_MS, PRODUCT_MAX_PAGES, PRODUCT_PAGE_SIZE, VARIANT_PAGE_SIZE,
 } = route;
 
 const whop = await import('../../src/services/whopProducts.js');
 const {
   extractWhopProducts, extractWhopProduct, findWhopByName, planWhopMapping,
   listWhopProducts, createWhopProduct, WhopUnavailableError,
+  rawWhopList, WHOP_PAGE_SIZE,
 } = whop;
 
 const cc = await import('../../src/services/checkoutCountries.js');
@@ -223,21 +225,94 @@ eq(shapeZones({ deliveryProfiles: { nodes: [null, 'str', { profileLocationGroups
   'zones: malformed profiles are dropped, never thrown on');
 eq(shapeZones([ZONE_PAYLOAD, ZONE_PAYLOAD]).length, 4, 'zones: multiple pages concatenate');
 
-eq(uncoveredCountries(shapeZones(ZONE_PAYLOAD), ['US', 'BD']), [],
-  'uncovered: a rest-of-world zone covers everything');
+// REGRESSION (review #6). ZONE_PAYLOAD's rest-of-world zone has ZERO rate
+// options — Shopify holds zones like that happily, and a buyer in one gets no
+// shipping option and cannot check out. The first cut treated ANY rest-of-world
+// zone as blanket coverage and returned a clean bill of health for a store that
+// could not ship to BD at all. The old fixture asserted that wrong behaviour.
+eq(uncoveredCountries(shapeZones(ZONE_PAYLOAD), ['US', 'BD']), ['BD'],
+  'uncovered: a rest-of-world zone with NO rate options covers NOTHING');
 {
-  const noRow = { deliveryProfiles: { nodes: [{ name: 'X', profileLocationGroups: [{ locationGroupZones: { nodes: [
+  // …and one WITH a rate option really does cover everything.
+  const rowShips = JSON.parse(JSON.stringify(ZONE_PAYLOAD));
+  rowShips.deliveryProfiles.nodes[0].profileLocationGroups[0].locationGroupZones.nodes[1]
+    .methodDefinitions.nodes = [{
+      active: true, name: 'Intl', rateProvider: { __typename: 'DeliveryRateDefinition', price: { amount: '12.00', currencyCode: 'USD' } }, methodConditions: [],
+    }];
+  eq(uncoveredCountries(shapeZones(rowShips), ['US', 'BD']), [],
+    'uncovered: a rest-of-world zone WITH a rate option does cover everything');
+}
+{
+  const noRates = { deliveryProfiles: { nodes: [{ name: 'X', profileLocationGroups: [{ locationGroupZones: { nodes: [
     { zone: { name: 'Domestic', countries: [{ name: 'United States', code: { countryCode: 'US' } }] }, methodDefinitions: { nodes: [] } },
   ] } }] }] } };
-  eq(uncoveredCountries(shapeZones(noRow), ['US', 'BD', 'GB']), ['BD', 'GB'],
-    'uncovered: names exactly the allowed countries no zone covers');
-  eq(uncoveredCountries(shapeZones(noRow), []), [], 'uncovered: no allow-list → nothing to report');
+  eq(uncoveredCountries(shapeZones(noRates), ['US', 'BD', 'GB']), ['US', 'BD', 'GB'],
+    'uncovered: a named zone with no rate options does not cover its own countries either');
+  const withRates = { deliveryProfiles: { nodes: [{ name: 'X', profileLocationGroups: [{ locationGroupZones: { nodes: [
+    { zone: { name: 'Domestic', countries: [{ name: 'United States', code: { countryCode: 'US' } }] },
+      methodDefinitions: { nodes: [{ active: true, name: 'Std', rateProvider: { __typename: 'DeliveryRateDefinition', price: { amount: '5', currencyCode: 'USD' } }, methodConditions: [] }] } },
+  ] } }] }] } };
+  eq(uncoveredCountries(shapeZones(withRates), ['US', 'BD', 'GB']), ['BD', 'GB'],
+    'uncovered: names exactly the allowed countries no shipping zone covers');
+  eq(uncoveredCountries(shapeZones(withRates), []), [], 'uncovered: no allow-list → nothing to report');
   eq(uncoveredCountries(null, ['US']), ['US'], 'uncovered: null zones → everything uncovered, no throw');
 }
+
+// REGRESSION (review #5). Number(null) is 0 and Number('') is 0 — coercing an
+// ABSENT amount produced price 0, which the UI rendered as "FREE". An unknown
+// shipping charge must never be advertised as no charge.
+{
+  const mk = (provider) => ({ deliveryProfiles: { nodes: [{ name: 'P', profileLocationGroups: [{ locationGroupZones: { nodes: [
+    { zone: { name: 'Z', countries: [] }, methodDefinitions: { nodes: [{ active: true, name: 'R', rateProvider: provider, methodConditions: [] }] } },
+  ] } }] }] } });
+  eq(shapeZones(mk({ __typename: 'DeliveryRateDefinition', price: { amount: null, currencyCode: 'USD' } }))[0].rates[0].price,
+    null, 'zone price: a NULL amount stays null — NOT 0, which renders as FREE');
+  eq(shapeZones(mk({ __typename: 'DeliveryRateDefinition', price: { amount: '', currencyCode: 'USD' } }))[0].rates[0].price,
+    null, 'zone price: an EMPTY amount stays null');
+  eq(shapeZones(mk({ __typename: 'DeliveryRateDefinition', price: {} }))[0].rates[0].price,
+    null, 'zone price: a missing amount stays null');
+  eq(shapeZones(mk({ __typename: 'DeliveryRateDefinition', price: { amount: '0.00', currencyCode: 'USD' } }))[0].rates[0].price,
+    0, 'zone price: a REAL zero is still 0 — genuinely free shipping must stay readable as FREE');
+  const unknown = shapeZones(mk({ __typename: 'DeliverySomethingNew' }))[0].rates[0];
+  eq([unknown.price, unknown.carrier], [null, ''],
+    'zone price: an UNKNOWN rateProvider kind yields null price and no carrier — the client must show "unavailable", never FREE');
+}
+
+// ── cost + throttle units (review #8) ──
+eq(readCostStatus({ cost: { requestedQueryCost: 702, actualQueryCost: 690, throttleStatus: { maximumAvailable: 2000, currentlyAvailable: 1310, restoreRate: 100 } } }),
+  { requested: 702, actual: 690, available: 1310, maximum: 2000, restoreRate: 100 },
+  'cost: extensions.cost.throttleStatus is read');
+eq(readCostStatus(null), { requested: null, actual: null, available: null, maximum: null, restoreRate: null },
+  'cost: absent extensions read as UNKNOWN (nulls), never as zero budget');
+eq(throttleDelayMs(readCostStatus(null), 700), 0,
+  'throttle: unknown cost never stalls the walk — a proxy that strips extensions must not break sync');
+eq(throttleDelayMs({ available: 1500, restoreRate: 100 }, 700), 0,
+  'throttle: a healthy bucket does not wait');
+ok(throttleDelayMs({ available: 50, restoreRate: 100 }, 700) > 0,
+  'throttle: a nearly drained bucket waits');
+ok(throttleDelayMs({ available: 0, restoreRate: 1 }, 700) <= 5000,
+  'throttle: the wait is capped — a pathological reading cannot park a request for minutes');
+eq(throttleDelayMs({ available: 10, restoreRate: 0 }, 700), 0,
+  'throttle: a zero restore rate cannot produce an infinite wait');
+
+// ── zone cursor units (review #7) ──
+eq(pendingZoneCursors(ZONE_PAYLOAD), [], 'zone cursors: a finished page has none');
+eq(pendingZoneCursors({ deliveryProfiles: { nodes: [
+  { profileLocationGroups: [{ locationGroupZones: { pageInfo: { hasNextPage: true, endCursor: 'A' }, nodes: [] } }] },
+  { profileLocationGroups: [{ locationGroupZones: { pageInfo: { hasNextPage: true, endCursor: 'B' }, nodes: [] } }] },
+] } }), ['A', 'B'],
+'zone cursors: TWO profiles still paging are BOTH reported — one shared $zonesAfter cannot advance both');
+eq(pendingZoneCursors({ deliveryProfiles: { nodes: [{ profileLocationGroups: [{ locationGroupZones: { pageInfo: { hasNextPage: true } } }] }] } }), [],
+  'zone cursors: hasNextPage with no cursor is not a usable cursor');
+eq(pendingZoneCursors(null), [], 'zone cursors: null → [], no throw');
 
 // ===========================================================================
 // PURE — Whop extraction + the mapping PLAN
 // ===========================================================================
+eq(rawWhopList({ data: [1, 2, 3] }), [1, 2, 3], 'whop raw: {data:[…]} unwrapped');
+eq(rawWhopList({ products: [1] }), [1], 'whop raw: {products:[…]} unwrapped');
+eq(rawWhopList([1, 2]), [1, 2], 'whop raw: a bare array passes through');
+eq(rawWhopList(null), [], 'whop raw: null → []');
 eq(extractWhopProducts({ data: [{ id: 'p1', name: 'Kit' }] }), [{ id: 'p1', name: 'Kit' }], 'whop: {data:[…]} shape');
 eq(extractWhopProducts({ products: [{ id: 'p2', title: 'Serum' }] }), [{ id: 'p2', name: 'Serum' }], 'whop: {products:[…]} + title alias');
 eq(extractWhopProducts([{ product_id: 'p3' }]), [{ id: 'p3', name: '' }], 'whop: a bare array + product_id alias');
@@ -296,6 +371,29 @@ process.env.WHOP_API_KEY = 'whop_SECRETKEY';
 process.env.WHOP_COMPANY_ID = 'biz_test';
 
 await ensureCommerceTables();
+
+// The funnels table + rows. Both handlers that spend upstream quota now REFUSE
+// an unknown funnel id (review #9 — an unknown id used to fall through to the
+// PLATFORM env Whop credentials and mint real company products), so the fixture
+// funnels have to exist.
+await pgQuery(
+  `CREATE TABLE IF NOT EXISTS funnels (
+     id TEXT PRIMARY KEY, slug TEXT NOT NULL, name TEXT NOT NULL,
+     status TEXT NOT NULL DEFAULT 'draft', archived BOOLEAN NOT NULL DEFAULT FALSE,
+     custom_domain TEXT, default_page_id TEXT, seo JSONB DEFAULT '{}',
+     flow_layout JSONB DEFAULT '{"nodes":[],"edges":[]}', misc JSONB DEFAULT '{}',
+     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`
+);
+await pgQuery(`ALTER TABLE funnels ADD COLUMN IF NOT EXISTS settings JSONB DEFAULT '{}'`);
+const seedFunnel = async (id, settings = {}) => {
+  await pgQuery(
+    `INSERT INTO funnels (id, slug, name, settings) VALUES ($1, $2, $3, $4)
+     ON CONFLICT (id) DO UPDATE SET settings = EXCLUDED.settings`,
+    // Raw object — postgres.js serializes the jsonb param itself.
+    [id, `slug-${id}`, `Commerce test ${id}`, settings]
+  );
+};
+
 const wipe = async () => {
   for (const f of [FUNNEL, FUNNEL_B]) {
     await pgQuery(`DELETE FROM co_funnel_products WHERE funnel_id = $1`, [f]);
@@ -303,6 +401,8 @@ const wipe = async () => {
   }
 };
 await wipe();
+await seedFunnel(FUNNEL);
+await seedFunnel(FUNNEL_B);
 
 const app = express();
 app.use(express.json());
@@ -320,14 +420,7 @@ const server = app.listen(0);
 await new Promise((r) => server.once('listening', r));
 const base = `http://127.0.0.1:${server.address().port}`;
 
-// The limiters key on req.user.id, so a block that deliberately exhausts a
-// budget must do it as its OWN user — otherwise it poisons every later case in
-// this file with 429s. `AS` is set at the top of each block and appended to
-// every stub call automatically.
-let AS = 'u_default';
 const call = async (method, path, body) => {
-  const sep = path.includes('?') ? '&' : '?';
-  if (path.startsWith('/stub/')) path = `${path}${sep}as=${AS}`;
   const r = await realFetch(`${base}${path}`, {
     method,
     ...(body ? { headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) } : {}),
@@ -338,6 +431,15 @@ const call = async (method, path, body) => {
 };
 const get = (p) => call('GET', p);
 const post = (p, b) => call('POST', p, b);
+
+// The limiter now keys on SHOP + FUNNEL, not on the user (review #8 — a
+// per-user budget multiplied the allowance by the number of admins hitting one
+// shared Shopify bucket). So a block that deliberately exhausts a budget must
+// isolate itself by SHOP, or it poisons every later case with 429s. Every mock
+// matches on the substring 'myshopify', so changing the subdomain is inert to
+// the fixtures and changes only the limiter key.
+let shopSeq = 0;
+const isolate = () => { shopSeq += 1; process.env.PUURE_SHOPIFY_STORE = `t${shopSeq}.myshopify.com`; };
 
 // ---- AUTH -----------------------------------------------------------------
 {
@@ -365,7 +467,7 @@ const productEdge = (id, title, price) => ({
   },
 });
 {
-  AS = 'sync_happy';
+  isolate();
   let seenUrl = null; let seenHeaders = null; let calls = 0;
   fetchImpl = async (url, opts) => {
     seenUrl = String(url); seenHeaders = opts.headers; calls += 1;
@@ -378,6 +480,8 @@ const productEdge = (id, title, price) => ({
   eq(r.body?.data?.synced, 2, 'sync: BOTH pages walked (the cursor is followed)');
   eq(r.body.data.products.map((p) => p.title), ['Kit', 'Serum'], 'sync: products returned, title-ordered');
   eq(r.body.data.products[0].variants_count, 2, 'sync: variant count persisted');
+  eq(r.body.data.truncated, false, 'sync: a walk that reached the end is NOT truncated');
+  eq(r.body.data.truncated_reason, '', 'sync: …and carries no reason');
 
   ok(!seenUrl.includes('shpat_'), 'creds: the Shopify token is NOT in the request URL', seenUrl);
   eq(seenHeaders['X-Shopify-Access-Token'], 'shpat_SECRETVALUE', 'creds: it travels in the header');
@@ -418,6 +522,116 @@ const productEdge = (id, title, price) => ({
   eq(serum.variants[0].title, 'Legacy', 'jsonb: …with its content intact');
 }
 
+// ===========================================================================
+// PRUNE — the destructive path (review #1, BLOCKER)
+//
+// The prune deletes every row NOT in the set the walk fetched. That is only
+// sound if the walk IS the catalog. Three inputs used to return 200 while
+// deleting live rows, because every early exit looked exactly like a finished
+// walk. Each is reproduced here.
+// ===========================================================================
+const seedThree = async () => {
+  await pgQuery(`DELETE FROM co_funnel_products WHERE funnel_id = $1`, [FUNNEL_B]);
+  await pgQuery(`DELETE FROM co_whop_product_map WHERE funnel_id = $1`, [FUNNEL_B]);
+  for (const [id, title] of [['1', 'One'], ['2', 'Two'], ['3', 'Three']]) {
+    await pgQuery(
+      `INSERT INTO co_funnel_products (funnel_id, shopify_product_id, title, variants)
+       VALUES ($1, $2, $3, '[]'::jsonb)`,
+      [FUNNEL_B, id, title]
+    );
+  }
+};
+const countB = async () => {
+  const [row] = await pgQuery(`SELECT COUNT(*)::int AS n FROM co_funnel_products WHERE funnel_id = $1`, [FUNNEL_B]);
+  return row.n;
+};
+
+// ── input A: hasNextPage TRUE with a NULL cursor ──
+{
+  isolate();
+  await seedThree();
+  fetchImpl = async () => jsonResponse(catalogPage([productEdge('1', 'One', '1.00')], true, null));
+  const r = await post(`/stub/${FUNNEL_B}/products/sync`);
+  eq(r.status, 200, 'prune A: hasNextPage:true + endCursor:null still answers 200');
+  eq(r.body.data.truncated, true, 'prune A: …but the walk is flagged TRUNCATED');
+  eq(r.body.data.truncated_reason, 'cursor_missing', 'prune A: …with the reason that stopped it');
+  eq(r.body.data.removed, 0, 'prune A: NOTHING is pruned on an unprovable walk');
+  eq(await countB(), 3, 'prune A: all three live rows survive (this used to delete 2 of 3)');
+}
+
+// ── input B: a 200 whose body carries no products connection ──
+{
+  isolate();
+  await seedThree();
+  for (const [label, payload] of [
+    ['no data at all', {}],
+    ['data without products', { data: {} }],
+    ['products without edges', { data: { products: { pageInfo: {} } } }],
+    ['products edges not an array', { data: { products: { edges: 'nope' } } }],
+  ]) {
+    fetchImpl = async () => jsonResponse(payload);
+    const r = await post(`/stub/${FUNNEL_B}/products/sync`);
+    eq(r.status, 503, `prune B: a 200 with ${label} is an OUTAGE, not an empty catalog`);
+    eq(r.body?.error?.code, 'shopify_unavailable', `prune B: ${label} → shopify_unavailable`);
+    eq(await countB(), 3, `prune B: ${label} deletes NOTHING (this used to wipe the whole snapshot)`);
+  }
+}
+
+// ── input C: a catalog larger than the page cap ──
+{
+  isolate();
+  await seedThree();
+  let page = 0;
+  fetchImpl = async () => {
+    page += 1;
+    // Never says "done" — every page reports another one after it.
+    return jsonResponse(catalogPage([productEdge(`90${page}`, `Deep ${page}`, '1.00')], true, `CUR${page}`));
+  };
+  const r = await post(`/stub/${FUNNEL_B}/products/sync`);
+  eq(r.status, 200, 'prune C: an over-long catalog answers 200');
+  eq(page, PRODUCT_MAX_PAGES, `prune C: the walk stops at the ${PRODUCT_MAX_PAGES}-page cap`);
+  eq(r.body.data.truncated, true, 'prune C: …and says so');
+  eq(r.body.data.truncated_reason, 'page_cap', 'prune C: …with reason page_cap');
+  eq(r.body.data.removed, 0, 'prune C: nothing past the cap is deleted (this used to delete everything after #1000)');
+  ok((await countB()) >= 3, 'prune C: the pre-existing rows are still there');
+}
+
+// ── the prune DOES run on a provably complete walk ──
+{
+  isolate();
+  await seedThree();
+  // Give product '2' a Whop mapping so the orphan cleanup is observable.
+  await pgQuery(
+    `INSERT INTO co_whop_product_map (id, funnel_id, shopify_product_id, shopify_title, whop_product_id, whop_product_name, source, status)
+     VALUES ('wpm_test_orphan', $1, '2', 'Two', 'w2', 'Two', 'linked', 'mapped')`,
+    [FUNNEL_B]
+  );
+  fetchImpl = async () => jsonResponse(catalogPage([productEdge('1', 'One', '1.00')]));
+  const r = await post(`/stub/${FUNNEL_B}/products/sync`);
+  eq(r.body.data.truncated, false, 'prune D: a walk that reached the end is complete');
+  eq(r.body.data.removed, 2, 'prune D: …and the two products Shopify no longer has ARE pruned');
+  eq(await countB(), 1, 'prune D: one row left');
+  const [{ n }] = await pgQuery(
+    `SELECT COUNT(*)::int AS n FROM co_whop_product_map WHERE funnel_id = $1 AND shopify_product_id = '2'`,
+    [FUNNEL_B]
+  );
+  eq(n, 0, 'prune D: the pruned product\'s Whop mapping is cleaned up too — it can no longer inflate mapped_count');
+}
+
+// ---- FUNNEL MUST EXIST before any upstream spend (review #9) --------------
+{
+  isolate();
+  fetchImpl = async () => { throw new Error('no upstream call may happen for an unknown funnel'); };
+  const s = await post('/stub/test_fc_does_not_exist/products/sync');
+  eq(s.status, 404, 'funnel gate: sync on an unknown funnel → 404');
+  eq(s.body?.error?.code, 'funnel_not_found', 'funnel gate: …with code funnel_not_found');
+  const m = await post('/stub/test_fc_does_not_exist/whop/map');
+  eq(m.status, 404, 'funnel gate: whop map on an unknown funnel → 404, BEFORE any Whop write');
+  eq(m.body?.error?.code, 'funnel_not_found', 'funnel gate: …with code funnel_not_found');
+  const e = await post('/stub/ /products/sync');
+  eq(e.status, 400, 'funnel gate: a blank funnel id → 400');
+}
+
 // ---- SHOPIFY OUTAGE — 503, never an empty catalog -------------------------
 {
   const cases = [
@@ -430,9 +644,8 @@ const productEdge = (id, title, price) => ({
     ['HTTP 401 dead key', async () => jsonResponse({}, 401), 'shopify_auth_error', false],
     ['HTTP 403 dead key', async () => jsonResponse({}, 403), 'shopify_auth_error', false],
   ];
-  let oi = 0;
   for (const [label, impl, code, retryable] of cases) {
-    AS = `outage_${oi}`; oi += 1;
+    isolate();
     fetchImpl = impl;
     const r = await post(`/stub/${FUNNEL}/products/sync`);
     eq(r.status, 503, `outage: ${label} → 503, never 200`);
@@ -446,7 +659,7 @@ const productEdge = (id, title, price) => ({
   eq(after.body.data.products.length, 2, 'outage: the stored snapshot survives — a blip never wipes the catalog');
 }
 {
-  AS = 'outage_cfg';
+  isolate();
   const store = process.env.PUURE_SHOPIFY_STORE;
   delete process.env.PUURE_SHOPIFY_STORE;
   delete process.env.SHOPIFY_STORE_DOMAIN;
@@ -492,7 +705,7 @@ function whopRouter(url, opts) {
   return jsonResponse({ data: made });
 }
 {
-  AS = 'map_main';
+  isolate();
   // Restore the two-product snapshot, then map.
   fetchImpl = async (url, opts) => {
     if (String(url).includes('myshopify')) {
@@ -526,10 +739,110 @@ function whopRouter(url, opts) {
   eq(r2.body.data.already, 2, 'whop map: a re-run reports both as already mapped');
   eq(whopState.created.length, before, 'whop map: …and mints NOTHING new');
   eq(r2.body.data.mappings.length, 2, 'whop map: still exactly two mapping rows (the unique key holds)');
+  eq([r.body.data.planned_match, r.body.data.planned_create], [1, 1],
+    'whop map: PLAN TOTALS are reported so the client can detect a shortfall');
+}
+
+// ---- CONCURRENCY — two simultaneous maps must not double-create (review #3)
+{
+  isolate();
+  await pgQuery(`DELETE FROM co_whop_product_map WHERE funnel_id = $1`, [FUNNEL]);
+  whopState.products = [];
+  whopState.created = [];
+  // Slow the Whop LIST so the two requests' plan phases genuinely overlap —
+  // without the lock both would read "Kit and Serum are unmapped" and both
+  // would create them.
+  fetchImpl = async (url, opts) => {
+    if (String(url).includes('myshopify')) {
+      return jsonResponse(catalogPage([productEdge('10', 'Kit', '19.00'), productEdge('11', 'Serum', '29.50')]));
+    }
+    if ((opts?.method || 'GET') === 'GET') {
+      await new Promise((r) => { const t = setTimeout(r, 120); if (t.unref) t.unref(); });
+    }
+    return whopRouter(url, opts);
+  };
+  await post(`/stub/${FUNNEL}/products/sync`);
+
+  const [a, b] = await Promise.all([
+    post(`/stub/${FUNNEL}/whop/map`),
+    post(`/stub/${FUNNEL}/whop/map`),
+  ]);
+  const statuses = [a.status, b.status].sort();
+  eq(statuses, [200, 409], 'concurrency: of two simultaneous maps, exactly ONE runs and the other is refused 409');
+  const refused = a.status === 409 ? a : b;
+  eq(refused.body?.error?.code, 'map_in_progress', 'concurrency: …with code map_in_progress');
+  eq(whopState.created.length, 2, 'concurrency: exactly TWO live Whop products were created, not four');
+  eq(whopState.created.map((c) => c.name).sort(), ['Kit', 'Serum'], 'concurrency: …one per Shopify product');
+  const [{ n }] = await pgQuery(
+    `SELECT COUNT(*)::int AS n FROM co_whop_product_map WHERE funnel_id = $1`, [FUNNEL]
+  );
+  eq(n, 2, 'concurrency: and exactly two mapping rows exist');
+
+  // The lock must be RELEASED — a session lock left on a pooled connection
+  // would wedge every later run on this funnel.
+  const after = await post(`/stub/${FUNNEL}/whop/map`);
+  eq(after.status, 200, 'concurrency: the advisory lock is released, so the next run proceeds');
+}
+
+// ---- WHOP PAGING — decided on the RAW page length (review #2) -------------
+{
+  isolate();
+  // A FULL page that contains one id-less row: 50 raw, 49 usable. Deciding
+  // paging on the filtered count read "49 < 50 → last page", stopped the walk,
+  // and made everything on page 2 look absent — so the mapper created a
+  // DUPLICATE of a product that already existed.
+  const pageOne = [
+    ...Array.from({ length: WHOP_PAGE_SIZE - 1 }, (_, i) => ({ id: `w${i}`, name: `Filler ${i}` })),
+    { name: 'no id at all' },
+  ];
+  const pageTwo = [{ id: 'wLate', name: 'Serum' }];
+  let seenPages = 0;
+  fetchImpl = async (url) => {
+    const page = Number(new URL(String(url)).searchParams.get('page'));
+    seenPages = Math.max(seenPages, page);
+    return jsonResponse({ data: page === 1 ? pageOne : pageTwo });
+  };
+  const cat = await listWhopProducts({ api_key: 'k', company_id: 'c' });
+  eq(seenPages, 2, 'whop paging: a FULL raw page keeps paging even when a row was dropped');
+  eq(cat.dropped, 1, 'whop paging: the dropped row is counted separately, not hidden');
+  eq(cat.complete, true, 'whop paging: the walk reached the last page');
+  ok(cat.products.some((p) => p.name === 'Serum'),
+    'whop paging: the page-2 product IS found — so the mapper matches it instead of creating a duplicate');
+  eq(findWhopByName('Serum', cat.products)?.id, 'wLate', 'whop paging: …and it is the right one');
 }
 {
-  AS = 'map_nameless';
+  isolate();
+  // A catalog that never ends: the walk hits its page cap and reports
+  // INCOMPLETE. An incomplete catalog cannot prove a name is absent.
+  fetchImpl = async () => jsonResponse({
+    data: Array.from({ length: WHOP_PAGE_SIZE }, (_, i) => ({ id: `x${i}`, name: `X${i}` })),
+  });
+  const cat = await listWhopProducts({ api_key: 'k', company_id: 'c' });
+  eq(cat.complete, false, 'whop paging: a walk that never sees a short page is INCOMPLETE');
+
+  // …and the route refuses to create against it.
+  await pgQuery(`DELETE FROM co_whop_product_map WHERE funnel_id = $1`, [FUNNEL]);
+  const createsBefore = whopState.created.length;
+  fetchImpl = async (url, opts) => {
+    if (String(url).includes('myshopify')) return jsonResponse(catalogPage([productEdge('10', 'Kit', '19.00')]));
+    if ((opts?.method || 'GET') === 'GET') {
+      return jsonResponse({ data: Array.from({ length: WHOP_PAGE_SIZE }, (_, i) => ({ id: `x${i}`, name: `X${i}` })) });
+    }
+    return whopRouter(url, opts);
+  };
+  await post(`/stub/${FUNNEL}/products/sync`);
+  const r = await post(`/stub/${FUNNEL}/whop/map`);
+  eq(r.status, 503, 'whop paging: mapping against an INCOMPLETE catalog is refused 503');
+  eq(r.body?.error?.code, 'whop_catalog_incomplete', 'whop paging: …with code whop_catalog_incomplete');
+  eq(whopState.created.length, createsBefore, 'whop paging: …and nothing was created');
+}
+{
+  isolate();
   // A nameless product is skipped, never created blank.
+  fetchImpl = async (url, opts) => (String(url).includes('myshopify')
+    ? jsonResponse(catalogPage([productEdge('10', 'Kit', '19.00')]))
+    : whopRouter(url, opts));
+  whopState.products = [{ id: 'wKit2', name: 'Kit' }];
   await pgQuery(
     `INSERT INTO co_funnel_products (funnel_id, shopify_product_id, title, variants)
      VALUES ($1, '99', '   ', '[]'::jsonb)
@@ -551,9 +864,8 @@ function whopRouter(url, opts) {
     ['list 401', async () => jsonResponse({}, 401), 'whop_auth_error', false],
     ['list transport failure', async () => { throw new Error('ECONNRESET'); }, 'whop_unavailable', true],
   ];
-  let wi = 0;
   for (const [label, impl, code, retryable] of cases) {
-    AS = `whop_outage_${wi}`; wi += 1;
+    isolate();
     const before = whopState.created.length;
     fetchImpl = async (url, opts) => (String(url).includes('myshopify') ? jsonResponse(catalogPage([])) : impl(url, opts));
     const r = await post(`/stub/${FUNNEL}/whop/map`);
@@ -566,7 +878,7 @@ function whopRouter(url, opts) {
   eq(count, 0, 'whop outage: and writes no mapping rows at all');
 }
 {
-  AS = 'map_ghost';
+  isolate();
   // A create that answers 2xx with no addressable id is NOT a success.
   fetchImpl = async (url, opts) => {
     if (String(url).includes('myshopify')) return jsonResponse(catalogPage([productEdge('12', 'Ghost', '5.00')]));
@@ -578,10 +890,69 @@ function whopRouter(url, opts) {
   eq(r.status, 200, 'whop create: a per-product failure does not fail the whole run');
   eq(r.body.data.created, 0, 'whop create: an id-less 2xx counts as 0 created');
   eq(r.body.data.failed.length, 1, 'whop create: …and is REPORTED as failed, never silently swallowed');
+  eq(r.body.data.failed[0].code, 'whop_create_no_id',
+    'whop create: …under a PER-ROW code, not the shop-wide outage code that would abandon the batch');
   eq(r.body.data.mapped_count, 0, 'whop create: no mapping row was written for it');
 }
+
+// ---- BATCH OF 5 — one failure must not abandon the other four (review #4) --
 {
-  AS = 'map_none';
+  isolate();
+  await pgQuery(`DELETE FROM co_funnel_products WHERE funnel_id = $1`, [FUNNEL_B]);
+  await pgQuery(`DELETE FROM co_whop_product_map WHERE funnel_id = $1`, [FUNNEL_B]);
+  const five = ['A', 'B', 'C', 'D', 'E'].map((t, i) => productEdge(`2${i}`, t, '9.00'));
+  let creates = 0;
+  fetchImpl = async (url, opts) => {
+    if (String(url).includes('myshopify')) return jsonResponse(catalogPage(five));
+    if ((opts?.method || 'GET') === 'GET') return jsonResponse({ data: [] });
+    creates += 1;
+    // The SECOND create fails with a per-row, non-fatal error. The other four
+    // must still be attempted — the old code `break`-ed and lost them from the
+    // report entirely.
+    if (creates === 2) return jsonResponse({ ok: true });   // id-less = per-row failure
+    const body = JSON.parse(opts.body);
+    return jsonResponse({ data: { id: `wp5_${creates}`, name: body.name } });
+  };
+  await post(`/stub/${FUNNEL_B}/products/sync`);
+  const r = await post(`/stub/${FUNNEL_B}/whop/map`);
+  eq(r.status, 200, 'batch5: the run completes');
+  eq(r.body.data.planned_create, 5, 'batch5: five creates were planned');
+  eq(creates, 5, 'batch5: all five were ATTEMPTED — one failure does not abandon the batch');
+  eq(r.body.data.created, 4, 'batch5: four succeeded');
+  eq(r.body.data.failed.length, 1, 'batch5: exactly one is reported failed');
+  eq(r.body.data.created + r.body.data.failed.length, r.body.data.planned_create,
+    'batch5: created + failed ACCOUNTS FOR every planned product — no product silently vanishes from the report');
+  eq(r.body.data.mapped_count, 4, 'batch5: four mapping rows written');
+}
+{
+  isolate();
+  // A FATAL error (dead key) stops further CALLS but still ACCOUNTS for every
+  // remaining product. Under-reporting is how a run that mapped 1 of 5 reads
+  // as a clean success.
+  await pgQuery(`DELETE FROM co_funnel_products WHERE funnel_id = $1`, [FUNNEL_B]);
+  await pgQuery(`DELETE FROM co_whop_product_map WHERE funnel_id = $1`, [FUNNEL_B]);
+  const five = ['A', 'B', 'C', 'D', 'E'].map((t, i) => productEdge(`3${i}`, t, '9.00'));
+  let creates = 0;
+  fetchImpl = async (url, opts) => {
+    if (String(url).includes('myshopify')) return jsonResponse(catalogPage(five));
+    if ((opts?.method || 'GET') === 'GET') return jsonResponse({ data: [] });
+    creates += 1;
+    if (creates >= 2) return jsonResponse({}, 401);   // dead key from #2 on
+    const body = JSON.parse(opts.body);
+    return jsonResponse({ data: { id: `wpf_${creates}`, name: body.name } });
+  };
+  await post(`/stub/${FUNNEL_B}/products/sync`);
+  const r = await post(`/stub/${FUNNEL_B}/whop/map`);
+  eq(r.body.data.created, 1, 'fatal: only the first create succeeded');
+  eq(creates, 2, 'fatal: Whop is NOT hammered once the key is proven dead');
+  eq(r.body.data.failed.length, 4, 'fatal: …but all four remaining products are still REPORTED as failed');
+  eq(r.body.data.created + r.body.data.failed.length, r.body.data.planned_create,
+    'fatal: the report still accounts for every planned product');
+  eq(r.body.data.failed.every((f) => f.code === 'whop_auth_error'), true,
+    'fatal: …each carrying the cause');
+}
+{
+  isolate();
   // No products at all is a 400 with an actionable code, not a fake success.
   await pgQuery(`DELETE FROM co_funnel_products WHERE funnel_id = $1`, [FUNNEL_B]);
   fetchImpl = async () => { throw new Error('must not call any upstream with no products'); };
@@ -590,7 +961,7 @@ function whopRouter(url, opts) {
   eq(r.body?.error?.code, 'no_products', 'whop map: …with code no_products');
 }
 {
-  AS = 'map_nocreds';
+  isolate();
   // Missing Whop credentials read as configuration, not an outage.
   const key = process.env.WHOP_API_KEY;
   delete process.env.WHOP_API_KEY;
@@ -610,6 +981,10 @@ function whopRouter(url, opts) {
   ok(threw instanceof WhopUnavailableError && threw.code === 'whop_not_configured',
     'whop service: a missing key THROWS rather than returning an empty catalog');
 
+  const empty = await listWhopProducts({ api_key: 'k', company_id: 'c' });
+  eq(empty, { products: [], complete: true, dropped: 0 },
+    'whop service: a genuinely empty first page is COMPLETE — a positive claim, one call');
+
   threw = null;
   try { await createWhopProduct({ api_key: 'k', company_id: 'c' }, { name: '   ' }); } catch (e) { threw = e; }
   eq(threw?.code, 'whop_invalid_name', 'whop service: creating a blank-named product is refused up front');
@@ -617,7 +992,7 @@ function whopRouter(url, opts) {
 
 // ---- MANUAL MAPPING CRUD --------------------------------------------------
 {
-  AS = 'crud';
+  isolate();
   fetchImpl = async (url, opts) => (String(url).includes('myshopify')
     ? jsonResponse(catalogPage([productEdge('10', 'Kit', '19.00')]))
     : whopRouter(url, opts));
@@ -648,32 +1023,38 @@ function whopRouter(url, opts) {
 
 // ---- FUNNEL-SCOPING + settings-driven allow-list --------------------------
 {
-  AS = 'zones_cfg';
-  await pgQuery(
-    `CREATE TABLE IF NOT EXISTS funnels (
-       id TEXT PRIMARY KEY, slug TEXT NOT NULL, name TEXT NOT NULL,
-       status TEXT NOT NULL DEFAULT 'draft', archived BOOLEAN NOT NULL DEFAULT FALSE,
-       custom_domain TEXT, default_page_id TEXT, seo JSONB DEFAULT '{}',
-       flow_layout JSONB DEFAULT '{"nodes":[],"edges":[]}', misc JSONB DEFAULT '{}',
-       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`
-  );
-  await pgQuery(`ALTER TABLE funnels ADD COLUMN IF NOT EXISTS settings JSONB DEFAULT '{}'`);
-  await pgQuery(`DELETE FROM funnels WHERE id = $1`, [FUNNEL]);
-  await pgQuery(
-    `INSERT INTO funnels (id, slug, name, settings) VALUES ($1, $2, $3, $4)`,
-    // Raw object — postgres.js serializes the jsonb param itself.
-    [FUNNEL, `slug-${FUNNEL}`, 'Commerce test', { commerce: { restrict_countries: true, allowed_countries: ['us', 'bd'] } }]
-  );
+  isolate();
+  await seedFunnel(FUNNEL, { commerce: { restrict_countries: true, allowed_countries: ['us', 'bd'] } });
 
-  fetchImpl = async () => jsonResponse({
-    data: { deliveryProfiles: { nodes: [{ name: 'G', profileLocationGroups: [{ locationGroupZones: { nodes: [
-      { zone: { name: 'Domestic', countries: [{ name: 'United States', code: { countryCode: 'US' } }] }, methodDefinitions: { nodes: [] } },
-    ] } }] }] } },
+  const zoneWithRate = (nodes) => ({
+    data: { deliveryProfiles: { nodes } },
   });
+  const usZone = {
+    zone: { name: 'Domestic', countries: [{ name: 'United States', code: { countryCode: 'US' } }] },
+    methodDefinitions: { nodes: [{ active: true, name: 'Std', rateProvider: { __typename: 'DeliveryRateDefinition', price: { amount: '5.00', currencyCode: 'USD' } }, methodConditions: [] }] },
+  };
+  fetchImpl = async () => jsonResponse(zoneWithRate([
+    { name: 'G', profileLocationGroups: [{ locationGroupZones: { nodes: [usZone] } }] },
+  ]));
   const r = await get(`/stub/${FUNNEL}/shipping/zones`);
   eq(r.body.data.allowed_countries, ['US', 'BD'], 'zones: the funnel settings allow-list is read + normalized');
-  eq(r.body.data.uncovered_countries, ['BD'], 'zones: an allowed country with no zone is named');
+  eq(r.body.data.uncovered_countries, ['BD'], 'zones: an allowed country with no shipping zone is named');
+  eq(r.body.data.truncated, false, 'zones: a single-page read is not truncated');
 
+  // Two profiles still paging, one shared $zonesAfter (review #7): the view is
+  // necessarily partial, and a partial view cannot prove a country UNCOVERED.
+  fetchImpl = async () => jsonResponse(zoneWithRate([
+    { name: 'A', profileLocationGroups: [{ locationGroupZones: { pageInfo: { hasNextPage: true, endCursor: 'CA' }, nodes: [usZone] } }] },
+    { name: 'B', profileLocationGroups: [{ locationGroupZones: { pageInfo: { hasNextPage: true, endCursor: 'CB' }, nodes: [] } }] },
+  ]));
+  const t = await get(`/stub/${FUNNEL}/shipping/zones`);
+  eq(t.body.data.truncated, true, 'zones: two profiles still paging → the view is flagged TRUNCATED');
+  eq(t.body.data.truncated_reason, 'multiple_profile_pages', 'zones: …with the reason');
+  eq(t.body.data.uncovered_countries, [],
+    'zones: a truncated view SUPPRESSES coverage warnings — an unseen zone could cover the country');
+
+  const mine = await get(`/stub/${FUNNEL}/products`);
+  ok(mine.body.data.products.some((p) => p.title === 'Kit'), 'scoping: this funnel has its own product');
   const other = await get(`/stub/${FUNNEL_B}/products`);
   ok(other.body.data.products.every((p) => p.title !== 'Kit'),
     'scoping: one funnel never sees another funnel\'s synced products');
@@ -681,7 +1062,7 @@ function whopRouter(url, opts) {
 
 // ---- RATE LIMITING --------------------------------------------------------
 {
-  AS = 'rl_sync_user';
+  isolate();
   let limited = null;
   let calls = 0;
   fetchImpl = async () => { calls += 1; return jsonResponse(catalogPage([])); };
@@ -695,10 +1076,73 @@ function whopRouter(url, opts) {
     ok(calls <= SYNC_RATE_MAX, 'rate limit: and Shopify was called at most the cap — live pricing keeps its budget', `calls=${calls}`);
   }
 }
+{
+  // REGRESSION (review #8). The budget is the SHOP's Shopify bucket, so the
+  // key must not be the user — a second admin account used to get a whole
+  // fresh allowance against the same bucket.
+  isolate();
+  fetchImpl = async () => jsonResponse(catalogPage([]));
+  for (let i = 0; i < SYNC_RATE_MAX + 2; i += 1) await post(`/stub/${FUNNEL_B}/products/sync`);
+  const asAnotherUser = await post(`/stub/${FUNNEL_B}/products/sync?as=a_different_admin`);
+  eq(asAnotherUser.status, 429,
+    'rate limit: a DIFFERENT user on the SAME shop+funnel is still limited — the cap is per shop, not per person');
+  // …while a different funnel on the same shop has its own budget.
+  const otherFunnel = await post(`/stub/${FUNNEL}/products/sync`);
+  ok(otherFunnel.status !== 429, 'rate limit: a different funnel keeps its own budget', `status=${otherFunnel.status}`);
+}
+// ---- LIMITER STORE DOWN — admin jobs FAIL CLOSED (review #8) --------------
+// Driven through the injectable `check` seam. `limited()` is the single gate
+// every upstream-spending handler goes through, so exercising it directly is
+// exercising the real path — no monkey patching, no guarded assertion.
+{
+  const fakeRes = () => {
+    const r = { statusCode: 0, payload: null };
+    r.status = (c) => { r.statusCode = c; return r; };
+    r.json = (b) => { r.payload = b; return r; };
+    return r;
+  };
+  const req = { params: { funnelId: FUNNEL }, user: { id: 'u1' }, ip: '127.0.0.1' };
+  const down = async () => { throw new Error('limiter store unreachable'); };
+
+  {
+    const res = fakeRes();
+    const blocked = await route.limited(req, res, 'k-closed', 5, 60, { failClosed: true, check: down });
+    eq(blocked, true, 'limiter down: an admin job (failClosed) is REFUSED');
+    eq(res.statusCode, 503, 'limiter down: …with 503');
+    eq(res.payload?.error?.code, 'rate_limiter_unavailable', 'limiter down: …and code rate_limiter_unavailable');
+    eq(res.payload?.error?.retryable, true, 'limiter down: …flagged retryable');
+  }
+  {
+    const res = fakeRes();
+    const blocked = await route.limited(req, res, 'k-open', 5, 60, { failClosed: false, check: down });
+    eq(blocked, false, 'limiter down: a READ-ONLY handler still fails OPEN — a Redis blip must not blank the panel');
+    eq(res.statusCode, 0, 'limiter down: …and nothing was written to the response');
+  }
+  {
+    // A genuine over-cap answer is still a 429, not the store-down 503 — the
+    // two must stay distinguishable or an operator cannot tell "slow down"
+    // from "infrastructure is broken".
+    const res = fakeRes();
+    const overCap = async () => ({ allowed: false, retryAfter: 42 });
+    await route.limited(req, res, 'k-cap', 5, 60, { failClosed: true, check: overCap });
+    eq(res.statusCode, 429, 'limiter: a real over-cap is 429');
+    eq(res.payload?.error?.code, 'rate_limited', 'limiter: …with code rate_limited, distinct from the store-down code');
+  }
+  {
+    const res = fakeRes();
+    let seenKey = null;
+    const spy = async (k) => { seenKey = k; return { allowed: true }; };
+    process.env.PUURE_SHOPIFY_STORE = 'keycheck.myshopify.com';
+    await route.limited(req, res, 'k-scope', 5, 60, { check: spy });
+    ok(seenKey.includes('keycheck.myshopify.com') && seenKey.includes(FUNNEL),
+      'limiter: the key is SHOP + FUNNEL', seenKey);
+    ok(!seenKey.includes('u1'), 'limiter: …and NOT the user id', seenKey);
+  }
+}
 
 // ---- the 8s timeout is actually armed -------------------------------------
 {
-  AS = 'timeout_user';
+  isolate();
   eq(FETCH_TIMEOUT_MS, 8000, 'timeout: the budget is 8s as specified');
   let sawSignal = false; let aborted = false;
   fetchImpl = async (_url, opts) => {
@@ -715,6 +1159,50 @@ function whopRouter(url, opts) {
   ok(sawSignal, 'timeout: an AbortSignal is passed to fetch');
   ok(aborted, 'timeout: the abort path fires');
   eq(r.status, 503, 'timeout: an aborted request answers 503, never a hang or a 200');
+}
+
+// ---- CROSS-SECTION SETTINGS QUEUE (review #11) ----------------------------
+// funnels PATCH replaces the WHOLE settings column, so every section's save is
+// a read-modify-write. Per-section queues serialized a section against itself
+// and nothing else, so General could GET, Shipping could GET+PATCH, and
+// General's PATCH would then land built on the pre-Shipping snapshot.
+{
+  const q1 = await import('../../../client/src/components/funnels/settings/serialQueue.js');
+  const q2 = await import('../../../client/src/components/funnels/settings/serialQueue.js');
+  ok(q1.enqueueSettingsSave === q2.enqueueSettingsSave,
+    'settings queue: every importer gets the SAME module-level instance (a per-component queue reopens the race)');
+  ok(typeof q1.makeSerialQueue === 'function',
+    'settings queue: makeSerialQueue is still exported (tracking-tab.mjs depends on it)');
+
+  // Two DIFFERENT sections doing read-modify-write on one shared document.
+  const { enqueueSettingsSave, makeSerialQueue } = q1;
+  const tick = () => new Promise((r) => { const t = setTimeout(r, 15); if (t.unref) t.unref(); });
+  const rmw = (enqueue, key) => enqueue(async () => {
+    const snapshot = { ...store };      // GET
+    await tick();                       // network gap — where the race lives
+    store = { ...snapshot, [key]: true }; // PATCH (whole-object replace)
+  });
+
+  // CONTROL: separate queues (the old shape) really do lose a write.
+  let store = {};
+  const qa = makeSerialQueue();
+  const qb = makeSerialQueue();
+  await Promise.all([rmw(qa, 'general'), rmw(qb, 'shipping')]);
+  eq(Object.keys(store).length, 1,
+    'settings queue: CONTROL — two SEPARATE queues drop one of the two writes (the reported bug)');
+
+  // FIX: one shared queue keeps both.
+  store = {};
+  await Promise.all([rmw(enqueueSettingsSave, 'general'), rmw(enqueueSettingsSave, 'shipping')]);
+  eq(Object.keys(store).sort(), ['general', 'shipping'],
+    'settings queue: the SHARED queue preserves BOTH sections\' writes');
+
+  // A failing job must not wedge the queue for every later section.
+  let after = null;
+  const boom = enqueueSettingsSave(async () => { throw new Error('save failed'); });
+  await boom.then(() => null, () => null);
+  await enqueueSettingsSave(async () => { after = 'ran'; });
+  eq(after, 'ran', 'settings queue: a failed save rejects its own promise but never wedges the queue');
 }
 
 // ---- cleanup --------------------------------------------------------------

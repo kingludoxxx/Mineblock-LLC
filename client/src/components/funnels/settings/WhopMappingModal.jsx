@@ -28,6 +28,10 @@ const ERR = {
   whop_not_configured: 'Whop is not configured for this funnel — add the API key and company ID in Payments first.',
   whop_auth_error: 'Whop rejected our credentials. This needs operator attention; retrying will not help.',
   whop_unavailable: 'Whop is temporarily unavailable — try again.',
+  whop_catalog_incomplete: 'Could not read the whole Whop catalog, so mapping stopped rather than risk creating duplicate products. Try again shortly.',
+  map_in_progress: 'A mapping run is already going for this funnel — wait for it to finish.',
+  rate_limiter_unavailable: 'The rate limiter is down, so mapping is held back. Try again shortly.',
+  funnel_not_found: 'This funnel no longer exists — close and reopen Settings.',
   internal_error: 'Server error — try again.',
 };
 const errText = (e, fallback) => {
@@ -124,9 +128,21 @@ export default function WhopMappingModal({ funnelId, products, onClose, onChange
       if (d.already) parts.push(`${d.already} already mapped`);
       if (d.skipped) parts.push(`${d.skipped} skipped (no product name)`);
       setNote(parts.length ? parts.join(' · ') : 'Nothing left to map.');
-      // A partial run must never read as a clean one.
-      if (Array.isArray(d.failed) && d.failed.length) {
-        setErr(`${d.failed.length} product${d.failed.length === 1 ? '' : 's'} could not be mapped (${d.failed[0].code}). Fix the cause and run it again.`);
+
+      // SHORTFALL, not just failures. `planned_create` is what the run set out
+      // to do; comparing against it catches a run that stopped early even if
+      // the failure list were somehow short. Counting outcomes alone cannot
+      // tell "nothing to do" apart from "we gave up".
+      const planned = Number(d.planned_create || 0);
+      const shortfall = planned - Number(d.created || 0);
+      const failures = Array.isArray(d.failed) ? d.failed : [];
+      if (failures.length || shortfall > 0) {
+        const n = Math.max(failures.length, shortfall);
+        const code = failures[0]?.code || 'unknown';
+        setErr(
+          `${n} of ${planned} product${planned === 1 ? '' : 's'} could not be created in Whop (${code}). `
+          + 'Nothing was half-written — fix the cause and run it again.'
+        );
       }
       setRows(d.mappings || []);
       onChanged?.();
