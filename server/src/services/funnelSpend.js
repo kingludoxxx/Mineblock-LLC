@@ -260,23 +260,30 @@ export async function deriveCampaignBindings(start, end) {
   const loIso = `${start}T00:00:00Z`;
   const hiIso = `${dayKeyUtc(new Date(`${end}T00:00:00Z`).getTime() + 86400000)}T00:00:00Z`;
   const sessions = await pgQuery(
-    `SELECT s.id, s.funnel_id, s.vid
+    `SELECT s.id, s.funnel_id, s.vid, s.paid_at
      FROM co_sessions s
      WHERE ${MONEY_MOVED_SQL} AND s.paid_at >= $1 AND s.paid_at < $2
        AND s.funnel_id IS NOT NULL AND s.funnel_id <> ''`,
     [loIso, hiIso]
   );
   if (!sessions.length) return {};
+  const paidAtBySid = new Map(sessions.map((s) => [String(s.id), s.paid_at ? new Date(s.paid_at).getTime() : 0]));
 
   // Exclusive LAST click per session: first by the conversion-stamped
-  // session_id, then (for sessions no click was stamped to) by vid — the
-  // work order's "by session_id/vid" join, in that order of trust.
+  // session_id, then (for sessions no click was stamped to) by vid — in that
+  // order of trust. Bot rows never vote (m6): a click farm must not be able
+  // to re-route a campaign's spend. Both draws ORDER BY ts, id so the tie on
+  // an identical instant is deterministic (m8) — the takeClick >= keeps the
+  // LAST row drawn, i.e. the highest (ts, id).
   const best = new Map(); // session.id → {ts, cid}
-  const takeClick = (sid, c) => {
+  const takeClick = (sid, c, { maxTs = null } = {}) => {
     const cid = String(((c.struct || {}).campaign_id) || '').trim();
     if (!cid) return;
     // PARSE the instant — never string-compare a timestamptz.
     const ts = c.ts ? new Date(c.ts).getTime() : 0;
+    // m7 — a click AFTER the purchase cannot have caused it. Applied on the
+    // vid fallback, where nothing else anchors the click to the session.
+    if (maxTs !== null && ts > maxTs) return;
     const prev = best.get(sid);
     if (!prev || ts >= prev.ts) best.set(sid, { ts, cid });
   };
@@ -285,7 +292,9 @@ export async function deriveCampaignBindings(start, end) {
   for (let i = 0; i < sids.length; i += CLICK_CHUNK) {
     const chunk = sids.slice(i, i + CLICK_CHUNK);
     const clicks = await pgQuery(
-      `SELECT session_id, struct, ts FROM lb_clicks WHERE session_id = ANY($1)`,
+      `SELECT session_id, struct, ts FROM lb_clicks
+       WHERE session_id = ANY($1) AND bot = FALSE
+       ORDER BY ts, id`,
       [chunk]
     );
     for (const c of clicks) takeClick(String(c.session_id), c);
@@ -301,11 +310,15 @@ export async function deriveCampaignBindings(start, end) {
   for (let i = 0; i < vids.length; i += CLICK_CHUNK) {
     const chunk = vids.slice(i, i + CLICK_CHUNK);
     const clicks = await pgQuery(
-      `SELECT vid, struct, ts FROM lb_clicks WHERE vid = ANY($1)`,
+      `SELECT vid, struct, ts FROM lb_clicks
+       WHERE vid = ANY($1) AND bot = FALSE
+       ORDER BY ts, id`,
       [chunk]
     );
     for (const c of clicks) {
-      for (const sid of vidToSids.get(String(c.vid)) || []) takeClick(sid, c);
+      for (const sid of vidToSids.get(String(c.vid)) || []) {
+        takeClick(sid, c, { maxTs: paidAtBySid.get(sid) || null });
+      }
     }
   }
 

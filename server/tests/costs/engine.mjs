@@ -140,7 +140,7 @@ const mkSession = (over = {}) => ({
 
 // ═══ T5: INVARIANT 2 — fees per transaction, pro-rata, cent-exact ══════════
 {
-  const fee = { default_pct: 2.9, default_fixed: 0.3, gateways: {} };
+  const fee = { default: { pct: 2.9, fixed: 0.3 }, gateways: {} };
   const legs = [
     { variant_id: V1, context: 'main', quantity: 1, revenue: 33.33, tx: 't1', kind: 'cart' },
     { variant_id: V1, context: 'main', quantity: 1, revenue: 33.33, tx: 't1', kind: 'cart' },
@@ -185,7 +185,7 @@ const mkSession = (over = {}) => ({
 {
   const catalog = { [V1]: { variant_id: V1, pays_shipping: false } };
   const rates = [{ id: 1, scope: 'variant', variant_id: V1, effective_from: '2020-01-01', unit_cogs: 5, ship: {}, created_at: '2020-01-01T00:00:00Z' }];
-  const fee = { default_pct: 6, default_fixed: 0, gateways: {} };
+  const fee = { default: { pct: 6, fixed: 0 }, gateways: {} };
   const base = resolveCosts(mkSession({}), TODAY, { catalog, rates, feeSettings: fee });
   const refunded = resolveCosts(mkSession({ refunds: [{ amount: 20, id: 're_1' }] }), TODAY, { catalog, rates, feeSettings: fee });
   ok(refunded.refunds === 20 && refunded.net_revenue === base.net_revenue - 20, 'T7 refund nets net_revenue');
@@ -333,9 +333,9 @@ const mkSession = (over = {}) => ({
   // grid + filters
   const grid = await listVariants({});
   ok(grid.items[0].variant_id === V1, 'T12 grid sorted by 30d revenue desc (worklist order)');
-  ok(grid.items[0].resolved.unit_cogs === null, 'T12 grid row: unknown COGS resolves null (dash), not 0');
+  ok(grid.items[0].unit_cogs === null, 'T12 grid row (FLAT): unknown COGS resolves null (dash), not 0');
   const v2row = grid.items.find((r) => r.variant_id === V2);
-  ok(v2row.resolved.unit_cogs === 12, 'T12 grid row: costed variant resolves today\'s rate');
+  ok(v2row.unit_cogs === 12, 'T12 grid row (FLAT): costed variant resolves today\'s rate');
   const byF = await listByFunnel();
   const f1 = byF.funnels.find((f) => f.funnel_id === 'f1');
   ok(f1 && f1.revenue_30d === 200, 'T12 by-funnel view credits f1 only its own $200');
@@ -344,7 +344,7 @@ const mkSession = (over = {}) => ({
 // ═══ T13: fee settings — defaults, override, inherit ═══════════════════════
 {
   const fs0 = await getFeeSettings();
-  ok(fs0.default_pct === 6 && fs0.default_fixed === 0, 'T13 seeded default 6% + $0');
+  ok(fs0.default.pct === 6 && fs0.default.fixed === 0, 'T13 seeded default 6% + $0 (nested shape)');
   ok(Object.keys(fs0.gateways).sort().join(',') === 'nmi,paypal,stripe,whop', 'T13 four rails seeded, present-but-null');
   const fs1 = await updateFeeSettings({ gateways: { stripe: { pct: 2.9, fixed: 0.3 } } }, 'test@local');
   ok(fs1.gateways.stripe.pct === 2.9, 'T13 stripe override stored');
@@ -354,7 +354,7 @@ const mkSession = (over = {}) => ({
   const partial = await updateFeeSettings({ gateways: { nmi: { pct: 3.5 } } }, 'test@local');
   ok(resolveFeeRate(partial, 'nmi').pct === 3.5 && resolveFeeRate(partial, 'nmi').fixed === 0, 'T13 partial override fills blanks from default');
   let threw = null;
-  try { await updateFeeSettings({ default_pct: 5000 }); } catch (e) { threw = e; }
+  try { await updateFeeSettings({ default: { pct: 5000 } }); } catch (e) { threw = e; }
   ok(threw && threw.code === 'bad_pct', 'T13 pct 5000 refused (catastrophic fee guard)');
   await updateFeeSettings({ gateways: { stripe: null, nmi: null } }, 'test@local');
 }
@@ -400,7 +400,7 @@ const mkSession = (over = {}) => ({
   await sql`UPDATE co_sessions SET refunds = ${sql.json([{ id: 're_x', amount: 30 }])}, status = 'refunded' WHERE id = 's_e1'`;
   const ov3 = await pnlOverview(D(7), TODAY);
   const f1r3 = ov3.rows.find((r) => r.fid === 'f1');
-  ok(f1r3.revenue === 170 && f1r3.cogs === 40 && f1r3.refunds === 30, 'T14 INVARIANT 5 at P&L level: refund nets top line, COGS/fees intact');
+  ok(f1r3.revenue === 170 && f1r3.cogs === 40 && !('refunds' in f1r3), 'T14 INVARIANT 5 at P&L level: refund nets top line, COGS intact, contract row set');
   ok(f1r3.gross_sales === 200, 'T14 gross_sales stays the captured money');
 
   // empty window
@@ -413,6 +413,52 @@ const mkSession = (over = {}) => ({
   threw = null;
   try { await pnlOverview(TODAY, D(5)); } catch (e) { threw = e; }
   ok(threw && threw.code === 'bad_range', 'T14 inverted range refused');
+}
+
+// ═══ T15: M4 windowing + M3 upsell refund netting (contract v2) ════════════
+{
+  // Parent order "June": paid 40 days ago. Its upsell settles "July": 2 days
+  // ago. A refunded upsell settles 3 days ago.
+  await sql`INSERT INTO co_sessions (id, funnel_id, status, line_items, total, paid_at, created_at)
+            VALUES ('s_m4', 'f_m4', 'paid', ${sql.json([{ variant_id: V1, quantity: 1, price: 100 }])}, 100,
+                    ${new Date(Date.now() - 40 * 86400000).toISOString()},
+                    ${new Date(Date.now() - 40 * 86400000).toISOString()})`;
+  await sql`INSERT INTO co_upsell_charges (id, session_id, offer_id, charge_id, amount, status, line_items, created_at)
+            VALUES ('ux_m4', 's_m4', 'upA', ${'v:' + V2}, 50, 'settled',
+                    ${sql.json([{ variant_id: V2, quantity: 1, unit_price: 50 }])},
+                    ${new Date(Date.now() - 2 * 86400000).toISOString()})`;
+  await sql`INSERT INTO co_upsell_charges (id, session_id, offer_id, charge_id, amount, status, line_items, created_at)
+            VALUES ('ux_m4r', 's_m4', 'upB', ${'v:' + V2}, 25, 'refunded',
+                    ${sql.json([{ variant_id: V2, quantity: 1, unit_price: 25 }])},
+                    ${new Date(Date.now() - 3 * 86400000).toISOString()})`;
+
+  // Recent window: the upsells land HERE (their own settle days), the parent
+  // order does NOT — revenue clock == spend clock (M4).
+  const ovNow = await pnlOverview(D(7), TODAY);
+  const fNow = ovNow.rows.find((r) => r.fid === 'f_m4');
+  ok(fNow && fNow.orders === 0, 'T15 M4: upsell-only window → money with ZERO orders (charge is not an order)');
+  ok(fNow.gross_sales === 75, `T15 M4: July window carries both upsells gross (${fNow.gross_sales})`);
+  ok(fNow.revenue === 50, `T15 M3: refunded upsell nets fully — 50+25−25 (${fNow.revenue})`);
+  ok(fNow.cogs === 12 * 2, `T15 M3: COGS NOT reversed on the refunded leg (${fNow.cogs})`);
+  // Old window: only the parent's base capture.
+  const ovThen = await pnlOverview(D(45), D(30));
+  const fThen = ovThen.rows.find((r) => r.fid === 'f_m4');
+  ok(fThen && fThen.orders === 1 && fThen.gross_sales === 100,
+    `T15 M4: parent order stays in ITS window — base 100, no upsell (${fThen && fThen.gross_sales})`);
+  // The upsell leg still PRICES at its own settle-day rate (invariant 4
+  // through the new windowing): V2 rate today is 12 (T12), so cogs above
+  // proves per-leg day survived the per-charge fold.
+  // window cap (m2)
+  let threw = null;
+  try { await pnlOverview('2024-01-01', '2026-08-01'); } catch (e) { threw = e; }
+  ok(threw && threw.code === 'window_too_large', 'T15 m2: >400-day window refused');
+  // contract shapes
+  ok(JSON.stringify(Object.keys(ovNow.window).sort()) === '["end","start"]', 'T15 overview carries window:{start,end}');
+  ok('known_legs' in fNow && 'missing_cogs_legs' in fNow && 'missing_ship_legs' in fNow, 'T15 M6: leg counters on the row');
+  const fpM4 = await pnlFunnel('f_m4', D(7), TODAY);
+  ok(!('fid' in fpM4) && 'totals' in fpM4 && fpM4.totals.fid === 'f_m4', 'T15 drill-in: {totals,daily,campaigns,manual_entries}, identity on totals');
+  const dUp = fpM4.daily.find((d) => d.day === D(2));
+  ok(dUp && dUp.revenue === 50 && dUp.orders === 0 && 'np' in dUp, `T15 daily row books the upsell on ITS day with np key (${JSON.stringify(dUp)})`);
 }
 
 console.log(`\nRESULT: ${pass} passed, ${fail} failed`);

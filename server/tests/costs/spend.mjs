@@ -165,8 +165,17 @@ await ensureTrackingTables();
   await mkSess('sp_4', 'f_a', 'v_aaaaaa4');
   await mkClick('ck4a', 'sp_4', 'v_aaaaaa4', 'C2', 50);
   await mkClick('ck4b', 'sp_4', 'v_aaaaaa4', 'C3', 2);
-  // vid fallback: click never stamped with the session id
-  await mkSess('sp_5', 'f_b', 'v_aaaaaa5'); await mkClick('ck5', '', 'v_aaaaaa5', 'C4', 10);
+  // vid fallback: click never stamped with the session id. The click must
+  // PRECEDE the purchase (sessions above paid 24h ago) — m7 bounds the
+  // fallback at s.paid_at, so ck5 sits at 30h and a SECOND click at 2h
+  // (after the money moved) must NOT steal the vote.
+  await mkSess('sp_5', 'f_b', 'v_aaaaaa5'); await mkClick('ck5', '', 'v_aaaaaa5', 'C4', 30);
+  await mkClick('ck5post', '', 'v_aaaaaa5', 'C5', 2);
+  // bot clicks never vote (m6)
+  await mkSess('sp_7', 'f_b', 'v_aaaaaa7');
+  await sql`INSERT INTO lb_clicks (id, funnel_id, vid, network, click_id, struct, session_id, ts, bot, expires_at)
+            VALUES ('ck7', 'f_any', 'v_aaaaaa7', 'meta', 'ck7', ${sql.json({ campaign_id: 'C6' })}, 'sp_7',
+                    NOW() - INTERVAL '30 hours', TRUE, NOW() + INTERVAL '30 days')`;
   // processing session must NOT vote
   await sql`INSERT INTO co_sessions (id, funnel_id, status, line_items, total, vid, created_at)
             VALUES ('sp_6', 'f_z', 'processing', '[]', 100, 'v_aaaaaa6', NOW())`;
@@ -179,7 +188,9 @@ await ensureTrackingTables();
     `S5 C1 majority f_a with the split visible (${JSON.stringify(b.C1)})`);
   ok(b.C1.fids.join(',') === 'f_a,f_b', 'S5 full funnel list, most sessions first');
   ok(b.C3 && b.C3.fid === 'f_a' && !b.C2, 'S5 exclusive last click: C3 voted, C2 got NOTHING');
-  ok(b.C4 && b.C4.fid === 'f_b', 'S5 vid fallback binds the unstamped click');
+  ok(b.C4 && b.C4.fid === 'f_b', 'S5 vid fallback binds the unstamped pre-purchase click');
+  ok(!b.C5, 'S5 m7: a click AFTER the purchase cannot win the vid fallback');
+  ok(!b.C6, 'S5 m6: a bot click never votes');
   ok(!Object.values(b).some((x) => x.fids.includes('f_z')), 'S5 processing session (intent, not money) never votes');
 }
 

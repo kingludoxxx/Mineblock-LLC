@@ -63,6 +63,9 @@ async function createTables() {
     CREATE INDEX IF NOT EXISTS idx_co_sessions_last_failed_payment
     ON co_sessions (last_failed_payment_id) WHERE last_failed_payment_id IS NOT NULL
   `);
+  // Money-window reads (funnelCosts P&L, detect sweep) filter on paid_at;
+  // partial index keeps it tight — processing rows have no paid_at.
+  await pgQuery(`CREATE INDEX IF NOT EXISTS idx_co_sessions_paid_at ON co_sessions (paid_at) WHERE paid_at IS NOT NULL`);
 
   // Per-session event trail (created, settled, upsell shown, …). Analytics
   // side of the line: writes are non-fatal to the money path.

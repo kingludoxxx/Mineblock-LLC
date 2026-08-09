@@ -2177,3 +2177,80 @@ dead-letters log status 'error' per reviewer wording, distinct from inline
 'skipped' hard errors - DECISION MADE.
 STATUS: COMPLETE
 ---
+
+---
+TIMESTAMP: 2026-08-09 18:40
+TASK: COGS / per-funnel P&L SERVER lane (Lane 1, work order cogs-work-order.md)
+BUILT: Port of funnel-os lb_cogs_service onto Puure co_* money tables, as four
+new files + a 2-line mount. server/src/services/funnelCostsSchema.js (all lb_*
+cost DDL, single-in-flight ensure); funnelCosts.js (rate index + resolvers +
+buildLegs/buildUpsellLegs + resolveCosts with the reference contract keys,
+append-only effective-dated rate door, SOLD-only detect sweep with by_funnel
+splits, coverage summary incl. revenue_at_risk_30d, on-read P&L);
+funnelSpend.js (Meta campaign-level daily insights with header-auth token and
+META_GRAPH_OVERRIDE_URL mock seam, self-healing catch-up window ceiling 90d,
+lb_spend_sync_state health ledger, derived campaign→funnel majority binding
+off lb_clicks with operator pins winning, in-process 30-min tick throttled on
+attempt); routes/funnelCosts.js mounted /api/v1/funnel-costs behind
+authenticate + requirePermission('funnels','access').
+TESTED: server/tests/costs/{engine,spend,routes}.mjs against embedded PG
+(drop/create per run) + local mock Meta Graph server. All six money
+invariants proven by execution (null-vs-zero for COGS and ship,
+captured-money revenue base + cent-exact fee pro-rata, zero-coverage
+withholding, per-leg pricing day, refunds net top line only, gp identity +
+spend_known gate), plus effective dating, majority binding + pin override,
+revenue_at_risk fixture, edges (empty window, unknown variant, malformed rate
+4xx, Meta 500 = recorded failure not crash). Harness run twice; money-path
+suite (seam-fixes, session-auth, shopify-order-create, shopify-refund-reflect,
+split-delivery, ssrf-guard) re-run green.
+OUTPUT: engine 106/0, spend 46/0, routes 64/0 (both runs); money-path
+15/9/66/35/33/15 all 0 failed. Commit b5b3845c47dfbc90ee756fd67b530922e5c73847.
+DECISIONS: UTC day keys everywhere; lb_ad_spend_daily.day TEXT day key;
+COLLECTED_UPSELL=('settled','refunded') per Puure statuses; Meta token in
+Authorization header (never URL); no live Meta smoke because no .env / no
+PUURE-scoped Meta creds exist in this repo, mock-only (DECISION MADE);
+first_sold/last_sold/kind_auto columns added for the first-rate backdate
+default (DECISION MADE).
+STATUS: COMPLETE
+---
+
+---
+TIMESTAMP: 2026-08-09 19:20
+TASK: COGS contract v2 conformance (joint adversarial review: pair did not
+connect; binding contract = scratchpad/cogs-contract-v2.md)
+BUILT: Server conformed to cogs-contract-v2.md exactly. B3 manual-spend body
+field `spend`; B5 fee-settings nested {default:{pct,fixed},gateways,updated_at}
+both directions (resolveFeeRate reads nested); B4 flat variant ROW
+(variantRow(), exact 20-key set); M1 by-funnel server-side product grouping
+(shopify_product_id||product_title, avg_price, missing_count, counts,
+revenue_at_risk_30d, variants=ROW+own_*); M2 spend/status {sources:[...]};
+M3 refunded upsell = full reversal into the refunds accumulator (partial +
+Whop refunds[] double-count limitations documented in resolveCosts); M4
+upsell charges windowed by their OWN settle day (created_at, documented:
+updated_at moves again on a refund flip), funnel attribution via parent,
+stand-alone charge folds; M6 leg counters on overview rows + totals; m1
+partial index co_sessions(paid_at) added in checkoutSchema.js (permitted
+single-statement fence extension); m2 400-day /pnl window cap -> 400
+window_too_large; m4 sweep coverage decided in SQL CASE; m5 campaigns carry
+bound_via/split/sessions; m6 bot=FALSE click filter; m7 vid-fallback clicks
+bounded at s.paid_at; m8 ORDER BY ts, id; m9 non-USD -> 422 usd_only; m11
+detect days >=30 else 400 window_too_small; m13 POST /rates {rate:{11 exact
+keys}}; n1 cost_item_id_required. NEW permanent tripwire
+server/tests/costs/contract.mjs: every endpoint driven with the contract's
+exact request shapes ({} bodies included) through the real router; response
+envelope + payload key sets asserted EXACTLY (sorted full-set compare, never
+subsets), incl. a legacy-{amount}-body refusal probe and cross-window M4
+evidence.
+TESTED: engine/spend/routes updated to the new shapes + new engine T15 (M4/M3:
+a 40-day-old parent order stays in its own window while its upsell settled 2
+days ago lands in the recent window with orders=0; refunded upsell nets fully
+with COGS not reversed; window cap; np key; drill-in totals identity). All
+four suites run twice + money-path suite + node --check.
+OUTPUT: recorded in the fix-cycle report (all suites green; commit SHA there).
+DECISIONS: overview/drill-in totals carry the SAME exact key set as rows
+(fid=''/name='Total' for overview totals; funnel id+name for drill-in) —
+contract says "same keys", encoded canonically in contract.mjs (DECISION
+MADE). Upsell settle day = created_at::date, documented in loadMoneyWindow
+(DECISION MADE).
+STATUS: COMPLETE
+---

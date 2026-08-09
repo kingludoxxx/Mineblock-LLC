@@ -40,13 +40,16 @@ router.use(async (req, res, next) => {
 const DAY_RE = /^\d{4}-\d{2}-\d{2}$/;
 
 // The one error boundary. CostError carries an operator-actionable .code →
-// 422; anything else is logged (message only) and returns 500.
+// 422 (window-bound codes are 400 per contract v2); anything else is logged
+// (message only) and returns 500.
+const COST_ERROR_STATUS = { window_too_small: 400, window_too_large: 400 };
 const guard = (name, fn) => async (req, res) => {
   try {
     await fn(req, res);
   } catch (err) {
     if (err instanceof CostError) {
-      return res.status(422).json({ success: false, error: { code: err.code } });
+      return res.status(COST_ERROR_STATUS[err.code] || 422)
+        .json({ success: false, error: { code: err.code } });
     }
     console.error(`[funnelCosts] ${name} failed:`, err && err.message ? err.message : err);
     return res.status(500).json({ success: false, error: { code: 'internal_error' } });
@@ -82,11 +85,16 @@ router.get('/coverage-summary', guard('coverage-summary', async (req, res) => {
 }));
 
 // POST /detect?days — rebuild the SOLD variant catalog. Idempotent; never
-// runs implicitly on a GET.
+// runs implicitly on a GET. Window bounds per contract v2: days < 30 makes
+// revenue_30d a partial-window lie → 400 window_too_small; > 400 → 400
+// window_too_large.
 router.post('/detect', guard('detect', async (req, res) => {
   const days = req.query.days ? parseInt(String(req.query.days), 10) : 90;
-  if (Number.isNaN(days) || days < 1 || days > 400) {
-    return res.status(422).json({ success: false, error: { code: 'bad_days' } });
+  if (Number.isNaN(days) || days < 30) {
+    return res.status(400).json({ success: false, error: { code: 'window_too_small' } });
+  }
+  if (days > 400) {
+    return res.status(400).json({ success: false, error: { code: 'window_too_large' } });
   }
   res.json({ success: true, data: await runDetectSweep({ days }) });
 }));
@@ -123,7 +131,10 @@ router.post('/rates', guard('rate-create', async (req, res) => {
   const scope = b.scope === undefined ? 'variant' : String(b.scope);
   const ref = scope === 'variant' ? b.variant_id : b.cost_item_id;
   if (!ref) {
-    return res.status(422).json({ success: false, error: { code: `${scope}_id_required` } });
+    return res.status(422).json({
+      success: false,
+      error: { code: scope === 'variant' ? 'variant_id_required' : 'cost_item_id_required' },
+    });
   }
   const row = await appendRate({
     scope,
@@ -138,7 +149,26 @@ router.post('/rates', guard('rate-create', async (req, res) => {
     note: b.note ? String(b.note) : '',
     createdBy: userId(req),
   });
-  res.json({ success: true, data: { rate: row } });
+  // Contract v2 m13: the rate payload is EXACTLY these keys — the client
+  // reads rate.effective_from for its confirmation line.
+  res.json({
+    success: true,
+    data: {
+      rate: {
+        id: row.id,
+        scope: row.scope,
+        variant_id: row.variant_id,
+        cost_item_id: row.cost_item_id,
+        effective_from: row.effective_from,
+        unit_cogs: row.unit_cogs,
+        ship: row.ship,
+        currency: row.currency,
+        source: row.source,
+        note: row.note,
+        created_at: row.created_at,
+      },
+    },
+  });
 }));
 
 // GET /rates/history/:variantId — newest-first audit trail, incl. the
@@ -173,8 +203,26 @@ router.get('/pnl/funnel/:fid', guard('pnl-funnel', async (req, res) => {
 }));
 
 // ── spend feed ──────────────────────────────────────────────────────────────
+// Contract v2 M2: {sources:[{source, configured, last_sync, last_attempt,
+// last_ok, stale, error, fail_streak}]} — the service keeps the rich shape
+// for internal callers; this is the projection the client renders.
 router.get('/spend/status', guard('spend-status', async (req, res) => {
-  res.json({ success: true, data: await spendStatus() });
+  const st = await spendStatus();
+  res.json({
+    success: true,
+    data: {
+      sources: [{
+        source: 'meta',
+        configured: st.configured,
+        last_sync: st.last_sync,
+        last_attempt: st.last_attempt,
+        last_ok: st.last_ok,
+        stale: st.stale,
+        error: st.error,
+        fail_streak: st.fail_streak,
+      }],
+    },
+  });
 }));
 
 // POST /spend/sync?days — runs in the BACKGROUND (Meta insights across many
@@ -224,9 +272,10 @@ router.post('/campaign-map', guard('campaign-map', async (req, res) => {
   res.json({ success: true, data: { campaign_id: cid, funnel_id: fid, pinned: true } });
 }));
 
-// POST /pnl/funnel/:fid/spend-manual {day, amount, note} — operator-typed
-// spend for a funnel-day. Keyed (source='manual', ref_id=fid, day): upsert,
-// never duplicate.
+// POST /pnl/funnel/:fid/spend-manual {day, spend, note?} — operator-typed
+// spend for a funnel-day (contract v2 B3: the field is `spend`, matching
+// the column). Keyed (source='manual', ref_id=fid, day): upsert, never
+// duplicate.
 router.post('/pnl/funnel/:fid/spend-manual', guard('spend-manual', async (req, res) => {
   const fid = String(req.params.fid || '').trim().slice(0, 64);
   const b = req.body || {};
@@ -234,9 +283,9 @@ router.post('/pnl/funnel/:fid/spend-manual', guard('spend-manual', async (req, r
   if (!DAY_RE.test(day)) {
     return res.status(422).json({ success: false, error: { code: 'bad_day' } });
   }
-  const amount = Number(b.amount);
-  if (b.amount === null || b.amount === undefined || b.amount === '' || Number.isNaN(amount) || !Number.isFinite(amount) || amount < 0) {
-    return res.status(422).json({ success: false, error: { code: 'bad_amount' } });
+  const amount = Number(b.spend);
+  if (b.spend === null || b.spend === undefined || b.spend === '' || Number.isNaN(amount) || !Number.isFinite(amount) || amount < 0) {
+    return res.status(422).json({ success: false, error: { code: 'bad_spend' } });
   }
   await pgQuery(
     `INSERT INTO lb_ad_spend_daily (source, ref_id, day, spend, note, updated_by, synced_at)

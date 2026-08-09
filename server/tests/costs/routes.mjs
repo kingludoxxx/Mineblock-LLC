@@ -113,7 +113,7 @@ await mkSess('rt_3', 'f_r2', 1, [{ variant_id: V2, quantity: 1, price: 50 }], 50
   const rv = await req('GET', '/variants');
   ok(rv.status === 200 && rv.j.data.total === 2, 'R2 GET /variants lists both');
   ok(rv.j.data.items[0].variant_id === V1, 'R2 sorted by revenue desc (V1 $300 first)');
-  ok(rv.j.data.items[0].resolved.unit_cogs === null, 'R2 uncosted row resolves null COGS (dash), never 0');
+  ok(rv.j.data.items[0].unit_cogs === null, 'R2 uncosted row (FLAT) resolves null COGS (dash), never 0');
   const rf = await req('GET', `/variants?funnel_id=f_r2`);
   ok(rf.j.data.total === 1 && rf.j.data.items[0].variant_id === V2, 'R2 funnel_id filter');
   const rq = await req('GET', `/variants?q=lift`);
@@ -124,7 +124,9 @@ await mkSess('rt_3', 'f_r2', 1, [{ variant_id: V2, quantity: 1, price: 50 }], 50
   const rc = await req('GET', '/coverage-summary');
   ok(rc.status === 200 && rc.j.data.needs_cost === 2 && rc.j.data.revenue_at_risk_30d === 350, `R2 coverage summary at_risk=350 (${rc.j.data.revenue_at_risk_30d})`);
   const rbad = await req('POST', '/detect?days=9999');
-  ok(rbad.status === 422 && rbad.j.error.code === 'bad_days', 'R2 detect days out of range → 422');
+  ok(rbad.status === 400 && rbad.j.error.code === 'window_too_large', 'R2 detect days > 400 → 400 window_too_large');
+  const rsmall = await req('POST', '/detect?days=5');
+  ok(rsmall.status === 400 && rsmall.j.error.code === 'window_too_small', 'R2 detect days < 30 → 400 window_too_small');
 }
 
 // ═══ R3: rates through the HTTP door — null preserved, malformed 4xx ═══════
@@ -184,14 +186,14 @@ await mkSess('rt_3', 'f_r2', 1, [{ variant_id: V2, quantity: 1, price: 50 }], 50
 // ═══ R5: fee settings round-trip ═══════════════════════════════════════════
 {
   const g = await req('GET', '/fee-settings');
-  ok(g.status === 200 && g.j.data.default_pct === 6 && g.j.data.gateways.whop === null, 'R5 defaults seeded, rails present-but-null');
-  const p = await req('PATCH', '/fee-settings', { default_pct: 5, gateways: { stripe: { pct: 2.9, fixed: 0.3 } } });
-  ok(p.status === 200 && p.j.data.default_pct === 5 && p.j.data.gateways.stripe.pct === 2.9, 'R5 patch stores default + override');
+  ok(g.status === 200 && g.j.data.default.pct === 6 && g.j.data.gateways.whop === null, 'R5 defaults seeded (nested), rails present-but-null');
+  const p = await req('PATCH', '/fee-settings', { default: { pct: 5 }, gateways: { stripe: { pct: 2.9, fixed: 0.3 } } });
+  ok(p.status === 200 && p.j.data.default.pct === 5 && p.j.data.gateways.stripe.pct === 2.9, 'R5 nested patch stores default + override');
   const p2 = await req('PATCH', '/fee-settings', { gateways: { stripe: null } });
   ok(p2.status === 200 && p2.j.data.gateways.stripe === null, 'R5 null clears the override back to inherit');
-  const bad = await req('PATCH', '/fee-settings', { default_pct: 500 });
+  const bad = await req('PATCH', '/fee-settings', { default: { pct: 500 } });
   ok(bad.status === 422 && bad.j.error.code === 'bad_pct', 'R5 pct 500 refused');
-  await req('PATCH', '/fee-settings', { default_pct: 6 });
+  await req('PATCH', '/fee-settings', { default: { pct: 6 } });
 }
 
 // ═══ R6: P&L endpoints ═════════════════════════════════════════════════════
@@ -210,17 +212,17 @@ await mkSess('rt_3', 'f_r2', 1, [{ variant_id: V2, quantity: 1, price: 50 }], 50
   const bad = await req('GET', '/pnl/overview?start=2026-01-01');
   ok(bad.status === 422 && bad.j.error.code === 'bad_day', 'R6 missing end → 422 bad_day');
   // drill-in + manual spend
-  const ms = await req('POST', '/pnl/funnel/f_r1/spend-manual', { day: dayUtc(1), amount: 40, note: 'agency' });
+  const ms = await req('POST', '/pnl/funnel/f_r1/spend-manual', { day: dayUtc(1), spend: 40, note: 'agency' });
   ok(ms.status === 200 && ms.j.data.spend === 40, 'R6 manual spend upserted');
   const fp = await req('GET', `/pnl/funnel/f_r1?start=${start}&end=${end}`);
   ok(fp.status === 200 && fp.j.data.totals.spend === 40 && fp.j.data.totals.spend_known === true,
     `R6 drill-in: manual spend makes spend KNOWN (${fp.j.data.totals.spend})`);
   ok(fp.j.data.totals.net_profit === Math.round((fp.j.data.totals.gp - 40) * 100) / 100, 'R6 net_profit = gp − spend once known');
   ok(fp.j.data.daily.length === 2 && fp.j.data.manual_entries.length === 1, 'R6 daily series + manual entries');
-  const msBad = await req('POST', '/pnl/funnel/f_r1/spend-manual', { day: 'yesterday', amount: 1 });
+  const msBad = await req('POST', '/pnl/funnel/f_r1/spend-manual', { day: 'yesterday', spend: 1 });
   ok(msBad.status === 422 && msBad.j.error.code === 'bad_day', 'R6 bad manual day → 422');
-  const msBad2 = await req('POST', '/pnl/funnel/f_r1/spend-manual', { day: dayUtc(1), amount: 'lots' });
-  ok(msBad2.status === 422 && msBad2.j.error.code === 'bad_amount', 'R6 bad manual amount → 422');
+  const msBad2 = await req('POST', '/pnl/funnel/f_r1/spend-manual', { day: dayUtc(1), spend: 'lots' });
+  ok(msBad2.status === 422 && msBad2.j.error.code === 'bad_spend', 'R6 bad manual spend → 422 bad_spend');
   const del = await req('DELETE', `/pnl/funnel/f_r1/spend-manual/${dayUtc(1)}`);
   ok(del.status === 200 && del.j.data.deleted === true, 'R6 manual spend deleted');
   const fp2 = await req('GET', `/pnl/funnel/f_r1?start=${start}&end=${end}`);
@@ -230,7 +232,7 @@ await mkSess('rt_3', 'f_r2', 1, [{ variant_id: V2, quantity: 1, price: 50 }], 50
 // ═══ R7: spend endpoints — status, background sync, campaign pin ═══════════
 {
   const st0 = await req('GET', '/spend/status');
-  ok(st0.status === 200 && st0.j.data.configured === true, 'R7 status: configured (mock token)');
+  ok(st0.status === 200 && st0.j.data.sources[0].configured === true, 'R7 status sources[]: configured (mock token)');
   const sy = await req('POST', '/spend/sync?days=7');
   ok(sy.status === 200 && sy.j.data.started === true, 'R7 sync starts in the background');
   // poll for the background sync to land
@@ -241,7 +243,7 @@ await mkSess('rt_3', 'f_r2', 1, [{ variant_id: V2, quantity: 1, price: 50 }], 50
   }
   ok(rows.length === 1 && Number(rows[0].spend) === 77.7, `R7 background sync landed CR1 spend (${rows.length})`);
   const st1 = await req('GET', '/spend/status');
-  ok(st1.j.data.last_ok === true && st1.j.data.stale === false, 'R7 status reflects the success');
+  ok(st1.j.data.sources[0].last_ok === true && st1.j.data.sources[0].stale === false, 'R7 status sources[] reflects the success');
   const syBad = await req('POST', '/spend/sync?days=180');
   ok(syBad.status === 422 && syBad.j.error.code === 'bad_days', 'R7 days > 90 refused (Meta would reject the range)');
   // campaign pin → spend routes to the pinned funnel

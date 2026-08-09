@@ -28,7 +28,7 @@
 // propagates to the route's 500 boundary.
 import { pgQuery } from '../db/pg.js';
 import { ensureFunnelCostsTables } from './funnelCostsSchema.js';
-import { funnelSpendByDay, deriveCampaignBindings, metaConfigured } from './funnelSpend.js';
+import { funnelSpendByDay, deriveCampaignBindings } from './funnelSpend.js';
 
 // ── Constants (reference :113-128) ─────────────────────────────────────────
 // Contexts a cost can be resolved for. "default" is the fallback bucket
@@ -216,10 +216,13 @@ export function resolveUnitShip(vc, rateIndex, day, context) {
 
 // (pct, fixed) for a gateway. A missing OR null override → the default; a
 // partial override fills its blanks from the default (reference :525-540).
+// Fee settings are NESTED (contract v2 / reference shape):
+//   {default:{pct,fixed}, gateways:{whop:{pct,fixed}|null, …}}
 export function resolveFeeRate(feeSettings, provider) {
   const s = feeSettings || {};
-  const dPct = s.default_pct === null || s.default_pct === undefined ? 6.0 : Number(s.default_pct);
-  const dFixed = Number(s.default_fixed || 0);
+  const dflt = s.default && typeof s.default === 'object' ? s.default : {};
+  const dPct = dflt.pct === null || dflt.pct === undefined ? 6.0 : Number(dflt.pct);
+  const dFixed = dflt.fixed === null || dflt.fixed === undefined ? 0 : Number(dflt.fixed);
   const gw = (s.gateways || {})[String(provider || '').trim().toLowerCase()];
   if (!gw || typeof gw !== 'object') return { pct: dPct, fixed: dFixed };
   return {
@@ -374,6 +377,22 @@ export function resolveCosts(orderOrLegs, atTime = null, opts = {}) {
     [legs, txs] = buildLegs(session, opts.charges, cat);
     day = dayKey(atTime !== null && atTime !== undefined ? atTime : (session.paid_at || session.created_at));
     orderRefunds = refundsOf(session);
+    // UPSELL REFUNDS (contract v2 M3 — RESOLVED): a status='refunded' upsell
+    // charge is a FULL reversal — its amount joins the order-level refunds
+    // accumulator (nets net_revenue) while the leg stays gross in `revenue`.
+    // DOCUMENTED LIMITATIONS (v1): (a) partial upsell refunds are
+    // unrepresentable — the gateway flips the whole leg's status for ANY
+    // refund amount, so a $5-partial on a $200 leg reverses $200 here;
+    // (b) on the Whop path gatewayWebhooks ALSO appends the upsell refund to
+    // co_sessions.refunds[], so an order-level resolve can subtract it twice
+    // (funnelAnalytics.js :178-190 documents the same asymmetry; the void-row
+    // dedupe it uses is out of v1 scope).
+    for (const c of opts.charges || []) {
+      if (c && typeof c === 'object' && String(c.status || '') === 'refunded') {
+        const amt = Number(c.amount || 0);
+        if (amt > 0) orderRefunds = round2(orderRefunds + amt);
+      }
+    }
   } else {
     legs = (orderOrLegs || []).map((l) => ({ ...l }));
     day = dayKey(atTime);
@@ -572,6 +591,8 @@ export async function loadCatalog() {
   return cat;
 }
 
+// Contract v2 shape, BOTH directions: {default:{pct,fixed}, gateways:{…},
+// updated_at} — the exact keys the client renders; nothing extra.
 export async function getFeeSettings() {
   await ensureFunnelCostsTables();
   await pgQuery(`INSERT INTO lb_fee_settings (id) VALUES (1) ON CONFLICT (id) DO NOTHING`);
@@ -588,30 +609,36 @@ export async function getFeeSettings() {
     };
   }
   return {
-    default_pct: Number(row.default_pct),
-    default_fixed: Number(row.default_fixed),
+    default: { pct: Number(row.default_pct), fixed: Number(row.default_fixed) },
     gateways,
     updated_at: row.updated_at,
-    updated_by: row.updated_by || '',
   };
 }
 
 // A workspace has a handful of payment rails, not an unbounded map.
 const MAX_GATEWAYS = 32;
 
+// PATCH body is the same NESTED shape the GET returns (contract v2):
+// {default:{pct,fixed}?, gateways:{name: {pct,fixed}|null, …}?}. A gateway
+// mapped to null clears back to inherit; a gateway omitted is untouched.
 export async function updateFeeSettings(patch, userId = '') {
   const cur = await getFeeSettings();
-  const next = { default_pct: cur.default_pct, default_fixed: cur.default_fixed, gateways: { ...cur.gateways } };
+  const next = { default_pct: cur.default.pct, default_fixed: cur.default.fixed, gateways: { ...cur.gateways } };
   const p = patch || {};
-  if (p.default_pct !== undefined) {
-    const v = moneyOrNone(p.default_pct, 'default_pct', 100);
-    if (v === null) throw new CostError('bad_amount', 'default_pct cannot be null');
-    next.default_pct = v;
-  }
-  if (p.default_fixed !== undefined) {
-    const v = moneyOrNone(p.default_fixed, 'default_fixed');
-    if (v === null) throw new CostError('bad_amount', 'default_fixed cannot be null');
-    next.default_fixed = v;
+  if (p.default !== undefined) {
+    if (!p.default || typeof p.default !== 'object' || Array.isArray(p.default)) {
+      throw new CostError('bad_default', 'default must be {pct, fixed}');
+    }
+    if (p.default.pct !== undefined) {
+      const v = moneyOrNone(p.default.pct, 'default.pct', 100);
+      if (v === null) throw new CostError('bad_amount', 'default.pct cannot be null');
+      next.default_pct = v;
+    }
+    if (p.default.fixed !== undefined) {
+      const v = moneyOrNone(p.default.fixed, 'default.fixed');
+      if (v === null) throw new CostError('bad_amount', 'default.fixed cannot be null');
+      next.default_fixed = v;
+    }
   }
   if (p.gateways !== undefined) {
     if (!p.gateways || typeof p.gateways !== 'object' || Array.isArray(p.gateways)) {
@@ -677,8 +704,10 @@ export async function appendRate({
   if (cogs === null && SHIP_KEYS.every((k) => shipMap[k] === null)) {
     throw new CostError('empty_rate', 'a rate must set unit_cogs or a ship value');
   }
-  if (!/^[A-Za-z]{3}$/.test(String(currency || 'USD'))) {
-    throw new CostError('bad_currency', 'currency must be a 3-letter code');
+  // v1 is single-currency: a non-USD rate would silently mix currencies in
+  // every profit figure. Refused at the ONE write door (contract v2 m9).
+  if (String(currency || 'USD').toUpperCase() !== 'USD') {
+    throw new CostError('usd_only', 'v1 rates are USD only');
   }
 
   const col = scope === 'variant' ? 'variant_id' : 'cost_item_id';
@@ -908,9 +937,10 @@ export async function runDetectSweep({ days = 90, now = null } = {}) {
     const [unit] = resolveUnitCogs(
       { variant_id: a.variant_id, cost_item_id: prev ? prev.cost_item_id : null, units_per: prev ? prev.units_per : 1 },
       rateIndex, today);
-    // 'ignored' is an operator decision — never reset by the sweep.
-    const coverage = prev && prev.coverage === 'ignored' ? 'ignored'
-      : (unit !== null ? 'ready' : 'needs_cost');
+    // 'ignored' is an operator decision — never reset by the sweep. The
+    // final say is the CASE in the upsert below (SQL row state at WRITE
+    // time), so an ignore landing between this read and the write survives.
+    const coverage = unit !== null ? 'ready' : 'needs_cost';
     let firstSold = a.first_sold;
     const prevFirst = prev ? String(prev.first_sold || '') : '';
     if (prevFirst && (!firstSold || prevFirst < firstSold)) firstSold = prevFirst;
@@ -940,7 +970,8 @@ export async function runDetectSweep({ days = 90, now = null } = {}) {
          first_sold = EXCLUDED.first_sold,
          last_sold = GREATEST(EXCLUDED.last_sold, lb_variant_costs.last_sold),
          kind_auto = EXCLUDED.kind_auto,
-         coverage = EXCLUDED.coverage,
+         coverage = CASE WHEN lb_variant_costs.coverage = 'ignored'
+                         THEN 'ignored' ELSE EXCLUDED.coverage END,
          updated_at = NOW()`,
       [
         a.variant_id,
@@ -1057,34 +1088,70 @@ export async function listVariants({ coverage = null, context = null, funnelId =
 
   const rateIndex = buildRateIndex(await loadRates());
   const today = dayKey();
-  const items = page.map((vc) => {
-    const [unitCogs, cogsSrc] = resolveUnitCogs(vc, rateIndex, today);
-    const ship = {};
-    let shipSrc = null;
-    for (const ctx of CONTEXTS) {
-      const [val, src] = resolveUnitShip(vc, rateIndex, today, ctx);
-      ship[ctx] = val;
-      if (src && !shipSrc) shipSrc = src;
-    }
-    return {
-      ...vc,
-      resolved: {
-        day: today,
-        unit_cogs: unitCogs,
-        cogs_source: cogsSrc,
-        ship,
-        ship_source: shipSrc,
-        pays_shipping: paysShipping(vc),
-        kind: resolveKind(vc),
-      },
-    };
-  });
+  const items = page.map((vc) => variantRow(vc, rateIndex, today));
   return { items, total, limit: lim, offset: off };
 }
 
-// Funnel → variants view, credited from by_funnel (a funnel only ever shows
-// the money ITS OWN sessions produced — never the variant's cross-funnel
-// total, which is the double-count the split exists to prevent).
+// THE ROW — contract v2's exact flat shape (resolved-for-today fields
+// top-level; unknown = null, never omitted). Both /variants and /by-funnel
+// emit this; the contract harness asserts the exact key set.
+export function variantRow(vc, rateIndex, today) {
+  const [unitCogs, cogsSrc] = resolveUnitCogs(vc, rateIndex, today);
+  const ship = {};
+  for (const key of SHIP_KEYS) {
+    if (key === 'default') continue;
+    const [val] = resolveUnitShip(vc, rateIndex, today, key);
+    ship[key] = val;
+  }
+  // The rate's raw `default` bucket, surfaced verbatim so the client's rate
+  // drawer can show the fallback the contexts above resolved through.
+  const rawRate = rateIndex.lookup('variant', String(vc.variant_id || ''), today);
+  const rawShip = rawRate ? (parseJson(rawRate.ship, {}) || {}) : {};
+  ship.default = rawShip.default === null || rawShip.default === undefined ? null : Number(rawShip.default);
+
+  // margin_pct — resolved-for-today unit economics off the observed price,
+  // in the variant's OWN context. Withheld (null) unless price is known AND
+  // COGS is known AND (the variant doesn't ship OR its ship is known) —
+  // invariant 1 renders here as a dash, never a flattering number.
+  const price = vc.price === null || vc.price === undefined ? null : Number(vc.price);
+  const ships = paysShipping(vc);
+  const kind = resolveKind(vc);
+  const ctx = CONTEXTS.includes(kind) ? kind : 'main';
+  const shipCost = !ships ? 0 : ship[ctx];
+  let marginPct = null;
+  if (price !== null && price > 0 && unitCogs !== null && shipCost !== null) {
+    marginPct = round2((100 * (price - unitCogs - shipCost)) / price);
+  }
+  return {
+    variant_id: vc.variant_id,
+    product_title: vc.product_title || '',
+    variant_title: vc.variant_title || '',
+    image_url: vc.image_url || '',
+    contexts: parseJson(vc.contexts, []) || [],
+    funnels: parseJson(vc.funnels, []) || [],
+    revenue_30d: round2(Number(vc.revenue_30d || 0)),
+    units_30d: Number(vc.units_30d || 0),
+    price,
+    coverage: vc.coverage,
+    pays_shipping: Boolean(vc.pays_shipping),
+    kind_override: vc.kind_override ?? null,
+    units_per: Number(vc.units_per || 1),
+    first_sold: vc.first_sold || '',
+    detected_at: vc.detected_at,
+    updated_at: vc.updated_at,
+    unit_cogs: unitCogs,
+    cogs_source: cogsSrc,
+    ship,
+    margin_pct: marginPct,
+  };
+}
+
+// Funnel → product → variant view (contract v2 M1), credited from by_funnel
+// (a funnel only ever shows the money ITS OWN sessions produced — never the
+// variant's cross-funnel total, which is the double-count the split exists
+// to prevent). Product grouping is built SERVER-side: group key =
+// shopify_product_id || product_title. Each variant entry is the flat ROW
+// plus its per-funnel own_revenue_30d / own_units_30d.
 export async function listByFunnel() {
   await ensureFunnelCostsTables();
   const rows = await pgQuery(`SELECT * FROM lb_variant_costs ORDER BY revenue_30d DESC, variant_id`);
@@ -1093,29 +1160,57 @@ export async function listByFunnel() {
   const byFid = new Map();
   for (const vc of rows) {
     const split = parseJson(vc.by_funnel, {}) || {};
-    const [unitCogs, cogsSrc] = resolveUnitCogs(vc, rateIndex, today);
+    const row = variantRow(vc, rateIndex, today);
+    const groupKey = String(vc.shopify_product_id || '') || row.product_title || row.variant_id;
     for (const [fid, f] of Object.entries(split)) {
-      if (!byFid.has(fid)) byFid.set(fid, { funnel_id: fid, revenue_30d: 0, units_30d: 0, variants: [] });
+      if (!byFid.has(fid)) {
+        byFid.set(fid, {
+          funnel_id: fid, revenue_30d: 0, units_30d: 0, revenue_at_risk_30d: 0,
+          counts: { needs_cost: 0, ready: 0, ignored: 0 }, _products: new Map(),
+        });
+      }
       const g = byFid.get(fid);
-      const rev = round2(Number((f || {}).revenue_30d || 0));
-      const units = Number((f || {}).units_30d || 0);
-      g.revenue_30d = round2(g.revenue_30d + rev);
-      g.units_30d += units;
-      g.variants.push({
-        variant_id: vc.variant_id,
-        product_title: vc.product_title,
-        variant_title: vc.variant_title,
-        image_url: vc.image_url,
-        coverage: vc.coverage,
-        revenue_30d: rev,
-        units_30d: units,
-        funnel_count: (parseJson(vc.funnels, []) || []).length,
-        unit_cogs: unitCogs,
-        cogs_source: cogsSrc,
-      });
+      const ownRev = round2(Number((f || {}).revenue_30d || 0));
+      const ownUnits = Number((f || {}).units_30d || 0);
+      g.revenue_30d = round2(g.revenue_30d + ownRev);
+      g.units_30d += ownUnits;
+      if (g.counts[row.coverage] !== undefined) g.counts[row.coverage] += 1;
+      if (row.coverage === 'needs_cost') g.revenue_at_risk_30d = round2(g.revenue_at_risk_30d + ownRev);
+      if (!g._products.has(groupKey)) {
+        g._products.set(groupKey, {
+          product_title: row.product_title || row.variant_id,
+          shopify_product_id: String(vc.shopify_product_id || ''),
+          _prices: [], _missing: 0, _rev: 0, variants: [],
+        });
+      }
+      const p = g._products.get(groupKey);
+      if (row.price !== null) p._prices.push(row.price);
+      if (row.coverage === 'needs_cost') p._missing += 1;
+      p._rev += ownRev;
+      p.variants.push({ ...row, own_revenue_30d: ownRev, own_units_30d: ownUnits });
     }
   }
-  const funnels = [...byFid.values()].sort((a, b) => b.revenue_30d - a.revenue_30d);
+  const funnels = [...byFid.values()]
+    .sort((a, b) => b.revenue_30d - a.revenue_30d)
+    .map((g) => ({
+      funnel_id: g.funnel_id,
+      name: g.funnel_id, // filled from the funnels table below when it exists
+      revenue_30d: g.revenue_30d,
+      units_30d: g.units_30d,
+      revenue_at_risk_30d: g.revenue_at_risk_30d,
+      counts: g.counts,
+      products: [...g._products.values()]
+        .sort((a, b) => b._rev - a._rev)
+        .map((p) => ({
+          product_title: p.product_title,
+          shopify_product_id: p.shopify_product_id,
+          avg_price: p._prices.length
+            ? round2(p._prices.reduce((s, v) => s + v, 0) / p._prices.length)
+            : null,
+          missing_count: p._missing,
+          variants: p.variants.sort((a, b) => b.own_revenue_30d - a.own_revenue_30d),
+        })),
+    }));
   // Names are additive; the funnels table belongs to another lane and may
   // not exist on a fresh DB — probe first, explicitly, instead of letting an
   // optional label lookup take the whole read down.
@@ -1197,6 +1292,29 @@ function validateDay(v, name) {
 
 const nextDayIso = (day) => `${daysAgo(-1, `${day}T00:00:00Z`)}T00:00:00Z`;
 
+// m2 — a /pnl/* window wider than the data could ever honestly answer is a
+// caller bug (and an unbounded on-read fold). 400-day cap, matching detect.
+const MAX_PNL_WINDOW_DAYS = 400;
+function validateWindow(start, end) {
+  const s = validateDay(start, 'start');
+  const e = validateDay(end, 'end');
+  if (s > e) throw new CostError('bad_range', 'start must be <= end');
+  const days = Math.round((new Date(`${e}T00:00:00Z`) - new Date(`${s}T00:00:00Z`)) / 86400000) + 1;
+  if (days > MAX_PNL_WINDOW_DAYS) {
+    throw new CostError('window_too_large', `window is capped at ${MAX_PNL_WINDOW_DAYS} days`);
+  }
+  return [s, e];
+}
+
+// WINDOWING (contract v2 M4 — RESOLVED): revenue is windowed by CAPTURE day.
+// Base orders enter by co_sessions.paid_at; an upsell charge enters by ITS
+// OWN settle day — so a July-settled upsell lands in July even when its
+// parent order is June, and the revenue clock matches the spend clock for
+// ROAS/CPA. Funnel attribution of the upsell still follows the PARENT
+// session. Settle day = created_at::date, DOCUMENTED CHOICE: updated_at is
+// bumped again when a later refund flips the leg's status, so it cannot be
+// the settle day; on this 1-click flow created_at (the claim instant) is
+// seconds before capture. Per-leg COST day unchanged (invariant 4).
 async function loadMoneyWindow(start, end, fid = null) {
   const params = [`${start}T00:00:00Z`, nextDayIso(end)];
   let fidSql = '';
@@ -1210,26 +1328,25 @@ async function loadMoneyWindow(start, end, fid = null) {
      WHERE ${MONEY_MOVED_SQL} AND s.paid_at >= $1 AND s.paid_at < $2${fidSql}`,
     params
   );
-  let charges = [];
-  if (sessions.length) {
-    charges = await pgQuery(
-      `SELECT c.id, c.session_id, c.amount, c.status, c.line_items, c.created_at
-       FROM co_upsell_charges c
-       WHERE c.session_id = ANY($1) AND c.status = ANY($2)`,
-      [sessions.map((s) => s.id), COLLECTED_UPSELL]
-    );
-  }
-  const chargesBySession = new Map();
-  for (const c of charges) {
-    const key = String(c.session_id);
-    if (!chargesBySession.has(key)) chargesBySession.set(key, []);
-    chargesBySession.get(key).push(c);
-  }
-  return { sessions, chargesBySession };
+  // Charges windowed by their OWN settle day; the parent joins for funnel
+  // attribution + gateway and must be a MONEY session (any date).
+  const charges = await pgQuery(
+    `SELECT c.id, c.session_id, c.amount, c.status, c.line_items, c.created_at,
+            s.funnel_id, s.gateway
+     FROM co_upsell_charges c
+     JOIN co_sessions s ON s.id = c.session_id
+     WHERE c.status = ANY($${params.length + 1})
+       AND c.created_at >= $1 AND c.created_at < $2
+       AND ${MONEY_MOVED_SQL}${fidSql}`,
+    [...params, COLLECTED_UPSELL]
+  );
+  return { sessions, charges };
 }
 
-function foldOrder(bucket, r) {
-  bucket.orders += 1;
+// Fold ONE resolve into a bucket. countOrder is false for a stand-alone
+// upsell-charge fold — a charge is money, not an order.
+function foldOrder(bucket, r, countOrder = true) {
+  if (countOrder) bucket.orders += 1;
   bucket.gross_sales = round2(bucket.gross_sales + r.revenue);
   bucket.revenue = round2(bucket.revenue + r.net_revenue);
   bucket.refunds = round2(bucket.refunds + r.refunds);
@@ -1238,12 +1355,26 @@ function foldOrder(bucket, r) {
   bucket.fees = round2(bucket.fees + r.fees);
   bucket.known_legs += r.known_legs;
   bucket.missing_legs += r.missing_legs;
+  bucket.missing_cogs_legs += r.missing_cogs_legs;
+  bucket.missing_ship_legs += r.missing_ship_legs;
 }
 
 const newBucket = () => ({
   orders: 0, gross_sales: 0, revenue: 0, refunds: 0, cogs: 0, ship_cost: 0,
-  fees: 0, known_legs: 0, missing_legs: 0,
+  fees: 0, known_legs: 0, missing_legs: 0, missing_cogs_legs: 0, missing_ship_legs: 0,
 });
+
+// A stand-alone resolve of ONE upsell charge on its own settle day: a
+// synthetic zero-collected session shell carries the parent's gateway, so
+// the charge's fee resolves on the right rail while the base transaction
+// (amount 0) bills nothing and other_revenue stays out of the way.
+function resolveChargeAlone(c, ctx) {
+  return resolveCosts(
+    { gateway: c.gateway, total: 0, line_items: [], refunds: [] },
+    c.created_at,
+    { catalog: ctx.catalog, rateIndex: ctx.rateIndex, feeSettings: ctx.feeSettings, charges: [c] }
+  );
+}
 
 // gp = net_revenue − cogs − ship_cost − fees, WITHHELD (null) at zero
 // coverage (INVARIANTS 3 + 6). Partial coverage returns a number with
@@ -1271,24 +1402,56 @@ function spendBlock(bucket, spendMap, known) {
   };
 }
 
+// The exact overview/totals row shape (contract v2 — the harness asserts
+// this key set byte-for-byte). No extras, nothing omitted.
+function pnlRow(fid, name, fin, block) {
+  return {
+    fid,
+    name,
+    revenue: fin.revenue,
+    gross_sales: fin.gross_sales,
+    orders: fin.orders,
+    cogs: fin.cogs,
+    fees: fin.fees,
+    ship_cost: fin.ship_cost,
+    gp: fin.gp,
+    gp_margin: fin.gp_margin,
+    cost_coverage_pct: fin.cost_coverage_pct,
+    known_legs: fin.known_legs,
+    missing_legs: fin.missing_legs,
+    missing_cogs_legs: fin.missing_cogs_legs,
+    missing_ship_legs: fin.missing_ship_legs,
+    spend: block.spend,
+    spend_known: block.spend_known,
+    net_profit: block.net_profit,
+    roas: block.roas,
+    cpa: block.cpa,
+  };
+}
+
 export async function pnlOverview(start, end) {
-  const s = validateDay(start, 'start');
-  const e = validateDay(end, 'end');
-  if (s > e) throw new CostError('bad_range', 'start must be <= end');
-  const { sessions, chargesBySession } = await loadMoneyWindow(s, e);
+  const [s, e] = validateWindow(start, end);
+  const { sessions, charges } = await loadMoneyWindow(s, e);
   const catalog = await loadCatalog();
   const rateIndex = buildRateIndex(await loadRates());
   const feeSettings = await getFeeSettings();
+  const ctx = { catalog, rateIndex, feeSettings };
 
   const byFid = new Map();
-  for (const sess of sessions) {
-    const fid = String(sess.funnel_id || '');
+  const bucketFor = (fid) => {
     if (!byFid.has(fid)) byFid.set(fid, newBucket());
-    const r = resolveCosts(sess, sess.paid_at, {
-      catalog, rateIndex, feeSettings,
-      charges: chargesBySession.get(String(sess.id)) || [],
-    });
-    foldOrder(byFid.get(fid), r);
+    return byFid.get(fid);
+  };
+  // Base orders on their paid_at day — charges are NOT passed here; each
+  // enters by its own settle day below (M4).
+  for (const sess of sessions) {
+    const r = resolveCosts(sess, sess.paid_at, { ...ctx, charges: [] });
+    foldOrder(bucketFor(String(sess.funnel_id || '')), r);
+  }
+  // Upsell charges on their own settle day, attributed to the PARENT funnel.
+  for (const c of charges) {
+    const r = resolveChargeAlone(c, ctx);
+    foldOrder(bucketFor(String(c.funnel_id || '')), r, false);
   }
 
   const fids = [...byFid.keys()].filter(Boolean);
@@ -1303,30 +1466,13 @@ export async function pnlOverview(start, end) {
     const fin = finishBucket(bucket);
     const known = spend.known[fid] || false;
     const block = spendBlock(fin, spend.days[fid], known);
-    rows.push({
-      fid,
-      name: names.get(fid) || fid,
-      revenue: fin.revenue,
-      gross_sales: fin.gross_sales,
-      orders: fin.orders,
-      refunds: fin.refunds,
-      cogs: fin.cogs,
-      fees: fin.fees,
-      ship_cost: fin.ship_cost,
-      gp: fin.gp,
-      gp_margin: fin.gp_margin,
-      cost_coverage_pct: fin.cost_coverage_pct,
-      ...block,
-    });
-    totalBucket.orders += bucket.orders;
-    totalBucket.gross_sales = round2(totalBucket.gross_sales + bucket.gross_sales);
-    totalBucket.revenue = round2(totalBucket.revenue + bucket.revenue);
-    totalBucket.refunds = round2(totalBucket.refunds + bucket.refunds);
-    totalBucket.cogs = round2(totalBucket.cogs + bucket.cogs);
-    totalBucket.ship_cost = round2(totalBucket.ship_cost + bucket.ship_cost);
-    totalBucket.fees = round2(totalBucket.fees + bucket.fees);
-    totalBucket.known_legs += bucket.known_legs;
-    totalBucket.missing_legs += bucket.missing_legs;
+    rows.push(pnlRow(fid, names.get(fid) || fid, fin, block));
+    for (const k of ['orders', 'known_legs', 'missing_legs', 'missing_cogs_legs', 'missing_ship_legs']) {
+      totalBucket[k] += bucket[k];
+    }
+    for (const k of ['gross_sales', 'revenue', 'refunds', 'cogs', 'ship_cost', 'fees']) {
+      totalBucket[k] = round2(totalBucket[k] + bucket[k]);
+    }
     if (block.spend_known) totalSpend = round2(totalSpend + block.spend);
     else totalSpendKnown = false;
   }
@@ -1336,49 +1482,43 @@ export async function pnlOverview(start, end) {
   rows.sort((a, b) => b.revenue - a.revenue);
 
   const finTotals = finishBucket(totalBucket);
-  const totals = {
-    revenue: finTotals.revenue,
-    gross_sales: finTotals.gross_sales,
-    orders: finTotals.orders,
-    refunds: finTotals.refunds,
-    cogs: finTotals.cogs,
-    fees: finTotals.fees,
-    ship_cost: finTotals.ship_cost,
-    gp: finTotals.gp,
-    gp_margin: finTotals.gp_margin,
-    cost_coverage_pct: finTotals.cost_coverage_pct,
+  const totals = pnlRow('', 'Total', finTotals, {
     spend: totalSpendKnown ? totalSpend : null,
     spend_known: totalSpendKnown,
     net_profit: totalSpendKnown && finTotals.gp !== null ? round2(finTotals.gp - totalSpend) : null,
     roas: totalSpendKnown && totalSpend > 0 ? round2(finTotals.revenue / totalSpend) : null,
     cpa: totalSpendKnown && finTotals.orders > 0 ? round2(totalSpend / finTotals.orders) : null,
-  };
-  return { start: s, end: e, rows, totals };
+  });
+  return { rows, totals, window: { start: s, end: e } };
 }
 
 export async function pnlFunnel(fid, start, end) {
-  const s = validateDay(start, 'start');
-  const e = validateDay(end, 'end');
-  if (s > e) throw new CostError('bad_range', 'start must be <= end');
+  const [s, e] = validateWindow(start, end);
   const funnelId = String(fid || '').trim();
   if (!funnelId) throw new CostError('bad_funnel_id', 'funnel id required');
 
-  const { sessions, chargesBySession } = await loadMoneyWindow(s, e, funnelId);
+  const { sessions, charges } = await loadMoneyWindow(s, e, funnelId);
   const catalog = await loadCatalog();
   const rateIndex = buildRateIndex(await loadRates());
   const feeSettings = await getFeeSettings();
+  const ctx = { catalog, rateIndex, feeSettings };
 
   const totalsBucket = newBucket();
   const byDay = new Map();
-  for (const sess of sessions) {
-    const r = resolveCosts(sess, sess.paid_at, {
-      catalog, rateIndex, feeSettings,
-      charges: chargesBySession.get(String(sess.id)) || [],
-    });
-    foldOrder(totalsBucket, r);
-    const day = dayKey(sess.paid_at);
+  const dayBucket = (day) => {
     if (!byDay.has(day)) byDay.set(day, newBucket());
-    foldOrder(byDay.get(day), r);
+    return byDay.get(day);
+  };
+  // M4: base orders on paid_at day; each upsell charge on ITS settle day.
+  for (const sess of sessions) {
+    const r = resolveCosts(sess, sess.paid_at, { ...ctx, charges: [] });
+    foldOrder(totalsBucket, r);
+    foldOrder(dayBucket(dayKey(sess.paid_at)), r);
+  }
+  for (const c of charges) {
+    const r = resolveChargeAlone(c, ctx);
+    foldOrder(totalsBucket, r, false);
+    foldOrder(dayBucket(dayKey(c.created_at)), r, false);
   }
 
   const spend = await funnelSpendByDay([funnelId], s, e);
@@ -1396,9 +1536,9 @@ export async function pnlFunnel(fid, start, end) {
       fees: fin.fees,
       ship_cost: fin.ship_cost,
       gp: fin.gp,
-      cost_coverage_pct: fin.cost_coverage_pct,
       spend: daySpend,
-      net_profit: fin.gp !== null && daySpend !== null ? round2(fin.gp - daySpend) : null,
+      np: fin.gp !== null && daySpend !== null ? round2(fin.gp - daySpend) : null,
+      cost_coverage_pct: fin.cost_coverage_pct,
     };
   });
 
@@ -1406,8 +1546,8 @@ export async function pnlFunnel(fid, start, end) {
   const block = spendBlock(fin, spendDays, spendKnown);
 
   // Campaign rows: derived bindings over the window + pins, each with its
-  // window spend, so the operator can see WHY the funnel's spend is what it
-  // is and pin/unpin from the same screen.
+  // window spend and how it is bound ('pin' wins over 'derived'), plus the
+  // split/sessions evidence so the UI can surface a contested campaign.
   const bindings = await deriveCampaignBindings(s, e);
   const pins = await pgQuery(`SELECT campaign_id, funnel_id FROM lb_campaign_map`);
   const pinByCid = new Map(pins.map((p) => [String(p.campaign_id), String(p.funnel_id)]));
@@ -1419,7 +1559,7 @@ export async function pnlFunnel(fid, start, end) {
   let campaigns = [];
   if (cids.size) {
     const spendRows = await pgQuery(
-      `SELECT ref_id, campaign_name, SUM(spend) AS spend, MAX(day) AS last_day
+      `SELECT ref_id, campaign_name, SUM(spend) AS spend
        FROM lb_ad_spend_daily
        WHERE source = 'meta' AND ref_id = ANY($1) AND day >= $2 AND day <= $3
        GROUP BY ref_id, campaign_name`,
@@ -1436,15 +1576,14 @@ export async function pnlFunnel(fid, start, end) {
       campaign_id: cid,
       name: nameByCid.get(cid) || '',
       spend: round2(Number(spendByCid.get(cid) || 0)),
-      pinned: pinByCid.get(cid) === funnelId,
-      derived: Boolean(bindings[cid] && bindings[cid].fid === funnelId),
+      bound_via: pinByCid.get(cid) === funnelId ? 'pin' : 'derived',
       split: Boolean(bindings[cid] && bindings[cid].split),
       sessions: bindings[cid] ? bindings[cid].sessions : 0,
     })).sort((a, b) => b.spend - a.spend);
   }
 
   const manual = await pgQuery(
-    `SELECT day, spend, note, updated_by, synced_at
+    `SELECT day, spend, note
      FROM lb_ad_spend_daily
      WHERE source = 'manual' AND ref_id = $1 AND day >= $2 AND day <= $3
      ORDER BY day DESC`,
@@ -1453,30 +1592,12 @@ export async function pnlFunnel(fid, start, end) {
 
   const names = await funnelNames([funnelId]);
   return {
-    fid: funnelId,
-    name: names.get(funnelId) || funnelId,
-    start: s,
-    end: e,
-    totals: {
-      revenue: fin.revenue,
-      gross_sales: fin.gross_sales,
-      orders: fin.orders,
-      refunds: fin.refunds,
-      cogs: fin.cogs,
-      fees: fin.fees,
-      ship_cost: fin.ship_cost,
-      gp: fin.gp,
-      gp_margin: fin.gp_margin,
-      cost_coverage_pct: fin.cost_coverage_pct,
-      ...block,
-    },
+    totals: pnlRow(funnelId, names.get(funnelId) || funnelId, fin, block),
     daily,
     campaigns,
     manual_entries: manual.map((m) => ({
       day: m.day, spend: round2(Number(m.spend || 0)), note: m.note || '',
-      updated_by: m.updated_by || '', updated_at: m.synced_at,
     })),
-    meta_configured: metaConfigured(),
   };
 }
 
