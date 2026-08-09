@@ -56,11 +56,13 @@ export default function VariantPicker({ value, onChange, onPick, help }) {
       // a claim about the catalog.
       setRows([]);
       setState('error');
-      setError(
-        err.response?.data?.error?.message ||
-          err.response?.data?.error ||
-          'Product search is unavailable right now'
-      );
+      const e = err.response?.data?.error;
+      setError({
+        text: e?.message || (typeof e === 'string' ? e : null) || 'Product search is unavailable right now',
+        // F11. A dead/absent credential will not fix itself. The Retry button
+        // only appears for genuinely retryable failures.
+        retryable: e?.retryable !== false,
+      });
     } finally {
       if (abortRef.current === controller) abortRef.current = null;
     }
@@ -82,7 +84,25 @@ export default function VariantPicker({ value, onChange, onPick, help }) {
   // Abort anything still on the wire when the inspector switches blocks.
   useEffect(() => () => { if (abortRef.current) abortRef.current.abort(); }, []);
 
+  // F12. A DRAFT/ARCHIVED product, or a variant that is not availableForSale,
+  // resolves to nothing at checkout — checkoutPricing OMITS it, so the bump is
+  // refused at the moment a real buyer accepts it. That is the worst possible
+  // time to discover it, so the picker says so up front and asks first.
+  const notPurchasable = (v) =>
+    v.available === false || (v.product_status && v.product_status.toUpperCase() !== 'ACTIVE' && v.product_status.toUpperCase() !== 'UNLISTED');
+
   const pick = (v) => {
+    if (notPurchasable(v)) {
+      const why = v.product_status && v.product_status.toUpperCase() !== 'ACTIVE' && v.product_status.toUpperCase() !== 'UNLISTED'
+        ? `its product is ${v.product_status} in Shopify`
+        : 'it is not available for sale in Shopify';
+      const go = window.confirm(
+        `“${v.product_title || v.title}” cannot be purchased right now — ${why}.\n\n` +
+        `If you publish this page with it wired, the order bump will be REFUSED when a buyer accepts it.\n\n` +
+        `Wire it anyway? (Fix it in Shopify before you publish.)`
+      );
+      if (!go) return;
+    }
     onChange(v.variant_id);
     onPick?.(v);
     setOpen(false);
@@ -150,8 +170,10 @@ export default function VariantPicker({ value, onChange, onPick, help }) {
             <div className="flex items-start gap-1.5 text-[11px] text-danger px-1 leading-snug">
               <AlertCircle className="w-3 h-3 mt-0.5 shrink-0" />
               <span>
-                {error} — this is a Shopify/connection problem, not an empty catalog.{' '}
-                <button onClick={() => run(q.trim())} className="underline cursor-pointer">Retry</button>
+                {error?.text} — this is a Shopify/connection problem, not an empty catalog.
+                {error?.retryable ? (
+                  <> <button onClick={() => run(q.trim())} className="underline cursor-pointer">Retry</button></>
+                ) : null}
               </span>
             </div>
           )}
@@ -176,8 +198,12 @@ export default function VariantPicker({ value, onChange, onPick, help }) {
                   <div className="text-[10px] text-text-faint truncate">
                     {v.title || 'Default'}
                     {v.sku ? ` · ${v.sku}` : ''}
-                    {v.available === false ? ' · unavailable' : ''}
                   </div>
+                  {notPurchasable(v) && (
+                    <div className="mt-0.5 inline-block px-1.5 py-0.5 rounded text-[9px] font-semibold uppercase tracking-wider bg-amber-500/15 text-amber-400 border border-amber-500/40">
+                      not purchasable until published in Shopify
+                    </div>
+                  )}
                 </div>
                 <span className="text-[11px] font-mono text-text-muted shrink-0">{v.price}</span>
               </button>

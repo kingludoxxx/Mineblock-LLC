@@ -417,10 +417,16 @@ export default function PageBuilderPage() {
   // The refs are pushed forward BEFORE the flush because flush() reads refs,
   // not state: waiting for React to commit would send the PREVIOUS document.
   const applyCodeDoc = useCallback(async ({ blocks: nextBlocks, code: nextCode }) => {
-    const withIdBlocks = withIds(nextBlocks);
-    commit(() => withIdBlocks, `code_${Date.now()}`);
-    blocksRef.current = withIdBlocks;
-    dirtyRef.current.add('blocks');
+    // R1: `blocks` is null when the document did not describe them (its
+    // @BLOCKS header was deleted). Marking 'blocks' dirty then would PATCH the
+    // current array over itself at best, and — before the fix — an empty one
+    // over a live page at worst. An undescribed field is simply not written.
+    if (nextBlocks) {
+      const withIdBlocks = withIds(nextBlocks);
+      commit(() => withIdBlocks, `code_${Date.now()}`);
+      blocksRef.current = withIdBlocks;
+      dirtyRef.current.add('blocks');
+    }
 
     const patch = {};
     for (const f of CODE_FIELDS) {
@@ -431,6 +437,10 @@ export default function PageBuilderPage() {
       codeRef.current = { ...codeRef.current, ...patch };
       for (const f of Object.keys(patch)) dirtyRef.current.add(f);
     }
+
+    // Nothing described, nothing to write — report it rather than firing an
+    // empty PATCH that would read as a successful save.
+    if (!dirtyRef.current.size) return;
 
     setHasPending(true);
     if (timerRef.current) clearTimeout(timerRef.current);

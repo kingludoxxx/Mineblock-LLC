@@ -2,14 +2,14 @@
 //
 // Faithful STRUCTURAL approximations of the server renderer's output
 // (funnelRender.js), in the light buyer theme. Deliberately NOT the server
-// renderer: no dangerouslySetInnerHTML anywhere in the admin DOM. All operator
+// renderer: no dangerouslySetInnerHTML in THIS file. All operator
 // text renders through React text nodes (auto-escaped). Operator HTML props
 // (custom_html / html / section html / row columns) preview inside a fully
 // sandboxed iframe (sandbox="" — no scripts, no same-origin) so hostile HTML
 // typed into a prop can never execute in the admin surface.
 import { useMemo } from 'react';
 import { CreditCard, ReceiptText, Film, Image as ImageIcon, Code2 } from 'lucide-react';
-import { bumpHeadline, bumpUnconfigured, parseInlineMarkup } from './builderModel';
+import { bumpHeadline, bumpUnconfigured, parseInlineMarkup, displayPrice } from './builderModel';
 
 const T = {
   text: '#374151',
@@ -380,15 +380,19 @@ export default function BlockPreview({ block, pageCss = '' }) {
     // ORDER BUMP. Two visibly different states, because the difference is
     // whether this block can take money:
     //   UNCONFIGURED (no variant_id) — dashed outline + the assign hint. The
-    //     server refuses this bump with 422 bump_not_chargeable, so the canvas
-    //     must not draw it as a working offer.
-    //   CONFIGURED — product chip, bold offer name, "from <price>" line.
-    // CANVAS ONLY: funnelRender.js is integrator-owned and unchanged.
+    //     renderer omits data-bump-armed and the server refuses the bump with
+    //     422 bump_not_chargeable, so the canvas must not draw it as working.
+    //   CONFIGURED — product chip, bold offer name, "from <price>" line. The
+    //     public runtime IS live on main: funnelRender arms
+    //     .lb-order-bump[data-bump-armed='1'] → POST /session/:id/bump.
+    // The bold offer name, the accent colour and <b>/<u> in the description
+    // are CANVAS-ONLY today — the renderer emits `label` and an esc()'d
+    // description. Every field carrying one of those says so in its help text.
     case 'order_bump': {
       const unconfigured = bumpUnconfigured(p);
       const accent = String(p.offer_name_color || '').trim() || '#f59e0b';
       const headline = bumpHeadline(p);
-      const priceText = p.price != null && String(p.price).trim() !== '' ? String(p.price).trim() : '';
+      const priceText = displayPrice(p.price);
       const qty = Number.isFinite(Number(p.quantity)) && Number(p.quantity) > 1 ? Number(p.quantity) : null;
       return (
         <div
@@ -431,7 +435,7 @@ export default function BlockPreview({ block, pageCss = '' }) {
 
           {p.description != null && String(p.description).trim() !== '' && (
             // <b>/<u> only, rendered as REACT ELEMENTS around auto-escaped
-            // text — this file's no-dangerouslySetInnerHTML invariant holds.
+            // text — this file's no-dangerouslySetInnerHTML rule holds.
             // The PUBLISHED page still escapes the whole string until the
             // renderer half lands — noted in the delivery report.
             <p style={{ margin: '8px 0 0 28px', color: T.faint, fontSize: 13 }}>

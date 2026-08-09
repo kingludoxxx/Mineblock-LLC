@@ -576,8 +576,71 @@ function BlockProps({ block, onProp, onDelete, onDuplicate }) {
   );
 }
 
+// F7. The slug is the LIVE URL. Autosaving it per keystroke walked a published
+// page through /c, /ch, /che… — each one a real PATCH, each one a moment where
+// the public URL 404s. It is committed on blur or Enter instead, and a
+// published page additionally confirms the old→new move.
+//
+// F6. The Status dropdown could unpublish a live page in one click with no
+// confirmation. Draft→Published stays one click; Published→Draft is the
+// destructive direction and asks first, naming the URL that goes dark.
 function PageSettings({ meta, onMeta, funnel, blocksCount, saveError }) {
   const slugTaken = isSlugCollision(saveError);
+  const [slugDraft, setSlugDraft] = useState(meta.slug);
+  const [lastSeenSlug, setLastSeenSlug] = useState(meta.slug);
+
+  // Re-sync when the slug changes from OUTSIDE (load, restore, undo).
+  //
+  // Adjusted DURING RENDER, not in an effect: this is React's own "adjust
+  // state when a prop changes" pattern. An effect would render once with the
+  // stale draft and then immediately re-render — the cascading render the
+  // lint rule exists to catch.
+  //
+  // The guard is `slugDraft === lastSeenSlug` — "there is no uncommitted
+  // edit" — rather than a focus ref. It is pure state (refs may not be read
+  // during render), and it is the better question anyway: a half-typed slug
+  // must survive an incoming change whether or not the field still has focus.
+  if (meta.slug !== lastSeenSlug) {
+    setLastSeenSlug(meta.slug);
+    if (slugDraft === lastSeenSlug) setSlugDraft(meta.slug);
+  }
+
+  const publicUrl = `/f/${funnel?.slug || ''}${meta.slug === '/' ? '' : meta.slug}`;
+
+  const commitSlug = () => {
+    const next = slugDraft;
+    if (next === meta.slug) return;
+    if (meta.status === 'published') {
+      const okToMove = window.confirm(
+        `This page is PUBLISHED and live.\n\n` +
+        `Its URL changes from:\n  ${publicUrl}\nto:\n  /f/${funnel?.slug || ''}${next === '/' ? '' : next}\n\n` +
+        `The old URL stops working immediately — any ad or link pointing at it will 404.\n\nChange the slug?`
+      );
+      if (!okToMove) {
+        setSlugDraft(meta.slug); // put the field back
+        return;
+      }
+    }
+    // Record it as seen so the render-phase sync does not immediately treat
+    // our own write as an outside change and bounce the field back.
+    setLastSeenSlug(next);
+    onMeta({ slug: next });
+  };
+
+  const onStatus = (next) => {
+    if (next === meta.status) return;
+    if (meta.status === 'published' && next === 'draft') {
+      const typed = window.prompt(
+        `UNPUBLISH this page?\n\n` +
+        `${publicUrl}\n\n` +
+        `It goes dark immediately for every visitor, including live ad traffic.\n\n` +
+        `Type UNPUBLISH to confirm.`
+      );
+      if (String(typed || '').trim().toUpperCase() !== 'UNPUBLISH') return;
+    }
+    onMeta({ status: next });
+  };
+
   return (
     <div className="p-3 space-y-4">
       <div>
@@ -594,14 +657,24 @@ function PageSettings({ meta, onMeta, funnel, blocksCount, saveError }) {
         <div>
           <label className={labelCls}>Slug</label>
           <input
-            value={meta.slug}
-            onChange={(e) => onMeta({ slug: e.target.value })}
+            value={slugDraft}
+            onChange={(e) => setSlugDraft(e.target.value)}
+            onBlur={commitSlug}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') { e.preventDefault(); e.currentTarget.blur(); }
+              if (e.key === 'Escape') { e.preventDefault(); setSlugDraft(meta.slug); e.currentTarget.blur(); }
+            }}
             spellCheck={false}
             className={`${inputCls} font-mono text-xs ${slugTaken ? 'border-danger' : ''}`}
           />
           <p className="mt-1 text-[11px] text-text-faint font-mono truncate">
-            /f/{funnel?.slug}{meta.slug === '/' ? '' : meta.slug}
+            /f/{funnel?.slug}{slugDraft === '/' ? '' : slugDraft}
           </p>
+          {slugDraft !== meta.slug && (
+            <p className="mt-1 text-[11px] text-amber-400/90">
+              Press Enter or click away to apply · Esc to cancel
+            </p>
+          )}
           {slugTaken ? (
             <p className="mt-1.5 flex items-start gap-1.5 text-[11px] text-danger leading-snug">
               <AlertTriangle className="w-3 h-3 mt-0.5 shrink-0" />
@@ -617,7 +690,7 @@ function PageSettings({ meta, onMeta, funnel, blocksCount, saveError }) {
         </div>
         <div>
           <label className={labelCls}>Status</label>
-          <select value={meta.status} onChange={(e) => onMeta({ status: e.target.value })} className={inputCls}>
+          <select value={meta.status} onChange={(e) => onStatus(e.target.value)} className={inputCls}>
             <option value="draft">Draft</option>
             <option value="published">Published</option>
           </select>

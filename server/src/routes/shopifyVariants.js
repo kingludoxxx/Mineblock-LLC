@@ -24,8 +24,16 @@
 import { Router } from 'express';
 import { authenticate } from '../middleware/auth.js';
 import { requirePermission } from '../middleware/rbac.js';
+import { checkRateLimit } from '../middleware/rateLimiter.js';
 
 const router = Router();
+
+// A TYPEAHEAD FIRES ON EVERY KEYSTROKE, and this route shares the Shopify
+// Admin bucket with LIVE CHECKOUT PRICING (services/checkoutPricing.js). An
+// operator holding a key down in the builder must not be able to throttle the
+// call that prices a real cart, so the search is capped per user.
+export const SEARCH_RATE_MAX = 30;
+export const SEARCH_RATE_WINDOW_SEC = 60;
 
 // Spec'd bound. Shopify's own limit for this connection is 250; we ask for
 // far less because this is a typeahead, not an export.
@@ -146,6 +154,12 @@ async function postGraphql(query, variables) {
   } finally {
     clearTimeout(timer);
   }
+  // F11. A 401/403 from Shopify is a REVOKED OR WRONG CREDENTIAL. It will not
+  // fix itself, so it must not be presented as a retryable blip with a Retry
+  // button — that just burns the operator's time against a dead key.
+  if (resp.status === 401 || resp.status === 403) {
+    throw new ShopifyUnavailableError(`http_${resp.status}`, 'shopify_auth_error');
+  }
   if (!resp.ok) throw new ShopifyUnavailableError(`http_${resp.status}`);
   let payload;
   try {
@@ -164,6 +178,24 @@ async function postGraphql(query, variables) {
  * -> 200 { success:true, data:{ variants:[...] } }
  */
 export async function searchHandler(req, res) {
+  // Fail-OPEN on a limiter outage: a Redis blip must not take the builder's
+  // product picker down. The Shopify-side budget is the real backstop.
+  const rl = await checkRateLimit(
+    `shopify-variant-search:${req.user?.id || req.ip}`,
+    SEARCH_RATE_MAX,
+    SEARCH_RATE_WINDOW_SEC
+  ).catch(() => ({ allowed: true }));
+  if (!rl.allowed) {
+    return res.status(429).json({
+      success: false,
+      error: {
+        code: 'rate_limited',
+        message: 'Too many product searches — wait a moment and try again',
+        retry_after: rl.retryAfter,
+      },
+    });
+  }
+
   const raw = typeof req.query?.q === 'string' ? req.query.q.trim() : '';
   if (raw.length < Q_MIN) {
     return res.status(400).json({
@@ -181,14 +213,19 @@ export async function searchHandler(req, res) {
   } catch (err) {
     if (err instanceof ShopifyUnavailableError) {
       console.error('[shopify-variants] search unavailable:', err.code, err.message);
+      const MESSAGES = {
+        shopify_not_configured: 'Shopify is not configured on this environment — this needs operator attention, retrying will not help.',
+        shopify_auth_error: 'Shopify rejected our credentials — the access token is missing, expired or revoked. This needs operator attention; retrying will not help.',
+        shopify_unavailable: 'Shopify product search is temporarily unavailable — try again',
+      };
       return res.status(503).json({
         success: false,
+        // `retryable` is the flag the picker keys its Retry button on, so the
+        // UI never invites a retry against a credential that will keep failing.
         error: {
           code: err.code,
-          message:
-            err.code === 'shopify_not_configured'
-              ? 'Shopify is not configured on this environment'
-              : 'Shopify product search is temporarily unavailable — try again',
+          retryable: err.code === 'shopify_unavailable',
+          message: MESSAGES[err.code] || MESSAGES.shopify_unavailable,
         },
       });
     }

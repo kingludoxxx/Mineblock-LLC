@@ -25,7 +25,7 @@ import {
   AlertTriangle, FileCode, Braces, Loader2, RotateCcw, Wand2, Save, Check,
 } from 'lucide-react';
 import {
-  buildHtmlDoc, buildCssDoc, docBlockIds, parseCodeDocs,
+  buildHtmlDoc, buildCssDoc, docBlockIds, parseCodeDocs, makeNonce, CodeDocRefusal,
 } from './codeDoc';
 import { newBlockId } from './blockRegistry';
 import {
@@ -73,6 +73,12 @@ function Editor({ value, language, onChange }) {
 
   return (
     <div className="relative flex-1 min-h-0 rounded-md border border-border-default bg-bg-elevated overflow-hidden">
+      {/* AUDITED dangerouslySetInnerHTML — the builder's only one. `painted`
+          comes from codeFormat.js's highlighters, which run escHtml() over
+          EVERY source character before wrapping runs in class-only <span>
+          tags: the result is escaped text plus a fixed span vocabulary, so
+          operator code cannot become live markup. The layer is aria-hidden
+          and pointer-events:none; the real input is the textarea above it. */}
       {painted != null && (
         <pre
           ref={preRef}
@@ -106,12 +112,16 @@ export default function CodeTab({ code, blocks, onApply }) {
   // The document as BUILT — dirty is a plain compare against this, and
   // knownIds is the id set the document actually describes (a block added
   // elsewhere afterwards has no marker and must not read as deleted).
-  const builtRef = useRef({ html: '', css: '', ids: [] });
+  // `nonce` anchors THIS document's page-JS wrapper (R3): only the wrapper
+  // carrying it is parsed back as custom_js, so an operator-written
+  // data-lb="page-js" script can never swap places with the real one.
+  const builtRef = useRef({ html: '', css: '', ids: [], nonce: '' });
 
   const rebuild = useCallback(() => {
-    const html = buildHtmlDoc(code, blocks);
+    const nonce = makeNonce();
+    const { text: html } = buildHtmlDoc(code, blocks, nonce);
     const css = buildCssDoc(code, blocks);
-    builtRef.current = { html, css, ids: docBlockIds(blocks) };
+    builtRef.current = { html, css, ids: docBlockIds(blocks), nonce };
     setHtmlDoc(html);
     setCssDoc(css);
     setNotice(null);
@@ -138,24 +148,36 @@ export default function CodeTab({ code, blocks, onApply }) {
         cssDoc,
         blocks,
         knownIds: builtRef.current.ids,
+        nonce: builtRef.current.nonce,
         deps: { newId: newBlockId },
       });
       await onApply(parsed);
-      // Re-baseline off what we just sent so the pane reads clean.
+      // Re-baseline off what we just sent so the pane reads clean. `blocks`
+      // is null when the document did not describe them (R1) — the baseline
+      // then keeps the ids it already had.
       builtRef.current = {
         html: htmlDoc,
         css: cssDoc,
-        ids: docBlockIds(parsed.blocks),
+        ids: parsed.blocks ? docBlockIds(parsed.blocks) : builtRef.current.ids,
+        nonce: builtRef.current.nonce,
       };
       const bits = [];
       if (parsed.stats.created) bits.push(`${parsed.stats.created} new block${parsed.stats.created === 1 ? '' : 's'} from pasted HTML`);
       if (parsed.stats.removed) bits.push(`${parsed.stats.removed} block${parsed.stats.removed === 1 ? '' : 's'} removed`);
       if (parsed.stats.retyped) bits.push(`${parsed.stats.retyped} converted to custom_html`);
       setNotice({
-        kind: 'ok',
+        kind: parsed.notices.length ? 'warn' : 'ok',
         text: bits.length ? `Applied — ${bits.join(', ')}.` : 'Applied.',
+        details: parsed.notices,
       });
     } catch (err) {
+      // A refusal is OUR rule (R2), not the server's — it means the document
+      // was never sent. Say so plainly and keep every character they typed.
+      if (err instanceof CodeDocRefusal) {
+        setNotice({ kind: 'error', text: err.message, details: ['Nothing was saved — your code is exactly as you left it.'] });
+        setSaving(false);
+        return;
+      }
       // The PATCH is validateBlocks-guarded; a refusal is the server telling
       // us the document does not describe a legal page. Surface it verbatim
       // and keep the operator's text — never silently rebuild over it.
@@ -261,10 +283,19 @@ export default function CodeTab({ code, blocks, onApply }) {
           className={`flex items-start gap-2 rounded-lg px-3 py-2 text-[12px] shrink-0 leading-relaxed border
             ${notice.kind === 'ok'
               ? 'border-emerald-500/30 bg-emerald-500/5 text-emerald-300/90'
-              : 'border-danger/40 bg-danger/5 text-danger'}`}
+              : notice.kind === 'warn'
+                ? 'border-amber-500/40 bg-amber-500/5 text-amber-300/90'
+                : 'border-danger/40 bg-danger/5 text-danger'}`}
         >
           {notice.kind === 'ok' ? <Check className="w-4 h-4 mt-0.5 shrink-0" /> : <AlertTriangle className="w-4 h-4 mt-0.5 shrink-0" />}
-          <span>{notice.text}</span>
+          <div className="min-w-0">
+            <div>{notice.text}</div>
+            {notice.details?.length > 0 && (
+              <ul className="mt-1 space-y-0.5 list-disc list-inside">
+                {notice.details.map((d, i) => <li key={i}>{d}</li>)}
+              </ul>
+            )}
+          </div>
         </div>
       )}
 

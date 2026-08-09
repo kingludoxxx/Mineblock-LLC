@@ -362,7 +362,6 @@ export const BLOCK_DEFS = {
     defaults: () => ({
       label: 'Yes! Add this one-time offer to my order',
       description: 'Special one-time deal, only available right now.',
-      price: '$19.00',
       quantity: 1,
     }),
     // Field ORDER and COPY are operator-spec'd (reference-tool screenshots).
@@ -373,18 +372,24 @@ export const BLOCK_DEFS = {
         key: 'variant_id', label: 'Shopify product', kind: 'variant',
         help: 'Variants and prices come live from Shopify; the published page creates the payment session server-side, so the buyer is always charged the current Shopify price.',
       },
+      // KEY IS `label`, NOT `headline`. Verified by execution against main:
+      // funnelRender's order_bump case emits `p.label` and reads no `headline`
+      // prop at all. A field writing `headline` would look right in the
+      // inspector and change nothing on the published page — and would leave
+      // the string that DOES render uneditable.
       {
-        key: 'headline', label: 'Checkbox headline', kind: 'text',
+        key: 'label', label: 'Checkbox headline', kind: 'text',
         placeholder: 'Yes, I want the … for ONLY $… (auto if blank)',
-        help: 'Leave blank to build it from the offer name and the picked variant’s price.',
+        help: 'This is the line the published page renders. Leave blank to build it from the offer name and the picked variant’s price.',
       },
       {
         key: 'offer_name', label: 'Offer name (bold, before the text)', kind: 'text',
         placeholder: 'EMERGENCY WATER TEST KIT',
+        help: 'Canvas preview — the live page renders the checkbox headline only; the bold offer name arrives with the next renderer release.',
       },
       {
         key: 'description', label: 'Description', kind: 'textarea',
-        help: 'What it is and why to add it. <b>bold</b> and <u>underline</u> allowed.',
+        help: 'What it is and why to add it. <b>bold</b> and <u>underline</u> render on the canvas; the live page currently shows this as plain text.',
       },
       {
         key: 'quantity', label: 'Quantity per order', kind: 'number', min: 1, max: 10, coerce: 'int',
@@ -396,11 +401,11 @@ export const BLOCK_DEFS = {
       },
       {
         key: 'offer_name_color', label: 'Offer name color', kind: 'color',
-        help: 'Applies on the canvas today; the public renderer adopts it in the renderer pass (funnelRender.js is integrator-owned).',
+        help: 'Canvas preview — the live page uses its own amber styling until the next renderer release.',
       },
       {
         key: 'price', label: 'Price (display text)', kind: 'text', placeholder: '$19.00',
-        help: 'Filled in for you when you pick a product. Label only — the amount charged always comes from Shopify via the variant above.',
+        help: 'Filled in for you when you pick a product. Label only — the amount charged always comes from Shopify via the variant above, re-priced at checkout.',
       },
     ],
   },

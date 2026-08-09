@@ -138,7 +138,14 @@ function OutlineTab({ blocks, selectedId, onSelect, onReorder, onDelete }) {
               ${selectedId && selectedId === r.id
                 ? 'bg-accent/10 text-text-primary border border-accent/40'
                 : 'text-text-muted hover:bg-bg-hover border border-transparent'}
-              ${overKey === r.key && dragIdx !== null && dragIdx !== r.index ? 'border-t-2 border-t-accent' : ''}`}
+              ${overKey === r.key && dragIdx !== null && dragIdx !== r.index
+                // F9. moveBlock(from,to) removes THEN inserts, so a block
+                // dragged DOWN onto row i lands BELOW that row's occupant
+                // (which shifts up), and dragged UP it lands above. A fixed
+                // top border claimed "inserts above" in both directions and
+                // disagreed with the result half the time.
+                ? (dragIdx < r.index ? 'border-b-2 border-b-accent' : 'border-t-2 border-t-accent')
+                : ''}`}
           >
             {r.movable
               ? <GripVertical className="w-3 h-3 text-text-faint shrink-0 cursor-grab" />

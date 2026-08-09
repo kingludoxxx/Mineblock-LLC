@@ -20,6 +20,7 @@ const {
   default: router, searchHandler,
   mapVariantNodes, numericVariantId, buildSearchQuery,
   SEARCH_LIMIT_MAX, Q_MIN, FETCH_TIMEOUT_MS,
+  SEARCH_RATE_MAX, SEARCH_RATE_WINDOW_SEC,
 } = mod;
 
 let pass = 0, fail = 0;
@@ -94,7 +95,10 @@ app.use(express.json());
 // Real router — auth intact.
 app.use('/api/v1/shopify-variants', router);
 // Stub-authed mount for body semantics.
-app.use('/stub', (req, _res, next) => { req.user = { id: 'u1', role: 'admin' }; next(); });
+// The rate limiter keys on req.user.id, so a test that deliberately exhausts
+// the budget must do it as its OWN user — otherwise it poisons every later
+// case in this file with 429s.
+app.use('/stub', (req, _res, next) => { req.user = { id: req.query.as || 'u1', role: 'admin' }; next(); });
 app.get('/stub/search', searchHandler);
 
 const server = app.listen(0);
@@ -180,7 +184,7 @@ const get = async (path) => {
     ['timeout (AbortError)', async () => { const e = new Error('aborted'); e.name = 'AbortError'; throw e; }, 'shopify_unavailable'],
     ['network failure', async () => { throw new Error('ECONNREFUSED'); }, 'shopify_unavailable'],
     ['HTTP 500', async () => jsonResponse({}, 500), 'shopify_unavailable'],
-    ['HTTP 401 from Shopify', async () => jsonResponse({}, 401), 'shopify_unavailable'],
+    ['HTTP 502 bad gateway', async () => jsonResponse({}, 502), 'shopify_unavailable'],
     ['HTTP 429 throttle', async () => jsonResponse({}, 429), 'shopify_unavailable'],
     ['unparseable body', async () => ({ ok: true, status: 200, json: async () => { throw new Error('bad json'); } }), 'shopify_unavailable'],
     ['GraphQL errors in a 200', async () => jsonResponse({ errors: [{ message: 'throttled' }], data: { productVariants: { edges: [] } } }), 'shopify_unavailable'],
@@ -207,6 +211,70 @@ const get = async (path) => {
   eq(r.body?.error?.code, 'shopify_not_configured', 'config: with its OWN code, distinguishable from an outage');
   process.env.PUURE_SHOPIFY_STORE = store;
   process.env.PUURE_SHOPIFY_TOKEN = token;
+}
+
+// ---- F11: 401/403 is a DEAD CREDENTIAL, not a retryable blip -------------
+{
+  for (const status of [401, 403]) {
+    fetchImpl = async () => jsonResponse({}, status);
+    const r = await get('/stub/search?q=glow');
+    eq(r.status, 503, `F11: Shopify ${status} → 503`);
+    eq(r.body?.error?.code, 'shopify_auth_error', `F11: Shopify ${status} → code shopify_auth_error, NOT a generic outage`);
+    eq(r.body?.error?.retryable, false, `F11: Shopify ${status} is flagged NOT retryable (the picker hides Retry)`);
+    ok(/operator attention/i.test(r.body?.error?.message || ''), `F11: Shopify ${status} says it needs operator attention`);
+  }
+  // …while a genuine blip stays retryable.
+  fetchImpl = async () => jsonResponse({}, 502);
+  const r = await get('/stub/search?q=glow');
+  eq(r.body?.error?.code, 'shopify_unavailable', 'F11: a 502 is still a generic outage');
+  eq(r.body?.error?.retryable, true, 'F11: and IS retryable');
+
+  fetchImpl = async () => { throw new Error('nope'); };
+  const rc = await get('/stub/search?q=glow');
+  eq(rc.body?.error?.retryable, true, 'F11: a transport failure is retryable');
+}
+{
+  // Missing config also needs a human, so it must not offer Retry either.
+  const store = process.env.PUURE_SHOPIFY_STORE;
+  delete process.env.PUURE_SHOPIFY_STORE;
+  const r = await get('/stub/search?q=glow');
+  eq(r.body?.error?.code, 'shopify_not_configured', 'F11: missing config keeps its own code');
+  eq(r.body?.error?.retryable, false, 'F11: and is NOT retryable');
+  process.env.PUURE_SHOPIFY_STORE = store;
+}
+
+// ---- F12: purchasability is surfaced, not hidden --------------------------
+{
+  fetchImpl = async () => jsonResponse({
+    data: { productVariants: { edges: [
+      { node: { id: 'gid://shopify/ProductVariant/1', title: 'A', price: '9', availableForSale: true, product: { title: 'Live', status: 'ACTIVE' } } },
+      { node: { id: 'gid://shopify/ProductVariant/2', title: 'B', price: '9', availableForSale: true, product: { title: 'Hidden', status: 'DRAFT' } } },
+      { node: { id: 'gid://shopify/ProductVariant/3', title: 'C', price: '9', availableForSale: false, product: { title: 'Gone', status: 'ARCHIVED' } } },
+    ] } },
+  });
+  const r = await get('/stub/search?q=any');
+  const v = r.body.data.variants;
+  eq(v.length, 3, 'F12: unpurchasable variants are RETURNED (hiding them would look like an empty catalog)');
+  eq(v.map((x) => x.product_status), ['ACTIVE', 'DRAFT', 'ARCHIVED'], 'F12: product_status is surfaced so the picker can badge it');
+  eq(v.map((x) => x.available), [true, true, false], 'F12: availableForSale is surfaced too');
+}
+
+// ---- F10: the typeahead cannot starve LIVE checkout pricing --------------
+{
+  eq(SEARCH_RATE_MAX, 30, 'F10: the cap is 30 searches');
+  eq(SEARCH_RATE_WINDOW_SEC, 60, 'F10: per 60 seconds');
+  let calls = 0;
+  fetchImpl = async () => { calls += 1; return jsonResponse({ data: { productVariants: { edges: [] } } }); };
+  let limited = null;
+  for (let i = 0; i < SEARCH_RATE_MAX + 6; i += 1) {
+    const r = await get(`/stub/search?q=hammer&as=rl_user`);
+    if (r.status === 429) { limited = r; break; }
+  }
+  ok(limited !== null, 'F10: hammering the endpoint eventually returns 429');
+  if (limited) {
+    eq(limited.body?.error?.code, 'rate_limited', 'F10: with code rate_limited');
+    ok(calls <= SEARCH_RATE_MAX, 'F10: and Shopify was called at most the cap — the live pricing bucket is protected', `calls=${calls}`);
+  }
 }
 
 // ---- the 8s timeout is actually armed -------------------------------------

@@ -11,7 +11,7 @@
 import {
   buildOutline, defaultLabel, blockCodeSections, editableCount, safeJson,
   parseInlineMarkup, bumpHeadline, bumpUnconfigured, blockNameAttr,
-  isSlugCollision, escapeHtml, SERVER_GENERATED_NOTE,
+  isSlugCollision, escapeHtml, displayPrice, SERVER_GENERATED_NOTE,
 } from '../../../client/src/pages/funnels/builder/builderModel.js';
 
 let pass = 0, fail = 0;
@@ -80,6 +80,21 @@ eq(buildOutline([]), [], 'outline: empty → []');
 {
   const rows = buildOutline([B('r', 'row', { columns: 'not-an-array' })]);
   eq(rows.length, 1, 'outline: row with a non-array columns prop does not throw or nest');
+}
+{
+  // F17: duplicate ids are reachable (hand-edited paste, AI insert_block
+  // echoing an id). Two React children with the same key silently drop a row,
+  // so the DISPLAY must stay honest even when the data is not.
+  const rows = buildOutline([B('dup', 'text'), B('dup', 'heading'), B('dup', 'button')]);
+  eq(rows.length, 3, 'F17: three blocks sharing an id all render');
+  eq(new Set(rows.map((r) => r.key)).size, 3, 'F17: and their React keys are DISTINCT');
+  eq(rows.map((r) => r.id), ['dup', 'dup', 'dup'], 'F17: the underlying id is NOT rewritten — only the key');
+  eq(rows.map((r) => r.index), [0, 1, 2], 'F17: each keeps its own array index');
+}
+{
+  // A duplicate id colliding with a row's column key must also stay distinct.
+  const rows = buildOutline([B('x', 'row', { columns: [{}, {}] }), B('x', 'row', { columns: [{}] })]);
+  eq(new Set(rows.map((r) => r.key)).size, rows.length, 'F17: duplicate parents AND their columns keep unique keys');
 }
 {
   const rows = buildOutline([B('r', 'row', null)]);
@@ -202,7 +217,25 @@ eq(escapeHtml(null), '', 'escapeHtml: null → empty');
 // bumpHeadline / bumpUnconfigured / blockNameAttr
 // ===========================================================================
 eq(bumpHeadline({ headline: 'Custom line' }), 'Custom line', 'headline: explicit wins');
+// The CURRENT renderer on main emits `p.label` for order_bump and reads no
+// `headline` prop — verified by execution against funnelRender.js. The canvas
+// must therefore show whichever key holds the string.
+eq(bumpHeadline({ label: 'From the label key' }), 'From the label key', 'headline: reads `label`, the key the LIVE renderer emits');
+eq(bumpHeadline({ headline: 'H', label: 'L' }), 'H', 'headline: `headline` wins when both exist (forward-compatible)');
+eq(bumpHeadline({ label: '   ', offer_name: 'KIT', price: '$19' }), 'Yes, I want the KIT for ONLY $19', 'headline: blank label auto-builds');
 eq(bumpHeadline({ headline: '   ', offer_name: 'KIT', price: '$19' }), 'Yes, I want the KIT for ONLY $19', 'headline: blank headline auto-builds');
+
+// ---- F15: a zero price is NOT a price ------------------------------------
+eq(bumpHeadline({ offer_name: 'KIT', price: 0 }), 'Yes, I want the KIT', 'F15: price 0 omits the money clause entirely');
+eq(bumpHeadline({ offer_name: 'KIT', price: '0' }), 'Yes, I want the KIT', 'F15: price "0" omits the clause');
+eq(bumpHeadline({ offer_name: 'KIT', price: '$0.00' }), 'Yes, I want the KIT', 'F15: price "$0.00" omits the clause — never "for ONLY $0.00"');
+eq(displayPrice('$19.00'), '$19.00', 'displayPrice: a real amount passes through');
+eq(displayPrice(0), '', 'displayPrice: 0 → ""');
+eq(displayPrice('0.00'), '', 'displayPrice: "0.00" → ""');
+eq(displayPrice(null), '', 'displayPrice: null → ""');
+eq(displayPrice('   '), '', 'displayPrice: whitespace → ""');
+eq(displayPrice('$19'), '$19', 'displayPrice: currency symbol preserved');
+eq(displayPrice('Free'), 'Free', 'displayPrice: a non-numeric label is kept as written');
 eq(bumpHeadline({ offer_name: 'KIT' }), 'Yes, I want the KIT', 'headline: no price → no money claim, and NO dangling "for ONLY $"');
 eq(bumpHeadline({ price: '$19' }), 'Yes, I want the offer', 'headline: price without a name → generic');
 eq(bumpHeadline({}), 'Yes, I want the offer', 'headline: empty → generic fallback');
@@ -216,6 +249,12 @@ eq(bumpUnconfigured({ variant_id: '   ' }), true, 'bump: whitespace variant_id �
 eq(bumpUnconfigured({ variant_id: '123' }), false, 'bump: a real variant_id → configured');
 eq(bumpUnconfigured(null), true, 'bump: null props → unconfigured');
 eq(bumpUnconfigured({ variant_id: 123 }), false, 'bump: a numeric variant_id counts as configured');
+// F14: the server does `String(bp.variant_id || '').trim()`. These four are
+// unwired THERE, so the canvas must not call them wired — `??` would.
+eq(bumpUnconfigured({ variant_id: 0 }), true, 'F14: variant_id 0 → unconfigured (matches the server\'s ||, not ??)');
+eq(bumpUnconfigured({ variant_id: '' }), true, 'F14: variant_id "" → unconfigured');
+eq(bumpUnconfigured({ variant_id: false }), true, 'F14: variant_id false → unconfigured');
+eq(bumpUnconfigured({ variant_id: null }), true, 'F14: variant_id null → unconfigured');
 
 eq(blockNameAttr({ block_name: ' hero ' }), 'hero', 'blockName: trimmed');
 eq(blockNameAttr({ block_name: '   ' }), '', 'blockName: whitespace-only → "" so the attribute is omitted');
@@ -227,7 +266,10 @@ eq(blockNameAttr({ block_name: 5 }), '', 'blockName: a non-string is not emitted
 // isSlugCollision
 // ===========================================================================
 eq(isSlugCollision('A page with this slug already exists in this funnel'), true, 'slug: the server refusal is recognised');
-eq(isSlugCollision('A funnel with this slug already exists'), true, 'slug: the funnel-level refusal also matches the field hint');
+// F16: the FUNNEL-level refusal is a different field on a different screen —
+// matching it would point the operator at the page slug box for a problem
+// that is not there.
+eq(isSlugCollision('A funnel with this slug already exists'), false, 'F16: the FUNNEL-level refusal does NOT flag the page slug field');
 eq(isSlugCollision('blocks exceed the 2MB limit'), false, 'slug: an unrelated refusal does NOT claim a slug collision');
 eq(isSlugCollision(null), false, 'slug: null → false');
 eq(isSlugCollision(undefined), false, 'slug: undefined → false');

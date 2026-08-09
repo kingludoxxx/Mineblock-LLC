@@ -42,6 +42,17 @@ export function buildOutline(blocks, labelFor) {
   const label = typeof labelFor === 'function' ? labelFor : defaultLabel;
   const rows = [];
   const list = Array.isArray(blocks) ? blocks : [];
+  // F17. Ids are supposed to be unique, but `blocks` is operator/AI-authored
+  // and a duplicated id is reachable (a hand-edited paste, an AI insert_block
+  // echoing an existing id). Two React children with the same key silently
+  // drop one row, so the key is disambiguated by position — the DISPLAY stays
+  // honest even when the data is not.
+  const keyCount = new Map();
+  const uniqueKey = (base) => {
+    const n = keyCount.get(base) || 0;
+    keyCount.set(base, n + 1);
+    return n === 0 ? base : `${base}__dup${n}`;
+  };
   for (let index = 0; index < list.length; index += 1) {
     const b = list[index];
     // A null/primitive entry cannot be selected or labelled — skipping it
@@ -50,7 +61,7 @@ export function buildOutline(blocks, labelFor) {
     const type = typeof b.type === 'string' && b.type ? b.type : 'unknown';
     const id = typeof b.id === 'string' && b.id ? b.id : null;
     rows.push({
-      key: id || `idx_${index}`,
+      key: uniqueKey(id || `idx_${index}`),
       id,
       index,
       type,
@@ -66,7 +77,7 @@ export function buildOutline(blocks, labelFor) {
     const cols = Array.isArray(props.columns) ? props.columns : [];
     for (let c = 0; c < cols.length; c += 1) {
       rows.push({
-        key: `${id || `idx_${index}`}__col${c}`,
+        key: uniqueKey(`${id || `idx_${index}`}__col${c}`),
         id,
         index,
         type: 'column',
@@ -196,11 +207,17 @@ export function escapeHtml(s) {
  * EVERYTHING else stays literal text.
  *
  * Returns SEGMENTS, not an HTML string, on purpose. BlockPreview.jsx holds a
- * hard invariant — no dangerouslySetInnerHTML anywhere in the admin DOM, all
- * operator text through React text nodes — and returning markup would force
- * that invariant to be broken here. Segments let the caller render
- * <strong>/<u> elements around auto-escaped text instead, so hostile input
- * cannot become markup at all rather than merely being filtered.
+ * hard rule — no dangerouslySetInnerHTML in that file, all operator text
+ * through React text nodes — and returning markup would force that rule to be
+ * broken there. Segments let the caller render <strong>/<u> elements around
+ * auto-escaped text instead, so hostile input cannot become markup at all
+ * rather than merely being filtered.
+ *
+ * (CodeTab.jsx is the ONE audited exception in the builder: its highlight
+ * overlay sets innerHTML from codeFormat.js's highlighters, which escape every
+ * source character with escHtml() before wrapping it in <span> tags — the
+ * output is escaped text plus a fixed set of class-only spans, and the layer
+ * is aria-hidden and pointer-events:none.)
  *
  * Unknown tags, attributes on the allowed tags (`<b onclick=…>`), and unclosed
  * tags are all simply not recognised by the regex, so they fall through as
@@ -254,14 +271,34 @@ export function bumpHeadline(props) {
   // caller passes `block.props`, which is legally null on a block the API
   // accepted. Destructuring null throws.
   const p = props && typeof props === 'object' ? props : {};
-  const { headline, offer_name: offerName, price } = p;
-  const explicit = typeof headline === 'string' ? headline.trim() : '';
+  // `headline` first for forward-compatibility (the renderer is expected to
+  // prefer it), then `label` — which is the key the CURRENT renderer on main
+  // actually emits for order_bump. Reading both means the canvas shows the
+  // published string whichever key holds it.
+  const explicit = (typeof p.headline === 'string' ? p.headline.trim() : '')
+    || (typeof p.label === 'string' ? p.label.trim() : '');
   if (explicit) return explicit;
-  const name = typeof offerName === 'string' ? offerName.trim() : '';
-  const amount = typeof price === 'string' ? price.trim() : price != null ? String(price).trim() : '';
+  const name = typeof p.offer_name === 'string' ? p.offer_name.trim() : '';
+  const amount = displayPrice(p.price);
   if (name && amount) return `Yes, I want the ${name} for ONLY ${amount}`;
   if (name) return `Yes, I want the ${name}`;
   return 'Yes, I want the offer';
+}
+
+/**
+ * F15. A price is only a price when it names an AMOUNT. `0`, `'0'`, `'$0.00'`,
+ * `''` and null all mean "no price to advertise" here — a headline reading
+ * "for ONLY $0.00" is a worse claim than one that simply omits the clause.
+ * A genuinely free offer should say so in words, not in a zero.
+ */
+export function displayPrice(price) {
+  if (price == null) return '';
+  const s = String(price).trim();
+  if (!s) return '';
+  // Strip currency symbols/separators to ask "is this numerically zero?"
+  const numeric = s.replace(/[^0-9.-]/g, '');
+  if (numeric && Number(numeric) === 0) return '';
+  return s;
 }
 
 /**
@@ -270,7 +307,11 @@ export function bumpHeadline(props) {
  */
 export function bumpUnconfigured(props) {
   const p = props && typeof props === 'object' ? props : {};
-  return !String(p.variant_id ?? '').trim();
+  // F14. `||` not `??`, matching the server EXACTLY: checkoutPublic does
+  // `String(bp.variant_id || '').trim()`, so variant_id = 0 / '' / false is
+  // unwired THERE. `??` would call 0 configured here and the canvas would
+  // promise a charge the server refuses with 422 bump_not_chargeable.
+  return !String(p.variant_id || '').trim();
 }
 
 /**
@@ -283,7 +324,11 @@ export function bumpUnconfigured(props) {
  * surfaces `err.response.data.error` — a string — and never the code.
  */
 export function isSlugCollision(saveError) {
-  return /slug already exists/i.test(String(saveError == null ? '' : saveError));
+  // F16. Scoped to the PAGE refusal. The funnel-level message
+  // ("A funnel with this slug already exists") is a different field on a
+  // different screen — matching it would point the operator at the page slug
+  // box for a problem that is not there.
+  return /A page with this slug already exists/i.test(String(saveError == null ? '' : saveError));
 }
 
 /**
