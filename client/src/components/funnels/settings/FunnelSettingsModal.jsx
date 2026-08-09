@@ -78,8 +78,8 @@ export default function FunnelSettingsModal({ open, onClose, funnel, initialSect
       case 'shipping': return <ShippingSection />;
       case 'subscriptions': return <SubscriptionsSection />;
       case 'tracking': return <TrackingSection funnel={funnel} onFunnelUpdated={onFunnelUpdated} />;
-      case 'tracking-health': return <TrackingHealthSection />;
-      case 'custom-tracking': return <CustomTrackingSection />;
+      case 'tracking-health': return <TrackingHealthSection funnel={funnel} />;
+      case 'custom-tracking': return <CustomTrackingSection funnel={funnel} />;
       case 'scripts': return <ScriptsSection funnel={funnel} onFunnelUpdated={onFunnelUpdated} />;
       case 'redirects': return <RedirectsSection funnel={funnel} />;
       case 'health': return <HealthSection funnelId={funnelId} />;

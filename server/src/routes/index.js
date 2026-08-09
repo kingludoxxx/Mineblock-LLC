@@ -38,6 +38,7 @@ import integrationsRoutes from './integrations.js';
 import liveViewRoutes from './liveView.js';
 import funnelTransferRoutes from './funnelTransfer.js';
 import funnelCostsRoutes from './funnelCosts.js';
+import funnelTrackingExtrasRoutes from './funnelTrackingExtras.js';
 
 const mountRoutes = (app) => {
   app.use('/api/v1/users', userRoutes);
@@ -64,6 +65,11 @@ const mountRoutes = (app) => {
   app.use('/api/v1/orders', ordersRoutes);
   app.use('/api/v1/customers', customersRoutes);
   app.use('/api/v1/abandoned', abandonedRoutes);
+  // Funnel tracking EXTRAS — mounted on the SAME base as funnelsRoutes and
+  // BEFORE it, so /funnels/:id/tracking/health|custom are served without
+  // entering the funnels router. Its auth chain is per-route (not router.use),
+  // so every other /funnels/* path falls straight through at zero cost.
+  app.use('/api/v1/funnels', funnelTrackingExtrasRoutes);
   app.use('/api/v1/funnels', funnelsRoutes);
   app.use('/api/v1/page-clone', pageCloneRoutes); // clone-a-page scan + create (authed, funnels permission)
   app.use('/api/v1/page-versions', pageVersionsRoutes); // builder page snapshots + restore (authed, funnels permission; owns lb_page_versions)
