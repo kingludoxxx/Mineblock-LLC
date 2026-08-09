@@ -34,6 +34,7 @@ import trackingAdminRoutes from './trackingAdmin.js';
 import domainHubRoutes from './domainHub.js';
 import funnelAnalyticsRoutes from './funnelAnalytics.js';
 import aiDeveloperRoutes from './aiDeveloper.js';
+import aiMediaRoutes from './aiMedia.js';
 import integrationsRoutes from './integrations.js';
 import liveViewRoutes from './liveView.js';
 import funnelTransferRoutes from './funnelTransfer.js';
@@ -81,6 +82,10 @@ const mountRoutes = (app) => {
   // AI Developer — builder chat that PROPOSES block edits (read-only on
   // funnel_pages; the editor applies ops in memory) + Higgsfield job proxy.
   app.use('/api/v1/ai-developer', aiDeveloperRoutes);
+  // AI Media dialog — Higgsfield image generation whose finished assets are
+  // RE-HOSTED into lb_media, so the library stays the single source of truth
+  // (authed, funnels permission; owns lb_ai_media_jobs, never writes pages).
+  app.use('/api/v1/ai-media', aiMediaRoutes);
   app.use('/api/v1/integrations', integrationsRoutes); // KLAVIYO LANE: marketing-integration config (authed, funnels permission; masked reads)
   app.use('/api/v1/live', liveViewRoutes); // LIVE-VIEW LANE: single additive mount (SSE + snapshot, isolated analytics pool)
   // Funnel export/import — portable JSON envelope (authed, funnels permission;
