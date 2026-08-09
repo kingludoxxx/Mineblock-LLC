@@ -17,6 +17,7 @@ export default function CostsSubnav() {
     <nav className="flex items-center gap-1" aria-label="Costs area">
       <NavLink to="/app/costs" end className={linkCls}>Costs</NavLink>
       <NavLink to="/app/costs/pnl" className={linkCls}>P&amp;L</NavLink>
+      <NavLink to="/app/costs/assistant" className={linkCls}>Assistant</NavLink>
     </nav>
   );
 }

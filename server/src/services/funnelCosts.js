@@ -573,9 +573,27 @@ export function resolveCosts(orderOrLegs, atTime = null, opts = {}) {
 // ══════════════════════════════════════════════════════════════════════════
 // Loaders
 // ══════════════════════════════════════════════════════════════════════════
-export async function loadRates() {
+// ── the `exec` seam (added by the cogs-assistant lane) ────────────────────
+// appendRate / refreshCoverage / loadRates take an optional executor with
+// pgQuery's signature — (text, params) => rows — defaulting to pgQuery so
+// every existing caller is untouched.
+//
+// It exists so a caller can run the rate write INSIDE A TRANSACTION it also
+// writes its own rows in, without becoming a second writer of lb_cost_rates.
+// The alternative was for the assistant to INSERT the rate itself, which is
+// exactly the parallel writer this lane must not have.
+//
+// Two consequences, stated:
+//  · a transactional caller passes `(t, p) => tx.unsafe(t, p)`, which bypasses
+//    pgQuery's circuit breaker and its 8s race — the same trade splitCredits.js
+//    documents at its own sql.begin. A transaction is pinned to one connection,
+//    so it cannot go through the pooled helper.
+//  · the READS inside must use the same executor, or refreshCoverage would
+//    resolve coverage from the pre-transaction snapshot and never see the row
+//    the same transaction just appended.
+export async function loadRates(exec = pgQuery) {
   await ensureFunnelCostsTables();
-  return pgQuery(`
+  return exec(`
     SELECT id, scope, variant_id, cost_item_id,
            to_char(effective_from, 'YYYY-MM-DD') AS effective_from,
            unit_cogs, ship, currency, source, batch_id, note, created_by,
@@ -695,8 +713,11 @@ export function resolveEffectiveFrom({ explicit, onlyFromToday, hasPriorRate, fi
 export async function appendRate({
   scope = 'variant', refId, unitCogs = null, ship = null, effectiveFrom = null,
   onlyFromToday = false, currency = 'USD', source = 'manual', batchId = '',
-  note = '', createdBy = '',
+  note = '', createdBy = '', exec = pgQuery,
 }) {
+  // DDL stays on the pooled helper on purpose: CREATE TABLE IF NOT EXISTS
+  // inside a caller's transaction would take DDL locks for the whole
+  // transaction, and this call is a cheap no-op after the first request.
   await ensureFunnelCostsTables();
   if (!SCOPES.includes(scope)) throw new CostError('bad_scope', 'scope must be variant or item');
   if (!SOURCES.includes(source)) throw new CostError('bad_source', `source must be one of ${SOURCES}`);
@@ -713,11 +734,11 @@ export async function appendRate({
   }
 
   const col = scope === 'variant' ? 'variant_id' : 'cost_item_id';
-  const [prior] = await pgQuery(
+  const [prior] = await exec(
     `SELECT id FROM lb_cost_rates WHERE scope = $1 AND ${col} = $2 LIMIT 1`, [scope, ref]);
   let firstSold = null;
   if (scope === 'variant') {
-    const [vc] = await pgQuery(`SELECT first_sold FROM lb_variant_costs WHERE variant_id = $1`, [ref]);
+    const [vc] = await exec(`SELECT first_sold FROM lb_variant_costs WHERE variant_id = $1`, [ref]);
     firstSold = vc ? vc.first_sold || null : null;
   }
   const ef = resolveEffectiveFrom({
@@ -728,7 +749,7 @@ export async function appendRate({
     today: dayKey(),
   });
 
-  const [row] = await pgQuery(
+  const [row] = await exec(
     `INSERT INTO lb_cost_rates
        (scope, variant_id, cost_item_id, effective_from, unit_cogs, ship,
         currency, source, batch_id, note, created_by)
@@ -750,18 +771,21 @@ export async function appendRate({
       String(createdBy || '').slice(0, 128),
     ]
   );
-  await refreshCoverage(scope, ref);
+  await refreshCoverage(scope, ref, exec);
   return row;
 }
 
 // Flip the affected variants' coverage the moment a cost lands — without
 // this the grid keeps saying "needs cost" until the next sweep. 'ignored'
 // is an operator decision and is never overwritten here.
-export async function refreshCoverage(scope, refId) {
+export async function refreshCoverage(scope, refId, exec = pgQuery) {
   const col = scope === 'variant' ? 'variant_id' : 'cost_item_id';
-  const rows = await pgQuery(`SELECT * FROM lb_variant_costs WHERE ${col} = $1`, [refId]);
+  const rows = await exec(`SELECT * FROM lb_variant_costs WHERE ${col} = $1`, [refId]);
   if (!rows.length) return 0;
-  const rateIndex = buildRateIndex(await loadRates());
+  // Same executor: inside a transaction the row appended a moment ago is only
+  // visible on THAT connection, and reading it through the pool would flip
+  // coverage off a snapshot that predates the write.
+  const rateIndex = buildRateIndex(await loadRates(exec));
   const today = dayKey();
   let flipped = 0;
   for (const vc of rows) {
@@ -769,7 +793,7 @@ export async function refreshCoverage(scope, refId) {
     const [unit] = resolveUnitCogs(vc, rateIndex, today);
     const coverage = unit !== null ? 'ready' : 'needs_cost';
     if (coverage === vc.coverage) continue;
-    await pgQuery(
+    await exec(
       `UPDATE lb_variant_costs SET coverage = $1, updated_at = NOW() WHERE variant_id = $2`,
       [coverage, vc.variant_id]);
     flipped += 1;

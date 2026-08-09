@@ -42,6 +42,7 @@ import integrationsRoutes from './integrations.js';
 import liveViewRoutes from './liveView.js';
 import funnelTransferRoutes from './funnelTransfer.js';
 import funnelCostsRoutes from './funnelCosts.js';
+import cogsAssistantRoutes from './cogsAssistant.js';
 import healthAlertsRoutes from './healthAlerts.js';
 import funnelMetricsRoutes from './funnelMetrics.js';
 import funnelAttributionRoutes from './funnelAttribution.js';
@@ -116,6 +117,12 @@ const mountRoutes = (app) => {
   // import always lands a DRAFT with no domain, in one transaction).
   app.use('/api/v1/funnel-transfer', funnelTransferRoutes);
   app.use('/api/v1/funnel-costs', funnelCostsRoutes); // COGS / per-funnel P&L (authed, funnels permission; on-read engine, append-only rates)
+  // COGS ASSISTANT — conversational cost entry + supplier-quote scan (authed,
+  // funnels permission). PROPOSE/APPLY split: /chat and /quote/scan write no
+  // cost; /apply writes ONLY through funnelCosts.appendRate, the same door
+  // POST /funnel-costs/rates uses. Owns lb_cogs_assistant_audit +
+  // lb_quote_scans; raw uploads are never persisted, only the matrix + a hash.
+  app.use('/api/v1/cogs-assistant', cogsAssistantRoutes);
   app.use('/api/v1/health-alerts', healthAlertsRoutes); // PLATFORM: operational alert feed + ack (authed, audit:read; 5-min sweep starts on load, HEALTH_ALERTS_SWEEP_DISABLED=1 off)
   // METRICS ENGINE — the one query API + presets + dashboard composite (authed,
   // funnels permission; read-only, isolated analytics pool, REPORT_TZ buckets).
