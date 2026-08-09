@@ -26,6 +26,7 @@ import brandSpyRouter from './routes/brandSpy.js';
 import funnelPublicRoutes from './routes/funnelPublic.js';
 import gatewayWebhookRoutes from './routes/gatewayWebhooks.js';
 import checkoutPublicRoutes from './routes/checkoutPublic.js';
+import optinPublicRoutes from './routes/optinPublic.js';
 import trackingPublicRoutes from './routes/trackingPublic.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -91,6 +92,12 @@ app.use('/api/v1/shopify-webhook', shopifyWebhookRoutes);
 // server-side re-pricing). After the global JSON parser; before the admin
 // /api/v1/checkout mount so /checkout/public is not shadowed by the authed router.
 app.use('/api/v1/checkout/public', checkoutPublicRoutes);
+
+// Public opt-in lead intake — unauthenticated by necessity (the visitor is not
+// a user), defended inside the router (per-IP limiter, origin allow-list,
+// honeypot, bounded fields). Mounted before the /api limiter, like the
+// checkout intake, so a burst of leads is throttled by the router's own rule.
+app.use('/api/v1/optin/public', optinPublicRoutes);
 
 // Public funnel pages — unauthenticated, gated by FUNNEL_PUBLIC_ENABLED at
 // request time inside the router (before API routes, outside auth).
