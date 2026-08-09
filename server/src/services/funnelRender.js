@@ -469,7 +469,11 @@ function renderBlockInner(block) {
     }
     case 'countdown':
       return (
-        `<div class='lb-countdown' data-deadline='${esc(p.deadline || '')}'>` +
+        // TRIMMED at emission: V8's Date.parse rejects padded ISO strings, so a
+        // stored deadline with stray whitespace (legacy free-text field, AI ops)
+        // would leave the clock permanently dead. Trimming here revives every
+        // such page without a data migration; the runtime stays byte-identical.
+        `<div class='lb-countdown' data-deadline='${esc(String(p.deadline || '').trim())}'>` +
         `<span class='lb-countdown-label' data-el='label'>${esc(p.label || 'Offer ends in')}</span>` +
         `<span class='lb-countdown-clock' data-el='clock'>—</span></div>`
       );

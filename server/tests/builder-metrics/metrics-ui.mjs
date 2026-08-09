@@ -21,6 +21,12 @@ const q = (text, params = []) => sql.unsafe(text, params);
 const { getFunnelLive, getFunnelsOverviewBatch, getFunnelOverview } = await import(
   '../../src/services/funnelAnalytics.js'
 );
+// The service buckets "today" and windows at REPORT-TZ midnight (Madrid — see
+// reportTz.js), NOT UTC midnight. Fixtures must anchor to the same midnight or
+// they land on the wrong report day between 22:00 and 24:00 UTC every day.
+const { REPORT_TZ, reportDayKey } = await import('../../src/services/reportTz.js');
+// SQL fragment: report-tz midnight of the current report day, as timestamptz.
+const MID = `(date_trunc('day', NOW() AT TIME ZONE '${REPORT_TZ}') AT TIME ZONE '${REPORT_TZ}')`;
 
 let pass = 0;
 let fail = 0;
@@ -111,32 +117,33 @@ const touch = (vid, tsSql, page = 'pg_bm_lp') =>
   );
 
 // 2 vids inside the 5-minute window (one of them touches twice — distinct
-// count must not double it).
-await touch('v_live_1', `NOW() - INTERVAL '1 minute'`);
-await touch('v_live_1', `NOW() - INTERVAL '2 minutes'`, 'pg_bm_co');
-await touch('v_live_2', `NOW() - INTERVAL '3 minutes'`);
-// 3 more vids earlier today — placed 5 minutes AFTER UTC midnight so the
+// count must not double it). GREATEST pins each touch inside TODAY even when
+// NOW() - Xmin would cross report-tz midnight: the clamped instant is still
+// within the last 5 minutes (X + 30s < 5min) AND on today's report day.
+await touch('v_live_1', `GREATEST(NOW() - INTERVAL '1 minute', ${MID} + INTERVAL '10 seconds')`);
+await touch('v_live_1', `GREATEST(NOW() - INTERVAL '2 minutes', ${MID} + INTERVAL '20 seconds')`, 'pg_bm_co');
+await touch('v_live_2', `GREATEST(NOW() - INTERVAL '3 minutes', ${MID} + INTERVAL '30 seconds')`);
+// 3 more vids earlier today — placed 5 minutes AFTER report-tz midnight so the
 // fixture is valid at any wall-clock time of day, and always outside the
 // 5-minute live window unless we are within 10 min of midnight (in which case
 // they'd legitimately also be live; the offset keeps the two windows disjoint
-// whenever NOW() - 5min > midnight + 5min, i.e. any time after 00:10 UTC).
+// whenever NOW() - 5min > midnight + 5min, i.e. any time after 00:10 report-tz).
 const [{ safe_today: safeToday }] = await q(
-  `SELECT (NOW() - (date_trunc('day', NOW() AT TIME ZONE 'utc') AT TIME ZONE 'utc')
-           > INTERVAL '10 minutes') AS safe_today`
+  `SELECT (NOW() - ${MID} > INTERVAL '10 minutes') AS safe_today`
 );
-await touch('v_today_1', `date_trunc('day', NOW() AT TIME ZONE 'utc') AT TIME ZONE 'utc' + INTERVAL '5 minutes'`);
-await touch('v_today_2', `date_trunc('day', NOW() AT TIME ZONE 'utc') AT TIME ZONE 'utc' + INTERVAL '5 minutes'`);
-await touch('v_today_3', `date_trunc('day', NOW() AT TIME ZONE 'utc') AT TIME ZONE 'utc' + INTERVAL '6 minutes'`);
+await touch('v_today_1', `${MID} + INTERVAL '5 minutes'`);
+await touch('v_today_2', `${MID} + INTERVAL '5 minutes'`);
+await touch('v_today_3', `${MID} + INTERVAL '6 minutes'`);
 // 3 vids yesterday — must count in NEITHER figure.
-await touch('v_yest_1', `date_trunc('day', NOW() AT TIME ZONE 'utc') AT TIME ZONE 'utc' - INTERVAL '10 hours'`);
-await touch('v_yest_2', `date_trunc('day', NOW() AT TIME ZONE 'utc') AT TIME ZONE 'utc' - INTERVAL '11 hours'`);
-await touch('v_yest_3', `date_trunc('day', NOW() AT TIME ZONE 'utc') AT TIME ZONE 'utc' - INTERVAL '12 hours'`);
+await touch('v_yest_1', `${MID} - INTERVAL '10 hours'`);
+await touch('v_yest_2', `${MID} - INTERVAL '11 hours'`);
+await touch('v_yest_3', `${MID} - INTERVAL '12 hours'`);
 
 {
   const live = await getFunnelLive({ funnelId: F1 }, { query: q });
   if (safeToday) {
     check('T1 live = 2 (distinct vids, last 5 min)', live.live === 2, JSON.stringify(live));
-    check('T1 unique_today = 5 (distinct vids since UTC midnight)', live.unique_today === 5, JSON.stringify(live));
+    check('T1 unique_today = 5 (distinct vids since report-tz midnight)', live.unique_today === 5, JSON.stringify(live));
   } else {
     // Within 10 min of UTC midnight the "earlier today" rows overlap the live
     // window by construction — assert the invariant that must still hold.
@@ -193,8 +200,10 @@ const mk = (id, { status, total, vid, paidSql, createdSql, refunds = [] }) =>
     [id, F1, status, total, vid, refunds]
   );
 
-await mk('cs_bm_1', { status: 'paid', total: 100, vid: 'v_today_1', paidSql: `NOW() - INTERVAL '30 minutes'`, createdSql: `NOW() - INTERVAL '40 minutes'` });
-await mk('cs_bm_2', { status: 'paid', total: 200, vid: 'v_today_2', paidSql: `NOW() - INTERVAL '20 minutes'`, createdSql: `NOW() - INTERVAL '25 minutes'` });
+// GREATEST clamps keep every money row inside TODAY (report-tz) even when the
+// suite runs within minutes of report-tz midnight.
+await mk('cs_bm_1', { status: 'paid', total: 100, vid: 'v_today_1', paidSql: `GREATEST(NOW() - INTERVAL '30 minutes', ${MID} + INTERVAL '1 minute')`, createdSql: `GREATEST(NOW() - INTERVAL '40 minutes', ${MID} + INTERVAL '50 seconds')` });
+await mk('cs_bm_2', { status: 'paid', total: 200, vid: 'v_today_2', paidSql: `GREATEST(NOW() - INTERVAL '20 minutes', ${MID} + INTERVAL '2 minutes')`, createdSql: `GREATEST(NOW() - INTERVAL '25 minutes', ${MID} + INTERVAL '110 seconds')` });
 await q(
   `INSERT INTO co_upsell_charges (id, session_id, offer_id, charge_id, amount, status)
    VALUES ('uc_bm_1', 'cs_bm_2', 'off_1', 'v:1', 50, 'settled')`
@@ -205,24 +214,24 @@ await q(
     status: 'refunded',
     total: 80,
     vid: 'v_today_3',
-    paidSql: `NOW() - INTERVAL '15 minutes'`,
-    createdSql: `NOW() - INTERVAL '18 minutes'`,
+    paidSql: `GREATEST(NOW() - INTERVAL '15 minutes', ${MID} + INTERVAL '3 minutes')`,
+    createdSql: `GREATEST(NOW() - INTERVAL '18 minutes', ${MID} + INTERVAL '170 seconds')`,
     refunds: [{ id: 're_bm_1', amount: 80, at: iso }],
   });
 }
-await mk('cs_bm_4', { status: 'processing', total: 999, vid: 'v_today_1', paidSql: 'NULL', createdSql: `NOW() - INTERVAL '10 minutes'` });
+await mk('cs_bm_4', { status: 'processing', total: 999, vid: 'v_today_1', paidSql: 'NULL', createdSql: `GREATEST(NOW() - INTERVAL '10 minutes', ${MID} + INTERVAL '4 minutes')` });
 
 // F2 gets traffic only (2 vids today, no money rows).
 await q(
   `INSERT INTO lb_touches (vid, funnel_id, page_id, ts, expires_at) VALUES
-   ('v_b1', $1, 'pg_x', NOW() - INTERVAL '1 hour', NOW() + INTERVAL '90 days'),
-   ('v_b2', $1, 'pg_x', NOW() - INTERVAL '2 hours', NOW() + INTERVAL '90 days')`,
+   ('v_b1', $1, 'pg_x', GREATEST(NOW() - INTERVAL '1 hour', ${MID} + INTERVAL '7 minutes'), NOW() + INTERVAL '90 days'),
+   ('v_b2', $1, 'pg_x', GREATEST(NOW() - INTERVAL '2 hours', ${MID} + INTERVAL '8 minutes'), NOW() + INTERVAL '90 days')`,
   [F2]
 );
 // F3 (ARCHIVED) gets rows that must NOT surface anywhere.
 await q(
   `INSERT INTO lb_touches (vid, funnel_id, page_id, ts, expires_at) VALUES
-   ('v_arch', $1, 'pg_y', NOW() - INTERVAL '1 hour', NOW() + INTERVAL '90 days')`,
+   ('v_arch', $1, 'pg_y', GREATEST(NOW() - INTERVAL '1 hour', ${MID} + INTERVAL '9 minutes'), NOW() + INTERVAL '90 days')`,
   [F3]
 );
 
@@ -231,7 +240,7 @@ await q(
 await q(`ANALYZE lb_touches`);
 await q(`ANALYZE co_sessions`);
 
-const [{ today }] = await q(`SELECT to_char(NOW() AT TIME ZONE 'utc', 'YYYY-MM-DD') AS today`);
+const today = reportDayKey(); // the service interprets window days in REPORT_TZ
 const win = { from: today, to: today };
 
 {
@@ -333,7 +342,8 @@ const win = { from: today, to: today };
 await q(
   `INSERT INTO co_sessions (id, funnel_id, page_id, status, total, vid, refunds, paid_at, created_at)
    VALUES ('cs_bm_np', $1, NULL, 'paid', 40, NULL, $2,
-           NOW() - INTERVAL '5 minutes', NOW() - INTERVAL '6 minutes')`,
+           GREATEST(NOW() - INTERVAL '5 minutes', ${MID} + INTERVAL '5 minutes'),
+           GREATEST(NOW() - INTERVAL '6 minutes', ${MID} + INTERVAL '290 seconds'))`,
   [F1, []]
 );
 {
@@ -376,9 +386,9 @@ await q(
 await q(
   `INSERT INTO co_sessions (id, funnel_id, page_id, status, total, vid, refunds, paid_at, created_at)
    VALUES
-   ('cs_bm_b1', $1, 'pg_x', 'paid', 10, 'v_b1', $2, NOW() - INTERVAL '5 minutes', NOW() - INTERVAL '6 minutes'),
-   ('cs_bm_b2', $1, 'pg_x', 'paid', 20, 'v_b2', $2, NOW() - INTERVAL '5 minutes', NOW() - INTERVAL '6 minutes'),
-   ('cs_bm_b3', $1, 'pg_x', 'paid', 30, 'v_b3', $3, NOW() - INTERVAL '5 minutes', NOW() - INTERVAL '6 minutes')`,
+   ('cs_bm_b1', $1, 'pg_x', 'paid', 10, 'v_b1', $2, GREATEST(NOW() - INTERVAL '5 minutes', ${MID} + INTERVAL '5 minutes'), GREATEST(NOW() - INTERVAL '6 minutes', ${MID} + INTERVAL '290 seconds')),
+   ('cs_bm_b2', $1, 'pg_x', 'paid', 20, 'v_b2', $2, GREATEST(NOW() - INTERVAL '5 minutes', ${MID} + INTERVAL '5 minutes'), GREATEST(NOW() - INTERVAL '6 minutes', ${MID} + INTERVAL '290 seconds')),
+   ('cs_bm_b3', $1, 'pg_x', 'paid', 30, 'v_b3', $3, GREATEST(NOW() - INTERVAL '5 minutes', ${MID} + INTERVAL '5 minutes'), GREATEST(NOW() - INTERVAL '6 minutes', ${MID} + INTERVAL '290 seconds'))`,
   [F2, [], 'corrupt-not-an-array']
 );
 {
@@ -414,7 +424,8 @@ await q(
 await q(
   `INSERT INTO co_sessions (id, funnel_id, page_id, status, total, vid, refunds, paid_at, created_at)
    VALUES ('cs_bm_ub', $1, 'pg_bm_co', 'paid', 60, NULL, $2,
-           NOW() - INTERVAL '4 minutes', NOW() - INTERVAL '5 minutes')`,
+           GREATEST(NOW() - INTERVAL '4 minutes', ${MID} + INTERVAL '6 minutes'),
+           GREATEST(NOW() - INTERVAL '5 minutes', ${MID} + INTERVAL '350 seconds'))`,
   [F1, []]
 );
 await q(

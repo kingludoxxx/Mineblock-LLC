@@ -339,14 +339,13 @@ export default function ShippingSection({ funnel, onFunnelUpdated }) {
 
       <SettingsCard
         title="Checkout countries"
-        description="The country list this funnel is configured with. Saved on the funnel today — the checkout does not consult it yet."
+        description="Which countries this funnel sells to. Enforced at checkout: the buyer's address is refused at the form, and a session naming an excluded country never reaches the payment gateway."
       >
-        <div className="flex items-start gap-2 rounded-lg border border-amber-500/25 bg-amber-500/10 px-3 py-2.5">
-          <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5 text-amber-400" />
-          <p className="text-xs text-amber-400 leading-relaxed">
-            <span className="font-semibold">Configuration only, not yet enforced.</span> Saving this list
-            records your choice on the funnel. The public checkout still accepts every country until the
-            checkout gate ships — do not rely on this to block a market.
+        <div className="flex items-start gap-2 rounded-lg border border-border-default bg-bg-elevated px-3 py-2.5">
+          <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5 text-text-muted" />
+          <p className="text-xs text-text-muted leading-relaxed">
+            Enforcement is by the address form&apos;s country selection. Turning the restriction on with an
+            empty list applies no restriction (a funnel that sells to nobody is never the intent).
           </p>
         </div>
 

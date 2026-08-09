@@ -7,9 +7,12 @@
 // the existing Save / Re-publish. There is no pgQuery UPDATE/INSERT anywhere
 // in this file, by design; keep it that way.
 //
-// POST /api/v1/ai-developer/chat   → SSE stream: text deltas, job events,
-//                                    final {reply, ops, jobs}
-// GET  /api/v1/ai-developer/jobs/:id → proxied Higgsfield job status
+// POST   /api/v1/ai-developer/chat   → SSE stream: text deltas, job events,
+//                                      final {reply, ops, jobs}
+// GET    /api/v1/ai-developer/chat   → the persisted thread for a page
+// DELETE /api/v1/ai-developer/chat   → clear that thread
+// GET    /api/v1/ai-developer/models → the server's model allowlist
+// GET    /api/v1/ai-developer/jobs/:id → proxied Higgsfield job status
 import { randomBytes, createHmac, timingSafeEqual } from 'crypto';
 import { Router } from 'express';
 import env from '../config/env.js';
@@ -19,19 +22,46 @@ import { requirePermission } from '../middleware/rbac.js';
 import { checkRateLimit } from '../middleware/rateLimiter.js';
 import { validateBlocks } from './funnels.js';
 import { createImageJob, createVideoJob, getJob, isAllowedAssetUrl } from '../services/higgsfield.js';
+import {
+  THREAD_LIMIT, appendThread, clearThread, ensureAiDevChatTables, openThreadEpoch, readThread,
+} from '../services/aiDeveloperSchema.js';
 
 const router = Router();
 router.use(authenticate, requirePermission('funnels', 'access'));
 
 // ---------------------------------------------------------------------------
+// Model allowlist
+// ---------------------------------------------------------------------------
+// The SERVER owns this list. It is exposed read-only via GET /models so the
+// picker in the panel is populated from it rather than from a hardcoded client
+// copy that can drift — but the enforcement is the check in validateChatBody,
+// NOT the dropdown. A body naming any other model is a 400, whatever the UI
+// offered. Labels ride along so the panel has nothing to invent.
+export const MODELS = Object.freeze([
+  Object.freeze({ id: 'claude-fable-5', label: 'Fable 5 · frontier' }),
+  Object.freeze({ id: 'claude-opus-5', label: 'Opus 5' }),
+  Object.freeze({ id: 'claude-sonnet-5', label: 'Sonnet 5' }),
+]);
+export const MODEL_ALLOWLIST = Object.freeze(MODELS.map((m) => m.id));
+export const DEFAULT_MODEL = 'claude-fable-5';
+
+// ---------------------------------------------------------------------------
 // Limits
 // ---------------------------------------------------------------------------
-const MODEL_ALLOWLIST = ['claude-fable-5', 'claude-opus-5', 'claude-sonnet-5'];
-const DEFAULT_MODEL = 'claude-fable-5';
 const MAX_MESSAGES = 40; // conversation length cap (client trims too)
 const MAX_TEXT_CHARS = 20_000; // per message text
-const MAX_IMAGES = 5; // per request
-const MAX_IMAGE_BYTES = 2 * 1024 * 1024; // decoded bytes per image
+// Screenshot caps, matched to the reference tool: 2 per message, 4MB DECODED
+// each. Per-image ceiling is UP from 2MB, per-message count is DOWN from 5.
+//
+// The cap is on DECODED bytes, so the worst-case DECODED image payload is 8MB
+// (2 x 4MB) — down from the previous 10MB (5 x 2MB). The worst-case REQUEST is
+// larger than that and always was: base64 inflates by 4/3, so 8MB decoded is
+// ~10.7MB on the wire, and the body as a whole is bounded by the app's 50mb
+// express limit, not by this constant. An earlier version of this comment
+// claimed the accepted payload "falls from 10MB to 8MB" full stop, which
+// conflated decoded bytes with request bytes.
+export const MAX_IMAGES = 2;
+export const MAX_IMAGE_BYTES = 4 * 1024 * 1024; // decoded bytes per image
 const MAX_TOOL_ROUNDS = 6;
 const MAX_OPS_PER_CALL = 20;
 const CHAT_LIMIT = parseInt(process.env.AI_DEV_CHAT_LIMIT, 10) || 20; // requests…
@@ -125,6 +155,66 @@ function scanHtmlProps(props) {
 
 const htmlRejection = (i, detail) =>
   `ops[${i}]: raw script/event-handler/javascript: content is not allowed (${detail}); re-emit the op without it — no <script>/<iframe>/<object>/<embed>/<base>/<form> tags, no on*= attributes, no javascript: or data:text/html URLs`;
+
+// ---------------------------------------------------------------------------
+// Image content-type SNIFF.
+//
+// A pasted screenshot arrives as `data:<media_type>;base64,…`, and the
+// media_type is whatever the CLIENT said it is. That string is forwarded to
+// Anthropic as the image block's media_type, so a mismatch is not cosmetic: a
+// caller could label an arbitrary blob `image/png` and have the server relay it
+// as an image. The declared type is therefore CHECKED AGAINST THE BYTES, and
+// anything whose magic number is not a supported image is refused before any
+// network call.
+//
+// Only the first bytes are decoded — the whole payload is never materialised
+// just to look at its header.
+export const ALLOWED_MEDIA_TYPES = Object.freeze(['image/png', 'image/jpeg', 'image/webp', 'image/gif']);
+
+const MAGIC = [
+  { type: 'image/png', bytes: [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a] },
+  { type: 'image/jpeg', bytes: [0xff, 0xd8, 0xff] },
+  { type: 'image/gif', bytes: [0x47, 0x49, 0x46, 0x38] }, // GIF87a / GIF89a
+];
+
+/**
+ * @param {Buffer} buf — at least the first 16 bytes of the decoded image
+ * @returns {string|null} the sniffed media type, or null when unrecognised
+ */
+export function sniffImageType(buf) {
+  if (!Buffer.isBuffer(buf) || buf.length < 4) return null;
+  for (const { type, bytes } of MAGIC) {
+    if (buf.length < bytes.length) continue;
+    let hit = true;
+    for (let i = 0; i < bytes.length; i++) {
+      if (buf[i] !== bytes[i]) { hit = false; break; }
+    }
+    if (hit) return type;
+  }
+  // WEBP is a RIFF container: "RIFF" <4-byte size> "WEBP". Both markers must be
+  // present — "RIFF" alone is also WAV/AVI and is NOT an image.
+  if (buf.length >= 12
+    && buf.toString('latin1', 0, 4) === 'RIFF'
+    && buf.toString('latin1', 8, 12) === 'WEBP') return 'image/webp';
+  return null;
+}
+
+/**
+ * Decode just enough of a base64 payload to sniff it. `head` must be a multiple
+ * of 4 base64 chars so the decode lands on a byte boundary.
+ * @param {string} b64 — whitespace already stripped
+ */
+export function sniffBase64Image(b64) {
+  if (typeof b64 !== 'string' || b64.length < 8) return null;
+  const head = b64.slice(0, 32); // 32 base64 chars → 24 bytes
+  let buf;
+  try {
+    buf = Buffer.from(head, 'base64');
+  } catch {
+    return null;
+  }
+  return sniffImageType(buf);
+}
 
 // ---------------------------------------------------------------------------
 // Job → user binding (review MINOR #2). Stateless: an HMAC-SHA256 tag over
@@ -332,7 +422,7 @@ function buildSystemPrompt({ page, funnel, blocks, attachment }) {
   if (brandJson.length > 4000) brandJson = '{}';
 
   const attachmentLine = attachment
-    ? `The operator has ATTACHED a specific block as the target: block_id "${attachment.block_id}" (type "${attachment.block_type || 'unknown'}"). Unless they clearly ask about something else, scope your edits to this block.`
+    ? `The operator has ATTACHED a specific block as the target: block_id "${attachment.block_id}" (type "${attachment.block_type || 'unknown'}"${attachment.excerpt ? `, currently reading ${JSON.stringify(attachment.excerpt)}` : ''}). Unless they clearly ask about something else, scope your edits to this block.`
     : 'No block is attached — the whole page is in scope.';
 
   return `You are the AI Developer inside a funnel page builder. You edit the CURRENT page's blocks on the operator's instruction by calling tools. You never output raw block JSON in prose — all edits go through the propose_block_edits tool.
@@ -368,14 +458,18 @@ OUTPUT CONTRACT (strict):
 // ---------------------------------------------------------------------------
 // Request validation helpers
 // ---------------------------------------------------------------------------
-function validateChatBody(body) {
+export function validateChatBody(body) {
   if (!isPlainObject(body)) return { error: 'body must be an object' };
   const pageId = typeof body.page_id === 'string' ? body.page_id : '';
   const funnelId = typeof body.funnel_id === 'string' ? body.funnel_id : '';
   if (!pageId || !funnelId) return { error: 'page_id and funnel_id are required' };
 
-  const model = body.model === undefined ? DEFAULT_MODEL : String(body.model);
-  if (!MODEL_ALLOWLIST.includes(model)) {
+  // The allowlist check must run on a STRING, never on String(anything).
+  // `String(['claude-fable-5'])` is 'claude-fable-5', and so is the output of
+  // an object with a hand-written toString — coercing first would let either
+  // one satisfy `includes()` and pick a model the caller never legally named.
+  const model = body.model === undefined ? DEFAULT_MODEL : body.model;
+  if (typeof model !== 'string' || !MODEL_ALLOWLIST.includes(model)) {
     return { error: `model must be one of: ${MODEL_ALLOWLIST.join(', ')}` };
   }
 
@@ -394,6 +488,15 @@ function validateChatBody(body) {
     if (m.content.length > MAX_TEXT_CHARS) {
       return { error: `messages[${i}] exceeds ${MAX_TEXT_CHARS} characters` };
     }
+    // A whitespace-only USER turn is refused. Anthropic rejects an empty text
+    // block outright, so this would have burned a request to earn a 400 from
+    // the vendor — and, worse, an empty turn that DID get through would be
+    // persisted, leaving a blank bubble in the thread forever. Assistant turns
+    // are deliberately NOT held to this: a rehydrated thread that happens to
+    // carry an empty reply must not wedge the panel out of sending anything.
+    if (m.role === 'user' && !m.content.trim()) {
+      return { error: `messages[${i}] is empty — say what you want changed` };
+    }
     messages.push({ role: m.role, content: m.content });
   }
   if (messages[messages.length - 1].role !== 'user') {
@@ -409,15 +512,53 @@ function validateChatBody(body) {
       const img = body.images[i];
       const str = typeof img === 'string' ? img : (isPlainObject(img) ? String(img.data || '') : '');
       const mtMatch = /^data:(image\/(?:png|jpeg|webp|gif));base64,(.+)$/.exec(str);
-      const mediaType = mtMatch ? mtMatch[1] : (isPlainObject(img) && typeof img.media_type === 'string' ? img.media_type : 'image/png');
+      // DECLARED is null when the caller said nothing about the type — bare
+      // base64 with no data: prefix and no media_type field. That is NOT the
+      // same as declaring image/png, which is what the previous default made it:
+      // a bare JPEG was refused as "declared image/png but its bytes are
+      // image/jpeg", blaming the caller for a claim the SERVER invented.
+      const declared = mtMatch
+        ? mtMatch[1]
+        : (isPlainObject(img) && typeof img.media_type === 'string' ? img.media_type : null);
       const b64 = mtMatch ? mtMatch[2] : str;
-      if (!b64 || !/^[A-Za-z0-9+/=\r\n]+$/.test(b64)) return { error: `images[${i}] must be base64 (or a data: URL)` };
-      if (!['image/png', 'image/jpeg', 'image/webp', 'image/gif'].includes(mediaType)) {
+      if (!b64) return { error: `images[${i}] must be base64 (or a data: URL)` };
+
+      // Strip the line breaks a MIME-wrapped payload legally carries, THEN
+      // validate the charset. '=' is base64 PADDING: it is legal only as the
+      // last one or two characters. Admitting it anywhere (the old
+      // `[A-Za-z0-9+/=\r\n]+`) is what let the size check be defeated below.
+      const clean = b64.replace(/[\r\n]/g, '');
+      if (!/^[A-Za-z0-9+/]+={0,2}$/.test(clean)) {
+        return { error: `images[${i}] must be base64 (or a data: URL)` };
+      }
+
+      // SIZE. Measured by DECODING, not by arithmetic on the string length.
+      //
+      // The arithmetic form this replaces stripped '=' GLOBALLY before
+      // measuring — `(clean.replace(/=/g,'').length * 3) / 4`. Combined with a
+      // charset check that admitted '=' anywhere, a 32-char PNG header followed
+      // by 20 million '=' characters measured as 24 BYTES and sailed past the
+      // 4MB cap, relaying ~21MB of payload to Anthropic (reproduced end to end;
+      // the only real ceiling was the app's 50mb express limit). The trailing-
+      // padding charset fix above kills that input, and byteLength makes the
+      // measurement independent of the charset check rather than dependent on
+      // it — two independent defenses, not one.
+      const bytes = Buffer.byteLength(clean, 'base64');
+      if (bytes > MAX_IMAGE_BYTES) return { error: `images[${i}] exceeds 4MB` };
+
+      // The declared type is a CLIENT claim. Check it against the magic number
+      // and refuse a mismatch — the media_type is relayed to Anthropic, so a
+      // blob labelled image/png must actually be a PNG. When nothing was
+      // declared, ADOPT what the bytes say.
+      const sniffed = sniffBase64Image(clean);
+      if (!sniffed) return { error: `images[${i}] is not a recognized image (png, jpeg, webp or gif)` };
+      if (declared !== null && !ALLOWED_MEDIA_TYPES.includes(declared)) {
         return { error: `images[${i}] has an unsupported media type` };
       }
-      const bytes = Math.floor((b64.replace(/[\r\n=]/g, '').length * 3) / 4);
-      if (bytes > MAX_IMAGE_BYTES) return { error: `images[${i}] exceeds 2MB` };
-      images.push({ media_type: mediaType, data: b64.replace(/[\r\n]/g, '') });
+      if (declared !== null && sniffed !== declared) {
+        return { error: `images[${i}] is declared ${declared} but its bytes are ${sniffed}` };
+      }
+      images.push({ media_type: sniffed, data: clean });
     }
   }
 
@@ -447,6 +588,104 @@ function validateChatBody(body) {
 
   return { pageId, funnelId, model, messages, images, attachment, draftBlocks };
 }
+
+// ---------------------------------------------------------------------------
+// Attached-context resolution
+// ---------------------------------------------------------------------------
+// The chip in the panel must describe the block the conversation is ACTUALLY
+// anchored to, not the label the client happened to send. Given the page's real
+// blocks, the target's type and a short content excerpt are read off the BLOCK,
+// so a stale or spoofed `kind` cannot make the chip lie about what is in scope.
+const EXCERPT_PROPS = ['headline', 'title', 'text', 'label', 'block_name', 'subheadline', 'body'];
+const EXCERPT_MAX = 60;
+
+export function resolveAttachment(attachment, blocks) {
+  if (!isPlainObject(attachment) || !attachment.block_id) return null;
+  const blk = (Array.isArray(blocks) ? blocks : []).find((b) => isPlainObject(b) && b.id === attachment.block_id);
+  if (!blk) return null;
+  let excerpt = '';
+  const props = isPlainObject(blk.props) ? blk.props : {};
+  for (const key of EXCERPT_PROPS) {
+    if (typeof props[key] === 'string' && props[key].trim()) {
+      excerpt = props[key].trim().replace(/\s+/g, ' ').slice(0, EXCERPT_MAX);
+      break;
+    }
+  }
+  return {
+    block_id: blk.id,
+    // The BLOCK's type wins over whatever the client called it.
+    block_type: typeof blk.type === 'string' ? blk.type : (attachment.block_type || ''),
+    block_path: attachment.block_path || '',
+    excerpt,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Thread endpoints — page resolution
+// ---------------------------------------------------------------------------
+// Every thread verb resolves (page_id, funnel_id) against a LIVE page first, so
+// a thread can never be read or cleared for a page the caller cannot see, and a
+// guessed page id under the wrong funnel is a 404 rather than an empty thread
+// that reads as "this page has no conversation".
+async function resolvePageOr404(req, res) {
+  const pageId = typeof req.query.page_id === 'string' ? req.query.page_id : '';
+  const funnelId = typeof req.query.funnel_id === 'string' ? req.query.funnel_id : '';
+  if (!pageId || !funnelId) {
+    res.status(400).json({ error: 'page_id and funnel_id are required' });
+    return null;
+  }
+  const rows = await pgQuery(
+    `SELECT id FROM funnel_pages WHERE id = $1 AND funnel_id = $2 AND archived = FALSE`,
+    [pageId, funnelId]
+  );
+  if (!rows.length) {
+    res.status(404).json({ error: 'Page not found' });
+    return null;
+  }
+  return { pageId, funnelId };
+}
+
+// ---------------------------------------------------------------------------
+// GET /models — the server's allowlist, read-only.
+//
+// This is a CONVENIENCE for the picker, never the gate. The gate is
+// validateChatBody: a model the client was never offered is refused there.
+// ---------------------------------------------------------------------------
+router.get('/models', (req, res) => {
+  res.json({ success: true, data: { models: MODELS, default: DEFAULT_MODEL } });
+});
+
+// ---------------------------------------------------------------------------
+// GET /chat — the persisted thread for a page (oldest first, bounded).
+// ---------------------------------------------------------------------------
+router.get('/chat', async (req, res) => {
+  try {
+    const scope = await resolvePageOr404(req, res);
+    if (!scope) return undefined;
+    await ensureAiDevChatTables();
+    const messages = await readThread(scope.pageId, scope.funnelId);
+    return res.json({ success: true, data: { messages, limit: THREAD_LIMIT } });
+  } catch (err) {
+    console.error('[ai-developer] thread read failed:', err?.message || err);
+    return res.status(500).json({ error: 'Failed to load the conversation' });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// DELETE /chat — clear the thread for a page.
+// ---------------------------------------------------------------------------
+router.delete('/chat', async (req, res) => {
+  try {
+    const scope = await resolvePageOr404(req, res);
+    if (!scope) return undefined;
+    await ensureAiDevChatTables();
+    const cleared = await clearThread(scope.pageId, scope.funnelId);
+    return res.json({ success: true, data: { cleared } });
+  } catch (err) {
+    console.error('[ai-developer] thread clear failed:', err?.message || err);
+    return res.status(500).json({ error: 'Failed to clear the conversation' });
+  }
+});
 
 // ---------------------------------------------------------------------------
 // SSE plumbing
@@ -516,11 +755,36 @@ router.post('/chat', async (req, res) => {
         isPlainObject(b) && typeof b.id === 'string' ? b : { id: `blk_srv_${i}`, ...(isPlainObject(b) ? b : {}) }
       );
     }
-    if (attachment && !contextBlocks.some((b) => b.id === attachment.block_id)) {
-      return res.status(400).json({ error: 'attachment.block_id does not reference a block of this page' });
+    // The chip's truth is derived from the page's REAL blocks, not from the
+    // label the client sent. A block_id that is not on this page is refused.
+    let resolvedAttachment = null;
+    if (attachment) {
+      resolvedAttachment = resolveAttachment(attachment, contextBlocks);
+      if (!resolvedAttachment) {
+        return res.status(400).json({ error: 'attachment.block_id does not reference a block of this page' });
+      }
     }
 
-    const system = buildSystemPrompt({ page, funnel, blocks: contextBlocks, attachment });
+    const system = buildSystemPrompt({ page, funnel, blocks: contextBlocks, attachment: resolvedAttachment });
+
+    // OPEN THE THREAD EPOCH *BEFORE* the model runs. This is the value the
+    // persist below is checked against: if the operator clears the conversation
+    // while this turn is streaming, the epoch moves and the persist stands down
+    // rather than repopulating the thread they just emptied. Opening it also
+    // guarantees the row exists, so the persist's FOR UPDATE has a real row to
+    // lock. Best-effort — a turn must not be lost to a bookkeeping failure.
+    // KNOWN DEGRADATION (reviewed, accepted): this open rides pgQuery's circuit
+    // breaker while the persist uses sharedClient directly — during a breaker-
+    // open window turnEpoch is undefined and the clear-beats-in-flight-turn
+    // guard reverts to append-unconditionally (DELETE 500s in that window too,
+    // so the race needs a DB incident + a turn spanning the breaker reset).
+    let turnEpoch;
+    try {
+      await ensureAiDevChatTables();
+      turnEpoch = await openThreadEpoch(pageId, funnelId);
+    } catch (epochErr) {
+      console.error('[ai-developer] thread epoch open failed:', epochErr?.message || epochErr);
+    }
 
     // Anthropic conversation: prior turns as plain text, last user turn gets
     // the pasted screenshots as vision blocks.
@@ -624,7 +888,38 @@ router.post('/chat', async (req, res) => {
     }
     if (!reply) reply = allOps.length ? 'Done — the draft on the canvas reflects the changes.' : 'I wasn\'t able to produce a change for that — try rephrasing.';
 
-    sseSend(res, 'done', { reply, ops: allOps, jobs, stop_reason: stopReason });
+    // PERSIST the turn: the operator's message and Claude's reply, appended to
+    // this page's rolling thread and pruned back to THREAD_LIMIT.
+    //
+    // GUARDED BY turnEpoch — if the operator cleared the conversation while this
+    // was streaming, the epoch has moved and appendThread writes NOTHING. A
+    // clear must win over a turn already in flight; the previous version
+    // repopulated the thread the operator had just emptied.
+    //
+    // BEST-EFFORT, and after the answer is computed — the transcript is a
+    // convenience, and a database blip must never cost the operator a turn they
+    // already paid for. A failure is logged and the `done` frame still ships.
+    //
+    // ⛔ Image BYTES are not written. Only how many rode along.
+    try {
+      await ensureAiDevChatTables();
+      await appendThread(pageId, funnelId, [
+        {
+          role: 'user',
+          content: messages[messages.length - 1].content,
+          image_count: images.length,
+          attachment: resolvedAttachment,
+          model,
+        },
+        { role: 'assistant', content: reply, ops_count: allOps.length, model },
+      ], { createdBy: req.user?.id || null, expectEpoch: turnEpoch });
+    } catch (persistErr) {
+      console.error('[ai-developer] thread persist failed:', persistErr?.message || persistErr);
+    }
+
+    sseSend(res, 'done', {
+      reply, ops: allOps, jobs, stop_reason: stopReason, attachment: resolvedAttachment,
+    });
     res.end();
   } catch (err) {
     console.error('[ai-developer] chat failed:', err?.message || err);

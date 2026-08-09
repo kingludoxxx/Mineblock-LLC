@@ -33,8 +33,9 @@ const {
   CostError, resolveCosts, buildRateIndex, resolveUnitCogs, resolveUnitShip,
   resolveFeeRate, resolveEffectiveFrom, appendRate, listRates, rateHistory,
   runDetectSweep, coverageSummary, listVariants, listByFunnel, patchVariant,
-  getFeeSettings, updateFeeSettings, pnlOverview, pnlFunnel, dayKey, daysAgo,
+  getFeeSettings, updateFeeSettings, pnlOverview, pnlFunnel, dayKey,
 } = await import('../../src/services/funnelCosts.js');
+const { reportDaysAgo, reportDayStartIso } = await import('../../src/services/reportTz.js');
 const { ensureFunnelCostsTables } = await import('../../src/services/funnelCostsSchema.js');
 const { ensureCheckoutTables } = await import('../../src/services/checkoutSchema.js');
 const { ensureTrackingTables } = await import('../../src/services/trackingSchema.js');
@@ -43,7 +44,11 @@ await ensureCheckoutTables();
 await ensureTrackingTables(); // lb_clicks — the P&L spend read joins it
 
 const TODAY = dayKey();
-const D = (n) => daysAgo(n); // n days ago as day key
+// n days ago as a REPORT-TZ day key — the same calendar the engine buckets in.
+// (funnelCosts.daysAgo slices UTC, which disagrees with dayKey 22:00-24:00 UTC.)
+const D = (n) => reportDaysAgo(n);
+// An instant safely inside report-day D(n): 10h after report-tz midnight.
+const T = (n) => new Date(Date.parse(reportDayStartIso(D(n))) + 10 * 3600e3).toISOString();
 const V1 = '111111111111';   // main product variant
 const V2 = '222222222222';   // upsell variant
 const V3 = '333333333333';   // never-costed variant
@@ -277,8 +282,8 @@ const mkSession = (over = {}) => ({
   const mk = (id, fid, paidDaysAgo, lines, total) => sql`
     INSERT INTO co_sessions (id, funnel_id, status, line_items, total, currency, paid_at, created_at)
     VALUES (${id}, ${fid}, 'paid', ${sql.json(lines)}, ${total}, 'USD',
-            ${new Date(Date.now() - paidDaysAgo * 86400000).toISOString()},
-            ${new Date(Date.now() - paidDaysAgo * 86400000).toISOString()})`;
+            ${T(paidDaysAgo)},
+            ${T(paidDaysAgo)})`;
   await mk('s_e1', 'f1', 2, [{ variant_id: V1, quantity: 2, price: 50, product_title: 'Cream', variant_title: '2 Pack' }], 100);
   await mk('s_e2', 'f1', 5, [{ variant_id: V1, quantity: 2, price: 50, product_title: 'Cream' }], 100);
   await mk('s_e3', 'f2', 3, [{ variant_id: V1, quantity: 1, price: 60 }], 60);
@@ -287,7 +292,7 @@ const mkSession = (over = {}) => ({
   await sql`INSERT INTO co_upsell_charges (id, session_id, offer_id, charge_id, amount, status, line_items, created_at)
             VALUES ('ux_e1', 's_e3', 'up1', ${'v:' + V2}, 40, 'settled',
                     ${sql.json([{ variant_id: V2, quantity: 1, unit_price: 40, title: 'Upsell' }])},
-                    ${new Date(Date.now() - 3 * 86400000).toISOString()})`;
+                    ${T(3)})`;
   // a DECLINE marker must not become catalog revenue
   await sql`INSERT INTO co_upsell_charges (id, session_id, offer_id, charge_id, amount, status, line_items, created_at)
             VALUES ('ux_e2', 's_e1', 'up1', 'decline', 0, 'declined', '[]', NOW())`;
@@ -299,7 +304,7 @@ const mkSession = (over = {}) => ({
   ok(rep.variants === 3 && rep.inserted === 3, `T11 sweep found exactly the 3 SOLD variants (${rep.variants})`);
   const [v1] = await sql`SELECT * FROM lb_variant_costs WHERE variant_id = ${V1}`;
   ok(Number(v1.revenue_30d) === 260 && v1.units_30d === 5, `T11 V1 30d money: 100+100+60 (60d session excluded) (${v1.revenue_30d}/${v1.units_30d})`);
-  ok(v1.first_sold === dayKey(new Date(Date.now() - 60 * 86400000)), 'T11 first_sold reaches back to the 90d window');
+  ok(v1.first_sold === D(60), 'T11 first_sold reaches back to the 90d window');
   const bf = v1.by_funnel;
   ok(Number(bf.f1.revenue_30d) === 200 && Number(bf.f2.revenue_30d) === 60,
     `T11 by_funnel split credits each funnel ONLY its own sessions (${JSON.stringify(bf)})`);
@@ -421,16 +426,16 @@ const mkSession = (over = {}) => ({
   // ago. A refunded upsell settles 3 days ago.
   await sql`INSERT INTO co_sessions (id, funnel_id, status, line_items, total, paid_at, created_at)
             VALUES ('s_m4', 'f_m4', 'paid', ${sql.json([{ variant_id: V1, quantity: 1, price: 100 }])}, 100,
-                    ${new Date(Date.now() - 40 * 86400000).toISOString()},
-                    ${new Date(Date.now() - 40 * 86400000).toISOString()})`;
+                    ${T(40)},
+                    ${T(40)})`;
   await sql`INSERT INTO co_upsell_charges (id, session_id, offer_id, charge_id, amount, status, line_items, created_at)
             VALUES ('ux_m4', 's_m4', 'upA', ${'v:' + V2}, 50, 'settled',
                     ${sql.json([{ variant_id: V2, quantity: 1, unit_price: 50 }])},
-                    ${new Date(Date.now() - 2 * 86400000).toISOString()})`;
+                    ${T(2)})`;
   await sql`INSERT INTO co_upsell_charges (id, session_id, offer_id, charge_id, amount, status, line_items, created_at)
             VALUES ('ux_m4r', 's_m4', 'upB', ${'v:' + V2}, 25, 'refunded',
                     ${sql.json([{ variant_id: V2, quantity: 1, unit_price: 25 }])},
-                    ${new Date(Date.now() - 3 * 86400000).toISOString()})`;
+                    ${T(3)})`;
 
   // Recent window: the upsells land HERE (their own settle days), the parent
   // order does NOT — revenue clock == spend clock (M4).

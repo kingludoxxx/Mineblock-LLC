@@ -29,6 +29,45 @@ import { validateDiscountCode } from '../services/checkoutDiscount.js';
 import { isValidVid } from '../services/trackingClicks.js';
 import { fireKlaviyoLeadEvent } from '../services/klaviyoEvents.js';
 import { recordExposure } from '../services/splitCredits.js';
+import { readCommerceSettings, isValidCountryCode } from '../services/checkoutCountries.js';
+
+// ── Checkout-countries gate (Settings → Commerce → Shipping) ────────────────
+// POLICY fails CLOSED: a country the operator excluded never reaches the
+// gateway. INFRASTRUCTURE fails OPEN: if the settings row can't be read, the
+// sale proceeds (the operator's restriction is a preference; a DB blip must
+// not stop revenue). Enforced at BOTH address capture (/session/:id/customer,
+// early buyer feedback) and the Whop mint (the last stop before money).
+//
+// Enforcement is by ISO alpha-2 code — the rendered checkout's country
+// <select> submits codes (funnelRender CKT_COUNTRIES), so our own forms are
+// fully covered. A free-text value that is not a code is NOT blocked: refusing
+// what we cannot identify would false-refuse legitimate buyers.
+export function blockedCountryOf(funnelSettings, customer) {
+  const cfg = readCommerceSettings(funnelSettings);
+  if (!cfg.restrict_countries) return null;
+  const raw = String(
+    customer?.shipping?.country || customer?.billing?.country || ''
+  ).trim().toUpperCase();
+  if (!isValidCountryCode(raw)) return null;
+  return cfg.allowed_countries.includes(raw) ? null : raw;
+}
+
+// Loads the funnel's settings for a session and applies blockedCountryOf.
+// Returns the offending code, or null (allowed / unknown / infra failure).
+async function sessionCountryBlocked(sessionId, customer) {
+  try {
+    const rows = await pgQuery(
+      `SELECT f.settings FROM co_sessions s JOIN funnels f ON f.id = s.funnel_id
+        WHERE s.id = $1`,
+      [sessionId]
+    );
+    if (!rows.length) return null;
+    return blockedCountryOf(rows[0].settings, customer);
+  } catch (err) {
+    console.error('[checkout] country gate read failed (fail-open):', err.message);
+    return null;
+  }
+}
 
 // Write the exposure denominator. Every failure is swallowed: a split outage
 // must never block a mint or an upsell decision (fail-open serving).
@@ -566,6 +605,87 @@ async function resolveRedirectUrl(req, session) {
   }
 }
 
+// ── Recovery-link resume (abandoned-checkout emails land here) ──────────────
+// PUBLIC by necessity; the HMAC token is the credential. Contract (see
+// routes/abandonedCheckouts.js header): NEVER re-open a settled cart, NEVER
+// mint a gateway session, NEVER mutate session status or extend token life.
+// Every failure mode — forged, expired, malformed, vanished row — answers the
+// SAME 302 to the site root, so the endpoint confirms nothing to a prober.
+router.get('/resume/:token', async (req, res) => {
+  const home = '/';
+  try {
+    if (!(await rateLimit(req, res, 'resume', 60))) return;
+    await ensureCheckoutTables();
+    const { verifyRecoveryToken } = await import('../services/abandonedRecovery.js');
+    const claims = verifyRecoveryToken(String(req.params.token || ''));
+    if (!claims) return res.redirect(302, home);
+
+    if (claims.source === 'shopify') {
+      const rows = await pgQuery(
+        `SELECT recovery_url FROM crm_abandoned_checkouts WHERE checkout_id = $1`,
+        [String(claims.ref)]
+      );
+      const url = rows.length ? String(rows[0].recovery_url || '') : '';
+      return res.redirect(302, /^https:\/\//.test(url) ? url : home);
+    }
+
+    // funnel source
+    const rows = await pgQuery(
+      `SELECT id, funnel_id, page_id, status, paid_at FROM co_sessions WHERE id = $1`,
+      [String(claims.ref)]
+    );
+    if (!rows.length) return res.redirect(302, home);
+    const session = rows[0];
+    const settled = ['paid', 'deposit_paid', 'refunded'].includes(String(session.status))
+      || session.paid_at != null;
+    if (settled) {
+      // A settled cart NEVER re-opens (double-charge vector). Land on the
+      // thank-you page when resolvable, the site root otherwise.
+      const thanks = await resolveRedirectUrl(req, session);
+      return res.redirect(302, thanks || home);
+    }
+    const pageUrl = await resolveSessionPageUrl(req, session);
+    if (!pageUrl) return res.redirect(302, home);
+    // co_events trail — fire-and-forget, a log failure never blocks the buyer.
+    pgQuery(
+      `INSERT INTO co_events (session_id, kind, data) VALUES ($1, 'resume', $2)`,
+      [session.id, { via: 'recovery_link' }]
+    ).catch((err) => console.error('[checkout] resume event write failed (non-fatal):', err.message));
+    return res.redirect(302, pageUrl);
+  } catch (err) {
+    console.error('[checkout] resume failed (fail-open to home):', err.message);
+    return res.redirect(302, home);
+  }
+});
+
+// The session's OWN checkout page URL (resume lands the buyer back on the
+// form), carrying resume + co_session_id params per the recovery contract.
+async function resolveSessionPageUrl(req, session) {
+  try {
+    if (!session.funnel_id || !session.page_id) return '';
+    const [f] = await pgQuery(
+      `SELECT slug FROM funnels WHERE id = $1 AND NOT archived`, [session.funnel_id]
+    );
+    if (!f || !f.slug) return '';
+    const [p] = await pgQuery(
+      `SELECT slug FROM funnel_pages
+        WHERE id = $1 AND funnel_id = $2 AND NOT archived AND status = 'published'`,
+      [session.page_id, session.funnel_id]
+    );
+    if (!p) return '';
+    const proto = String(req.headers['x-forwarded-proto'] || req.protocol || 'https').split(',')[0].trim();
+    const host = String(req.headers['x-forwarded-host'] || req.get('host') || '').split(',')[0].trim();
+    if (!host) return '';
+    const slug = String(p.slug || '/');
+    const path = slug === '/' ? `/f/${f.slug}` : `/f/${f.slug}${slug.startsWith('/') ? slug : '/' + slug}`;
+    const ref = encodeURIComponent(session.id);
+    return `${proto}://${host}${path}?resume=${ref}&co_session_id=${ref}`;
+  } catch (e) {
+    console.error('[checkout] resume page resolve failed (non-fatal):', e.message);
+    return '';
+  }
+}
+
 router.post('/whop/create-session', async (req, res) => {
   try {
     if (!(await rateLimit(req, res, 'whop-create', 20))) return;
@@ -575,7 +695,10 @@ router.post('/whop/create-session', async (req, res) => {
       return res.status(422).json({ success: false, error: { code: 'session_required' } });
     }
     const rows = await pgQuery(
-      `SELECT id, funnel_id, page_id, status, total, currency FROM co_sessions WHERE id = $1`,
+      `SELECT s.id, s.funnel_id, s.page_id, s.status, s.total, s.currency, s.customer,
+              f.settings AS funnel_settings
+         FROM co_sessions s LEFT JOIN funnels f ON f.id = s.funnel_id
+        WHERE s.id = $1`,
       [sessionId]
     );
     if (!rows.length) {
@@ -584,6 +707,18 @@ router.post('/whop/create-session', async (req, res) => {
     const session = rows[0];
     if (session.status !== 'processing') {
       return res.status(409).json({ success: false, error: { code: 'session_not_payable' } });
+    }
+    // Countries gate — the last stop before money. A session whose captured
+    // address names an excluded country never reaches the gateway.
+    {
+      const { parseJsonColumn } = await import('../services/checkoutCountries.js');
+      const blocked = blockedCountryOf(session.funnel_settings, parseJsonColumn(session.customer, {}));
+      if (blocked) {
+        return res.status(400).json({
+          success: false,
+          error: { code: 'country_not_supported', message: 'This store does not currently sell to the selected country.' },
+        });
+      }
     }
     const { resolveCredential } = await import('../services/gatewayConfigs.js');
     const whop = await import('../services/gateways/whop.js');
@@ -1428,6 +1563,15 @@ router.post('/session/:id/customer', async (req, res) => {
       return res.status(409).json({ success: false, error: { code: 'session_not_editable' } });
     }
     const customer = cleanCustomer(req.body || {});
+    // Countries gate — refuse the address BEFORE it lands, so the buyer hears
+    // it at the form, not after a failed payment (policy fail-closed).
+    const blockedAt = await sessionCountryBlocked(id, customer);
+    if (blockedAt) {
+      return res.status(400).json({
+        success: false,
+        error: { code: 'country_not_supported', message: 'This store does not currently sell to the selected country.' },
+      });
+    }
     await pgQuery(
       `UPDATE co_sessions SET customer = $2, updated_at = NOW()
        WHERE id = $1 AND status = 'processing'`,
