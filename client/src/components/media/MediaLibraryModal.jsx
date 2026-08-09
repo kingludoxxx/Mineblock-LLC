@@ -54,13 +54,19 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   X, Search, UploadCloud, Link2, ImageIcon, Archive, ArchiveRestore,
-  Check, Loader2, AlertCircle, RefreshCw, Pencil,
+  Check, AlertCircle, RefreshCw, Pencil,
 } from 'lucide-react';
 import api from '../../services/api';
 import Button from '../ui/Button';
 
 const PAGE_SIZE = 60;
 const ACCEPT = 'image/png,image/jpeg,image/gif,image/webp';
+// Dropping a folder of 200 photos would fire 200 sequential uploads and hold
+// each one in memory as base64. Take the first batch and say so, rather than
+// starting work the operator cannot cancel.
+const MAX_FILES_PER_BATCH = 10;
+// Fallback only — the real number comes from GET /media/storage.
+const FALLBACK_MAX_UPLOAD_BYTES = 5 * 1024 * 1024;
 
 const fmtBytes = (n) => {
   if (!Number.isFinite(n) || n <= 0) return '';
@@ -193,11 +199,32 @@ export default function MediaLibraryModal({
 
   // ── upload ───────────────────────────────────────────────────────────────
   const uploadFiles = useCallback(async (fileList) => {
-    const files = Array.from(fileList || []);
-    if (!files.length) return;
-    setActionError(''); setNotice(''); setBusy('upload');
+    const all = Array.from(fileList || []);
+    if (!all.length) return;
+
+    const maxBytes = storage?.max_upload_bytes || FALLBACK_MAX_UPLOAD_BYTES;
+    const notes = [];
+    let files = all;
+    if (files.length > MAX_FILES_PER_BATCH) {
+      notes.push(`Only the first ${MAX_FILES_PER_BATCH} of ${files.length} files were uploaded.`);
+      files = files.slice(0, MAX_FILES_PER_BATCH);
+    }
+    // Refuse oversize files HERE. FileReader would otherwise read the whole
+    // file into memory and base64 it (+33%) just to be told 413 by the server.
+    const tooBig = files.filter((f) => f.size > maxBytes);
+    if (tooBig.length) {
+      notes.push(
+        `${tooBig.map((f) => f.name).join(', ')} exceeded the ${fmtBytes(maxBytes)} limit and ${tooBig.length === 1 ? 'was' : 'were'} skipped.`
+      );
+      files = files.filter((f) => f.size <= maxBytes);
+    }
+
+    setActionError(''); setNotice('');
+    if (!files.length) { setActionError(notes.join(' ')); return; }
+
+    setBusy('upload');
     let ok = 0;
-    const failures = [];
+    const failures = [...notes];
     try {
       for (const file of files) {
         try {
@@ -216,7 +243,7 @@ export default function MediaLibraryModal({
       setNotice(`${ok} image${ok === 1 ? '' : 's'} added.`);
       await load(0);
     }
-  }, [load]);
+  }, [load, storage]);
 
   const onDrop = useCallback((e) => {
     e.preventDefault();
@@ -288,7 +315,9 @@ export default function MediaLibraryModal({
   }, [editingAlt, items, patchItem]);
 
   const choose = useCallback((item) => {
-    if (!selectMode || !item?.url) return;
+    // The two halves of the documented guarantee, asserted at the only place
+    // onSelect is ever called: non-empty url, never archived.
+    if (!selectMode || !item?.url || item.archived) return;
     setPicked(item.id);
     onSelect?.({
       url: item.url,
@@ -380,18 +409,24 @@ export default function MediaLibraryModal({
             Upload
           </Button>
 
-          <button
-            type="button"
-            onClick={() => setShowArchived((v) => !v)}
-            className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg border text-xs cursor-pointer transition-colors ${
-              showArchived
-                ? 'bg-accent/10 border-accent/40 text-accent'
-                : 'bg-bg-elevated border-border-default text-text-muted hover:text-text-primary hover:bg-bg-hover'
-            }`}
-          >
-            <Archive className="w-3.5 h-3.5" />
-            Archived
-          </button>
+          {/* Not in select mode. The picker's documented guarantee is that
+              onSelect only ever fires for a NON-archived asset; showing the
+              archived shelf inside a picker invites exactly the click that
+              would break it. Enforce the guarantee by removing the door. */}
+          {!selectMode && (
+            <button
+              type="button"
+              onClick={() => setShowArchived((v) => !v)}
+              className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg border text-xs cursor-pointer transition-colors ${
+                showArchived
+                  ? 'bg-accent/10 border-accent/40 text-accent'
+                  : 'bg-bg-elevated border-border-default text-text-muted hover:text-text-primary hover:bg-bg-hover'
+              }`}
+            >
+              <Archive className="w-3.5 h-3.5" />
+              Archived
+            </button>
+          )}
         </div>
 
         {/* ── import by URL ──────────────────────────────────────────────── */}
@@ -578,7 +613,6 @@ export default function MediaLibraryModal({
           {hasMore && (
             <div className="mt-4 flex justify-center">
               <Button size="sm" variant="secondary" onClick={() => load(items.length)} loading={loading}>
-                {!loading && <Loader2 className="w-3.5 h-3.5 hidden" />}
                 Load more
               </Button>
             </div>

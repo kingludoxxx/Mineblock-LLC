@@ -31,10 +31,11 @@
 //     route. v1 is images only (kind='image'); video is the follow-up that
 //     should bring multer with it.
 
-import { Router } from 'express';
+import { Router, json } from 'express';
 import { pgQuery } from '../db/pg.js';
 import { authenticate } from '../middleware/auth.js';
 import { requirePermission } from '../middleware/rbac.js';
+import { checkRateLimit } from '../middleware/rateLimiter.js';
 import { ensureMediaTables } from '../services/mediaSchema.js';
 import {
   putImage,
@@ -52,11 +53,66 @@ import {
 } from '../services/mediaService.js';
 
 const router = Router();
+
+// ── this router parses its OWN body ────────────────────────────────────────
+// Same pattern and same reason as checkoutPublic.js:151 / optinPublic: a
+// route-level cap is only real if this router is mounted BEFORE the app-level
+// express.json({limit:'50mb'}) at app.js:93. Behind it, express.json is a no-op
+// (req._body is already set) and the documented cap is decoration — a 49mb
+// upload body gets fully buffered first, which on a 512mb dyno is the whole
+// dyno. See the mount comment in routes/index.js: until the integrator moves
+// the mount ahead of the global parser, this line cannot fire.
+//
+// 7mb, not 5mb: the payload is base64, so a 5mb image is ~6.7mb on the wire,
+// plus the JSON envelope. The 5mb DECODED cap is enforced in the handler.
+router.use(json({ limit: '7mb' }));
+
 router.use(authenticate, requirePermission('funnels', 'access'));
 
 // ── structured errors — a caller never regexes a message ───────────────────
 const fail = (res, status, code, message) =>
   res.status(status).json({ success: false, error: { code, ...(message ? { message } : {}) } });
+
+// ── per-USER rate limit on the two expensive, outbound-network routes ──────
+// Keyed on the user id, not the IP: this surface is authenticated, a whole
+// office shares one egress IP, and the thing being limited is spend (Shopify
+// API calls, CDN writes, outbound fetches) which is attributable to a person.
+// Redis-backed with an in-memory fallback — the same helper the public
+// checkout intake uses (checkoutPublic.js:167).
+const WRITE_WINDOW_SEC = 60;
+const DEFAULT_WRITE_LIMIT = 20;   // per user, per bucket, per minute
+
+// Read at CALL time, not module load: an operator raising the ceiling during an
+// import session should not need a redeploy, and the harness needs to drive
+// both sides of the limit in one process. NaN/garbage falls back to the
+// default rather than disabling the limit.
+function writeLimit() {
+  const raw = process.env.MEDIA_WRITE_RATE_LIMIT;
+  if (raw === undefined || String(raw).trim() === '') return DEFAULT_WRITE_LIMIT;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n < 1) return DEFAULT_WRITE_LIMIT;
+  return Math.trunc(n);
+}
+
+async function rateLimit(req, res, bucket) {
+  const who = req.user?.id || req.ip || 'unknown';
+  const { allowed, retryAfter } = await checkRateLimit(
+    `media:${bucket}:${who}`, writeLimit(), WRITE_WINDOW_SEC
+  );
+  if (!allowed) {
+    res.set('Retry-After', String(retryAfter));
+    res.status(429).json({
+      success: false,
+      error: {
+        code: 'rate_limited',
+        message: `Too many ${bucket} requests. Try again in ${retryAfter}s.`,
+        retryAfter,
+      },
+    });
+    return false;
+  }
+  return true;
+}
 
 const clamp = (v, def, min, max) => {
   const n = parseInt(v, 10);
@@ -133,6 +189,7 @@ router.get('/storage', (req, res) => {
 // ---------------------------------------------------------------------------
 router.post('/upload', async (req, res, next) => {
   try {
+    if (!await rateLimit(req, res, 'upload')) return undefined;
     await ensureMediaTables();
     const body = req.body || {};
     const filename = String(body.filename || '').slice(0, 200);
@@ -189,10 +246,14 @@ router.post('/upload', async (req, res, next) => {
       filename: stored.filename || null,
       mime,
       bytes: buffer.length,
-      // Prefer OUR header parse over the CDN's echo: it is measured from the
-      // exact bytes we stored, and Shopify omits it while the file is pending.
-      width: dims.width ?? stored.width ?? null,
-      height: dims.height ?? stored.height ?? null,
+      // OUR header parse is the ONLY source. Not "ours, falling back to the
+      // CDN's echo": when our parser returns null it has REFUSED the header
+      // (absent, truncated, or an int4-overflowing lie), and falling through to
+      // a number derived from that same rejected file would reinstate exactly
+      // what the refusal exists to prevent. Null means "unknown", which every
+      // consumer already handles.
+      width: dims.width ?? null,
+      height: dims.height ?? null,
       alt,
       shopifyFileId: stored.shopifyFileId,
       createdBy: req.user?.id || null,
@@ -214,25 +275,32 @@ router.post('/upload', async (req, res, next) => {
 // ---------------------------------------------------------------------------
 router.post('/import-url', async (req, res, next) => {
   try {
+    if (!await rateLimit(req, res, 'import')) return undefined;
     await ensureMediaTables();
     const raw = String((req.body || {}).url || '').trim();
     if (!raw) return fail(res, 400, 'url_required', 'Provide an https image URL.');
     if (raw.length > 2048) return fail(res, 400, 'url_too_long');
 
     const verdict = await importUrlAllowed(raw);
-    if (verdict === 'scheme') {
-      return fail(res, 400, 'invalid_scheme', 'Only https:// image URLs can be imported.');
-    }
-    if (verdict === 'blocked_host') {
-      return fail(res, 400, 'blocked_host', 'That host resolves to a private or loopback address.');
-    }
-    if (verdict === 'dns_resolution_failed') {
+    if (!verdict.ok) {
+      if (verdict.reason === 'scheme') {
+        return fail(res, 400, 'invalid_scheme', 'Only https:// image URLs can be imported.');
+      }
+      if (verdict.reason === 'blocked_host') {
+        return fail(res, 400, 'blocked_host', 'That host resolves to a private or loopback address.');
+      }
       return fail(res, 400, 'dns_resolution_failed', 'That host could not be resolved.');
     }
 
     let fetched;
     try {
-      fetched = await fetchExternalImage(raw, { maxBytes: MAX_IMPORT_BYTES });
+      // The addresses the guard APPROVED are handed to the fetch so the socket
+      // cannot re-resolve the name to something else (DNS rebinding).
+      fetched = await fetchExternalImage(raw, {
+        maxBytes: MAX_IMPORT_BYTES,
+        addresses: verdict.addresses,
+        relaxed: verdict.relaxed,
+      });
     } catch (err) {
       if (err.code === 'too_large') {
         return fail(res, 413, 'too_large', `Maximum import is ${MAX_IMPORT_BYTES} bytes.`);
@@ -241,8 +309,15 @@ router.post('/import-url', async (req, res, next) => {
         return fail(res, 415, 'unsupported_type',
           `That URL is not a supported image (${err.detail || 'unknown type'}).`);
       }
+      if (err.code === 'redirect_refused') {
+        return fail(res, 400, 'redirect_refused',
+          'That URL redirects. Redirects are not followed (a redirect can point at a private address) — paste the final image URL.');
+      }
       if (err.code === 'upstream_status') {
         return fail(res, 400, 'upstream_status', `The source returned HTTP ${err.status}.`);
+      }
+      if (err.code === 'blocked_host') {
+        return fail(res, 400, 'blocked_host', 'That host resolves to a private or loopback address.');
       }
       if (err.code === 'empty_body') return fail(res, 400, 'empty_body');
       return fail(res, 400, 'fetch_failed', 'The image could not be downloaded.');
@@ -380,6 +455,24 @@ router.patch('/:id', async (req, res, next) => {
   } catch (err) {
     return next(err);
   }
+});
+
+// ── router-scoped error handler ────────────────────────────────────────────
+// express.json's own 413 would otherwise reach the app's default handler and
+// come back as an HTML error page — a client that parses `error.code` gets
+// nothing to act on, and the operator sees "unknown error" instead of
+// "your file is too big". Everything else is passed straight through to the
+// app-level handler; this is a translator, not a catch-all.
+// eslint-disable-next-line no-unused-vars
+router.use((err, req, res, next) => {
+  if (err && (err.type === 'entity.too.large' || err.status === 413 || err.statusCode === 413)) {
+    return fail(res, 413, 'too_large',
+      `Request body exceeds the media route's 7MB limit (max image ${MAX_UPLOAD_BYTES} bytes).`);
+  }
+  if (err && err.type === 'entity.parse.failed') {
+    return fail(res, 400, 'invalid_json', 'The request body is not valid JSON.');
+  }
+  return next(err);
 });
 
 export default router;

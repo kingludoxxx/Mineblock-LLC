@@ -42,6 +42,8 @@
 
 import crypto from 'crypto';
 import dns from 'dns/promises';
+import http from 'node:http';
+import https from 'node:https';
 import net from 'net';
 import { uploadBuffer, isR2Configured } from './r2.js';
 
@@ -73,11 +75,42 @@ const EXT_BY_MIME = {
   'image/webp': 'webp',
 };
 
+// Every numeric env read goes through this. `Number(undefined)` is NaN and
+// NaN silently disables a timeout (`setTimeout(fn, NaN)` fires immediately,
+// `Date.now() < NaN` is false forever), so a typo'd env var must fall back to
+// the default rather than reshape the control flow.
+function envInt(name, fallback, { min = 1, max = Number.MAX_SAFE_INTEGER } = {}) {
+  const raw = process.env[name];
+  if (raw === undefined || raw === null || String(raw).trim() === '') return fallback;
+  const n = Number(raw);
+  if (!Number.isFinite(n)) return fallback;
+  const i = Math.trunc(n);
+  if (i < min || i > max) return fallback;
+  return i;
+}
+
 const FETCH_TIMEOUT_MS = 15_000;
-const POLL_TIMEOUT_MS = Number(process.env.MEDIA_SHOPIFY_POLL_TIMEOUT_MS || 20_000);
-const POLL_INTERVAL_MS = Number(process.env.MEDIA_SHOPIFY_POLL_INTERVAL_MS || 500);
+const POLL_TIMEOUT_MS = envInt('MEDIA_SHOPIFY_POLL_TIMEOUT_MS', 20_000, { max: 300_000 });
+const POLL_INTERVAL_MS = envInt('MEDIA_SHOPIFY_POLL_INTERVAL_MS', 500, { max: 60_000 });
+// ONE budget across every Shopify leg (staged create + staged POST + fileCreate
+// + the whole poll loop). Per-leg timeouts alone bound nothing: four legs at
+// 15s plus a 20s poll is a 75s worst case, well past any sane request budget,
+// and the caller is a browser holding an upload open.
+const SHOPIFY_BUDGET_MS = envInt('MEDIA_SHOPIFY_BUDGET_MS', 45_000, { max: 300_000 });
+
+// PostgreSQL int4 range — width/height are INTEGER columns.
+const INT4_MAX = 2147483647;
 
 export const newMediaId = () => `med_${crypto.randomBytes(9).toString('hex')}`;
+
+// Test seam for the SSRF/rebinding harness. The guard must resolve the host
+// ONCE and the connection must reuse that exact answer, which is only
+// observable if the test can control what each resolution returns.
+export const _dnsHooks = {
+  lookup: (hostname) => dns.lookup(hostname, { all: true, verbatim: true }),
+};
+// Observability for the harness: every address actually handed to a socket.
+export const _probe = { pinnedAddresses: [], dnsCalls: 0 };
 
 // ===========================================================================
 // 1. Image header parsing — width/height + a magic-byte MIME sniff.
@@ -164,17 +197,38 @@ function jpegSize(buf) {
 }
 
 /**
- * Width/height from the image header alone. Never throws — a malformed or
- * unsupported image yields null and the row simply stores NULL dimensions.
+ * A header is ATTACKER-CONTROLLED DATA, not a measurement. PNG stores width and
+ * height as unsigned 32-bit ints, so a 13-byte IHDR can legally claim
+ * 4294967295 x 4294967295 — a number that is not a picture, it is a lie. Left
+ * unclamped it reaches an INTEGER column and the INSERT raises
+ * `value out of range for type integer` AFTER the bytes are already on the CDN:
+ * the caller gets an unstructured 500 and the object is orphaned with no row
+ * pointing at it.
+ *
+ * Anything <= 0 or beyond int4 is therefore treated as ABSENT, not as an error.
+ * Dimensions are metadata; a bad header must never cost an upload.
+ */
+function sane(dims) {
+  if (!dims) return null;
+  const { width, height } = dims;
+  if (!Number.isInteger(width) || !Number.isInteger(height)) return null;
+  if (width <= 0 || height <= 0) return null;
+  if (width > INT4_MAX || height > INT4_MAX) return null;
+  return { width, height };
+}
+
+/**
+ * Width/height from the image header alone. Never throws — a malformed,
+ * unsupported, or LYING header yields null and the row stores NULL dimensions.
  */
 export function imageDimensions(buf, mimeHint = '') {
   if (!Buffer.isBuffer(buf) || buf.length < 12) return null;
   const mime = sniffMime(buf) || String(mimeHint || '');
   try {
-    if (mime === 'image/png') return pngSize(buf);
-    if (mime === 'image/gif') return gifSize(buf);
-    if (mime === 'image/webp') return webpSize(buf);
-    if (mime === 'image/jpeg') return jpegSize(buf);
+    if (mime === 'image/png') return sane(pngSize(buf));
+    if (mime === 'image/gif') return sane(gifSize(buf));
+    if (mime === 'image/webp') return sane(webpSize(buf));
+    if (mime === 'image/jpeg') return sane(jpegSize(buf));
   } catch {
     return null; // truncated buffer — metadata, not a failure
   }
@@ -205,26 +259,41 @@ const SSRF_HOST_DENY = new Set([
 
 export function isPublicAddress(addr) {
   if (net.isIPv4(addr)) {
-    const [a, b] = addr.split('.').map(Number);
+    const [a, b, c] = addr.split('.').map(Number);
     if (a === 10 || a === 127 || a === 0) return false;        // private / loopback / unspecified
     if (a === 172 && b >= 16 && b <= 31) return false;         // private
     if (a === 192 && b === 168) return false;                  // private
+    // 192.0.0.0/24 — IETF protocol assignments (incl. the NAT64 well-known
+    // prefix). /24, so the THIRD octet matters: 192.0.1.1 is ordinary public
+    // space and must still resolve.
+    if (a === 192 && b === 0 && c === 0) return false;
     if (a === 169 && b === 254) return false;                  // link-local / cloud metadata
     if (a === 100 && b >= 64 && b <= 127) return false;        // CGNAT
+    if (a === 198 && (b === 18 || b === 19)) return false;      // 198.18/15 benchmarking (RFC 2544)
     if (a >= 224) return false;                                // multicast / reserved
     return true;
   }
   if (net.isIPv6(addr)) {
     const x = addr.toLowerCase();
     if (x === '::' || x === '::1') return false;
-    if (x.startsWith('fe80') || x.startsWith('fc') || x.startsWith('fd')) return false;
-    if (x.startsWith('ff')) return false;
-    // IPv4-mapped must be judged as IPv4. WHATWG URL canonicalizes
+    // Link-local is fe80::/10 — that is fe80 THROUGH febf, not just the fe80
+    // prefix string. `fe9a::1` is link-local and a prefix match misses it.
+    const head = parseInt(x.split(':')[0] || '0', 16);
+    if (Number.isFinite(head) && head >= 0xfe80 && head <= 0xfebf) return false;
+    if (x.startsWith('fc') || x.startsWith('fd')) return false;   // ULA fc00::/7
+    if (x.startsWith('ff')) return false;                         // multicast
+    // 6to4 (2002::/16) and NAT64 (64:ff9b::/96) both EMBED an IPv4 address and
+    // are routed to it — refusing the wrapper is the only way to refuse the
+    // target. We cannot cheaply extract every embedded form, so refuse the
+    // whole prefix; neither belongs in an image URL.
+    if (x.startsWith('2002:')) return false;
+    if (/^64:ff9b:/.test(x)) return false;
+    // IPv4-mapped/compatible must be judged as IPv4. WHATWG URL canonicalizes
     // ::ffff:169.254.169.254 into HEX form, so match BOTH — the dotted form
     // alone is a bypass.
-    const dotted = x.match(/::ffff:(\d+\.\d+\.\d+\.\d+)$/);
+    const dotted = x.match(/::(?:ffff:)?(\d+\.\d+\.\d+\.\d+)$/);
     if (dotted) return isPublicAddress(dotted[1]);
-    const hex = x.match(/^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/);
+    const hex = x.match(/^::(?:ffff:)?([0-9a-f]{1,4}):([0-9a-f]{1,4})$/);
     if (hex) {
       const n = ((parseInt(hex[1], 16) << 16) | parseInt(hex[2], 16)) >>> 0;
       const v4 = [(n >>> 24) & 255, (n >>> 16) & 255, (n >>> 8) & 255, n & 255].join('.');
@@ -235,36 +304,58 @@ export function isPublicAddress(addr) {
   return false;
 }
 
-// Test/dev-only host allow-list, e.g. MEDIA_IMPORT_ALLOW_HOST=127.0.0.1:51234
-// Hard-off in production regardless of the env var's value.
+// Test/dev-only host allow-list, e.g. MEDIA_IMPORT_ALLOW_HOST=media-mock.test:51234
+//
+// DELIBERATELY NARROW: it relaxes exactly two things — the https-only rule and
+// the is-this-address-public verdict — and nothing else. URL parsing, the host
+// deny-list, DNS resolution, address PINNING, redirect refusal, the byte cap
+// and the magic-byte sniff all still run for an allow-listed host, so the test
+// suite's happy path exercises the real pipeline rather than stepping around
+// it. Hard-off in production regardless of the env var's value.
 function allowListed(u) {
   if (process.env.NODE_ENV === 'production') return false;
   const raw = String(process.env.MEDIA_IMPORT_ALLOW_HOST || '').trim();
   if (!raw) return false;
-  const hostport = u.host.toLowerCase();
+  const hostport = String(u.host || '').toLowerCase();
   return raw.split(',').map((s) => s.trim().toLowerCase()).filter(Boolean).includes(hostport);
 }
 
 /**
- * @returns {Promise<true|'scheme'|'blocked_host'|'dns_resolution_failed'>}
+ * Resolve and vet an import URL.
+ *
+ * Returns the RESOLVED ADDRESSES on success because the caller must connect to
+ * one of THOSE, not re-resolve the name. See fetchExternalImage.
+ *
+ * @returns {Promise<{ok: true, addresses: string[], relaxed: boolean}
+ *                  | {ok: false, reason: 'scheme'|'blocked_host'|'dns_resolution_failed'}>}
  */
 export async function importUrlAllowed(rawUrl) {
+  const no = (reason) => ({ ok: false, reason });
   let u;
-  try { u = new URL(String(rawUrl)); } catch { return 'scheme'; }
-  if (allowListed(u)) return true;
-  if (u.protocol !== 'https:') return 'scheme';
+  try { u = new URL(String(rawUrl)); } catch { return no('scheme'); }
+  const relaxed = allowListed(u);
+  if (u.protocol !== 'https:' && !(relaxed && u.protocol === 'http:')) return no('scheme');
   const host = u.hostname.toLowerCase().replace(/^\[|\]$/g, '');
-  if (!host) return 'scheme';
-  if (SSRF_HOST_DENY.has(host) || host.endsWith('.localhost')) return 'blocked_host';
-  if (net.isIP(host)) return isPublicAddress(host) ? true : 'blocked_host';
+  if (!host) return no('scheme');
+  if (SSRF_HOST_DENY.has(host) || host.endsWith('.localhost')) return no('blocked_host');
+  if (net.isIP(host)) {
+    if (!relaxed && !isPublicAddress(host)) return no('blocked_host');
+    return { ok: true, addresses: [host], relaxed };
+  }
   let answers;
   try {
-    answers = await dns.lookup(host, { all: true, verbatim: true });
+    _probe.dnsCalls += 1;
+    answers = await _dnsHooks.lookup(host);
   } catch {
-    return 'dns_resolution_failed';
+    return no('dns_resolution_failed');
   }
-  if (!answers.length) return 'dns_resolution_failed';
-  return answers.every((a) => isPublicAddress(a.address)) ? true : 'blocked_host';
+  if (!Array.isArray(answers) || !answers.length) return no('dns_resolution_failed');
+  const addresses = answers.map((a) => (typeof a === 'string' ? a : a.address)).filter(Boolean);
+  if (!addresses.length) return no('dns_resolution_failed');
+  // EVERY answer must be public. A name that resolves to one public and one
+  // private address is a rebinding attempt, not a multi-homed host.
+  if (!relaxed && !addresses.every((a) => isPublicAddress(a))) return no('blocked_host');
+  return { ok: true, addresses, relaxed };
 }
 
 /**
@@ -276,81 +367,136 @@ export async function importUrlAllowed(rawUrl) {
  * @throws {Error} with .code in
  *   'fetch_failed' | 'upstream_status' | 'too_large' | 'unsupported_type' | 'empty_body'
  */
-export async function fetchExternalImage(url, { maxBytes = MAX_IMPORT_BYTES } = {}) {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
-  if (timer.unref) timer.unref();
-  let resp;
-  try {
-    resp = await fetch(url, {
-      // A 302 can walk a validated public host to an unvalidated private one —
-      // the reference guard has exactly that hole. Refuse to follow.
-      redirect: 'manual',
-      signal: controller.signal,
-      headers: { Accept: 'image/*' },
+export async function fetchExternalImage(url, {
+  maxBytes = MAX_IMPORT_BYTES,
+  addresses = null,
+  relaxed = false,
+} = {}) {
+  const fail = (code, detail, extra = {}) => {
+    const e = new Error(code);
+    e.code = code;
+    if (detail !== undefined) e.detail = detail;
+    return Object.assign(e, extra);
+  };
+
+  const u = new URL(String(url));
+  const isHttps = u.protocol === 'https:';
+  const mod = isHttps ? https : http;
+
+  // ── DNS PINNING (the rebinding fix) ──────────────────────────────────────
+  // The guard resolved this host and judged the answers. If the connection is
+  // allowed to resolve the name AGAIN, an attacker controlling the zone can
+  // answer 93.184.216.34 for the check and 169.254.169.254 microseconds later
+  // for the socket — the classic TOCTOU. So we hand the agent a `lookup` that
+  // can only ever return an address the guard already approved, and re-runs
+  // isPublicAddress on it as a second line of defence.
+  //
+  // This is done with node:https rather than fetch() because pinning needs a
+  // custom `lookup`, which fetch only exposes through an undici Agent — and
+  // undici is NOT a dependency of this repo (checked: not in package.json, not
+  // resolvable). node:https keeps SNI and certificate validation pointed at
+  // the real hostname, which is what makes the pin safe for TLS.
+  const pinned = Array.isArray(addresses) && addresses.length ? addresses : null;
+  const lookup = pinned
+    ? (hostname, opts, cb) => {
+      const addr = pinned.find((a) => relaxed || isPublicAddress(a));
+      if (!addr) { cb(fail('blocked_host', hostname)); return; }
+      _probe.pinnedAddresses.push(addr);
+      const family = net.isIPv6(addr) ? 6 : 4;
+      // `all: true` changes the callback's contract to an array.
+      if (opts && opts.all) cb(null, [{ address: addr, family }]);
+      else cb(null, addr, family);
+    }
+    : undefined;
+
+  // A FRESH agent with keep-alive OFF. The global agent pools sockets, and a
+  // pooled socket skips `lookup` entirely — which would silently un-pin a
+  // later request to the same host:port and made the pinning assertion in the
+  // harness pass for the wrong reason. Import is a rare, security-sensitive
+  // call; a connection per request is the correct trade.
+  const agent = new mod.Agent({ keepAlive: false, maxSockets: 1 });
+
+  const res = await new Promise((resolve, reject) => {
+    const req = mod.request(
+      {
+        protocol: u.protocol,
+        hostname: u.hostname.replace(/^\[|\]$/g, ''),
+        port: u.port || (isHttps ? 443 : 80),
+        path: `${u.pathname}${u.search}`,
+        method: 'GET',
+        headers: { Accept: 'image/*', Host: u.host },
+        agent,
+        lookup,
+        // node:https honours `servername` from hostname by default; leaving it
+        // implicit keeps cert validation against the NAME, not the pinned IP.
+      },
+      resolve
+    );
+    req.setTimeout(FETCH_TIMEOUT_MS, () => {
+      req.destroy(fail('fetch_failed', 'timeout'));
     });
-  } catch (err) {
-    clearTimeout(timer);
-    const e = new Error('fetch_failed');
-    e.code = 'fetch_failed';
-    e.detail = String((err && err.message) || err);
-    throw e;
-  }
+    req.on('error', (err) => reject(err.code ? err : fail('fetch_failed', String(err && err.message))));
+    req.end();
+  }).catch((err) => { throw (err.code && typeof err.code === 'string' && !err.errno ? err : fail('fetch_failed', String(err && err.message))); });
+
   try {
-    if (!resp.ok) {
-      const e = new Error('upstream_status');
-      e.code = 'upstream_status';
-      e.status = resp.status;
-      throw e;
+    const status = res.statusCode || 0;
+    // A 3xx can walk a validated public host to an unvalidated private one —
+    // the reference guard has exactly that hole. We do not follow, and we do
+    // not silently treat it as an error either: it gets its own code.
+    if (status >= 300 && status < 400) {
+      throw fail('redirect_refused', String(status), { status });
     }
-    const declared = String(resp.headers.get('content-type') || '').split(';')[0].trim().toLowerCase();
+    if (status < 200 || status >= 300) {
+      throw fail('upstream_status', String(status), { status });
+    }
+    const declared = String(res.headers['content-type'] || '').split(';')[0].trim().toLowerCase();
     if (declared && !declared.startsWith('image/')) {
-      const e = new Error('unsupported_type');
-      e.code = 'unsupported_type';
-      e.detail = declared;
-      throw e;
+      throw fail('unsupported_type', declared);
     }
-    // Trust the advertised length as an EARLY refusal only; it is a hint, so
-    // the streaming cap below still runs.
-    const advertised = Number(resp.headers.get('content-length') || 0);
-    if (advertised && advertised > maxBytes) {
-      const e = new Error('too_large');
-      e.code = 'too_large';
-      e.detail = String(advertised);
-      throw e;
+    // The advertised length is an EARLY refusal only; it is a hint from the
+    // same party we are defending against, so the streaming cap still runs.
+    const advertised = Number(res.headers['content-length'] || 0);
+    if (Number.isFinite(advertised) && advertised > maxBytes) {
+      throw fail('too_large', String(advertised));
     }
-    const chunks = [];
-    let total = 0;
-    for await (const chunk of resp.body) {
-      const b = Buffer.from(chunk);
-      total += b.length;
-      if (total > maxBytes) {
-        try { await resp.body.cancel?.(); } catch { /* already torn down */ }
-        const e = new Error('too_large');
-        e.code = 'too_large';
-        e.detail = `>${maxBytes}`;
-        throw e;
-      }
-      chunks.push(b);
-    }
-    const buf = Buffer.concat(chunks, total);
-    if (!buf.length) {
-      const e = new Error('empty_body');
-      e.code = 'empty_body';
-      throw e;
-    }
+
+    const buf = await new Promise((resolve, reject) => {
+      const chunks = [];
+      let total = 0;
+      // `settled` matters: destroying the socket to stop an oversize download
+      // makes the stream emit 'aborted'/'error' a tick later, and without this
+      // guard that generic failure would overwrite the specific `too_large`
+      // verdict the caller needs to turn into a 413.
+      let settled = false;
+      const done = (fn, v) => { if (settled) return; settled = true; fn(v); };
+      res.on('data', (chunk) => {
+        total += chunk.length;
+        if (total > maxBytes) {
+          done(reject, fail('too_large', `>${maxBytes}`));
+          // Destroy AFTER settling — draining a hostile 10GB body to be polite
+          // is how a 512MB dyno dies, but the verdict is recorded first.
+          res.destroy();
+          return;
+        }
+        chunks.push(chunk);
+      });
+      res.on('error', (err) => done(reject, fail('fetch_failed', String(err && err.message))));
+      res.on('end', () => done(resolve, Buffer.concat(chunks, total)));
+      res.on('aborted', () => done(reject, fail('fetch_failed', 'aborted')));
+    });
+
+    if (!buf.length) throw fail('empty_body');
     // The DECLARED type is a claim; the bytes are the fact. An `image/png`
     // header over a zip is still a zip.
     const sniffed = sniffMime(buf);
     if (!sniffed || !ALLOWED_MIME.has(sniffed)) {
-      const e = new Error('unsupported_type');
-      e.code = 'unsupported_type';
-      e.detail = sniffed || declared || 'unknown';
-      throw e;
+      throw fail('unsupported_type', sniffed || declared || 'unknown');
     }
     return { buffer: buf, mime: sniffed, bytes: buf.length };
   } finally {
-    clearTimeout(timer);
+    if (!res.destroyed) res.resume(); // release the socket on every path
+    agent.destroy();
   }
 }
 
@@ -381,23 +527,58 @@ export function isShopifyConfigured() {
 }
 
 /**
+ * R2 is only USABLE here if it can also produce a browser-reachable URL.
+ *
+ * r2.js's own isR2Configured() checks the three credential vars and nothing
+ * else; without R2_PUBLIC_URL its uploadBuffer() still performs (and bills) a
+ * PutObject and then returns an `r2://bucket/key` pseudo-URL that no browser
+ * can load. Advertising that as a working backend means every upload costs a
+ * write and ends in a 503. Requiring the public base makes the backend
+ * honestly unavailable BEFORE the bytes move. (r2.js is another lane's file —
+ * the extra condition lives here, not there.)
+ */
+function isR2Usable() {
+  return isR2Configured() && Boolean(String(process.env.R2_PUBLIC_URL || '').trim());
+}
+
+/**
  * Which backend a putImage() call would use right now.
  * @returns {'shopify'|'r2'|null}
  */
 export function storageBackend() {
   const forced = String(process.env.MEDIA_STORAGE_BACKEND || '').trim().toLowerCase();
   if (forced === 'shopify') return isShopifyConfigured() ? 'shopify' : null;
-  if (forced === 'r2') return isR2Configured() ? 'r2' : null;
+  if (forced === 'r2') return isR2Usable() ? 'r2' : null;
   if (forced === 'none') return null;
   if (isShopifyConfigured()) return 'shopify';
-  if (isR2Configured()) return 'r2';
+  if (isR2Usable()) return 'r2';
   return null;
 }
 
-async function shopifyGraphql(query, variables) {
+// ── one budget for the whole Shopify conversation (MED #5) ─────────────────
+// Per-leg timeouts bound a LEG, not the request. Four legs plus a poll loop is
+// a 75s worst case with 15s legs, and the caller is a browser holding an upload
+// open. Every leg gets min(leg timeout, what is left of the budget).
+function newBudget(ms = SHOPIFY_BUDGET_MS) {
+  return { deadline: Date.now() + ms, total: ms };
+}
+function budgetLeft(budget) {
+  if (!budget) return FETCH_TIMEOUT_MS;
+  return budget.deadline - Date.now();
+}
+function assertBudget(budget, where) {
+  if (!budget) return;
+  if (budgetLeft(budget) <= 0) {
+    throw new StorageUnavailableError('shopify_budget_exceeded', `${where} after ${budget.total}ms`);
+  }
+}
+
+async function shopifyGraphql(query, variables, budget = null) {
   const { token } = shopifyCreds();
+  assertBudget(budget, 'graphql');
+  const timeoutMs = Math.max(1, Math.min(FETCH_TIMEOUT_MS, budgetLeft(budget) || FETCH_TIMEOUT_MS));
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
   if (timer.unref) timer.unref();
   let resp;
   try {
@@ -491,18 +672,26 @@ query fileStatus($id: ID!) {
  * staged target requires the pre-signed `parameters` to appear BEFORE the file
  * part, in order — GCS rejects the POST otherwise.
  */
+// A multipart part header is CRLF-delimited, so a CR or LF inside a name or
+// value forges new headers/parts. These values come from Shopify rather than
+// from a user, but "the upstream is trustworthy" is exactly the assumption that
+// makes an upstream compromise catastrophic — and stripping them costs nothing.
+// Quotes are stripped for the same reason: `name="a" x="b` breaks out of the
+// quoted string.
+const headerSafe = (v) => String(v ?? '').replace(/[\r\n"\\]/g, '');
+
 function buildMultipart(parameters, { filename, mime, buffer }) {
   const boundary = `----puureMedia${crypto.randomBytes(12).toString('hex')}`;
   const parts = [];
   for (const p of parameters || []) {
     parts.push(Buffer.from(
-      `--${boundary}\r\nContent-Disposition: form-data; name="${p.name}"\r\n\r\n${p.value}\r\n`,
+      `--${boundary}\r\nContent-Disposition: form-data; name="${headerSafe(p.name)}"\r\n\r\n${headerSafe(p.value)}\r\n`,
       'utf8'
     ));
   }
   parts.push(Buffer.from(
-    `--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="${filename}"\r\n`
-    + `Content-Type: ${mime}\r\n\r\n`,
+    `--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="${headerSafe(filename)}"\r\n`
+    + `Content-Type: ${headerSafe(mime)}\r\n\r\n`,
     'utf8'
   ));
   parts.push(buffer);
@@ -510,7 +699,29 @@ function buildMultipart(parameters, { filename, mime, buffer }) {
   return { body: Buffer.concat(parts), contentType: `multipart/form-data; boundary=${boundary}` };
 }
 
-async function putViaShopify({ buffer, filename, mime, alt = '' }) {
+// Hosts Shopify legitimately hands back as staged-upload targets. The target
+// is where the IMAGE BYTES go, so a compromised or spoofed Admin response
+// could otherwise redirect an upload to an attacker's collector — and we would
+// POST it there ourselves, from inside the dyno. Suffix match on the
+// registrable host, never a substring (`evil-shopify.com` must not pass).
+const STAGED_TARGET_HOSTS = [
+  'shopify.com',
+  'myshopify.com',
+  'storage.googleapis.com',   // shopify-staged-uploads.storage.googleapis.com
+  'amazonaws.com',            // legacy/regional staged targets
+];
+
+function stagedTargetAllowed(rawUrl) {
+  // The test seam deliberately points the whole conversation at a local mock.
+  if (process.env.MEDIA_SHOPIFY_API_BASE) return true;
+  let u;
+  try { u = new URL(String(rawUrl)); } catch { return false; }
+  if (u.protocol !== 'https:') return false;
+  const host = u.hostname.toLowerCase();
+  return STAGED_TARGET_HOSTS.some((d) => host === d || host.endsWith(`.${d}`));
+}
+
+async function putViaShopify({ buffer, filename, mime, alt = '' }, budget) {
   // ── 1. stagedUploadsCreate ────────────────────────────────────────────────
   const staged = await shopifyGraphql(Q_STAGED, {
     input: [{
@@ -520,7 +731,7 @@ async function putViaShopify({ buffer, filename, mime, alt = '' }) {
       resource: 'FILE',
       fileSize: String(buffer.length),
     }],
-  });
+  }, budget);
   const sNode = staged.stagedUploadsCreate;
   const sErr = firstUserError(sNode);
   if (sErr) raiseUserError(sErr, 'stagedUploadsCreate');
@@ -528,16 +739,16 @@ async function putViaShopify({ buffer, filename, mime, alt = '' }) {
   if (!target || !target.url || !target.resourceUrl) {
     throw new StorageUnavailableError('shopify_no_staged_target');
   }
-  // The staged target comes from Shopify, but it still lands in a fetch() —
-  // refuse a plaintext one unless the test seam is deliberately active.
-  if (!/^https:/i.test(target.url) && !process.env.MEDIA_SHOPIFY_API_BASE) {
-    throw new StorageUnavailableError('shopify_insecure_target');
+  if (!stagedTargetAllowed(target.url)) {
+    throw new StorageUnavailableError('shopify_untrusted_target', String(target.url).slice(0, 120));
   }
 
   // ── 2. POST the bytes at the staged target ───────────────────────────────
+  assertBudget(budget, 'staged_upload');
   const { body, contentType } = buildMultipart(target.parameters, { filename, mime, buffer });
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+  const stagedTimeout = Math.max(1, Math.min(FETCH_TIMEOUT_MS, budgetLeft(budget) || FETCH_TIMEOUT_MS));
+  const timer = setTimeout(() => controller.abort(), stagedTimeout);
   if (timer.unref) timer.unref();
   let up;
   try {
@@ -545,6 +756,8 @@ async function putViaShopify({ buffer, filename, mime, alt = '' }) {
       method: 'POST',
       headers: { 'Content-Type': contentType },
       body,
+      // A 3xx here would move the bytes to an unvalidated host.
+      redirect: 'manual',
       signal: controller.signal,
     });
   } catch (err) {
@@ -559,7 +772,7 @@ async function putViaShopify({ buffer, filename, mime, alt = '' }) {
   // ── 3. fileCreate ────────────────────────────────────────────────────────
   const created = await shopifyGraphql(Q_FILE_CREATE, {
     files: [{ alt: String(alt || ''), contentType: 'IMAGE', originalSource: target.resourceUrl }],
-  });
+  }, budget);
   const cNode = created.fileCreate;
   const cErr = firstUserError(cNode);
   if (cErr) raiseUserError(cErr, 'fileCreate');
@@ -576,11 +789,17 @@ async function putViaShopify({ buffer, filename, mime, alt = '' }) {
   }
 
   // ── 4. poll until READY (fileCreate returns UPLOADED, not READY) ─────────
-  const deadline = Date.now() + POLL_TIMEOUT_MS;
+  // The poll window is whichever runs out first: its own timeout, or what is
+  // left of the request-wide budget.
+  const deadline = Math.min(
+    Date.now() + POLL_TIMEOUT_MS,
+    budget ? budget.deadline : Number.MAX_SAFE_INTEGER
+  );
   let lastStatus = file.fileStatus || 'UNKNOWN';
   while (Date.now() < deadline) {
     await new Promise((r) => { const t = setTimeout(r, POLL_INTERVAL_MS); if (t.unref) t.unref(); });
-    const polled = await shopifyGraphql(Q_FILE_POLL, { id: file.id });
+    if (Date.now() >= deadline) break;
+    const polled = await shopifyGraphql(Q_FILE_POLL, { id: file.id }, budget);
     const node = polled.node;
     if (!node) continue;
     lastStatus = node.fileStatus || lastStatus;
@@ -602,12 +821,16 @@ async function putViaShopify({ buffer, filename, mime, alt = '' }) {
   throw new StorageUnavailableError('shopify_poll_timeout', lastStatus);
 }
 
+// Same seam idea as _dnsHooks: r2.js belongs to another lane, so the harness
+// swaps the transport here rather than reaching into it.
+export const _r2Hooks = { uploadBuffer };
+
 async function putViaR2({ buffer, filename, mime }) {
   const ext = EXT_BY_MIME[mime] || 'bin';
   const key = `media-library/${crypto.randomUUID()}.${ext}`;
   let url;
   try {
-    url = await uploadBuffer(buffer, key, mime);
+    url = await _r2Hooks.uploadBuffer(buffer, key, mime);
   } catch (err) {
     throw new StorageUnavailableError('r2_upload_failed', String((err && err.message) || err));
   }
@@ -638,7 +861,7 @@ export async function putImage({ buffer, filename, mime, alt = '' }) {
   if (!backend) throw new StorageUnavailableError('storage_not_configured');
   const safeName = sanitizeFilename(filename, mime);
   const out = backend === 'shopify'
-    ? await putViaShopify({ buffer, filename: safeName, mime, alt })
+    ? await putViaShopify({ buffer, filename: safeName, mime, alt }, newBudget())
     : await putViaR2({ buffer, filename: safeName, mime });
   return { ...out, filename: safeName, backend };
 }
@@ -668,7 +891,11 @@ export default {
   sniffMime,
   importUrlAllowed,
   fetchExternalImage,
+  isPublicAddress,
   sanitizeFilename,
   newMediaId,
   StorageUnavailableError,
+  _dnsHooks,
+  _r2Hooks,
+  _probe,
 };

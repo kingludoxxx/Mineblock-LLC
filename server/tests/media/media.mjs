@@ -27,6 +27,16 @@
 //       as 503 shopify_scope_missing with the operator's fix in the message
 //   T10 no-backend degradation: upload 503, import-url still indexes the
 //       ORIGINAL url with rehosted:false
+//   T11 the route-level body cap only fires ahead of the global parser — the
+//       SAME 8MB request is 413 on the correct mount and 201 on today's
+//       (app.js:133 runs mountRoutes AFTER app.js:93's 50mb parser)
+//   T12 an IHDR claiming 4294967295px is clamped to NULL, not written to int4
+//   T13 DNS pinning: one resolution, reused by the socket; a post-check flip to
+//       169.254.169.254 is never connected to; mixed answer sets refused; 302
+//       refused with its own code
+//   T14 per-user rate limit, per-bucket, structured 429
+//   T15 R2 is not offered without R2_PUBLIC_URL; key shape; r2:// refused
+//   T16 poll timeout writes no row; the widened address checks
 //
 // Run:  node server/tests/media/media.mjs      (idempotent — run it twice)
 process.env.DATABASE_URL = process.env.DATABASE_URL || 'postgres://puure@127.0.0.1:5433/puure_shoporder';
@@ -35,10 +45,24 @@ process.env.JWT_ACCESS_SECRET = process.env.JWT_ACCESS_SECRET || 'dev-access-sec
 // Poll fast — the mock returns UPLOADED once before READY, so the real polling
 // loop is exercised without adding seconds to the run.
 process.env.MEDIA_SHOPIFY_POLL_INTERVAL_MS = '20';
-process.env.MEDIA_SHOPIFY_POLL_TIMEOUT_MS = '4000';
+process.env.MEDIA_SHOPIFY_POLL_TIMEOUT_MS = '600';
+// The rate limit is real (20/user/min) but this file makes ~30 write calls in
+// a few seconds. Raise the ceiling for the bulk of the run and drive the limit
+// itself in T14 with its own user and its own low ceiling.
+process.env.MEDIA_WRITE_RATE_LIMIT = '100000';
 process.env.PUURE_SHOPIFY_TOKEN = 'shpat_mock_token';
 process.env.PUURE_SHOPIFY_STORE = 'mock-store.myshopify.com';
 delete process.env.MEDIA_STORAGE_BACKEND;
+// r2.js snapshots its credential env vars into module-level constants AT
+// IMPORT TIME, so isR2Configured() is frozen for the life of the process —
+// setting these later in T15 would do nothing. They go here, before any
+// import. R2_PUBLIC_URL is read LIVE by mediaService (that is the MED #4 fix),
+// so T15 toggles that one at runtime. Shopify still wins the backend race
+// throughout, so this changes nothing for T1–T14.
+process.env.R2_ACCOUNT_ID = 'test-acct';
+process.env.R2_ACCESS_KEY_ID = 'test-key';
+process.env.R2_SECRET_ACCESS_KEY = 'test-secret';
+delete process.env.R2_PUBLIC_URL;
 
 import zlib from 'node:zlib';
 import express from 'express';
@@ -79,6 +103,19 @@ const PNG_4x3 = (() => {
     chunk('IDAT', zlib.deflateSync(raw)),
     chunk('IEND', Buffer.alloc(0)),
   ]);
+})();
+
+// A structurally VALID PNG whose IHDR claims 4294967295 x 4294967295. Not a
+// picture — a lie that overflows PostgreSQL's int4 if it is believed.
+const PNG_INT4_OVERFLOW = (() => {
+  const b = Buffer.from(PNG_4x3);
+  b.writeUInt32BE(0xffffffff, 16);   // width
+  b.writeUInt32BE(0xffffffff, 20);   // height
+  // Recompute the IHDR CRC so the file stays well-formed; a parser that
+  // rejected it on a bad checksum would prove nothing about the clamp.
+  const ihdrBody = b.subarray(12, 12 + 4 + 13);
+  b.writeUInt32BE(crc32(ihdrBody), 12 + 4 + 13);
+  return b;
 })();
 
 // 1x1 transparent GIF (the canonical one), 1x1 white JPEG, 2x2 lossy WebP.
@@ -135,10 +172,12 @@ function crc32(buf) {
 // ═══════════════════════════════════════════════════════════════════════════
 const mockState = {
   scopeDenied: false,
+  neverReady: false,       // poll always answers UPLOADED → exercise the timeout
   stagedBody: null,        // raw multipart body received at /staged
   fileCreateCalls: 0,
   pollCalls: 0,
   graphqlAuthHeaders: [],
+  originHits: [],          // every image-origin path actually served
 };
 
 const mock = express();
@@ -191,6 +230,9 @@ mock.post('/admin/api/:v/graphql.json', (req, res) => {
 
   if (q.includes('fileStatus')) {
     mockState.pollCalls += 1;
+    if (mockState.neverReady) {
+      return res.json({ data: { node: { id: 'gid://shopify/MediaImage/9001', fileStatus: 'UPLOADED' } } });
+    }
     if (mockState.pollCalls % 2 === 1) {
       return res.json({ data: { node: { id: 'gid://shopify/MediaImage/9001', fileStatus: 'UPLOADED' } } });
     }
@@ -215,7 +257,18 @@ mock.post('/staged', (req, res) => {
 });
 
 // ── image origin ────────────────────────────────────────────────────────────
+// Record every origin hit so the pinning test can prove WHICH server answered.
+mock.use((req, res, nxt) => {
+  if (!req.path.startsWith('/admin/') && req.path !== '/staged') mockState.originHits.push(req.path);
+  nxt();
+});
 mock.get('/img.png', (req, res) => { res.type('image/png').send(PNG_4x3); });
+mock.get('/overflow.png', (req, res) => { res.type('image/png').send(PNG_INT4_OVERFLOW); });
+// A 302 pointing straight at cloud metadata — the exact walk the guard exists
+// to stop. Following it would hand the dyny's IAM credentials to the caller.
+mock.get('/redirect.png', (req, res) => {
+  res.redirect(302, 'http://169.254.169.254/latest/meta-data/iam/security-credentials/');
+});
 mock.get('/img.gif', (req, res) => { res.type('image/gif').send(GIF_1x1); });
 mock.get('/notfound.png', (req, res) => { res.status(404).type('image/png').send('nope'); });
 mock.get('/page.html', (req, res) => { res.type('text/html').send('<html>not an image</html>'); });
@@ -244,8 +297,15 @@ await new Promise((r) => mockServer.once('listening', r));
 const MOCK_PORT = mockServer.address().port;
 MOCK_ORIGIN = `http://127.0.0.1:${MOCK_PORT}`;
 process.env.MEDIA_SHOPIFY_API_BASE = MOCK_ORIGIN;
-// Dev/test-only loopback allow-list (hard-off when NODE_ENV==='production').
-process.env.MEDIA_IMPORT_ALLOW_HOST = `127.0.0.1:${MOCK_PORT}`;
+
+// The import tests address the mock by NAME, not by IP, so every import runs
+// the REAL guard end to end: parse → deny-list → DNS resolution → address
+// verdict → PINNED connect → redirect refusal → byte cap → magic-byte sniff.
+// MEDIA_IMPORT_ALLOW_HOST relaxes exactly two things for this one host (the
+// https-only rule and the is-this-public verdict) and nothing else.
+const MOCK_HOST = `media-mock.test:${MOCK_PORT}`;
+const IMPORT_ORIGIN = `http://${MOCK_HOST}`;
+process.env.MEDIA_IMPORT_ALLOW_HOST = MOCK_HOST;
 
 // ═══════════════════════════════════════════════════════════════════════════
 // SEED — minimal users/roles/user_roles, same shape as the tracking harness.
@@ -278,12 +338,40 @@ const mediaService = await import('../../src/services/mediaService.js');
 const { ensureMediaTables } = await import('../../src/services/mediaSchema.js');
 await ensureMediaTables();
 
+// ── DNS seam ───────────────────────────────────────────────────────────────
+// `media-mock.test` resolves to whatever `dnsScript` says. Default: the mock.
+// The rebinding test makes it answer DIFFERENTLY on the second call, which is
+// only detectable if the connection re-resolves — i.e. if pinning is broken.
+const dnsState = { calls: 0, script: null };
+mediaService._dnsHooks.lookup = async (hostname) => {
+  dnsState.calls += 1;
+  if (hostname === 'media-mock.test') {
+    if (dnsState.script) return dnsState.script(dnsState.calls);
+    return [{ address: '127.0.0.1', family: 4 }];
+  }
+  throw new Error(`unexpected DNS lookup in test: ${hostname}`);
+};
+
+// TWO mounts, deliberately, because the difference between them IS a finding.
+//
+//  app  — reproduces PRODUCTION TODAY: the global express.json({limit:'50mb'})
+//         runs first (app.js:93) and mountRoutes happens after (app.js:133).
+//  appFixed — the mount the integrator must move to: the media router ahead of
+//         any app-level parser, exactly like checkoutPublic (app.js:87).
+//
+// T11 sends one request to BOTH and shows they disagree.
 const app = express();
 app.use(express.json({ limit: '50mb' }));
 app.use('/api/v1/media', mediaRouter);
 const server = app.listen(0);
 await new Promise((r) => server.once('listening', r));
 const B = `http://127.0.0.1:${server.address().port}/api/v1/media`;
+
+const appFixed = express();
+appFixed.use('/api/v1/media', mediaRouter);   // no app-level parser ahead of it
+const serverFixed = appFixed.listen(0);
+await new Promise((r) => serverFixed.once('listening', r));
+const BF = `http://127.0.0.1:${serverFixed.address().port}/api/v1/media`;
 
 const token = jwt.sign({ userId: 'u_media_test' }, process.env.JWT_ACCESS_SECRET, { expiresIn: '10m' });
 const tokenNoPerm = jwt.sign({ userId: 'u_media_noperm' }, process.env.JWT_ACCESS_SECRET, { expiresIn: '10m' });
@@ -457,7 +545,7 @@ let uploadedId = '';
 // ═══════════════════════════════════════════════════════════════════════════
 let importedId = '';
 {
-  const ok = await req('POST', '/import-url', { url: `${MOCK_ORIGIN}/img.png`, alt: 'imported hero' });
+  const ok = await req('POST', '/import-url', { url: `${IMPORT_ORIGIN}/img.png`, alt: 'imported hero' });
   check('T6 import happy path → 201', ok.status === 201, code(ok));
   importedId = ok.j?.item?.id || '';
   check('T6 rehosted:true', ok.j?.rehosted === true, JSON.stringify(ok.j?.rehosted));
@@ -468,25 +556,25 @@ let importedId = '';
     `${ok.j?.item?.width}x${ok.j?.item?.height}`);
   check('T6 filename derived from the path', ok.j?.item?.filename === 'img.png', String(ok.j?.item?.filename));
 
-  const gif = await req('POST', '/import-url', { url: `${MOCK_ORIGIN}/img.gif` });
+  const gif = await req('POST', '/import-url', { url: `${IMPORT_ORIGIN}/img.gif` });
   check('T6 a GIF imports too', gif.status === 201 && gif.j?.item?.mime === 'image/gif', code(gif));
 
-  const html = await req('POST', '/import-url', { url: `${MOCK_ORIGIN}/page.html` });
+  const html = await req('POST', '/import-url', { url: `${IMPORT_ORIGIN}/page.html` });
   check('T6 text/html content-type → 415', html.status === 415 && code(html) === 'unsupported_type', code(html));
 
-  const liar = await req('POST', '/import-url', { url: `${MOCK_ORIGIN}/liar.png` });
+  const liar = await req('POST', '/import-url', { url: `${IMPORT_ORIGIN}/liar.png` });
   check('T6 image/png header over non-image bytes → 415',
     liar.status === 415 && code(liar) === 'unsupported_type', code(liar));
 
-  const declared = await req('POST', '/import-url', { url: `${MOCK_ORIGIN}/big-declared.png` });
+  const declared = await req('POST', '/import-url', { url: `${IMPORT_ORIGIN}/big-declared.png` });
   check('T6 declared-oversize → 413 (refused before the body is read)',
     declared.status === 413 && code(declared) === 'too_large', code(declared));
 
-  const streamed = await req('POST', '/import-url', { url: `${MOCK_ORIGIN}/big-stream.png` });
+  const streamed = await req('POST', '/import-url', { url: `${IMPORT_ORIGIN}/big-stream.png` });
   check('T6 STREAMED oversize with no content-length → 413',
     streamed.status === 413 && code(streamed) === 'too_large', code(streamed));
 
-  const missing = await req('POST', '/import-url', { url: `${MOCK_ORIGIN}/notfound.png` });
+  const missing = await req('POST', '/import-url', { url: `${IMPORT_ORIGIN}/notfound.png` });
   check('T6 upstream 404 → 400 upstream_status',
     missing.status === 400 && code(missing) === 'upstream_status', code(missing));
 }
@@ -603,12 +691,12 @@ let importedId = '';
   check('T10 upload with no backend → 503 storage_not_configured',
     up.status === 503 && code(up) === 'storage_not_configured', `${up.status} ${code(up)}`);
 
-  const imp = await req('POST', '/import-url', { url: `${MOCK_ORIGIN}/img.png` });
+  const imp = await req('POST', '/import-url', { url: `${IMPORT_ORIGIN}/img.png` });
   check('T10 import-url still succeeds (index-only)', imp.status === 201, code(imp));
   check('T10 rehosted:false is REPORTED, not hidden', imp.j?.rehosted === false, JSON.stringify(imp.j?.rehosted));
   check('T10 rehost_error names the reason', imp.j?.rehost_error === 'storage_not_configured', String(imp.j?.rehost_error));
   check('T10 the ORIGINAL url is what got indexed',
-    imp.j?.item?.url === `${MOCK_ORIGIN}/img.png`, String(imp.j?.item?.url));
+    imp.j?.item?.url === `${IMPORT_ORIGIN}/img.png`, String(imp.j?.item?.url));
   check('T10 shopify_file_id is null for an un-rehosted row',
     imp.j?.item?.shopify_file_id === null, String(imp.j?.item?.shopify_file_id));
 
@@ -619,8 +707,329 @@ let importedId = '';
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// T11 — HIGH #2: the route-level body cap is only real ahead of the global
+// parser. One request, two mounts, two different answers.
+// ═══════════════════════════════════════════════════════════════════════════
+{
+  // 8MB of filler in a field the handler ignores, plus a perfectly legal 4x3
+  // PNG in `data`. The DECODED image is ~100 bytes, so the handler's own 5MB
+  // check cannot fire — only a BODY cap can refuse this.
+  const payload = {
+    filename: 'ordering.png',
+    mime: 'image/png',
+    junk: 'A'.repeat(8 * 1024 * 1024),
+    data: PNG_4x3.toString('base64'),
+  };
+  const body = JSON.stringify(payload);
+  check('T11 the probe body really is >7MB', body.length > 7 * 1024 * 1024, `${body.length}B`);
+
+  const t0 = Date.now();
+  const fixed = await fetch(`${BF}/upload`, { method: 'POST', headers: H, body });
+  const elapsed = Date.now() - t0;
+  let fj = null;
+  try { fj = JSON.parse(await fixed.text()); } catch { /* non-JSON = default handler */ }
+  check('T11 correctly-mounted router refuses an 8MB body with 413', fixed.status === 413, String(fixed.status));
+  check('T11 the 413 is OUR structured code, not express\'s HTML page',
+    fj?.error?.code === 'too_large', JSON.stringify(fj));
+  check('T11 it refuses FAST (<500ms — the body was not fully buffered)', elapsed < 500, `${elapsed}ms`);
+
+  // The same request against the CURRENT production ordering. This is the
+  // finding, asserted rather than described: behind the global 50mb parser the
+  // 7mb cap is decoration and the request sails through.
+  const prod = await fetch(`${B}/upload`, { method: 'POST', headers: H, body });
+  const pj = await prod.json().catch(() => null);
+  check('T11 behind the global 50mb parser the SAME body is accepted (the bug)',
+    prod.status === 201 && pj?.item?.id, `${prod.status} ${JSON.stringify(pj?.error)}`);
+  check('T11 => the mount MUST move ahead of app.js:93 (documented in routes/index.js)', true);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// T12 — HIGH #1: a header claiming 4294967295px must not reach an int4 column.
+// ═══════════════════════════════════════════════════════════════════════════
+{
+  check('T12 the fixture really claims 4294967295 in its IHDR',
+    PNG_INT4_OVERFLOW.readUInt32BE(16) === 4294967295
+    && PNG_INT4_OVERFLOW.readUInt32BE(20) === 4294967295, '');
+  check('T12 the fixture is still a well-formed PNG (sniffs as image/png)',
+    mediaService.sniffMime(PNG_INT4_OVERFLOW) === 'image/png', '');
+  check('T12 imageDimensions clamps the lie to null',
+    mediaService.imageDimensions(PNG_INT4_OVERFLOW) === null,
+    JSON.stringify(mediaService.imageDimensions(PNG_INT4_OVERFLOW)));
+
+  const before = mockState.fileCreateCalls;
+  const r = await req('POST', '/upload', {
+    filename: 'overflow.png', mime: 'image/png', data: PNG_INT4_OVERFLOW.toString('base64'),
+  });
+  check('T12 the upload SUCCEEDS (201) — a bad header is not a bad image', r.status === 201, code(r));
+  check('T12 width/height are stored NULL, not a garbage number',
+    r.j?.item?.width === null && r.j?.item?.height === null,
+    `${r.j?.item?.width}x${r.j?.item?.height}`);
+  check('T12 the row exists and points at the CDN object (no orphan)',
+    Boolean(r.j?.item?.url) && Boolean(r.j?.item?.shopify_file_id), JSON.stringify(r.j?.item?.url));
+  check('T12 exactly one CDN write happened', mockState.fileCreateCalls === before + 1, '');
+
+  // int4 boundary, both sides.
+  const ok = Buffer.from(PNG_4x3); ok.writeUInt32BE(2147483647, 16); ok.writeUInt32BE(1, 20);
+  ok.writeUInt32BE(crc32(ok.subarray(12, 29)), 29);
+  check('T12 exactly INT4_MAX is ACCEPTED (the clamp is not off by one)',
+    JSON.stringify(mediaService.imageDimensions(ok)) === '{"width":2147483647,"height":1}',
+    JSON.stringify(mediaService.imageDimensions(ok)));
+  const over = Buffer.from(PNG_4x3); over.writeUInt32BE(2147483648, 16); over.writeUInt32BE(1, 20);
+  over.writeUInt32BE(crc32(over.subarray(12, 29)), 29);
+  check('T12 INT4_MAX+1 is refused', mediaService.imageDimensions(over) === null, '');
+  const zero = Buffer.from(PNG_4x3); zero.writeUInt32BE(0, 16); zero.writeUInt32BE(0, 20);
+  zero.writeUInt32BE(crc32(zero.subarray(12, 29)), 29);
+  check('T12 a 0x0 header is refused too', mediaService.imageDimensions(zero) === null, '');
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// T13 — MED #3: DNS pinning + redirect refusal, through the REAL guard.
+// ═══════════════════════════════════════════════════════════════════════════
+{
+  // CONTROL: `media-mock.test` does not exist as far as the OS is concerned.
+  // Everything below therefore only works if the address the GUARD resolved is
+  // the address the SOCKET used — a re-resolving implementation gets ENOTFOUND.
+  const realDns = await import('node:dns/promises');
+  let osResolves = true;
+  try { await realDns.lookup('media-mock.test'); } catch { osResolves = false; }
+  check('T13 CONTROL: media-mock.test is unresolvable by the OS', osResolves === false, '');
+
+  const callsBefore = dnsState.calls;
+  mediaService._probe.pinnedAddresses.length = 0;
+  mockState.originHits.length = 0;
+  const r = await req('POST', '/import-url', { url: `${IMPORT_ORIGIN}/img.png` });
+  check('T13 the import SUCCEEDS — only possible via the pinned address', r.status === 201, code(r));
+  check('T13 the guard resolved exactly ONCE', dnsState.calls - callsBefore === 1, String(dnsState.calls - callsBefore));
+  check('T13 the socket was handed the guard-approved address',
+    mediaService._probe.pinnedAddresses.every((a) => a === '127.0.0.1')
+    && mediaService._probe.pinnedAddresses.length >= 1,
+    JSON.stringify(mediaService._probe.pinnedAddresses));
+  check('T13 the mock origin actually served it', mockState.originHits.includes('/img.png'),
+    JSON.stringify(mockState.originHits));
+
+  // REBINDING: the zone flips its answer to cloud metadata after the check.
+  // A re-resolving client would connect to answer #2. A pinning one cannot.
+  // NOTE the local counter — dnsState.calls is cumulative for the whole run,
+  // and keying the flip off it made the FIRST answer the hostile one (which
+  // hung the suite on a link-local connect). The bug was in the test, but it
+  // is exactly the shape of mistake the pinning code must survive.
+  let rebindN = 0;
+  dnsState.script = () => {
+    rebindN += 1;
+    return rebindN === 1
+      ? [{ address: '127.0.0.1', family: 4 }]
+      : [{ address: '169.254.169.254', family: 4 }];
+  };
+  const callsBefore2 = dnsState.calls;
+  mediaService._probe.pinnedAddresses.length = 0;
+  const reb = await req('POST', '/import-url', { url: `${IMPORT_ORIGIN}/img.png` });
+  check('T13 REBINDING: the import still lands on the first, validated answer', reb.status === 201, code(reb));
+  check('T13 REBINDING: still exactly one resolution', dnsState.calls - callsBefore2 === 1, String(dnsState.calls - callsBefore2));
+  check('T13 REBINDING: 169.254.169.254 was NEVER handed to a socket',
+    !mediaService._probe.pinnedAddresses.includes('169.254.169.254'),
+    JSON.stringify(mediaService._probe.pinnedAddresses));
+  dnsState.script = null;
+
+  // A name whose answers are mixed public/private is a rebinding attempt, not
+  // a multi-homed host — EVERY answer must pass. Asserted against the guard
+  // directly (no allow-list, https URL, so it runs completely unrelaxed);
+  // going through HTTP here would mean dialling a real internet host.
+  process.env.MEDIA_IMPORT_ALLOW_HOST = '';
+  dnsState.script = () => [{ address: '93.184.216.34', family: 4 }, { address: '127.0.0.1', family: 4 }];
+  const mixed = await mediaService.importUrlAllowed('https://media-mock.test/img.png');
+  check('T13 a mixed public/private answer set is refused',
+    mixed.ok === false && mixed.reason === 'blocked_host', JSON.stringify(mixed));
+  // CONTROL: the same name with an all-public answer set is allowed — so the
+  // refusal above came from the ADDRESS, not from the hostname.
+  dnsState.script = () => [{ address: '93.184.216.34', family: 4 }];
+  const allPublic = await mediaService.importUrlAllowed('https://media-mock.test/img.png');
+  check('T13 CONTROL: an all-public answer set is allowed, and the addresses are returned',
+    allPublic.ok === true && allPublic.addresses.join() === '93.184.216.34', JSON.stringify(allPublic));
+  check('T13 the guard returns addresses for the caller to PIN (not just a boolean)',
+    Array.isArray(allPublic.addresses), JSON.stringify(allPublic));
+  process.env.MEDIA_IMPORT_ALLOW_HOST = MOCK_HOST;
+  dnsState.script = null;
+
+  // REDIRECT: a 302 straight at cloud metadata. Not followed, and it gets its
+  // own code so the operator is told what to do instead.
+  mockState.originHits.length = 0;
+  const redir = await req('POST', '/import-url', { url: `${IMPORT_ORIGIN}/redirect.png` });
+  check('T13 a 302 is REFUSED, not followed', redir.status === 400 && code(redir) === 'redirect_refused',
+    `${redir.status} ${code(redir)}`);
+  check('T13 the redirect target was never fetched',
+    !mockState.originHits.some((p) => p.includes('meta-data')), JSON.stringify(mockState.originHits));
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// T14 — MED #5: per-user rate limit on the two outbound-network routes.
+// ═══════════════════════════════════════════════════════════════════════════
+{
+  await sql`INSERT INTO users (id, email, first_name, last_name) VALUES ('u_media_rl','rl@local.test','RL','Test') ON CONFLICT (id) DO NOTHING`;
+  await sql`DELETE FROM user_roles WHERE user_id = 'u_media_rl'`;
+  await sql`INSERT INTO user_roles (user_id, role_id) VALUES ('u_media_rl','r_media_test')`;
+  const rlToken = jwt.sign({ userId: 'u_media_rl' }, process.env.JWT_ACCESS_SECRET, { expiresIn: '10m' });
+  const RH = { Authorization: `Bearer ${rlToken}`, 'Content-Type': 'application/json' };
+
+  process.env.MEDIA_WRITE_RATE_LIMIT = '3';
+  const statuses = [];
+  for (let i = 0; i < 5; i += 1) {
+    // Deliberately invalid bodies: the limiter runs BEFORE validation, which is
+    // the point — a hostile caller must not be able to spend our Shopify quota
+    // by sending well-formed requests only.
+    const r = await req('POST', '/upload', { filename: 'x.png', mime: 'image/png' }, RH);
+    statuses.push(r.status);
+  }
+  check('T14 the first 3 are let through (400 validation, not 429)',
+    statuses.slice(0, 3).every((s) => s === 400), JSON.stringify(statuses));
+  check('T14 the 4th and 5th are 429', statuses[3] === 429 && statuses[4] === 429, JSON.stringify(statuses));
+
+  const limited = await req('POST', '/upload', { filename: 'x.png', mime: 'image/png' }, RH);
+  check('T14 the 429 carries a structured code + retryAfter',
+    limited.j?.error?.code === 'rate_limited' && Number.isFinite(limited.j?.error?.retryAfter),
+    JSON.stringify(limited.j));
+
+  // Separate bucket: exhausting /upload must not lock out /import-url.
+  const imp = await req('POST', '/import-url', { url: `${IMPORT_ORIGIN}/img.png` }, RH);
+  check('T14 import has its OWN bucket (not blocked by the upload limit)',
+    imp.status === 201, `${imp.status} ${code(imp)}`);
+
+  // Garbage in the env must fall back to the default, never disable the limit.
+  process.env.MEDIA_WRITE_RATE_LIMIT = 'not-a-number';
+  const garbage = await req('POST', '/upload', { filename: 'x.png', mime: 'image/png' }, RH);
+  check('T14 a garbage MEDIA_WRITE_RATE_LIMIT does not DISABLE the limiter (default 20 applies)',
+    [400, 429].includes(garbage.status), String(garbage.status));
+
+  // The original user is untouched — the key is per USER. Restore the ceiling
+  // first: u_media_test has already spent well over 3 calls in T1–T13.
+  process.env.MEDIA_WRITE_RATE_LIMIT = '100000';
+  const other = await req('POST', '/upload', { filename: 'x.png', mime: 'image/png' });
+  check('T14 a DIFFERENT user is unaffected', other.status === 400 && code(other) === 'data_required', code(other));
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// T15 — MED #4: R2 must not advertise itself without a public base URL.
+// ═══════════════════════════════════════════════════════════════════════════
+{
+  const savedBase = process.env.MEDIA_SHOPIFY_API_BASE;
+  const savedToken = process.env.PUURE_SHOPIFY_TOKEN;
+  delete process.env.MEDIA_SHOPIFY_API_BASE;
+  delete process.env.PUURE_SHOPIFY_TOKEN;   // force the R2 branch
+  delete process.env.R2_PUBLIC_URL;         // creds were set before any import
+
+  check('T15 r2.js DOES consider itself configured (creds present)',
+    (await import('../../src/services/r2.js')).isR2Configured() === true, '');
+  check('T15 R2 creds WITHOUT R2_PUBLIC_URL => no backend (the fix)',
+    mediaService.storageBackend() === null, String(mediaService.storageBackend()));
+  const st = await req('GET', '/storage');
+  check('T15 /storage says uploads are OFF rather than advertising R2',
+    st.j?.backend === null && st.j?.uploads_enabled === false, JSON.stringify(st.j));
+  const blocked = await req('POST', '/upload', {
+    filename: 'r2.png', mime: 'image/png', data: PNG_4x3.toString('base64'),
+  });
+  check('T15 upload is refused BEFORE any PutObject is billed',
+    blocked.status === 503 && code(blocked) === 'storage_not_configured', code(blocked));
+
+  // Now give it a public base and stub the transport so the key shape and the
+  // returned URL are asserted without a network call.
+  process.env.R2_PUBLIC_URL = 'https://cdn.example-r2.test';
+  check('T15 with R2_PUBLIC_URL set the backend becomes r2',
+    mediaService.storageBackend() === 'r2', String(mediaService.storageBackend()));
+
+  const seen = [];
+  const realUpload = mediaService._r2Hooks.uploadBuffer;
+  mediaService._r2Hooks.uploadBuffer = async (buf, key, ct) => {
+    seen.push({ key, ct, bytes: buf.length });
+    return `${process.env.R2_PUBLIC_URL}/${key}`;
+  };
+  const up = await req('POST', '/upload', {
+    filename: 'r2 shot.png', mime: 'image/png', data: PNG_4x3.toString('base64'),
+  });
+  check('T15 the R2 upload path returns 201', up.status === 201, code(up));
+  check('T15 backend reported as r2', up.j?.backend === 'r2', String(up.j?.backend));
+  check('T15 key shape is media-library/<uuid>.png',
+    /^media-library\/[0-9a-f-]{36}\.png$/.test(seen[0]?.key || ''), JSON.stringify(seen[0]));
+  check('T15 content-type is the SNIFFED mime', seen[0]?.ct === 'image/png', String(seen[0]?.ct));
+  check('T15 the stored url is the public CDN url',
+    up.j?.item?.url === `${process.env.R2_PUBLIC_URL}/${seen[0]?.key}`, String(up.j?.item?.url));
+  check('T15 shopify_file_id is null on the R2 path', up.j?.item?.shopify_file_id === null, '');
+  check('T15 dimensions still parsed on the R2 path',
+    up.j?.item?.width === 4 && up.j?.item?.height === 3, '');
+
+  // An r2:// pseudo-url is NOT browser-reachable and must never be stored.
+  mediaService._r2Hooks.uploadBuffer = async (buf, key) => `r2://bucket/${key}`;
+  const pseudo = await req('POST', '/upload', {
+    filename: 'pseudo.png', mime: 'image/png', data: PNG_4x3.toString('base64'),
+  });
+  check('T15 an r2:// pseudo-url is refused, not stored',
+    pseudo.status === 503 && code(pseudo) === 'r2_public_url_missing', code(pseudo));
+
+  // A transport failure is a 503, never an unstructured 500.
+  mediaService._r2Hooks.uploadBuffer = async () => { throw new Error('connection reset'); };
+  const boom = await req('POST', '/upload', {
+    filename: 'boom.png', mime: 'image/png', data: PNG_4x3.toString('base64'),
+  });
+  check('T15 an R2 transport failure is 503 r2_upload_failed',
+    boom.status === 503 && code(boom) === 'r2_upload_failed', `${boom.status} ${code(boom)}`);
+
+  mediaService._r2Hooks.uploadBuffer = realUpload;
+  delete process.env.R2_PUBLIC_URL;
+  process.env.MEDIA_SHOPIFY_API_BASE = savedBase;
+  process.env.PUURE_SHOPIFY_TOKEN = savedToken;
+  check('T15 shopify is restored as the backend', mediaService.storageBackend() === 'shopify', '');
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// T16 — poll timeout + the widened address checks (LOW #6)
+// ═══════════════════════════════════════════════════════════════════════════
+{
+  mockState.neverReady = true;
+  const t0 = Date.now();
+  const r = await req('POST', '/upload', {
+    filename: 'stuck.png', mime: 'image/png', data: PNG_4x3.toString('base64'),
+  });
+  const elapsed = Date.now() - t0;
+  check('T16 a file that never reaches READY is a 503, not a hang',
+    r.status === 503 && code(r) === 'shopify_poll_timeout', `${r.status} ${code(r)}`);
+  check('T16 it gives up inside the poll window', elapsed < 3000, `${elapsed}ms`);
+  const rows = await sql`SELECT COUNT(*)::int AS n FROM lb_media WHERE filename = 'stuck.png'`;
+  check('T16 no row was written for a file that never went READY', rows[0].n === 0, JSON.stringify(rows[0]));
+  mockState.neverReady = false;
+
+  const pub = mediaService.isPublicAddress;
+  const refuse = [
+    ['fe80::1 link-local', 'fe80::1'],
+    ['fe9a::1 link-local (prefix-match misses this)', 'fe9a::1'],
+    ['febf::1 top of the link-local range', 'febf::1'],
+    ['fd00::1 ULA', 'fd00::1'],
+    ['2002::1 6to4', '2002:7f00:1::1'],
+    ['64:ff9b:: NAT64', '64:ff9b::7f00:1'],
+    ['::7f00:1 IPv4-compatible loopback', '::7f00:1'],
+    ['::ffff:127.0.0.1 IPv4-mapped loopback', '::ffff:127.0.0.1'],
+    ['198.18.0.1 benchmarking', '198.18.0.1'],
+    ['198.19.255.1 benchmarking', '198.19.255.1'],
+    ['192.0.0.1 IETF protocol assignments', '192.0.0.1'],
+    ['100.64.0.1 CGNAT', '100.64.0.1'],
+  ];
+  for (const [name, addr] of refuse) {
+    check(`T16 isPublicAddress refuses ${name}`, pub(addr) === false, addr);
+  }
+  const allow = [
+    ['93.184.216.34 (example.com)', '93.184.216.34'],
+    ['2606:2800:220:1:248:1893:25c8:1946', '2606:2800:220:1:248:1893:25c8:1946'],
+    ['198.20.0.1 (just outside 198.18/15)', '198.20.0.1'],
+    ['192.0.1.1 (just outside 192.0.0.0/24)', '192.0.1.1'],
+    ['fec0::1 (site-local, above the link-local range)', 'fec0::1'],
+  ];
+  for (const [name, addr] of allow) {
+    check(`T16 isPublicAddress allows ${name}`, pub(addr) === true, addr);
+  }
+  check('T16 a non-address is refused', pub('not-an-ip') === false, '');
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 console.log(`\n${pass} passed, ${fail} failed`);
 server.close();
+serverFixed.close();
 mockServer.close();
 await sql.end({ timeout: 5 });
 process.exit(fail === 0 ? 0 : 1);
