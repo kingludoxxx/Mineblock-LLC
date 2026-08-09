@@ -398,6 +398,49 @@ router.post('/stripe/create-intent', async (req, res) => {
 // metadata carries co_session_id so payment.succeeded maps back. The embed
 // mounts with setupFutureUsage=off_session (an embed prop, not an API field)
 // which tokenizes the card for 1-click upsells.
+
+// Where Whop sends the buyer after payment. Without it Whop falls back to the
+// COMPANY's default page (the wrong product, in the visitor's locale — what the
+// first live order showed). Resolves the funnel's thank-you page: the checkout
+// page's 'main' flow edge target if the operator connected one in the builder,
+// else any published page of type 'thankyou'. The URL is absolute (built from
+// the request host so it works on custom domains too) and carries ?s=<session>
+// so the thank-you page loads THIS order's live totals — dynamic by construction.
+async function resolveRedirectUrl(req, session) {
+  try {
+    if (!session.funnel_id) return '';
+    const [f] = await pgQuery(
+      `SELECT slug, flow_layout FROM funnels WHERE id = $1 AND NOT archived`, [session.funnel_id]
+    );
+    if (!f || !f.slug) return '';
+    const pages = await pgQuery(
+      `SELECT id, slug, type FROM funnel_pages
+       WHERE funnel_id = $1 AND NOT archived AND status = 'published'`, [session.funnel_id]
+    );
+    const byId = new Map(pages.map((p) => [String(p.id), p]));
+    let target = null;
+    const flow = f.flow_layout && typeof f.flow_layout === 'object' ? f.flow_layout : {};
+    const edges = Array.isArray(flow.edges) ? flow.edges : [];
+    for (const e of edges) {
+      if (!e || String(e.source) !== String(session.page_id)) continue;
+      if ((e.kind || 'main') === 'fallback') continue;
+      const t = byId.get(String(e.target));
+      if (t) { target = t; break; }
+    }
+    if (!target) target = pages.find((p) => p.type === 'thankyou') || null;
+    if (!target) return '';
+    const proto = String(req.headers['x-forwarded-proto'] || req.protocol || 'https').split(',')[0].trim();
+    const host = String(req.headers['x-forwarded-host'] || req.get('host') || '').split(',')[0].trim();
+    if (!host) return '';
+    const slug = String(target.slug || '/');
+    const path = slug === '/' ? `/f/${f.slug}` : `/f/${f.slug}${slug.startsWith('/') ? slug : '/' + slug}`;
+    return `${proto}://${host}${path}?s=${encodeURIComponent(session.id)}`;
+  } catch (e) {
+    console.error('[checkout] redirect resolve failed (non-fatal):', e.message);
+    return '';
+  }
+}
+
 router.post('/whop/create-session', async (req, res) => {
   try {
     if (!(await rateLimit(req, res, 'whop-create', 20))) return;
@@ -407,7 +450,7 @@ router.post('/whop/create-session', async (req, res) => {
       return res.status(422).json({ success: false, error: { code: 'session_required' } });
     }
     const rows = await pgQuery(
-      `SELECT id, funnel_id, status, total, currency FROM co_sessions WHERE id = $1`,
+      `SELECT id, funnel_id, page_id, status, total, currency FROM co_sessions WHERE id = $1`,
       [sessionId]
     );
     if (!rows.length) {
@@ -426,13 +469,12 @@ router.post('/whop/create-session', async (req, res) => {
     if (!creds.api_key || !creds.company_id) {
       return res.status(503).json({ success: false, error: { code: 'gateway_not_configured' } });
     }
+    const redirectUrl = await resolveRedirectUrl(req, session);
     const result = await whop.createCheckoutSession(creds, {
       amount: Number(session.total),
       currency: session.currency,
       metadata: { co_session_id: session.id, kind: '0' },
-      redirectUrl: (process.env.CHECKOUT_BASE_URL || '').replace(/\/$/, '')
-        ? `${(process.env.CHECKOUT_BASE_URL || '').replace(/\/$/, '')}/checkout/complete`
-        : '',
+      redirectUrl,
     });
     if (!result.ok) {
       console.error('[checkout] whop create-session failed:', result.error, result.detail || '');
@@ -453,6 +495,8 @@ router.post('/whop/create-session', async (req, res) => {
       data: {
         whop_session_id: result.session_id, // ch_… → embed sessionId
         purchase_url: result.purchase_url,
+        redirect_url: redirectUrl,
+
         amount: Number(session.total),
         currency: session.currency,
       },

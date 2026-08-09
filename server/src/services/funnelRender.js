@@ -954,6 +954,10 @@ function doMount(){var v=emailValue();if(mounted||!valid(v)||!billingReady()){re
   applyPrefill(billing(),v);
   mount.setAttribute('data-fos-prefill-key',prefillKey());
   mount.setAttribute('data-whop-checkout-session',embed.whop_session_id);
+  /* Belt + braces with the plan's server-side redirect_url: also tell the
+     EMBED where to send the buyer, so Whop's own default post-purchase
+     page (wrong product, visitor locale) never wins. */
+  if(embed.redirect_url){mount.setAttribute('data-whop-checkout-return-url',embed.redirect_url);}
   if(placeholder){placeholder.hidden=true;}
   loadWhopLoader();
   activate();}
