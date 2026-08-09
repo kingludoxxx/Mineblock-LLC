@@ -41,6 +41,7 @@ import funnelTransferRoutes from './funnelTransfer.js';
 import funnelCostsRoutes from './funnelCosts.js';
 import healthAlertsRoutes from './healthAlerts.js';
 import funnelMetricsRoutes from './funnelMetrics.js';
+import funnelAttributionRoutes from './funnelAttribution.js';
 
 const mountRoutes = (app) => {
   app.use('/api/v1/users', userRoutes);
@@ -98,6 +99,7 @@ const mountRoutes = (app) => {
   // METRICS ENGINE — the one query API + presets + dashboard composite (authed,
   // funnels permission; read-only, isolated analytics pool, REPORT_TZ buckets).
   app.use('/api/v1/funnel-metrics', funnelMetricsRoutes);
+  app.use('/api/v1/funnel-attribution', funnelAttributionRoutes); // ATTRIBUTION LANE: last-touch marketing breakdowns, ROAS, click ledger (authed, funnels permission; isolated analytics pool, read-only, Europe/Madrid days)
   // MEDIA LIBRARY routes are mounted in app.js, AHEAD of the global body
   // parser, so the router's own 7mb cap is real (see app.js media mount).
 };
