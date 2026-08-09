@@ -316,9 +316,11 @@ function LibraryTab({ funnelId, onCloned, onError, reloadToken }) {
           // document-level key handler saw it and closed everything, losing the
           // operator's filters and scroll position.
           onKeyDown={(e) => {
-            if (e.key === 'Escape') {
+            // Swallow Escape only when it DOES something (clears the filter);
+            // with an empty box it falls through and closes the flyout.
+            if (e.key === 'Escape' && q) {
               e.stopPropagation();
-              if (q) setQ('');
+              setQ('');
             }
           }}
           placeholder="Search saved pages"
