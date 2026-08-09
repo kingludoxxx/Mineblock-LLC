@@ -69,6 +69,7 @@ import {
   sanitizeFilename,
   newMediaId,
   StorageUnavailableError,
+  MAX_IMPORT_BYTES,
 } from '../services/mediaService.js';
 
 const router = Router();
@@ -101,12 +102,32 @@ function generationLimit() {
   return Math.trunc(n);
 }
 
-// A generated asset is an image the operator will drop on a paid-traffic page.
-// 20MB is generous for that and is a hard ceiling on what one poll can pull
-// into a 512MB dyno's memory.
-const MAX_ASSET_BYTES = 20 * 1024 * 1024;
+// The lane's existing external-image ceiling, IMPORTED rather than restated.
+// media.js's import-url path already answers "how big may an image we pull
+// from someone else's host be" with MAX_IMPORT_BYTES (10MB), and two different
+// answers to that question in one service is how the smaller one stops being
+// the real limit. A generated hero image is nowhere near it.
+const MAX_ASSET_BYTES = MAX_IMPORT_BYTES;
 
 const isPlainObject = (v) => v != null && typeof v === 'object' && !Array.isArray(v);
+
+// A jsonb column comes back as a STRING from this repo's pg driver, not as a
+// parsed object (verified by execution against the live DB — `typeof stored`
+// is 'string'). Assuming either behaviour is how the `stored` receipt silently
+// stopped being read; this handles both and refuses anything that is not an
+// object, so a corrupt cell degrades to "no receipt" rather than a TypeError
+// three lines later.
+function parseJsonColumn(value) {
+  if (value == null) return null;
+  if (isPlainObject(value)) return value;
+  if (typeof value !== 'string') return null;
+  try {
+    const parsed = JSON.parse(value);
+    return isPlainObject(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
 
 // Structured errors — a client reads error.code, never a message regex.
 const fail = (res, status, code, message) =>
@@ -121,14 +142,37 @@ const fail = (res, status, code, message) =>
 // instead of paying for a second download + CDN write and leaving two rows
 // behind. `status` is the claim; `media_id` is the answer.
 //
-// status: pending | persisting | completed | failed
-//   persisting is the in-flight claim taken by an atomic conditional UPDATE —
-//   a check-then-write would race two concurrent polls straight past it.
+// status: pending | persisting | completed | failed | dead
+//   pending     nothing done yet, or a TRANSIENT attempt failed — re-claimable
+//   persisting  an in-flight claim, taken by an atomic conditional UPDATE. A
+//               check-then-write would race two concurrent polls straight past
+//               it. `claimed_at` is what makes the claim RECOVERABLE: a dyno
+//               that dies mid-download would otherwise strand the row here
+//               forever, with the operator already charged for the generation
+//               and every later poll answering "in_progress" until the heat
+//               death of the universe. After CLAIM_STALE_SEC the next poll may
+//               steal it.
+//   completed   media_id names a live lb_media row
+//   failed      this attempt will not produce an asset (upstream said so) but
+//               a later poll may still learn otherwise — re-claimable
+//   dead        TERMINALLY refused by OUR checks (oversize, not an image, a
+//               host we will not fetch). NOT re-claimable, and answered
+//               without ever calling upstream again.
+//
+// `stored` is the ORPHAN FIX. putImage() writes bytes to a CDN we are billed
+// for; the lb_media INSERT is a separate statement that can fail (circuit
+// breaker, timeout, deploy). Recording the CDN result on the claim row the
+// instant putImage returns means the retry re-uses those bytes instead of
+// paying to upload them a second time, and it means a completed job whose
+// lb_media row was manually deleted can be rebuilt without touching Higgsfield
+// or the CDN at all. No reaper process required — the next poll reconciles.
 //
 // Ensure-on-demand with the single-in-flight-promise guard, identical to
 // mediaSchema/checkoutSchema: two concurrent first requests must not run
 // CREATE TABLE in parallel.
 // ---------------------------------------------------------------------------
+export const CLAIM_STALE_SEC = 300; // 5 minutes
+
 let tablesReadyPromise = null;
 
 export function ensureAiMediaTables() {
@@ -151,9 +195,21 @@ async function createTables() {
       status TEXT NOT NULL DEFAULT 'pending',
       media_id TEXT,
       prompt TEXT NOT NULL DEFAULT '',
+      aspect TEXT,
+      quality TEXT,
+      claimed_at TIMESTAMPTZ,
+      stored JSONB,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )
   `);
+  // Additive, for a table an earlier deploy already created. IF NOT EXISTS
+  // makes each one a no-op on a fresh table.
+  for (const col of [
+    'aspect TEXT', 'quality TEXT', 'claimed_at TIMESTAMPTZ', 'stored JSONB',
+  ]) {
+    // eslint-disable-next-line no-await-in-loop
+    await pgQuery(`ALTER TABLE lb_ai_media_jobs ADD COLUMN IF NOT EXISTS ${col}`);
+  }
   await pgQuery(
     `CREATE INDEX IF NOT EXISTS idx_lb_ai_media_jobs_user_created
        ON lb_ai_media_jobs (user_id, created_at DESC)`
@@ -183,6 +239,12 @@ function verifyJobToken(jobId, userId, provided) {
 // with a human string. Credits exhaustion is the one operator-actionable case
 // that must NOT read as "something broke" — the dialog turns this code into a
 // calm amber note, not an error toast.
+//
+// The generic branch does NOT forward the upstream string. That string is a
+// third party's prose about a request WE built, and it has already carried a
+// status line and a body fragment; echoing it into the browser is how internal
+// detail leaks out of a vendor error one day. `detail` is returned separately
+// and only ever goes to the server log.
 // ---------------------------------------------------------------------------
 export function classifyUpstream(message) {
   const m = String(message || '');
@@ -203,12 +265,14 @@ export function classifyUpstream(message) {
   return {
     status: 502,
     code: 'upstream_error',
-    message: m.slice(0, 300) || 'Higgsfield rejected the request',
+    message: 'Higgsfield could not be reached right now — try again in a moment.',
+    detail: m.slice(0, 300),
   };
 }
 
 const upstreamFail = (res, message) => {
   const c = classifyUpstream(message);
+  if (c.detail) console.error('[ai-media] upstream failure:', c.detail);
   return fail(res, c.status, c.code, c.message);
 };
 
@@ -218,16 +282,31 @@ const upstreamFail = (res, message) => {
 // charged: over-counting a REFUSED request is the conservative direction — the
 // alternative (check first, charge later) is a window an operator can drive a
 // 4x batch through every time.
+//
+// Returns { allowed, consumed, remaining, retryAfter }. `consumed` is what the
+// 429 body reports: an operator who asked for a batch of 4 with 2 units left
+// has BURNED those 2, and a refusal that does not say so reads as "nothing
+// happened" while their quota quietly drained.
 // ---------------------------------------------------------------------------
+// Test seam, the same shape mediaService._dnsHooks / _r2Hooks use. The
+// fail-closed branch below is the one that decides whether a broken limiter
+// costs money, so it has to be reachable from a harness — an unverified
+// failure path is a claim about a mechanism, not evidence.
+export const _hooks = { checkRateLimit };
+
 async function consumeGenerationQuota(who, units) {
-  let last = { allowed: true, remaining: 0, retryAfter: 0 };
   const limit = generationLimit();
+  let consumed = 0;
+  let last = { allowed: true, remaining: limit, retryAfter: 0 };
   for (let i = 0; i < units; i += 1) {
     // eslint-disable-next-line no-await-in-loop
-    last = await checkRateLimit(`ai-media:${who}`, limit, GEN_WINDOW_SEC);
-    if (!last.allowed) return last;
+    last = await _hooks.checkRateLimit(`ai-media:${who}`, limit, GEN_WINDOW_SEC);
+    consumed += 1;
+    if (!last.allowed) {
+      return { allowed: false, consumed, remaining: 0, retryAfter: last.retryAfter || GEN_WINDOW_SEC };
+    }
   }
-  return last;
+  return { allowed: true, consumed, remaining: last.remaining ?? 0, retryAfter: 0 };
 }
 
 // ---------------------------------------------------------------------------
@@ -260,16 +339,43 @@ async function loadMedia(id) {
   return rows.length ? mediaView(rows[0]) : null;
 }
 
-const jobPayload = (id, status, { media = null, error = null } = {}) => ({
+const jobPayload = (id, status, {
+  media = null, error = null, permanent = false, aspect = null, quality = null,
+} = {}) => ({
   success: true,
   data: {
     id,
     status,
     url: media ? media.url : null,
     media,
+    // Echoed back so a card can label itself without the client having to
+    // remember what it asked for (and so a reopened dialog can too).
+    aspect,
+    quality,
     ...(error ? { error } : {}),
+    // `permanent` is the client's licence to STOP polling. Without it a failed
+    // card and a dead card look identical and Retry arms 100 futile requests.
+    ...(permanent ? { permanent: true } : {}),
   },
 });
+
+// Higgsfield's own id shape (higgsfield.js:99 mints ids against this exact
+// pattern, and getJob refuses anything else) — so a request that cannot be a
+// job id is answered here rather than three network calls later.
+const JOB_ID_RE = /^[A-Za-z0-9_-]{4,128}$/;
+
+// Terminal refusal BY US. Distinct from 'failed' (upstream's verdict, which a
+// later poll may revise): nothing re-claims a dead job, and the reason is kept
+// on the row so every later poll can answer without calling anyone.
+async function markDead(jobId, reason) {
+  await pgQuery(
+    `UPDATE lb_ai_media_jobs
+        SET status = 'dead',
+            stored = COALESCE(stored, '{}'::jsonb) || jsonb_build_object('dead_reason', $2::text)
+      WHERE job_id = $1 AND status <> 'completed'`,
+    [jobId, String(reason).slice(0, 300)]
+  );
+}
 
 // ---------------------------------------------------------------------------
 // The re-host. Everything about this download is somebody else's bytes, so
@@ -367,7 +473,29 @@ router.post('/generate', async (req, res, next) => {
     }
 
     const who = req.user?.id || req.ip || 'unknown';
-    const rl = await consumeGenerationQuota(who, batch).catch(() => ({ allowed: true }));
+    // FAIL CLOSED, deliberately unlike media.js:97 and aiDeveloper.js:433 which
+    // both fail OPEN. Those limiters protect a CPU; this one protects a credit
+    // balance. If the limiter itself is broken we do not know how much of the
+    // quota is already gone, and "let it through" is the branch that empties
+    // the account while nobody is watching.
+    let rl;
+    try {
+      rl = await consumeGenerationQuota(who, batch);
+    } catch (err) {
+      console.error('[ai-media] rate limiter unavailable — refusing (fail-closed):', err?.message || err);
+      res.set('Retry-After', String(GEN_WINDOW_SEC));
+      return res.status(429).json({
+        success: false,
+        error: {
+          code: 'rate_limited',
+          message: 'The generation quota could not be checked, so the request was refused. Try again shortly.',
+          retryAfter: GEN_WINDOW_SEC,
+          consumed: 0,
+          remaining: 0,
+          window_reset: new Date(Date.now() + GEN_WINDOW_SEC * 1000).toISOString(),
+        },
+      });
+    }
     if (!rl.allowed) {
       const retryAfter = rl.retryAfter || GEN_WINDOW_SEC;
       res.set('Retry-After', String(retryAfter));
@@ -377,6 +505,11 @@ router.post('/generate', async (req, res, next) => {
           code: 'rate_limited',
           message: `Too many generations. Try again in ${retryAfter}s.`,
           retryAfter,
+          // The refusal burned quota. Saying so is the difference between the
+          // UI reporting "try again" and reporting the truth.
+          consumed: rl.consumed,
+          remaining: 0,
+          window_reset: new Date(Date.now() + retryAfter * 1000).toISOString(),
         },
       });
     }
@@ -390,12 +523,21 @@ router.post('/generate', async (req, res, next) => {
       const created = await createImageJob({ prompt, aspect_ratio: aspect });
       if (!created.ok) { firstError = created.error; break; }
       // eslint-disable-next-line no-await-in-loop
-      await pgQuery(
-        `INSERT INTO lb_ai_media_jobs (job_id, user_id, status, prompt)
-         VALUES ($1, $2, 'pending', $3)
-         ON CONFLICT (job_id) DO NOTHING`,
-        [created.id, req.user.id, prompt.slice(0, 500)]
+      const claimRows = await pgQuery(
+        `INSERT INTO lb_ai_media_jobs (job_id, user_id, status, prompt, aspect, quality)
+         VALUES ($1, $2, 'pending', $3, $4, $5)
+         ON CONFLICT (job_id) DO NOTHING
+         RETURNING job_id`,
+        [created.id, req.user.id, prompt.slice(0, 500), aspect, quality]
       );
+      if (!claimRows.length) {
+        // Higgsfield handed us a request id we have SEEN BEFORE. Either their
+        // ids are not unique or we are looking at a replay — both are things
+        // somebody must be able to find in a log, because the pre-existing row
+        // may belong to a different user and this poll will 404 for no visible
+        // reason.
+        console.error('[ai-media] job id collision — Higgsfield returned an id already in lb_ai_media_jobs:', created.id);
+      }
       jobs.push({
         job_id: created.id,
         // The poll credential. Header-only on the way back (never a URL).
@@ -410,12 +552,18 @@ router.post('/generate', async (req, res, next) => {
     // silently dropping 3 of a 4-batch is how an operator pays for 4 and
     // believes they got 4.
     if (!jobs.length) return upstreamFail(res, firstError);
+    let partial;
+    if (firstError) {
+      const c = classifyUpstream(firstError);
+      if (c.detail) console.error('[ai-media] partial batch, upstream failure:', c.detail);
+      // `detail` is destructured OFF — it is the raw upstream string and it
+      // belongs in the log, not in a browser.
+      partial = { requested: batch, started: jobs.length, code: c.code, message: c.message };
+    }
     return res.status(201).json({
       success: true,
       jobs,
-      ...(firstError
-        ? { partial: { requested: batch, started: jobs.length, ...classifyUpstream(firstError) } }
-        : {}),
+      ...(partial ? { partial } : {}),
     });
   } catch (err) {
     return next(err);
@@ -430,9 +578,17 @@ router.get('/jobs/:id', async (req, res, next) => {
     const id = String(req.params.id || '');
     const userId = req.user.id;
 
-    // Ownership first, and the refusal is an indistinguishable 404: a wrong
-    // user, a missing tag and a garbage tag must all look identical, or the
-    // status code becomes an oracle for "this job id exists".
+    // Shape check FIRST. It is not an existence oracle — it says nothing about
+    // whether the id exists, only whether it could — and it keeps a garbage
+    // path segment out of getJob() and out of a LIKE-free but still pointless
+    // round trip to Postgres.
+    if (!JOB_ID_RE.test(id)) {
+      return fail(res, 400, 'invalid_job_id', 'That is not a valid job id.');
+    }
+
+    // Ownership, and the refusal is an indistinguishable 404: a wrong user, a
+    // missing tag and a garbage tag must all look identical, or the status
+    // code becomes an oracle for "this job id exists".
     if (!verifyJobToken(id, userId, req.get('x-job-token'))) {
       return fail(res, 404, 'not_found');
     }
@@ -441,7 +597,8 @@ router.get('/jobs/:id', async (req, res, next) => {
     await ensureMediaTables();
 
     const claims = await pgQuery(
-      `SELECT job_id, user_id, status, media_id, prompt FROM lb_ai_media_jobs WHERE job_id = $1`,
+      `SELECT job_id, user_id, status, media_id, prompt, aspect, quality, stored
+         FROM lb_ai_media_jobs WHERE job_id = $1`,
       [id]
     );
     const claim = claims[0];
@@ -449,12 +606,31 @@ router.get('/jobs/:id', async (req, res, next) => {
     // but the row is the record of it and the two must agree.
     if (!claim || claim.user_id !== userId) return fail(res, 404, 'not_found');
 
+    const meta = { aspect: claim.aspect || null, quality: claim.quality || null };
+
+    // ── terminally refused by OUR checks → answer without calling upstream ──
+    // A 'dead' job cannot become good: we already looked at the bytes (or the
+    // host) and refused them. Polling Higgsfield again would cost a round trip
+    // per tick to re-learn the same thing.
+    const claimStored = parseJsonColumn(claim.stored);
+
+    if (claim.status === 'dead') {
+      return res.json(jobPayload(id, 'failed', {
+        ...meta,
+        permanent: true,
+        error: claimStored?.dead_reason || 'The generated asset was permanently refused.',
+      }));
+    }
+
     // ── already re-hosted → answer from OUR row, no upstream call at all ──
     if (claim.status === 'completed' && claim.media_id) {
       const media = await loadMedia(claim.media_id);
-      if (media) return res.json(jobPayload(id, 'completed', { media }));
-      // The row is gone (there is no DELETE route, so this means a manual
-      // cleanup). Fall through and re-host rather than serve a dangling id.
+      if (media) return res.json(jobPayload(id, 'completed', { ...meta, media }));
+      // The lb_media row is GONE. There is no DELETE route, so this is a manual
+      // cleanup — and the claim below is written to re-take exactly this case
+      // and rebuild the row from `stored`, without touching Higgsfield or
+      // paying for the CDN write twice.
+      console.warn('[ai-media] completed job points at a missing lb_media row — rebuilding:', id, claim.media_id);
     }
 
     const job = await getJob(id);
@@ -463,31 +639,59 @@ router.get('/jobs/:id', async (req, res, next) => {
     if (job.status !== 'completed') {
       if (job.status === 'failed') {
         await pgQuery(
-          `UPDATE lb_ai_media_jobs SET status = 'failed' WHERE job_id = $1 AND status <> 'completed'`,
+          `UPDATE lb_ai_media_jobs SET status = 'failed' WHERE job_id = $1 AND status NOT IN ('completed','dead')`,
           [id]
         );
-        return res.json(jobPayload(id, 'failed', { error: `Higgsfield reported "${job.raw_status}"` }));
+        return res.json(jobPayload(id, 'failed', { ...meta, error: `Higgsfield reported "${job.raw_status}"` }));
       }
-      return res.json(jobPayload(id, job.status));
+      return res.json(jobPayload(id, job.status, meta));
     }
 
     // ── completed upstream: the asset URL is a claim until it is checked ──
     if (!job.url || !isAllowedAssetUrl(job.url)) {
-      await pgQuery(
-        `UPDATE lb_ai_media_jobs SET status = 'failed' WHERE job_id = $1 AND status <> 'completed'`,
-        [id]
-      );
+      await markDead(id, 'asset URL rejected: not a higgsfield-owned https host');
       return res.json(jobPayload(id, 'failed', {
+        ...meta,
+        permanent: true,
         error: 'asset URL rejected: not a higgsfield-owned https host',
       }));
     }
 
-    // ── atomic claim: exactly one poll does the download + CDN write ─────
+    // ── storage FIRST (review MED F5) ──────────────────────────────────────
+    // Checked BEFORE the claim and before a single byte moves. The old order
+    // pulled the asset down, then discovered there was nowhere to put it, and
+    // threw it away — a wasted download per poll, every poll, for as long as
+    // the backend stayed unconfigured. Nothing is claimed and nothing is
+    // fetched; the job stays pending and re-hosts itself the moment a CDN
+    // backend exists.
+    if (!storageBackend()) {
+      return fail(res, 503, 'storage_unavailable',
+        'No CDN backend is configured, so the generated image cannot be stored in the library.');
+    }
+
+    // ── atomic claim: exactly one poll does the download + CDN write ───────
+    // Three ways in, all decided by Postgres in ONE statement so two concurrent
+    // polls cannot both win:
+    //   1. pending / failed        — nobody holds it
+    //   2. persisting but STALE    — the holder died (deploy, OOM, timeout).
+    //                                Without this the row is stranded forever
+    //                                and the operator has paid for a job they
+    //                                can never collect.
+    //   3. completed but its lb_media row is GONE — rebuild from `stored`.
+    // 'dead' is absent on purpose: it is the one status nothing re-takes.
     const claimed = await pgQuery(
-      `UPDATE lb_ai_media_jobs SET status = 'persisting'
-        WHERE job_id = $1 AND status IN ('pending', 'failed')
-        RETURNING job_id`,
-      [id]
+      `UPDATE lb_ai_media_jobs AS j
+          SET status = 'persisting', claimed_at = NOW()
+        WHERE j.job_id = $1
+          AND (
+                j.status IN ('pending', 'failed')
+             OR (j.status = 'persisting'
+                 AND (j.claimed_at IS NULL OR j.claimed_at < NOW() - ($2 || ' seconds')::interval))
+             OR (j.status = 'completed'
+                 AND NOT EXISTS (SELECT 1 FROM lb_media m WHERE m.id = j.media_id))
+              )
+        RETURNING j.job_id, j.stored, j.prompt`,
+      [id, String(CLAIM_STALE_SEC)]
     );
     if (!claimed.length) {
       const again = await pgQuery(
@@ -496,13 +700,14 @@ router.get('/jobs/:id', async (req, res, next) => {
       const now = again[0];
       if (now?.status === 'completed' && now.media_id) {
         const media = await loadMedia(now.media_id);
-        if (media) return res.json(jobPayload(id, 'completed', { media }));
+        if (media) return res.json(jobPayload(id, 'completed', { ...meta, media }));
       }
-      // Another poll holds the claim. Report in_progress so the caller keeps
+      // Another poll holds a FRESH claim. Report in_progress so the caller keeps
       // polling — it will get the row on the next tick.
-      return res.json(jobPayload(id, 'in_progress'));
+      return res.json(jobPayload(id, 'in_progress', meta));
     }
 
+    const held = claimed[0];
     const release = async (status) => {
       await pgQuery(
         `UPDATE lb_ai_media_jobs SET status = $2 WHERE job_id = $1 AND status = 'persisting'`,
@@ -510,46 +715,75 @@ router.get('/jobs/:id', async (req, res, next) => {
       );
     };
 
-    let asset;
-    try {
-      asset = await downloadAsset(job.url);
-    } catch (err) {
-      await release('pending');
-      throw err;
-    }
-    if (!asset.ok) {
-      await release(asset.terminal ? 'failed' : 'pending');
-      if (!asset.terminal) {
+    const alt = String(held.prompt || claim.prompt || '').slice(0, 500);
+
+    // ── the bytes ─────────────────────────────────────────────────────────
+    // `stored` short-circuits everything below it. If a previous attempt got
+    // as far as putImage and then lost the lb_media INSERT (circuit breaker,
+    // timeout, deploy), those bytes are ALREADY on a CDN we were billed for.
+    // Re-downloading and re-uploading them would pay twice and orphan the
+    // first copy; this reads the receipt instead.
+    // Prefer the receipt the CLAIM statement just returned (it is the freshest
+    // read, taken inside the same UPDATE that won the claim) and fall back to
+    // the one loaded above.
+    const heldStored = parseJsonColumn(held.stored) || claimStored;
+    let stored = heldStored && heldStored.url ? heldStored : null;
+
+    if (!stored) {
+      let asset;
+      try {
+        asset = await downloadAsset(job.url);
+      } catch (err) {
+        await release('pending');
+        throw err;
+      }
+      if (!asset.ok) {
+        const message = DOWNLOAD_MESSAGES[asset.code] || 'The generated asset was refused.';
+        if (asset.terminal) {
+          await markDead(id, message);
+          return res.json(jobPayload(id, 'failed', { ...meta, permanent: true, error: message }));
+        }
+        await release('pending');
+        console.error('[ai-media] transient asset download failure:', asset.code, asset.detail);
         return fail(res, 502, 'asset_download_failed',
           'The generated asset could not be downloaded — retrying.');
       }
-      return res.json(jobPayload(id, 'failed', {
-        error: DOWNLOAD_MESSAGES[asset.code] || 'The generated asset was refused.',
-      }));
-    }
 
-    if (!storageBackend()) {
-      // Nothing was stored, so nothing is claimed. Leave the job pollable: the
-      // moment a CDN backend is configured the next poll re-hosts it.
-      await release('pending');
-      return fail(res, 503, 'storage_unavailable',
-        'No CDN backend is configured, so the generated image cannot be stored in the library.');
-    }
+      const dims = imageDimensions(asset.buffer, asset.mime) || {};
+      const filename = sanitizeFilename(`ai-${id}`, asset.mime);
 
-    const dims = imageDimensions(asset.buffer, asset.mime) || {};
-    const alt = String(claim.prompt || '').slice(0, 500);
-    const filename = sanitizeFilename(`ai-${id}`, asset.mime);
-
-    let stored;
-    try {
-      stored = await putImage({ buffer: asset.buffer, filename, mime: asset.mime, alt });
-    } catch (err) {
-      await release('pending');
-      if (err instanceof StorageUnavailableError) {
-        return fail(res, 503, err.code || 'storage_unavailable',
-          err.detail || 'The generated image could not be stored on the CDN.');
+      let put;
+      try {
+        put = await putImage({ buffer: asset.buffer, filename, mime: asset.mime, alt });
+      } catch (err) {
+        await release('pending');
+        if (err instanceof StorageUnavailableError) {
+          return fail(res, 503, err.code || 'storage_unavailable',
+            err.detail || 'The generated image could not be stored on the CDN.');
+        }
+        throw err;
       }
-      throw err;
+
+      stored = {
+        url: put.url,
+        file_id: put.shopifyFileId || null,
+        filename: put.filename || filename,
+        mime: asset.mime,
+        bytes: asset.bytes,
+        // OUR header parse only — media.js:250 states the reason: a null from
+        // the parser is a REFUSAL, and falling back to a CDN echo of the same
+        // rejected header reinstates exactly what the refusal prevents.
+        width: dims.width ?? null,
+        height: dims.height ?? null,
+      };
+
+      // THE RECEIPT, written before the row. This statement is the whole
+      // orphan fix: from here on the bytes are findable even if every
+      // subsequent statement fails.
+      await pgQuery(
+        `UPDATE lb_ai_media_jobs SET stored = $2::jsonb WHERE job_id = $1`,
+        [id, JSON.stringify(stored)]
+      );
     }
 
     const mediaId = newMediaId();
@@ -562,30 +796,24 @@ router.get('/jobs/:id', async (req, res, next) => {
          VALUES ($1,'image','url',$2,$3,$4,$5,$6,$7,$8,$9,$10)
          RETURNING ${MEDIA_COLS}`,
         [
-          mediaId, stored.url, stored.filename || filename, asset.mime, asset.bytes,
-          // OUR header parse only — media.js:250 states the reason: a null from
-          // the parser is a REFUSAL, and falling back to a CDN echo of the same
-          // rejected header reinstates exactly what the refusal prevents.
-          dims.width ?? null, dims.height ?? null, alt,
-          stored.shopifyFileId || null, userId,
+          mediaId, stored.url, stored.filename, stored.mime, stored.bytes,
+          stored.width ?? null, stored.height ?? null, alt,
+          stored.file_id || null, userId,
         ]
       );
       inserted = rows[0];
     } catch (err) {
+      // The CDN copy survives on the claim row, so the next poll re-uses it.
       await release('pending');
       throw err;
     }
 
-    // The claim is only settled once the row exists. Order matters: a crash
-    // between these two writes leaves the job 'persisting' with no media_id,
-    // and the next poll's conditional UPDATE will not re-claim it — which is
-    // the safe direction (a stuck card, never a duplicate charge + row).
     await pgQuery(
       `UPDATE lb_ai_media_jobs SET status = 'completed', media_id = $2 WHERE job_id = $1`,
       [id, mediaId]
     );
 
-    return res.json(jobPayload(id, 'completed', { media: mediaView(inserted) }));
+    return res.json(jobPayload(id, 'completed', { ...meta, media: mediaView(inserted) }));
   } catch (err) {
     return next(err);
   }

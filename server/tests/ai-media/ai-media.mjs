@@ -85,6 +85,14 @@ const check = (name, ok, extra = '') => {
   else { fail += 1; console.log(`FAIL  ${name}  ${extra}`); }
 };
 
+// Tee console.error so the tests can assert that a condition which MUST be
+// findable in a log (a job-id collision, a raw upstream string that is kept
+// out of the HTTP body) actually reached one.
+const errorLog = [];
+const realError = console.error;
+console.error = (...args) => { errorLog.push(args.map(String).join(' ')); realError(...args); };
+const loggedSince = (n) => errorLog.slice(n).join('\n');
+
 // ═══════════════════════════════════════════════════════════════════════════
 // FIXTURES — real image bytes. Dimensions are asserted, so a broken parser
 // cannot pass by returning null.
@@ -136,6 +144,8 @@ const mockState = {
   jobs: {},                     // id -> { statuses:[...], url }
   nextJob: null,                // template applied to the NEXT created job
   jobSeq: 0,
+  forceId: null,                // make the NEXT submit return this exact id
+  statusCalls: [],              // every job-status poll Higgsfield actually saw
   cdnHits: [],                  // every asset path the CDN actually served
   fileCreateCalls: 0,
   pollCalls: 0,
@@ -211,7 +221,7 @@ api.post('/higgsfield-ai/soul/standard', (req, res) => {
     return res.status(mockState.createStatus).json(mockState.createBody || { error: 'boom' });
   }
   mockState.jobSeq += 1;
-  const id = `job_${mockState.jobSeq}_${Math.random().toString(36).slice(2, 8)}`;
+  const id = mockState.forceId || `job_${mockState.jobSeq}_${Math.random().toString(36).slice(2, 8)}`;
   mockState.jobs[id] = mockState.nextJob
     ? JSON.parse(JSON.stringify(mockState.nextJob))
     : { statuses: ['completed'], url: `${CDN_ORIGIN}/asset/ok.png` };
@@ -220,6 +230,7 @@ api.post('/higgsfield-ai/soul/standard', (req, res) => {
 
 // ── Higgsfield: status ─────────────────────────────────────────────────────
 api.get('/requests/:id/status', (req, res) => {
+  mockState.statusCalls.push(req.params.id);
   const job = mockState.jobs[req.params.id];
   if (!job) return res.status(404).json({ error: 'unknown request' });
   const status = job.statuses.length > 1 ? job.statuses.shift() : job.statuses[0];
@@ -265,9 +276,13 @@ const cdnServer = https.createServer(
       res.end(Buffer.from('this is not a png, it is a sentence'));
       return;
     }
+    // 11MB — deliberately BETWEEN the lane's 10MB import ceiling and the 20MB
+    // this route used to carry. It is only refused if the cap really is
+    // MAX_IMPORT_BYTES; a 21MB fixture would have passed under either number
+    // and proved nothing about which one is in force.
     if (url.pathname === '/asset/big-declared.png') {
       res.setHeader('Content-Type', 'image/png');
-      res.setHeader('Content-Length', String(21 * 1024 * 1024));
+      res.setHeader('Content-Length', String(11 * 1024 * 1024));
       res.end(PNG_6x4);
       return;
     }
@@ -276,7 +291,7 @@ const cdnServer = https.createServer(
       res.setHeader('Content-Type', 'image/png');
       res.write(PNG_6x4);
       const mb = Buffer.alloc(1024 * 1024, 0x41);
-      for (let i = 0; i < 22; i += 1) {
+      for (let i = 0; i < 12; i += 1) {
         if (res.writableEnded || res.destroyed) break;
         // eslint-disable-next-line no-await-in-loop
         if (!res.write(mb)) await new Promise((r) => res.once('drain', r));
@@ -607,8 +622,19 @@ let persistedMediaId = '';
   check('T7 no url is ever handed to the client', p.j?.data?.url === null && p.j?.data?.media === null, JSON.stringify(p.j?.data));
   check('T7 nothing was persisted', (await mediaCount()) === before, '');
   check('T7 nothing was downloaded', mockState.cdnHits.length === hitsBefore, '');
+  check('T7 the refusal is marked PERMANENT so the client stops polling', p.j?.data?.permanent === true, JSON.stringify(p.j?.data));
   const row = (await sql`SELECT status, media_id FROM lb_ai_media_jobs WHERE job_id = ${job.job_id}`)[0];
-  check('T7 the claim row is failed with no media_id', row?.status === 'failed' && row?.media_id === null, JSON.stringify(row));
+  check('T7 the claim row is DEAD (not re-claimable) with no media_id',
+    row?.status === 'dead' && row?.media_id === null, JSON.stringify(row));
+
+  // A dead job must be answered from OUR row — asking Higgsfield again per
+  // poll tick costs a round trip to re-learn a verdict we already reached.
+  const statusBefore = mockState.statusCalls.length;
+  const rePoll = await pollJob(job);
+  check('T7 a re-poll of a dead job is still failed+permanent',
+    rePoll.j?.data?.status === 'failed' && rePoll.j?.data?.permanent === true, JSON.stringify(rePoll.j?.data));
+  check('T7 a re-poll of a dead job makes NO upstream call',
+    mockState.statusCalls.length === statusBefore, `${mockState.statusCalls.length - statusBefore} calls`);
 
   // An http (non-TLS) higgsfield host is refused for the same reason.
   const { job: j2 } = await startJob({ statuses: ['completed'], url: `http://cdn.higgsfield.ai:${CDN_PORT}/asset/ok.png` });
@@ -668,6 +694,20 @@ let persistedMediaId = '';
   check('T9 the 11th unit is refused with 429', over.status === 429, `${over.status} ${code(over)}`);
   check('T9 the refusal is structured rate_limited', code(over) === 'rate_limited', code(over));
   check('T9 a Retry-After is present', Number(over.j?.error?.retryAfter) > 0, JSON.stringify(over.j?.error));
+  // The refusal BURNED quota. A body that hides that reads as "nothing
+  // happened" while the window quietly drained.
+  check('T9 the 429 says how much quota the refusal consumed',
+    over.j?.error?.consumed === 1, JSON.stringify(over.j?.error));
+  check('T9 the 429 says remaining:0', over.j?.error?.remaining === 0, JSON.stringify(over.j?.error));
+  check('T9 the 429 carries a parseable window_reset in the future',
+    Number.isFinite(Date.parse(over.j?.error?.window_reset || '')) && Date.parse(over.j.error.window_reset) > Date.now(),
+    String(over.j?.error?.window_reset));
+
+  // A batch that only PARTLY fits still charges what it consumed, and says so.
+  const partialBurn = await req('POST', '/generate', { prompt: 'g', batch: 4 }, H(RL_TOKEN));
+  check('T9 an over-quota BATCH is refused', partialBurn.status === 429, `${partialBurn.status} ${code(partialBurn)}`);
+  check('T9 the over-quota batch reports the units it burned',
+    partialBurn.j?.error?.consumed === 1, JSON.stringify(partialBurn.j?.error));
 
   // A DIFFERENT user, under the SAME low ceiling, with its own fresh bucket.
   const otherUser = await req('POST', '/generate', { prompt: 'f', batch: 1 }, H(RL_TOKEN2));
@@ -684,9 +724,12 @@ let persistedMediaId = '';
   const before = await mediaCount();
   const { job: dj } = await startJob({ statuses: ['completed'], url: `${CDN_ORIGIN}/asset/big-declared.png` });
   const dp = await pollJob(dj);
-  check('T10 a DECLARED-oversize asset fails the job', dp.j?.data?.status === 'failed', JSON.stringify(dp.j));
+  check('T10 an 11MB DECLARED asset fails the job (cap is the lane\'s 10MB, not 20MB)',
+    dp.j?.data?.status === 'failed', JSON.stringify(dp.j));
   check('T10 the declared-oversize refusal names the size limit',
     /larger than the \d+ byte limit/.test(String(dp.j?.data?.error || '')), String(dp.j?.data?.error));
+  check('T10 the limit quoted to the operator IS 10MB',
+    String(dp.j?.data?.error || '').includes(String(10 * 1024 * 1024)), String(dp.j?.data?.error));
 
   const { job: sj } = await startJob({ statuses: ['completed'], url: `${CDN_ORIGIN}/asset/big-stream.png` });
   const sp = await pollJob(sj);
@@ -694,7 +737,10 @@ let persistedMediaId = '';
     sp.j?.data?.status === 'failed', JSON.stringify(sp.j));
   check('T10 nothing oversize was persisted', (await mediaCount()) === before, '');
   const rows = await sql`SELECT status FROM lb_ai_media_jobs WHERE job_id IN (${dj.job_id}, ${sj.job_id})`;
-  check('T10 both claim rows are failed', rows.length === 2 && rows.every((x) => x.status === 'failed'), JSON.stringify(rows));
+  check('T10 both claim rows are DEAD, not merely failed',
+    rows.length === 2 && rows.every((x) => x.status === 'dead'), JSON.stringify(rows));
+  check('T10 both refusals are marked permanent',
+    dp.j?.data?.permanent === true && sp.j?.data?.permanent === true, '');
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -748,6 +794,239 @@ let persistedMediaId = '';
   const retry = await pollJob(job);
   check('T13 the retry re-hosts the asset', retry.j?.data?.status === 'completed' && Boolean(retry.j?.data?.media?.id), JSON.stringify(retry.j));
   check('T13 the retry added exactly one row', (await mediaCount()) === before + 1, '');
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// T14 — the claim is RECOVERABLE (review MAJOR F3)
+// A dyno that dies mid-download used to strand the row in 'persisting'
+// forever: the operator had paid for the generation and every later poll
+// answered in_progress until someone noticed. `claimed_at` bounds it.
+// ═══════════════════════════════════════════════════════════════════════════
+{
+  const { job } = await startJob({ statuses: ['completed'], url: `${CDN_ORIGIN}/asset/ok.png` });
+
+  // A FRESH claim belongs to a poll that is still alive — nobody may steal it.
+  await sql`UPDATE lb_ai_media_jobs SET status='persisting', claimed_at=NOW() WHERE job_id=${job.job_id}`;
+  const beforeFresh = await mediaCount();
+  const fresh = await pollJob(job);
+  check('T14 a FRESH persisting claim is not stolen', fresh.j?.data?.status === 'in_progress', JSON.stringify(fresh.j));
+  check('T14 nothing was persisted behind the live holder', (await mediaCount()) === beforeFresh, '');
+
+  // A STALE claim's holder is gone. The next poll takes it over.
+  await sql`UPDATE lb_ai_media_jobs
+               SET status='persisting', claimed_at = NOW() - INTERVAL '6 minutes'
+             WHERE job_id=${job.job_id}`;
+  const stale = await pollJob(job);
+  check('T14 a STALE persisting claim is re-taken and completes',
+    stale.j?.data?.status === 'completed' && Boolean(stale.j?.data?.media?.id), JSON.stringify(stale.j));
+  check('T14 the re-take produced exactly one row', (await mediaCount()) === beforeFresh + 1, '');
+
+  // A claim with a NULL claimed_at (a row written by the pre-fix deploy) is
+  // stale by definition — otherwise the fix would not reach the very rows it
+  // exists to rescue.
+  const { job: j2 } = await startJob({ statuses: ['completed'], url: `${CDN_ORIGIN}/asset/ok.png` });
+  await sql`UPDATE lb_ai_media_jobs SET status='persisting', claimed_at=NULL WHERE job_id=${j2.job_id}`;
+  const legacy = await pollJob(j2);
+  check('T14 a legacy persisting row with NULL claimed_at is recoverable',
+    legacy.j?.data?.status === 'completed', JSON.stringify(legacy.j));
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// T15 — storage is checked BEFORE anything is downloaded (review MED F5)
+// ═══════════════════════════════════════════════════════════════════════════
+{
+  const { job } = await startJob({ statuses: ['completed'], url: `${CDN_ORIGIN}/asset/ok.png` });
+  const hitsBefore = mockState.cdnHits.length;
+
+  process.env.MEDIA_STORAGE_BACKEND = 'none';
+  const blocked = await pollJob(job);
+  const blocked2 = await pollJob(job);
+  delete process.env.MEDIA_STORAGE_BACKEND;
+
+  check('T15 no CDN backend is a 503', blocked.status === 503 && blocked2.status === 503,
+    `${blocked.status}/${blocked2.status}`);
+  check('T15 ZERO bytes were downloaded and discarded',
+    mockState.cdnHits.length === hitsBefore, JSON.stringify(mockState.cdnHits.slice(hitsBefore)));
+  const row = (await sql`SELECT status, stored FROM lb_ai_media_jobs WHERE job_id=${job.job_id}`)[0];
+  check('T15 the job was never even claimed', row?.status === 'pending' && row?.stored === null, JSON.stringify(row));
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// T16 — the CDN receipt closes the orphan window (review MED F6)
+// putImage bills us for bytes; the lb_media INSERT is a separate statement
+// that can fail. `stored` records the CDN result the instant putImage returns,
+// so the retry re-uses those bytes instead of paying for them twice.
+// ═══════════════════════════════════════════════════════════════════════════
+{
+  const { job } = await startJob({ statuses: ['completed'], url: `${CDN_ORIGIN}/asset/ok.png` });
+  const done = await pollJob(job);
+  check('T16 the job completed', done.j?.data?.status === 'completed', JSON.stringify(done.j));
+
+  const row = (await sql`SELECT stored, media_id FROM lb_ai_media_jobs WHERE job_id=${job.job_id}`)[0];
+  // This driver hands a jsonb column back as a STRING — the route parses
+  // defensively for exactly this reason, and so does the assertion.
+  const st = typeof row?.stored === 'string' ? JSON.parse(row.stored) : row?.stored;
+  check('T16 the CDN receipt is on the claim row',
+    Boolean(st?.url) && st?.mime === 'image/png' && st?.width === 6 && st?.height === 4 && Number(st?.bytes) > 0,
+    JSON.stringify(st));
+
+  // Reproduce the orphan: putImage succeeded, the INSERT did not.
+  await sql`DELETE FROM lb_media WHERE id = ${row.media_id}`;
+  await sql`UPDATE lb_ai_media_jobs SET status='pending', media_id=NULL WHERE job_id=${job.job_id}`;
+  const hitsBefore = mockState.cdnHits.length;
+  const fileCreateBefore = mockState.fileCreateCalls;
+
+  const recovered = await pollJob(job);
+  check('T16 the retry completes', recovered.j?.data?.status === 'completed', JSON.stringify(recovered.j));
+  check('T16 the retry re-used the SAME CDN url', recovered.j?.data?.media?.url === st.url,
+    `${recovered.j?.data?.media?.url} vs ${st.url}`);
+  check('T16 the retry did NOT download the asset again',
+    mockState.cdnHits.length === hitsBefore, JSON.stringify(mockState.cdnHits.slice(hitsBefore)));
+  check('T16 the retry did NOT pay for a second CDN upload',
+    mockState.fileCreateCalls === fileCreateBefore, `${mockState.fileCreateCalls - fileCreateBefore} uploads`);
+  check('T16 the dimensions survived the round trip through the receipt',
+    recovered.j?.data?.media?.width === 6 && recovered.j?.data?.media?.height === 4,
+    `${recovered.j?.data?.media?.width}x${recovered.j?.data?.media?.height}`);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// T17 — completed job whose lb_media row vanished (review MED F7)
+// The old comment claimed this "falls through and re-hosts"; the claim
+// predicate did not match 'completed', so it answered in_progress forever.
+// ═══════════════════════════════════════════════════════════════════════════
+{
+  const { job } = await startJob({ statuses: ['completed'], url: `${CDN_ORIGIN}/asset/ok.png` });
+  const first = await pollJob(job);
+  const firstId = first.j?.data?.media?.id;
+  check('T17 the job completed', Boolean(firstId), JSON.stringify(first.j));
+
+  // The claim row still says completed and still names the (now absent) row.
+  await sql`DELETE FROM lb_media WHERE id = ${firstId}`;
+  const hitsBefore = mockState.cdnHits.length;
+  const fileCreateBefore = mockState.fileCreateCalls;
+
+  const rebuilt = await pollJob(job);
+  check('T17 the dangling completed job is REBUILT, not stuck in_progress',
+    rebuilt.j?.data?.status === 'completed' && Boolean(rebuilt.j?.data?.media?.id), JSON.stringify(rebuilt.j));
+  check('T17 the rebuild is a NEW lb_media row', rebuilt.j?.data?.media?.id !== firstId,
+    `${rebuilt.j?.data?.media?.id} vs ${firstId}`);
+  check('T17 the rebuild cost no download and no upload',
+    mockState.cdnHits.length === hitsBefore && mockState.fileCreateCalls === fileCreateBefore, '');
+  const row = (await sql`SELECT status, media_id FROM lb_ai_media_jobs WHERE job_id=${job.job_id}`)[0];
+  check('T17 the claim row now points at the rebuilt row',
+    row?.status === 'completed' && row?.media_id === rebuilt.j?.data?.media?.id, JSON.stringify(row));
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// T18 — job id shape (review MINOR F11)
+// ═══════════════════════════════════════════════════════════════════════════
+{
+  const statusBefore = mockState.statusCalls.length;
+  for (const bad of ['ab', '../../etc/passwd', 'has spaces', 'x'.repeat(129)]) {
+    const r = await req('GET', `/jobs/${encodeURIComponent(bad)}`, undefined, {
+      Authorization: `Bearer ${OWNER}`, 'Content-Type': 'application/json', 'X-Job-Token': 'f'.repeat(64),
+    });
+    check(`T18 a malformed job id (${bad.slice(0, 16)}) is 400 invalid_job_id`,
+      r.status === 400 && code(r) === 'invalid_job_id', `${r.status} ${code(r)}`);
+  }
+  check('T18 no malformed id reached Higgsfield',
+    mockState.statusCalls.length === statusBefore, `${mockState.statusCalls.length - statusBefore}`);
+  // A WELL-FORMED unknown id is still the ownership 404 — the shape check must
+  // not become a second, chattier existence oracle.
+  const wellFormed = await req('GET', '/jobs/job_well_formed_but_unknown', undefined, {
+    Authorization: `Bearer ${OWNER}`, 'Content-Type': 'application/json', 'X-Job-Token': 'f'.repeat(64),
+  });
+  check('T18 a well-formed unknown id is still 404', wellFormed.status === 404, String(wellFormed.status));
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// T19 — the raw upstream string never reaches the browser (review MINOR F10)
+// ═══════════════════════════════════════════════════════════════════════════
+{
+  const marker = 'INTERNAL-TRACE-9f2a-do-not-leak';
+  const logBefore = errorLog.length;
+  mockState.createStatus = 500;
+  mockState.createBody = { error: marker };
+  const r = await req('POST', '/generate', { prompt: 'leak test' });
+  mockState.createStatus = 200;
+  mockState.createBody = null;
+
+  check('T19 the upstream failure is a 502 upstream_error',
+    r.status === 502 && code(r) === 'upstream_error', `${r.status} ${code(r)}`);
+  check('T19 the raw upstream string is NOT in the HTTP body',
+    !(r.text || '').includes(marker), (r.text || '').slice(0, 160));
+  check('T19 the operator-facing message is generic prose',
+    /try again in a moment/i.test(String(r.j?.error?.message || '')), String(r.j?.error?.message));
+  check('T19 the raw upstream string IS in the server log',
+    loggedSince(logBefore).includes(marker), loggedSince(logBefore).slice(0, 160));
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// T20 — aspect + quality are recorded and echoed (review MED F8)
+// ═══════════════════════════════════════════════════════════════════════════
+{
+  mockState.nextJob = { statuses: ['queued'], url: `${CDN_ORIGIN}/asset/ok.png` };
+  const r = await req('POST', '/generate', { prompt: 'echo test', aspect: '4:5', quality: '720p', batch: 1 });
+  mockState.nextJob = null;
+  const job = r.j?.jobs?.[0];
+  check('T20 generate accepted', r.status === 201 && Boolean(job), code(r));
+
+  const row = (await sql`SELECT aspect, quality FROM lb_ai_media_jobs WHERE job_id=${job.job_id}`)[0];
+  check('T20 aspect + quality are stored on the claim row',
+    row?.aspect === '4:5' && row?.quality === '720p', JSON.stringify(row));
+
+  const p = await pollJob(job);
+  check('T20 the status response echoes aspect + quality',
+    p.j?.data?.aspect === '4:5' && p.j?.data?.quality === '720p', JSON.stringify(p.j?.data));
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// T21 — a duplicate Higgsfield request id is LOUD (review MINOR F15)
+// ═══════════════════════════════════════════════════════════════════════════
+{
+  const dupId = `job_dup_${Date.now().toString(36)}`;
+  mockState.forceId = dupId;
+  mockState.nextJob = { statuses: ['queued'], url: `${CDN_ORIGIN}/asset/ok.png` };
+  const first = await req('POST', '/generate', { prompt: 'dup one' });
+  const logBefore = errorLog.length;
+  const second = await req('POST', '/generate', { prompt: 'dup two' });
+  mockState.forceId = null;
+  mockState.nextJob = null;
+
+  check('T21 both requests are accepted', first.status === 201 && second.status === 201,
+    `${first.status}/${second.status}`);
+  check('T21 the collision is logged with the offending id',
+    loggedSince(logBefore).includes('collision') && loggedSince(logBefore).includes(dupId),
+    loggedSince(logBefore).slice(0, 200));
+  const n = (await sql`SELECT COUNT(*)::int AS n FROM lb_ai_media_jobs WHERE job_id=${dupId}`)[0].n;
+  check('T21 the table still holds exactly one row for that id', n === 1, String(n));
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// T22 — the rate limiter FAILS CLOSED (review MINOR F13)
+// media.js and aiDeveloper.js both fail OPEN. This route protects a credit
+// balance, not a CPU, so a limiter it cannot consult is a refusal.
+// ═══════════════════════════════════════════════════════════════════════════
+{
+  const aiMediaModule = await import('../../src/routes/aiMedia.js');
+  const realCheck = aiMediaModule._hooks.checkRateLimit;
+  const submitsBefore = mockState.createCalls.length;
+  aiMediaModule._hooks.checkRateLimit = async () => { throw new Error('redis exploded'); };
+
+  const r = await req('POST', '/generate', { prompt: 'fail closed please', batch: 4 });
+  aiMediaModule._hooks.checkRateLimit = realCheck;
+
+  check('T22 a broken limiter REFUSES rather than letting spend through',
+    r.status === 429 && code(r) === 'rate_limited', `${r.status} ${code(r)}`);
+  check('T22 nothing was submitted to Higgsfield',
+    mockState.createCalls.length === submitsBefore, `${mockState.createCalls.length - submitsBefore} submits`);
+  check('T22 the refusal reports consumed:0 (nothing was counted)',
+    r.j?.error?.consumed === 0, JSON.stringify(r.j?.error));
+
+  // …and the limiter recovering restores service, so the fail-closed branch is
+  // not a one-way door.
+  const after = await req('POST', '/generate', { prompt: 'back to normal' });
+  check('T22 service resumes once the limiter recovers', after.status === 201, code(after));
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

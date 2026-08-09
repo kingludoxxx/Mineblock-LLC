@@ -140,7 +140,9 @@ export default function AiMediaDialog({ open, onClose, onSelect, title, subtitle
   const [files, setFiles] = useState([]);
   const [filesLoading, setFilesLoading] = useState(false);
   const [filesError, setFilesError] = useState('');
-  const [filesLoaded, setFilesLoaded] = useState(false);
+  // "attempted", NOT "loaded" — see loadFiles for why the distinction is the
+  // difference between one request and a few thousand.
+  const [filesAttempted, setFilesAttempted] = useState(false);
 
   const promptRef = useRef(null);
   const pollState = useRef({}); // jobId -> { timer, attempts, failures, token }
@@ -166,35 +168,75 @@ export default function AiMediaDialog({ open, onClose, onSelect, title, subtitle
     const st = { attempts: 0, failures: 0, token: token ?? existing?.token, timer: null };
     pollState.current[jobId] = st;
 
+    // `st` IS this chain's identity. clearTimeout alone cannot stop a chain
+    // whose request is already in flight: the await resolves after the close,
+    // schedules the next tick, and that timer is unreachable by anything —
+    // an immortal chain, one more per open/close cycle. So every resumption
+    // point re-checks that the registry still points at THIS `st`. Closing
+    // (stopAllPolling empties the registry) or superseding it (a new chain for
+    // the same job) makes that check fail and the chain ends there.
+    const superseded = () => pollState.current[jobId] !== st;
+
     const poll = async () => {
+      if (superseded()) return;
       st.attempts += 1;
+
+      let data = null;
+      let error = null;
       try {
         const res = await api.get(`/ai-media/jobs/${jobId}`, {
           // Job -> user binding: the HMAC tag issued with the job, in a HEADER,
           // never in the URL.
           headers: st.token ? { 'X-Job-Token': st.token } : {},
         });
-        st.failures = 0;
-        const d = res.data?.data;
-        if (d && d.status === 'completed' && d.media) {
-          delete pollState.current[jobId];
-          patchJob(jobId, { status: 'completed', media: d.media, error: null });
-          // A finished generation is now a library row, so a library tab the
-          // operator already opened is stale. Mark it for a refetch.
-          setFilesLoaded(false);
-          return;
-        }
-        if (d && d.status === 'failed') {
-          delete pollState.current[jobId];
-          patchJob(jobId, { status: 'failed', error: d.error || 'The generation failed.' });
-          return;
-        }
+        data = res.data?.data ?? null;
       } catch (err) {
+        error = err;
+      }
+
+      // ── the resumption guard ──
+      if (superseded()) return;
+
+      if (error) {
+        const c = errCode(error);
         // 402 mid-poll is the same operator-actionable state the submit path
         // surfaces — say it once, and let the card keep its own retry.
-        if (errCode(err) === 'not_enough_credits') setCreditsEmpty(true);
+        if (c === 'not_enough_credits') setCreditsEmpty(true);
+        // Storage being unconfigured is not transient and not the operator's
+        // typo — it is an infra fact with a named fix. Polling it 100 times
+        // changes nothing, so the card stops and says what is wrong.
+        if (c === 'storage_unavailable') {
+          delete pollState.current[jobId];
+          patchJob(jobId, {
+            status: 'blocked',
+            error: errText(error, 'The image cannot be saved — no CDN backend is configured.'),
+          });
+          return;
+        }
         st.failures += 1; // transient — back off below
+      } else {
+        st.failures = 0;
+        if (data && data.status === 'completed' && data.media) {
+          delete pollState.current[jobId];
+          patchJob(jobId, { status: 'completed', media: data.media, error: null });
+          // A finished generation is now a library row, so a library tab the
+          // operator already opened is stale. Let it refetch once.
+          setFilesAttempted(false);
+          return;
+        }
+        if (data && data.status === 'failed') {
+          delete pollState.current[jobId];
+          patchJob(jobId, {
+            status: 'failed',
+            error: data.error || 'The generation failed.',
+            // The server says when a refusal is final; a card that knows this
+            // does not offer a Retry that cannot work.
+            permanent: Boolean(data.permanent),
+          });
+          return;
+        }
       }
+
       if (st.attempts >= MAX_POLL_ATTEMPTS) {
         delete pollState.current[jobId];
         patchJob(jobId, { status: 'stale' });
@@ -207,12 +249,24 @@ export default function AiMediaDialog({ open, onClose, onSelect, title, subtitle
   }, [patchJob]);
 
   const retryJob = useCallback((job) => {
-    patchJob(job.jobId, { status: 'running', error: null });
+    // A permanently-refused generation has no retry to offer; the card does not
+    // render the button, and this is the second half of that guarantee.
+    if (job.permanent && job.status !== 'blocked' && job.status !== 'stale') return;
+    patchJob(job.jobId, { status: 'running', error: null, permanent: false });
     startPolling(job.jobId, job.token, { immediate: true });
   }, [patchJob, startPolling]);
 
   // ── library ──────────────────────────────────────────────────────────────
   const loadFiles = useCallback(async () => {
+    // ATTEMPTED, not LOADED, and set in `finally`. Gating the effect on
+    // success means a FAILING /media request re-satisfies the effect's
+    // condition the instant `filesLoading` drops back to false — the effect
+    // fires again, fails again, forever, thousands of requests deep, and the
+    // error panel it is supposed to render never survives a frame. The flag
+    // that stops the loop must be set on BOTH outcomes; the only way back in
+    // is an explicit operator action (Try again / Refresh) or a finished
+    // generation, both of which call this function directly.
+    setFilesAttempted(true);
     setFilesLoading(true);
     setFilesError('');
     try {
@@ -220,7 +274,6 @@ export default function AiMediaDialog({ open, onClose, onSelect, title, subtitle
         params: { limit: LIBRARY_PAGE_SIZE, offset: 0, archived: false },
       });
       setFiles(Array.isArray(data.items) ? data.items : []);
-      setFilesLoaded(true);
     } catch (err) {
       setFilesError(errText(err, 'Could not load the media library.'));
       setFiles([]);
@@ -230,9 +283,9 @@ export default function AiMediaDialog({ open, onClose, onSelect, title, subtitle
   }, []);
 
   useEffect(() => {
-    if (!open || tab !== 'files' || filesLoaded || filesLoading) return;
+    if (!open || tab !== 'files' || filesAttempted) return;
     loadFiles();
-  }, [open, tab, filesLoaded, filesLoading, loadFiles]);
+  }, [open, tab, filesAttempted, loadFiles]);
 
   // Closing resets the transient bits so a previous session's banner never
   // greets the next one. Results are kept — reopening to grab the second image
@@ -405,11 +458,18 @@ export default function AiMediaDialog({ open, onClose, onSelect, title, subtitle
             <div>
               <label htmlFor="ai-media-quality" className="block text-[10px] font-semibold tracking-widest text-text-muted mb-1.5">
                 QUALITY
+                <span
+                  className="ml-1.5 normal-case tracking-normal text-text-faint"
+                  title="Recorded with the job, but not yet forwarded to Higgsfield — the generation service only accepts prompt + aspect ratio today."
+                >
+                  (recorded, not yet applied)
+                </span>
               </label>
               <select
                 id="ai-media-quality"
                 value={quality}
                 onChange={(e) => setQuality(e.target.value)}
+                title="Recorded with the job, but not yet forwarded to Higgsfield — the generation service only accepts prompt + aspect ratio today."
                 className="w-full px-3 py-1.5 rounded-lg bg-bg-elevated border border-border-default text-text-primary text-sm focus:outline-none focus:border-accent/60 cursor-pointer"
               >
                 {QUALITIES.map((q) => <option key={q} value={q}>{q}</option>)}
@@ -637,15 +697,27 @@ function JobCard({ job, picked, onUse, onRetry }) {
     );
   }
 
-  if (job.status === 'failed' || job.status === 'stale') {
+  if (job.status === 'failed' || job.status === 'stale' || job.status === 'blocked') {
+    // Three different things, three different affordances:
+    //   stale    — we gave up asking; asking again is exactly the fix
+    //   blocked  — infra (no CDN backend). Named cause, one retry once fixed
+    //   failed   — upstream/asset verdict. `permanent` means OUR checks
+    //              refused the bytes, so no amount of retrying changes it and
+    //              offering the button would be a lie
     const isStale = job.status === 'stale';
+    const isBlocked = job.status === 'blocked';
+    const canRetry = isStale || isBlocked || !job.permanent;
+    const tone = isBlocked ? 'text-amber-400' : isStale ? 'text-text-faint' : 'text-danger';
     return (
       <div className="aspect-square rounded-lg border border-border-default bg-bg-elevated flex flex-col items-center justify-center gap-2 p-3 text-center">
-        <AlertCircle className={`w-6 h-6 ${isStale ? 'text-text-faint' : 'text-danger'}`} />
+        <AlertCircle className={`w-6 h-6 ${tone}`} />
         <p className="text-[11px] text-text-muted break-words">
           {isStale ? 'Generation status unavailable.' : (job.error || 'The generation failed.')}
         </p>
-        {isStale && (
+        {job.permanent && !isBlocked && (
+          <p className="text-[10px] text-text-faint">This one cannot be retried.</p>
+        )}
+        {canRetry && (
           <Button size="sm" variant="secondary" onClick={onRetry}>Retry</Button>
         )}
       </div>

@@ -30,6 +30,7 @@ import {
 import { BreakpointSwitch, MobileScopeNote, AlignmentControls } from './BreakpointControls';
 import VariantPicker from './VariantPicker';
 import { isSlugCollision } from './builderModel';
+import { AiMediaDialog } from '../../../components/media';
 
 const inputCls =
   'w-full px-2.5 py-1.5 text-sm bg-bg-elevated border border-border-default rounded-md text-text-primary placeholder:text-text-faint focus:outline-none focus:border-border-strong';
@@ -80,7 +81,7 @@ function JsonField({ value, onCommit }) {
   );
 }
 
-function Field({ field, value, onChange, onPick }) {
+function Field({ field, value, onChange, onPick, onRequestMedia }) {
   switch (field.kind) {
     case 'textarea':
       return (
@@ -136,8 +137,8 @@ function Field({ field, value, onChange, onPick }) {
     }
     case 'json':
       return <JsonField value={value} onCommit={onChange} />;
-    case 'url':
-      return (
+    case 'url': {
+      const input = (
         <input
           value={value ?? ''}
           onChange={(e) => onChange(e.target.value)}
@@ -146,6 +147,25 @@ function Field({ field, value, onChange, onPick }) {
           className={`${inputCls} font-mono text-xs`}
         />
       );
+      // Image-bearing url fields (registry `media: 'image'`) get a way to fill
+      // themselves that is not "go find a URL somewhere else and paste it".
+      // Typing a URL by hand still works and is untouched — this is an extra
+      // door, not a replacement.
+      if (field.media !== 'image') return input;
+      return (
+        <div className="flex items-center gap-1.5">
+          <div className="min-w-0 flex-1">{input}</div>
+          <button
+            type="button"
+            onClick={() => onRequestMedia?.(field)}
+            title="Generate an image or pick one from your media library"
+            className="shrink-0 px-2 py-1.5 rounded-md border border-border-default bg-bg-elevated text-[11px] text-text-muted hover:text-text-primary hover:border-border-strong cursor-pointer"
+          >
+            <span aria-hidden="true">✦</span> AI Media
+          </button>
+        </div>
+      );
+    }
     case 'checkbox':
       // Unchecked writes `undefined`, which deletes the prop — an unticked
       // block stays byte-identical to one that never had the field, the same
@@ -182,7 +202,7 @@ function Field({ field, value, onChange, onPick }) {
   }
 }
 
-function FieldList({ fields, props, onProp, onFieldFocus }) {
+function FieldList({ fields, props, onProp, onFieldFocus, onRequestMedia }) {
   // Picking a variant fills companion DISPLAY props — but only ones the
   // operator has not already written. Overwriting a hand-typed offer name with
   // Shopify's product title would silently undo their copy.
@@ -206,7 +226,13 @@ function FieldList({ fields, props, onProp, onFieldFocus }) {
           </span>
         )}
       </label>
-      <Field field={f} value={props[f.key]} onChange={(v) => onProp(f.key, v)} onPick={onPick} />
+      <Field
+        field={f}
+        value={props[f.key]}
+        onChange={(v) => onProp(f.key, v)}
+        onPick={onPick}
+        onRequestMedia={onRequestMedia}
+      />
       {f.help && <p className="mt-1 text-[11px] text-text-faint">{f.help}</p>}
     </div>
   ));
@@ -479,6 +505,24 @@ function BlockProps({ block, onProp, onDelete, onDuplicate }) {
   // Always-base write (css_class, visibility toggles).
   const onBaseStyle = (key, value) => writeBag('style', key, value);
 
+  // ── AI Media / library picker ────────────────────────────────────────────
+  // ONE dialog instance for the whole inspector, holding the field it was
+  // opened for. `mediaField` is the registry field descriptor, so the write
+  // target and its companion alt key travel together and the handler needs no
+  // knowledge of which block type it is serving.
+  const [mediaField, setMediaField] = useState(null);
+
+  const applyMediaAsset = (asset) => {
+    if (!mediaField || !asset?.url) return;
+    onProp(mediaField.key, asset.url);
+    // The alt text describes the IMAGE. Swapping the image makes the old alt
+    // wrong, which is worse for a screen reader than no alt at all — so a new
+    // asset's alt wins. An asset with NO alt does not blank the operator's own
+    // wording; there is nothing better to put there.
+    if (mediaField.altKey && asset.alt) onProp(mediaField.altKey, asset.alt);
+    setMediaField(null);
+  };
+
   return (
     <div className="p-3 space-y-3.5">
       {/* Breadcrumb chip row — BLOCK > SUB-ELEMENT + block id */}
@@ -543,7 +587,7 @@ function BlockProps({ block, onProp, onDelete, onDuplicate }) {
           </div>
 
           {def?.fields?.length ? (
-            <FieldList fields={def.fields} props={props} onProp={onProp} onFieldFocus={setSubEl} />
+            <FieldList fields={def.fields} props={props} onProp={onProp} onFieldFocus={setSubEl} onRequestMedia={setMediaField} />
           ) : (
             !def?.wiringFields?.length && <p className="text-xs text-text-faint">This block has no editable settings.</p>
           )}
@@ -572,6 +616,16 @@ function BlockProps({ block, onProp, onDelete, onDuplicate }) {
       {tab === 'advanced' && (
         <AdvancedTab bp={bp} setBp={setBp} props={props} onStyle={onStyle} onBaseStyle={onBaseStyle} />
       )}
+
+      {/* Generate a new image OR pick an existing one — both hand back the
+          same asset object, so this single call site covers both. The dialog
+          never closes itself; applyMediaAsset / onClose own that. */}
+      <AiMediaDialog
+        open={Boolean(mediaField)}
+        onClose={() => setMediaField(null)}
+        onSelect={applyMediaAsset}
+        title={mediaField ? `AI Media — ${mediaField.label}` : 'AI Media'}
+      />
     </div>
   );
 }

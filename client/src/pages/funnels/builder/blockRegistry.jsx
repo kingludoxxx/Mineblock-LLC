@@ -110,7 +110,12 @@ export const BLOCK_DEFS = {
     icon: ImageIcon,
     defaults: () => ({ src: '', alt: '' }),
     fields: [
-      { key: 'src', label: 'Image URL', kind: 'url' },
+      // `media: 'image'` opts a url field into the inspector's picker/AI Media
+      // affordance. It is NOT implied by kind:'url' — cta_href, video src and
+      // every other link are url fields too, and offering an image picker on
+      // them would be noise. `altKey` names the companion field a picked asset
+      // should describe.
+      { key: 'src', label: 'Image URL', kind: 'url', media: 'image', altKey: 'alt' },
       { key: 'alt', label: 'Alt text', kind: 'text' },
     ],
   },
@@ -188,7 +193,7 @@ export const BLOCK_DEFS = {
       { key: 'subheadline', label: 'Subheadline', kind: 'text' },
       { key: 'cta_text', label: 'CTA label', kind: 'text' },
       { key: 'cta_href', label: 'CTA link', kind: 'url' },
-      { key: 'image_url', label: 'Background image URL', kind: 'url' },
+      { key: 'image_url', label: 'Background image URL', kind: 'url', media: 'image' },
     ],
   },
   list: {
@@ -443,7 +448,7 @@ export const BLOCK_DEFS = {
       image: '',
     }),
     fields: [
-      { key: 'image', label: 'Image URL', kind: 'url' },
+      { key: 'image', label: 'Image URL', kind: 'url', media: 'image' },
       { key: 'name', label: 'Name', kind: 'text' },
       { key: 'description', label: 'Description', kind: 'textarea' },
       { key: 'price', label: 'Price (display text)', kind: 'text', placeholder: '$49.00' },
