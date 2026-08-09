@@ -76,6 +76,9 @@ async function createTables() {
     )
   `);
   await pgQuery(`CREATE INDEX IF NOT EXISTS idx_co_events_session ON co_events (session_id, created_at)`);
+  // Live View reads by (kind, created_at) with no session filter; co_events has
+  // no TTL, so without this it degrades to a full seq scan (liveViewQueries.js).
+  await pgQuery(`CREATE INDEX IF NOT EXISTS idx_co_events_kind_created ON co_events (kind, created_at DESC)`);
 
   // Orders written by settlement. idempotency_key UNIQUE is the exactly-once
   // gate: the webhook, the sweep and an operator retry can all race the same

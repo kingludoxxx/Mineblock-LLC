@@ -28,7 +28,11 @@ import EventRail, { useTick, timeAgo, fmtMoney } from './EventRail';
 
 function ConnectionDot({ status }) {
   const color =
-    status === 'live' ? 'bg-success' : status === 'connecting' ? 'bg-warning' : 'bg-danger';
+    status === 'live'
+      ? 'bg-success'
+      : status === 'connecting' || status === 'paused'
+        ? 'bg-warning'
+        : 'bg-danger';
   return (
     <span className="relative inline-flex h-2.5 w-2.5">
       {status === 'live' && (
@@ -43,7 +47,8 @@ const STATUS_LABEL = {
   connecting: 'Connecting…',
   live: 'Live',
   reconnecting: 'Reconnecting…',
-  error: 'Disconnected',
+  paused: 'Paused (tab in background)',
+  error: 'Disconnected — retrying',
 };
 
 // null means "could not measure" (a degraded source) — render a dash, never 0.

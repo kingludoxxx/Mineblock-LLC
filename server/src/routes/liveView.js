@@ -63,22 +63,45 @@ router.get('/snapshot', async (req, res, next) => {
   }
 });
 
+// The JWT's exp claim, in ms — authenticate has ALREADY verified the token's
+// signature; this only re-reads the payload of that same (verified) token so
+// the hub can end the stream when it lapses (review M4). Never a verification
+// path of its own: an unreadable exp yields null (no mid-stream cutoff), it
+// never grants access.
+function tokenExpMs(req) {
+  const header = req.headers.authorization || '';
+  const parts = header.split(' ');
+  const token = req.cookies?.accessToken
+    || (parts.length === 2 && parts[0] === 'Bearer' ? parts[1] : '');
+  try {
+    const payload = JSON.parse(Buffer.from(token.split('.')[1], 'base64url').toString('utf8'));
+    return Number.isFinite(payload.exp) ? payload.exp * 1000 : null;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * GET /stream — SSE. The hub owns headers + lifecycle from here; this handler
- * only enforces the connection cap. No query params are accepted: a stray
- * ?limit here is a caller bug, name it instead of silently ignoring it.
+ * only enforces the connection caps (per-process and per-user → 503 with a
+ * named error). No query params are accepted: a stray ?limit here is a caller
+ * bug, name it instead of silently ignoring it.
  */
 router.get('/stream', (req, res, next) => {
   try {
     if (req.query.limit !== undefined || req.query.since !== undefined) {
       return res.status(400).json({ error: 'stream_takes_no_params' });
     }
-    const attached = subscribe(req, res);
-    if (!attached) {
-      return res.status(503).json({
-        error: 'too_many_live_connections',
-        max: LIVE_VIEW_LIMITS.maxClients,
-      });
+    const attached = subscribe(req, res, {
+      userId: req.user?.id || 'unknown',
+      authExpiresAt: tokenExpMs(req),
+    });
+    if (!attached.ok) {
+      return res.status(503).json(
+        attached.reason === 'user_cap'
+          ? { error: 'too_many_user_connections', max: LIVE_VIEW_LIMITS.maxPerUser }
+          : { error: 'too_many_live_connections', max: LIVE_VIEW_LIMITS.maxClients }
+      );
     }
   } catch (err) {
     next(err);

@@ -49,6 +49,9 @@ async function createTables() {
   await pgQuery(`CREATE INDEX IF NOT EXISTS idx_lb_touches_vid_ts ON lb_touches (vid, ts)`);
   await pgQuery(`CREATE INDEX IF NOT EXISTS idx_lb_touches_funnel ON lb_touches (funnel_id, ts DESC)`);
   await pgQuery(`CREATE INDEX IF NOT EXISTS idx_lb_touches_expires ON lb_touches (expires_at)`);
+  // Live View scans all funnels by time alone (no funnel_id filter), which the
+  // (funnel_id, ts DESC) index cannot serve — this one can (liveViewQueries.js).
+  await pgQuery(`CREATE INDEX IF NOT EXISTS idx_lb_touches_ts ON lb_touches (ts DESC)`);
 
   // ── lb_clicks — one first-class row per ad click (TTL 90d) ──
   // bot / velocity_flag are written ONLY on insert (DECISIONS #10): a later

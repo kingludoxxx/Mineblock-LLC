@@ -19,8 +19,12 @@
 //   : keepalive / : connected — comments; they only reset the freshness clock.
 //
 // Reconnect: jittered exponential backoff 1s → 30s, reset on a healthy
-// connection. A tab going visible or the browser coming online forces an
-// immediate resync (fresh snapshot + reopen), same as the reference.
+// connection. A hidden tab CLOSES the stream (status "paused") and a tab
+// going visible / the browser coming online forces an immediate resync
+// (fresh snapshot + reopen), same as the reference's visibility contract.
+// An `auth_expired` frame (server ended the stream on JWT expiry) reconnects
+// IMMEDIATELY — the reconnect's snapshot GET rides the app's axios
+// interceptors, which is where the token refresh lives.
 import { useCallback, useEffect, useRef, useState } from 'react';
 import api from '../../services/api';
 
@@ -29,7 +33,9 @@ const BACKOFF_MIN_MS = 1_000;
 const BACKOFF_MAX_MS = 30_000;
 
 function mergeFeed(prev, incoming) {
-  // incoming arrives oldest-first; newest must end up on top.
+  // incoming arrives oldest-first; dedupe by id, then keep the rail in strict
+  // ts-desc order (a reconnect gap backfilled from a snapshot may interleave
+  // between rows already on the rail, not only above them).
   const seen = new Set(prev.map((e) => e.id));
   const fresh = [];
   for (const ev of incoming) {
@@ -37,8 +43,10 @@ function mergeFeed(prev, incoming) {
     seen.add(ev.id);
     fresh.push(ev);
   }
-  fresh.reverse();
-  return [...fresh, ...prev].slice(0, FEED_MAX);
+  if (fresh.length === 0) return prev;
+  return [...fresh, ...prev]
+    .sort((a, b) => String(b.ts || '').localeCompare(String(a.ts || '')))
+    .slice(0, FEED_MAX);
 }
 
 /** Parse complete SSE frames out of a text buffer; returns [frames, rest]. */
@@ -63,7 +71,7 @@ function drainSseBuffer(buffer) {
 }
 
 export default function useLiveFeed() {
-  const [status, setStatus] = useState('connecting'); // connecting|live|reconnecting|error
+  const [status, setStatus] = useState('connecting'); // connecting|live|reconnecting|paused|error
   const [error, setError] = useState(null);
   const [snapshot, setSnapshot] = useState(null);
   const [feed, setFeed] = useState([]);
@@ -73,16 +81,20 @@ export default function useLiveFeed() {
   const timerRef = useRef(null);
   const backoffRef = useRef(BACKOFF_MIN_MS);
   const aliveRef = useRef(true);
+  const immediateRef = useRef(false); // auth_expired ⇒ skip the backoff delay
   const connectRef = useRef(() => {});
 
   const applySnapshot = useCallback((snap) => {
     if (!snap || typeof snap !== 'object') return;
     setSnapshot(snap);
-    // The snapshot's own events list only SEEDS an empty feed; after that the
-    // locally-accumulated rail (deduped deltas) is the richer record.
-    setFeed((prev) => (prev.length === 0 && Array.isArray(snap.events)
-      ? snap.events.slice(0, FEED_MAX)
-      : prev));
+    // Snapshot events are MERGED into the rail (dedupe by id) — this is what
+    // backfills a reconnect gap the delta stream never saw. They arrive
+    // newest-first; mergeFeed expects oldest-first.
+    if (Array.isArray(snap.events)) {
+      setFeed((prev) => (prev.length === 0
+        ? snap.events.slice(0, FEED_MAX)
+        : mergeFeed(prev, [...snap.events].reverse())));
+    }
     setLastMessageAt(Date.now());
   }, []);
 
@@ -127,6 +139,13 @@ export default function useLiveFeed() {
         buffer = rest;
         setLastMessageAt(Date.now());
         for (const f of frames) {
+          if (f.event === 'auth_expired') {
+            // Server ended the stream because the JWT lapsed (review M4).
+            // Reconnect NOW — the snapshot GET on the way back in goes
+            // through the axios interceptors where the token refresh lives.
+            immediateRef.current = true;
+            throw new Error('session refreshed — resyncing');
+          }
           if (!f.data) continue;
           let payload;
           try {
@@ -146,8 +165,14 @@ export default function useLiveFeed() {
       if (!aliveRef.current || controller.signal.aborted) return;
       const msg = err?.response?.data?.error || err?.message || 'connection lost';
       setError(String(msg));
-      setStatus('reconnecting');
-      const delay = backoffRef.current + Math.floor(Math.random() * 500);
+      // "error" (review L4) = the backoff is saturated: still retrying, but
+      // the connection has been failing for a while and the UI should say so
+      // louder than a transient "reconnecting".
+      setStatus(backoffRef.current >= BACKOFF_MAX_MS ? 'error' : 'reconnecting');
+      const delay = immediateRef.current
+        ? 0
+        : backoffRef.current + Math.floor(Math.random() * 500);
+      immediateRef.current = false;
       backoffRef.current = Math.min(backoffRef.current * 2, BACKOFF_MAX_MS);
       timerRef.current = setTimeout(() => connectRef.current(), delay);
     }
@@ -165,17 +190,24 @@ export default function useLiveFeed() {
     aliveRef.current = true;
     connectRef.current();
 
-    // A tab returning to view / the browser coming back online forces a full
-    // resync — the cheapest honest answer to "what did I miss".
-    const onVisible = () => {
-      if (document.visibilityState === 'visible') reconnect();
+    // Hidden tab ⇒ CLOSE the stream (review L1) — a wall of background tabs
+    // must not hold server connections. Visible again / back online ⇒ full
+    // resync, the cheapest honest answer to "what did I miss".
+    const onVisibility = () => {
+      if (document.visibilityState === 'visible') {
+        reconnect();
+      } else {
+        if (timerRef.current) clearTimeout(timerRef.current);
+        if (abortRef.current) abortRef.current.abort();
+        setStatus('paused');
+      }
     };
-    document.addEventListener('visibilitychange', onVisible);
+    document.addEventListener('visibilitychange', onVisibility);
     window.addEventListener('online', reconnect);
 
     return () => {
       aliveRef.current = false;
-      document.removeEventListener('visibilitychange', onVisible);
+      document.removeEventListener('visibilitychange', onVisibility);
       window.removeEventListener('online', reconnect);
       if (timerRef.current) clearTimeout(timerRef.current);
       if (abortRef.current) abortRef.current.abort();
