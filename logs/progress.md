@@ -2987,3 +2987,158 @@ stale-funnel guards already prevent the observable bug (wrong funnel's data
 painting) and aborting is an optimisation, not a correctness fix.
 STATUS: COMPLETE
 ---
+
+---
+TIMESTAMP: 2026-08-09 22:30
+TASK: Abandoned Checkouts — parity with the reference tool (feat/abandoned-complete)
+BUILT: Audited our Shopify-only abandoned list against funnel-os's funnel-session
+version, then closed the gaps. New service server/src/services/abandonedRecovery.js
+holds the whole recovery lane: the single definition of "abandoned" (grace window
+from ABANDON_MINUTES, clamped 5..1440), HMAC-signed recovery-link tokens
+(base64url payload so ids containing dots survive), the sidecar record shape, the
+normalized cart summary, and the outbound Klaviyo "Abandoned Checkout" nudge
+(two-layer idempotency copied from klaviyoEvents: lb_integration_sends claim
+before the network call + the same ref as Klaviyo's unique_id, released on every
+path where the event did not land). New sidecar table crm_recovery_meta via the
+ensureTables pattern. server/src/routes/abandonedCheckouts.js now serves ONE list
+over TWO populations (co_sessions + crm_abandoned_checkouts) through a windowed
+CTE, plus detail (full cart + session events), manual status override, mint-link,
+send-nudge, and a detector sweep; recovered attribution is a WINDOWED SWEEP rather
+than a settle hook because the money path belongs to another lane. Client page
+extended in place: source/status/days filters, five-cell KPI strip, recovery pill
++ per-row actions, cart-contents modal. The public resume endpoint was deliberately
+NOT built — its contract is specified in the route file header for the integrator.
+TESTED: server/tests/abandoned/recovery.mjs 133/133 (pure logic; grace clamps,
+settled-beats-everything, missing-clock fail-safe, token tamper/expiry/wrong-secret,
+jsonb both shapes, malformed input on every entry point, and the nudge's failure
+paths driven through the _deps seam: vendor 500, throw between claim and send,
+failing release, dedup, Klaviyo off). server/tests/abandoned/route.mjs 90/90 (real
+router + real authenticate + real SQL on embedded PG :5433; grace-window
+membership, both populations, filters, LIKE-escape, 401/400/404/409/422 paths,
+exactly-once across two sweeps, vendor-500-then-retry, recovered attribution with a
+negative control for a payment predating the nudge, and an explicit assertion that
+no session status, cart total or order was touched). Full server booted against the
+scratch DB: listened, route mounted, 401 without a token. vite build exit 0. eslint
+0 errors on all four touched files (server files linted under a node-globals config
+because the repo's only eslint config is client/browser-scoped; positive control:
+that same config reports 114 errors elsewhere in server/src).
+OUTPUT: 133/133 + 90/90, both re-run clean; build exit 0; lint exit 0.
+DECISIONS: (1) the outbound nudge lives in abandonedRecovery.js rather than as a
+fourth export on klaviyoEvents.js — klaviyoEvents loads from co_sessions, which
+cannot serve Shopify checkouts, and the file is documented as dormant for the
+integrator's call-site map (DECISION MADE). (2) recovered counts/revenue are read
+from the sidecar, not from the list rows: a revived cart that settles leaves the
+unpaid set entirely, so counting recoveries off the list would erase exactly the
+wins being measured (DECISION MADE). (3) "unpaid" is expressed negatively
+(status <> 'paid' AND paid_at IS NULL) rather than as a list of pending statuses,
+so a status added elsewhere cannot silently start emailing live recovery links
+(DECISION MADE). (4) no boot against the production .env — the root .env points at
+the live Render database and the list route runs CREATE TABLE and can hit live
+Shopify (DECISION MADE).
+STATUS: COMPLETE
+---
+
+---
+TIMESTAMP: 2026-08-09 23:05
+TASK: Abandoned Checkouts — adversarial review FIX-FIRST pass (feat/abandoned-complete)
+BUILT: Fixed all 5 gating + 4 major findings, and 7 of 7 minors. B1: the Klaviyo
+event value read row.total while every real caller emits total_price (CTE +
+loadOne alias) — added cartTotal() reading both, so production events stop
+shipping at $0. B2: the detector held a SNAPSHOT and did no re-read, so a cart
+settling mid-sweep got emailed a live recovery link — sendRecoveryEvent now takes
+a `recheck` hook and both the sweep and POST /send re-read status/paid_at
+immediately before the send. B3: the Shopify sync fetched status=open, a feed a
+paid checkout LEAVES, so completed_at stayed NULL forever — switched to
+status=any bounded by created_at_min, which is what lets a completion reach the
+mirror at all. M4: attribution multi-credited one payment across every cart that
+email abandoned — a matched payment is now consumed, and the consume set is
+SEEDED FROM recovered_by so it survives across sweeps. M5: the HMAC key fell back
+to sha256('puure-resume:'), a derivable constant — mint now throws
+RecoverySecretError and verify fails closed; Shopify rows no longer mint a token
+they never use. M6/M7: sent_at is first-stamp-wins in SQL and the sweep stamps on
+deduped too, so a deduped resend cannot move the attribution clock AND a lost
+stamp self-heals. M8: bounded 429 retries. M9: per-operator checkRateLimit on
+sweep/send/link/sync + the route header now states there is no cron in
+render.yaml. M10-M16: notes merged not replaced, ORDER BY tiebreakers, page
+clamp, sync mutex + recency floor, client request-sequence guard.
+TESTED: recovery.mjs 164/164 (was 133) — new production-shaped sections 5b
+(settled evidence on real co_sessions rows), 5c (cartTotal column naming), 6b
+(secret mandatory), 9b (recheck). route.mjs 130/130 (was 90) — new sections 9b
+settle-mid-sweep (mutates the DB between snapshot and send via the trackEvent
+seam), 9c self-heal from a claim-with-no-sidecar row, 10b multi-credit (3 carts,
+1 payment, asserts exactly one credit at $500 AND that a repeat sweep does not
+multiply it), 10c Shopify sync learns completion behind a stubbed fetch + the 429
+loop bound, 10d rate limits + page clamp. vite build exit 0, node --check clean on
+all four files, eslint 0 errors, full server boots and both endpoints answer 401.
+OUTPUT: 164/164 + 130/130, exit 0 both. The repeat-sweep case FAILED first
+(n:2, v:1000) and exposed a bug the review's stated fix would not have closed:
+an in-memory-only consume set lets the next sweep re-spend the same payment on
+the next cart, so recovered revenue climbs once per sweep on static data. Fixed
+by seeding the set from recovered_by.
+DECISIONS: (1) DECLINED the "use gateway_session_id" half of M12, with evidence:
+checkoutPublic.js writes that column at INTENT time on a row still guarded
+`WHERE status = 'processing'`, so treating it as payment evidence would classify
+every gateway-reached cart as paid and silently disable the whole feature. The
+dead gateway_payment_id clause was REMOVED (that column lives on
+co_upsell_charges, never on co_sessions) and replaced with SETTLED_STATUSES
+(paid/deposit_paid/refunded) + paid_at + completed_at, pinned by a
+production-shaped test (DECISION MADE). (2) Attribution credits the MOST RECENTLY
+abandoned cart, not the earliest-nudged: a single sweep stamps every row inside
+the same millisecond, so sent_at carries no usable order and the winner was
+falling out of sweep row ordering — the rule is now explicit with a
+(source, ref_id) tiebreaker so the KPI is reproducible (DECISION MADE).
+(3) Sync bounded to 90 days of created_at: the list's own maximum window is 90d
+and the sweep looks back at most 30, so an older completion changes nothing we
+display (DECISION MADE).
+STATUS: COMPLETE
+---
+
+---
+TIMESTAMP: 2026-08-09 23:55
+TASK: Abandoned Checkouts — delta re-verify round (N1-N6 + M16 remainder)
+BUILT: N2 (gating) concurrent reconciles double-spending one payment: the credit
+is now taken in ONE statement with an AND NOT EXISTS guard on recovered_by,
+backed by a UNIQUE partial index on recovered_by, with SQLSTATE 23505 handled as
+a normal lost-race outcome rather than an error. A zero-row update now also
+consumes the payment for the rest of the pass (conservative: under-crediting
+self-corrects on the next sweep, over-crediting does not). N1: probed the LIVE
+store read-only before trusting the status=any change. M16 remainder: openDetail
+got the same reqSeq guard as load. N3: lastSyncAt is stamped in .finally so a
+failing Shopify does not launch a fresh crawl on every list load. N4:
+recovery_secret_unset answers 503, matching /recovery-link. N5: SETTLED_STATUSES
+documents deposit_paid as aspirational (no writer sets it in this repo; listing
+it can only make classification more conservative). N6: partial index
+(created_at DESC) WHERE completed_at IS NULL on the mirror table.
+TESTED: route.mjs 147/147 (was 130), recovery.mjs 164/164. New section 10b2 runs
+12 trials of 3 parallel list loads over 2 nudged carts + 1 payment, asserting the
+invariant attributed == real, plus a direct assertion that the UNIQUE index
+exists and a positive control that the database itself refuses a duplicate
+recovered_by, plus a check that NULL recovered_by stays repeatable.
+NEGATIVE CONTROL RUN: reverting to the f552e1d crediting path made this section
+report "bad trials = 11" and "attributed 11500 vs real 6000", so it genuinely
+reproduces the bug rather than passing vacuously. A FIRST attempt at the negative
+control PASSED while neutered, which showed the case was not yet exercising the
+race; it was tightened until it failed for the right reason. vite build exit 0,
+node --check clean on all four files, eslint 0 errors.
+OUTPUT: 147/147 + 164/164, exit 0 both; build exit 0.
+DECISIONS: (1) THE N1 LIVE PROBE REFUTED THE B3 PREMISE, and the code comment was
+rewritten to say so. Against 17cca0-2.myshopify.com (API 2024-01, read-only, token
+in header only): status=any and status=open returned BYTE-IDENTICAL bodies
+(26,163 B, same 5 ids); status=closed returned an empty checkouts array (16 B),
+proving the status parameter IS read and that this store simply has zero closed
+checkouts; and completed checkouts do NOT leave the open feed — 2 of the 5 oldest
+rows carry a completed_at and appear under both status values. So status=open was
+already capable of learning completion. status=any is KEPT as a costless superset
+but is no longer claimed to have fixed a demonstrated production failure. The
+two-pass (open+closed) fallback is DECLINED: its stated precondition ("if
+status=any is not honoured") did not occur, and a status=closed pass fetches 0
+rows on this store (DECISION MADE).
+(2) The probe identified the parameter that IS load-bearing: created_at_min is
+honoured (a 90-day floor dropped the 2025 rows and cleared the rel="next" link; a
+1-day floor returned 16 B) and the feed is ordered OLDEST-FIRST, so the previous
+unbounded crawl started at the store's most ancient checkouts and, on a store with
+more than 40x250 = 10,000 of them, would exhaust the page cap before reaching any
+recoverable cart. limit was probed too (5 to 2 shrank the body), so the page cap
+means what it says (DECISION MADE).
+STATUS: COMPLETE
+---
