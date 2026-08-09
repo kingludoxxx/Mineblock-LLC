@@ -2556,3 +2556,53 @@ key on a NEW block would put a value behind the headline field that the
 operator cannot see in the inspector (DECISION MADE).
 STATUS: COMPLETE
 ---
+
+---
+TIMESTAMP: 2026-08-09 22:30
+TASK: Abandoned Checkouts — parity with the reference tool (feat/abandoned-complete)
+BUILT: Audited our Shopify-only abandoned list against funnel-os's funnel-session
+version, then closed the gaps. New service server/src/services/abandonedRecovery.js
+holds the whole recovery lane: the single definition of "abandoned" (grace window
+from ABANDON_MINUTES, clamped 5..1440), HMAC-signed recovery-link tokens
+(base64url payload so ids containing dots survive), the sidecar record shape, the
+normalized cart summary, and the outbound Klaviyo "Abandoned Checkout" nudge
+(two-layer idempotency copied from klaviyoEvents: lb_integration_sends claim
+before the network call + the same ref as Klaviyo's unique_id, released on every
+path where the event did not land). New sidecar table crm_recovery_meta via the
+ensureTables pattern. server/src/routes/abandonedCheckouts.js now serves ONE list
+over TWO populations (co_sessions + crm_abandoned_checkouts) through a windowed
+CTE, plus detail (full cart + session events), manual status override, mint-link,
+send-nudge, and a detector sweep; recovered attribution is a WINDOWED SWEEP rather
+than a settle hook because the money path belongs to another lane. Client page
+extended in place: source/status/days filters, five-cell KPI strip, recovery pill
++ per-row actions, cart-contents modal. The public resume endpoint was deliberately
+NOT built — its contract is specified in the route file header for the integrator.
+TESTED: server/tests/abandoned/recovery.mjs 133/133 (pure logic; grace clamps,
+settled-beats-everything, missing-clock fail-safe, token tamper/expiry/wrong-secret,
+jsonb both shapes, malformed input on every entry point, and the nudge's failure
+paths driven through the _deps seam: vendor 500, throw between claim and send,
+failing release, dedup, Klaviyo off). server/tests/abandoned/route.mjs 90/90 (real
+router + real authenticate + real SQL on embedded PG :5433; grace-window
+membership, both populations, filters, LIKE-escape, 401/400/404/409/422 paths,
+exactly-once across two sweeps, vendor-500-then-retry, recovered attribution with a
+negative control for a payment predating the nudge, and an explicit assertion that
+no session status, cart total or order was touched). Full server booted against the
+scratch DB: listened, route mounted, 401 without a token. vite build exit 0. eslint
+0 errors on all four touched files (server files linted under a node-globals config
+because the repo's only eslint config is client/browser-scoped; positive control:
+that same config reports 114 errors elsewhere in server/src).
+OUTPUT: 133/133 + 90/90, both re-run clean; build exit 0; lint exit 0.
+DECISIONS: (1) the outbound nudge lives in abandonedRecovery.js rather than as a
+fourth export on klaviyoEvents.js — klaviyoEvents loads from co_sessions, which
+cannot serve Shopify checkouts, and the file is documented as dormant for the
+integrator's call-site map (DECISION MADE). (2) recovered counts/revenue are read
+from the sidecar, not from the list rows: a revived cart that settles leaves the
+unpaid set entirely, so counting recoveries off the list would erase exactly the
+wins being measured (DECISION MADE). (3) "unpaid" is expressed negatively
+(status <> 'paid' AND paid_at IS NULL) rather than as a list of pending statuses,
+so a status added elsewhere cannot silently start emailing live recovery links
+(DECISION MADE). (4) no boot against the production .env — the root .env points at
+the live Render database and the list route runs CREATE TABLE and can hit live
+Shopify (DECISION MADE).
+STATUS: COMPLETE
+---
