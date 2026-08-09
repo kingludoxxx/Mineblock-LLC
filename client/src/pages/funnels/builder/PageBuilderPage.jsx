@@ -21,6 +21,7 @@ import LeftPanel from './LeftPanel';
 import RightPanel from './RightPanel';
 import CanvasArea from './CanvasArea';
 import CodeTab from './CodeTab';
+import AIDeveloperPanel from '../../../components/funnels/ai/AIDeveloperPanel';
 
 const DEVICES = [
   { id: 'mobile', width: 375, icon: Smartphone, label: 'Mobile (375px)' },
@@ -50,6 +51,7 @@ export default function PageBuilderPage() {
   const [saveState, setSaveState] = useState('idle'); // idle | saving | saved | error
   const [saveError, setSaveError] = useState(null);
   const [publishing, setPublishing] = useState(false);
+  const [aiOpen, setAiOpen] = useState(false);
 
   // ---- refs so the debounced flush always sends the LATEST state -----------
   const blocksRef = useRef(blocks);
@@ -197,6 +199,37 @@ export default function PageBuilderPage() {
     }), `prop_${blockId}_${key}`);
     scheduleSave('blocks');
   }, [commit, scheduleSave]);
+
+  // ---- AI Developer ---------------------------------------------------------
+  // Applies Claude's validated ops through the SAME history commit user edits
+  // use (one undo step per batch). DRAFT SEMANTICS: we mark 'blocks' dirty but
+  // do NOT start the autosave timer — the AI change persists only when the
+  // operator publishes (flush) or makes a normal edit that autosaves.
+  const applyAiOps = useCallback((ops) => {
+    if (!Array.isArray(ops) || !ops.length) return;
+    commit((prev) => {
+      let next = prev.map((b) => ({ ...b }));
+      for (const op of ops) {
+        const idx = next.findIndex((b) => b.id === op.block_id);
+        if (op.op === 'replace_props') {
+          if (idx !== -1) next[idx] = { ...next[idx], props: op.props };
+        } else if (op.op === 'remove_block') {
+          if (idx !== -1) next.splice(idx, 1);
+        } else if (op.op === 'move_block') {
+          if (idx !== -1) {
+            const [b] = next.splice(idx, 1);
+            next.splice(Math.max(0, Math.min(op.index, next.length)), 0, b);
+          }
+        } else if (op.op === 'insert_block' && op.block) {
+          if (next.length < BLOCKS_MAX_COUNT) {
+            next.splice(Math.max(0, Math.min(op.index ?? next.length, next.length)), 0, op.block);
+          }
+        }
+      }
+      return next;
+    }, `ai_${Date.now()}`);
+    dirtyRef.current.add('blocks'); // picked up by the next Save / Publish
+  }, [commit]);
 
   // ---- undo / redo (buttons + keyboard) -------------------------------------
   const doUndo = useCallback(() => {
@@ -378,12 +411,12 @@ export default function PageBuilderPage() {
           {saveChip.text}
         </span>
 
-        {/* AI Developer — visible, disabled, coming soon. Do not wire. */}
+        {/* AI Developer — toggles the Claude chat panel */}
         <button
-          disabled
-          title="soon"
-          className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold
-            bg-emerald-600/80 text-white opacity-60 cursor-not-allowed"
+          onClick={() => setAiOpen((o) => !o)}
+          title="AI Developer — describe a change, Claude writes the code"
+          className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold cursor-pointer transition-colors
+            ${aiOpen ? 'bg-emerald-500 text-white' : 'bg-emerald-600/80 hover:bg-emerald-600 text-white'}`}
         >
           <Bot className="w-3.5 h-3.5" /> AI Developer
         </button>
@@ -447,6 +480,17 @@ export default function PageBuilderPage() {
           </>
         ) : (
           <CodeTab css={code.custom_css} js={code.custom_js} blocks={blocks} onChange={onCode} />
+        )}
+        {aiOpen && (
+          <AIDeveloperPanel
+            funnelId={id}
+            pageId={pageId}
+            blocks={blocks}
+            selectedBlock={selectedBlock}
+            selectedIndex={blocks.findIndex((b) => b.id === selectedId)}
+            onApplyOps={applyAiOps}
+            onClose={() => setAiOpen(false)}
+          />
         )}
       </div>
     </div>
