@@ -3064,3 +3064,60 @@ the caller never legally named. Now requires typeof === 'string'. Coercion is
 not membership.
 STATUS: COMPLETE
 ---
+
+---
+TIMESTAMP: 2026-08-10 00:35
+TASK: AI Developer extras — review round F1-F8 (branch feat/ai-developer-extras)
+BUILT: Fixed all eight review findings. F1 (GATING): MAX_IMAGE_BYTES was not
+enforced — the size formula stripped '=' globally before measuring and the
+charset regex admitted '=' anywhere, so a PNG header + 20M '=' chars measured 24
+bytes and relayed ~21MB. Replaced with two independent defenses: '=' legal only
+as 0-2 trailing chars, and Buffer.byteLength(clean,'base64') for the size. F2:
+bare base64 now ADOPTS the sniffed type instead of assuming png then blaming the
+caller. F3: added a thread EPOCH (new table lb_ai_dev_threads) so a DELETE
+issued mid-stream wins over an in-flight turn's persist. F4: the same epoch row
+is locked FOR UPDATE by every append, which serializes appends per thread and
+makes the prune bound EXACT; corrected the false "can never outrun" header. F5:
+attachment memo keyed on id/type/index, not the block object. F6: restored the
+cap inside the setState updater plus a generation token for late FileReaders.
+F7: whitespace-only user turns refused server-side (assistant turns exempt so a
+rehydrated thread cannot wedge the panel). F8: documented the archival-orphan
+retention as an explicit decision in the schema header.
+TESTED: validation 155/155 (was 130), thread-routes 77/77 (was 57), chat-turn
+62/62 (was 44). New cases: the pure-padding repro, the interleaved form, an
+assertion that the mock never receives more than the cap, all four image types
+bare, and the exact DELETE-mid-stream sequence.
+OUTPUT: 294/294 across the three ai-developer harnesses. Regressions green —
+ai-ops-wiring 31/31, builder-model 181/181, page-versions 93/93. vite build 0
+errors (934ms). eslint 0 errors 0 warnings. Commit e14744c.
+DECISIONS:
+(1) F1 fixed with TWO independent defenses rather than one. The charset fix
+alone would stop the known input; byteLength alone would stop it too. Keeping
+both means the measurement does not depend on the charset check being right,
+which is exactly the coupling that produced the bug.
+(2) F7 refuses empty USER turns only. Refusing empty assistant turns too would
+be stricter but would let a rehydrated thread containing one empty reply wedge
+the panel out of ever sending again — a worse failure than the one being fixed.
+(3) F4 taken as advisory-lock-equivalent (row lock on the epoch row) rather than
+accept-and-document, because F3 required that lock anyway. One mechanism, two
+findings closed, and the contract asserted under real concurrency instead of
+documented as approximate.
+(4) F8 retention: no FK/cascade. Archiving is reversible here and a restored
+page getting its conversation back is expected; a cascade would make page
+deletion silently destroy history, and this module owns no page-delete path.
+Bounded at 50 rows, no image bytes, unreachable via the API.
+TWO DEFECTS FOUND BY MY OWN NEW TESTS, MID-FIX:
+(a) The F4 concurrency assertion FAILED on its first run — 58 rows, not 50.
+Cause: `SELECT ... FOR UPDATE` that matches NO ROW locks NOTHING, so on a thread
+whose epoch row did not exist yet the lock was a no-op. appendThread now creates
+the row itself rather than trusting a caller to have opened it. The guarantee
+must not depend on call order.
+(b) My own epoch test cleared P1 and thereby emptied the thread a LATER test
+asserted a count of, which failed as "cleared: 0, want 2". Cross-test state in a
+shared-DB harness is a real hazard; rewritten to use dedicated pages.
+MUTATION CHECK: removed `expectEpoch` from the route's persist call and re-ran —
+3 assertions failed showing exactly the original defect (the cleared thread came
+back with 2 ghost rows). The F3 test is load-bearing, not decorative. File
+restored and re-verified at 62/62.
+STATUS: COMPLETE
+---
