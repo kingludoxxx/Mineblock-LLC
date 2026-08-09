@@ -36,7 +36,11 @@ const sql = postgres(DB, { ssl: false, onnotice: () => {} });
 //   failInsights   → act_2's insights answer 500 (partial failure)
 const captured = [];
 let failAccounts = false;
-const dayUtc = (n) => new Date(Date.now() - n * 86400000).toISOString().slice(0, 10);
+// REPORT-TZ day keys — Meta buckets insight days in the AD ACCOUNT's timezone
+// (Madrid, same as the engine), so the mock must speak that calendar too.
+// (a UTC slice here disagrees with the engine 22:00-24:00 UTC every day)
+import { reportDaysAgo } from '../../src/services/reportTz.js';
+const day = (n) => reportDaysAgo(n);
 const mock = http.createServer((req, res) => {
   captured.push({ url: req.url, auth: req.headers.authorization || '' });
   res.setHeader('content-type', 'application/json');
@@ -49,9 +53,9 @@ const mock = http.createServer((req, res) => {
   }
   if (req.url.startsWith('/act_1/insights')) {
     return res.end(JSON.stringify({ data: [
-      { campaign_id: 'C1', campaign_name: 'Puure Lift US', spend: '120.50', date_start: dayUtc(1), date_stop: dayUtc(1) },
-      { campaign_id: 'C1', campaign_name: 'Puure Lift US', spend: '80.25', date_start: dayUtc(0), date_stop: dayUtc(0) },
-      { campaign_id: 'C2', campaign_name: 'Puure Oil EU', spend: '44.00', date_start: dayUtc(1), date_stop: dayUtc(1) },
+      { campaign_id: 'C1', campaign_name: 'Puure Lift US', spend: '120.50', date_start: day(1), date_stop: day(1) },
+      { campaign_id: 'C1', campaign_name: 'Puure Lift US', spend: '80.25', date_start: day(0), date_stop: day(0) },
+      { campaign_id: 'C2', campaign_name: 'Puure Oil EU', spend: '44.00', date_start: day(1), date_stop: day(1) },
     ] }));
   }
   if (req.url.startsWith('/act_2/insights')) {
@@ -85,7 +89,7 @@ await ensureTrackingTables();
   ok(out.errors.length === 1 && out.errors[0].includes('2:'), 'S1 per-account error captured, not fatal');
   const rows = await sql`SELECT * FROM lb_ad_spend_daily WHERE source = 'meta' ORDER BY ref_id, day`;
   ok(rows.length === 3, `S1 lb_ad_spend_daily has 3 rows (${rows.length})`);
-  const c1y = rows.find((r) => r.ref_id === 'C1' && r.day === dayUtc(1));
+  const c1y = rows.find((r) => r.ref_id === 'C1' && r.day === day(1));
   ok(c1y && Number(c1y.spend) === 120.5 && c1y.campaign_name === 'Puure Lift US' && c1y.account_id === '1',
     'S1 row carries spend/name/account');
   // re-sync = upsert, never duplicate
@@ -143,7 +147,7 @@ await ensureTrackingTables();
   ok(tick.ok === true, 'S4 tick ran a sync');
   const insReq = captured.find((c) => c.url.includes('/insights'));
   const since = decodeURIComponent(insReq.url).match(/"since":"(\d{4}-\d{2}-\d{2})"/);
-  ok(since && since[1] === dayUtc(12), `S4 tick requested since=${since && since[1]} (12 days back) — the gap closes on ONE tick`);
+  ok(since && since[1] === day(12), `S4 tick requested since=${since && since[1]} (12 days back) — the gap closes on ONE tick`);
   const tick2 = await maybeSpendSync();
   ok(tick2.skipped === 'throttled', 'S4 second tick inside 30 min throttled ON THE ATTEMPT');
 }
@@ -181,8 +185,8 @@ await ensureTrackingTables();
             VALUES ('sp_6', 'f_z', 'processing', '[]', 100, 'v_aaaaaa6', NOW())`;
   await mkClick('ck6', 'sp_6', 'v_aaaaaa6', 'C1', 1);
 
-  const start = dayUtc(3);
-  const end = dayUtc(0);
+  const start = day(3);
+  const end = day(0);
   const b = await deriveCampaignBindings(start, end);
   ok(b.C1 && b.C1.fid === 'f_a' && b.C1.sessions === 3 && b.C1.split === true,
     `S5 C1 majority f_a with the split visible (${JSON.stringify(b.C1)})`);
@@ -196,8 +200,8 @@ await ensureTrackingTables();
 
 // ═══ S6: funnelSpendByDay — derived + pins win + manual, known tri-state ═══
 {
-  const start = dayUtc(3);
-  const end = dayUtc(0);
+  const start = day(3);
+  const end = day(0);
   // derived: C1 → f_a gets C1's spend (120.50 + 80.25)
   const s1 = await funnelSpendByDay(['f_a', 'f_b', 'f_unbound'], start, end);
   const fa = Object.values(s1.days.f_a).reduce((a, v) => a + v, 0);
@@ -218,9 +222,9 @@ await ensureTrackingTables();
   ok(Object.values(s3.days.f_a).reduce((a, v) => a + v, 0) === 0, 'S6 pin to an outside funnel STRIPS the derived credit');
   await sql`DELETE FROM lb_campaign_map WHERE campaign_id = 'C1'`;
   // manual rows: f_manual has no campaigns at all
-  await sql`INSERT INTO lb_ad_spend_daily (source, ref_id, day, spend, note) VALUES ('manual', 'f_manual', ${dayUtc(1)}, 33.10, 'agency')`;
+  await sql`INSERT INTO lb_ad_spend_daily (source, ref_id, day, spend, note) VALUES ('manual', 'f_manual', ${day(1)}, 33.10, 'agency')`;
   const s4 = await funnelSpendByDay(['f_manual'], start, end);
-  ok(s4.known.f_manual === true && s4.days.f_manual[dayUtc(1)] === 33.1, 'S6 manual row → spend known and summed');
+  ok(s4.known.f_manual === true && s4.days.f_manual[day(1)] === 33.1, 'S6 manual row → spend known and summed');
   // empty input
   const s5 = await funnelSpendByDay([], start, end);
   ok(Object.keys(s5.days).length === 0, 'S6 empty funnel list → empty result, no crash');

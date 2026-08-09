@@ -3352,3 +3352,36 @@ failure TTL globally, which would have restored the per-request fan-out on the
 list that the memo exists to prevent (DECISION MADE).
 STATUS: COMPLETE
 ---
+
+---
+TIMESTAMP: 2026-08-10 00:30
+TASK: Fix UTC-vs-Madrid day-key flake in costs test harnesses (+ metrics-ui)
+BUILT: Replaced harness-local UTC day helpers with REPORT_TZ (Madrid) helpers
+from server/src/services/reportTz.js so fixtures and the engine share one
+calendar. costs/engine.mjs: D() now uses reportDaysAgo (funnelCosts.daysAgo
+slices UTC and disagrees with dayKey 22:00-24:00 UTC); T11/T15 fixture
+instants pinned to 10:00-report-tz of their intended day via reportDayStartIso.
+costs/routes.mjs, costs/spend.mjs, costs/contract.mjs: dayUtc() replaced with
+day()=reportDaysAgo + dayInstant() for session/upsell timestamps.
+builder-metrics/metrics-ui.mjs: all UTC-midnight anchors switched to report-tz
+midnight (MID SQL fragment); NOW()-minutes fixtures wrapped in
+GREATEST(..., MID + offset) so they can never cross the report-day boundary
+near midnight; window day now reportDayKey(). Engine code untouched.
+TESTED: All suites run IN the 22:00-24:00 UTC divergence window (real clock,
+22:27-22:35 UTC — the exact condition that produced the 6 verified failures:
+engine T15, routes R3/R6 x3, spend S4, plus metrics-ui) AND re-run with a JS
+clock shim (+2.5h -> 00:57 UTC, out-of-window; shim in session scratchpad,
+offset chosen so shifted JS "today" still equals the Madrid day PG NOW() sees,
+keeping PG-anchored fixtures coherent).
+OUTPUT: In-window: engine 116/0, routes 65/0, spend 48/0, contract 57/0,
+report-tz 18/0, metrics-ui 40/0. Out-of-window (shim): identical — all 0 failed.
+DECISIONS: Also fixed costs/contract.mjs and metrics-ui.mjs (same latent
+dayUtc/UTC-midnight pattern found by grep, per task instruction to sweep other
+suites); metrics/engine.mjs + metrics/routes.mjs already anchor to
+T0=todayInTz() with calendar arithmetic - correct, left alone;
+builder-metrics/analytics-report-tz.mjs uses UTC midnight deliberately (it
+tests the tz seam) - left alone. Fixture instants pinned at ~10:00 report-tz
+rather than now-minus-24h-multiples so they also survive DST-transition days
+(DECISION MADE).
+STATUS: COMPLETE
+---

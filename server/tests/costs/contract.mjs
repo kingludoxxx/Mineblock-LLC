@@ -31,8 +31,14 @@ await admin`CREATE DATABASE puure_costs_contract`;
 await admin.end();
 const sql = postgres(DB, { ssl: false, onnotice: () => {} });
 
+// ── day helpers — REPORT-TZ calendar, the one the engine buckets in ─────────
+// (a UTC slice here disagrees with the engine 22:00-24:00 UTC every day)
+import { reportDaysAgo, reportDayStartIso } from '../../src/services/reportTz.js';
+const day = (n) => reportDaysAgo(n); // n days ago as a report-day key
+// An instant safely inside report-day day(n): 10h after report-tz midnight.
+const dayInstant = (n) => new Date(Date.parse(reportDayStartIso(day(n))) + 10 * 3600e3).toISOString();
+
 // mock Meta so spend endpoints are exercised for real
-const dayUtc = (n) => new Date(Date.now() - n * 86400000).toISOString().slice(0, 10);
 const mock = http.createServer((req, res) => {
   res.setHeader('content-type', 'application/json');
   if (req.url.startsWith('/me/adaccounts')) {
@@ -40,7 +46,7 @@ const mock = http.createServer((req, res) => {
   }
   if (req.url.startsWith('/act_7/insights')) {
     return res.end(JSON.stringify({ data: [
-      { campaign_id: 'CC1', campaign_name: 'Contract Camp', spend: '10.00', date_start: dayUtc(1), date_stop: dayUtc(1) },
+      { campaign_id: 'CC1', campaign_name: 'Contract Camp', spend: '10.00', date_start: day(1), date_stop: day(1) },
     ] }));
   }
   res.statusCode = 404; res.end('{}');
@@ -87,15 +93,15 @@ const V1 = '777777777777';
 const V2 = '888888888888';
 await sql`INSERT INTO co_sessions (id, funnel_id, status, line_items, total, refunds, paid_at, created_at)
   VALUES ('ct_1', 'f_ct', 'paid', ${sql.json([{ variant_id: V1, quantity: 1, price: 100, product_title: 'Contract Cream' }])},
-          100, '[]', ${new Date(Date.now() - 86400000).toISOString()}, ${new Date(Date.now() - 86400000).toISOString()})`;
+          100, '[]', ${dayInstant(1)}, ${dayInstant(1)})`;
 // cross-window parent + recent upsell (M4 evidence in the same payloads)
 await sql`INSERT INTO co_sessions (id, funnel_id, status, line_items, total, refunds, paid_at, created_at)
   VALUES ('ct_2', 'f_ct', 'paid', ${sql.json([{ variant_id: V1, quantity: 1, price: 60 }])},
-          60, '[]', ${new Date(Date.now() - 40 * 86400000).toISOString()}, ${new Date(Date.now() - 40 * 86400000).toISOString()})`;
+          60, '[]', ${dayInstant(40)}, ${dayInstant(40)})`;
 await sql`INSERT INTO co_upsell_charges (id, session_id, offer_id, charge_id, amount, status, line_items, created_at)
   VALUES ('ct_ux', 'ct_2', 'up', ${'v:' + V2}, 30, 'settled',
           ${sql.json([{ variant_id: V2, quantity: 1, unit_price: 30 }])},
-          ${new Date(Date.now() - 86400000).toISOString()})`;
+          ${dayInstant(1)})`;
 
 // ══ CONTRACT KEY SETS (cogs-contract-v2.md, verbatim) ══════════════════════
 const ROW_KEYS = ['variant_id', 'product_title', 'variant_title', 'image_url', 'contexts', 'funnels',
@@ -178,7 +184,7 @@ const SOURCE_KEYS = ['source', 'configured', 'last_sync', 'last_attempt', 'last_
 
 // ── GET /pnl/overview (M6 + window) ─────────────────────────────────────────
 {
-  const r = await req('GET', `/pnl/overview?start=${dayUtc(7)}&end=${dayUtc(0)}`);
+  const r = await req('GET', `/pnl/overview?start=${day(7)}&end=${day(0)}`);
   keysEq('overview: data keys EXACT', r.j.data, ['rows', 'totals', 'window']);
   keysEq('overview: window keys', r.j.data.window, ['start', 'end']);
   const row = r.j.data.rows.find((x) => x.fid === 'f_ct');
@@ -194,17 +200,17 @@ const SOURCE_KEYS = ['source', 'configured', 'last_sync', 'last_attempt', 'last_
 // ── GET /pnl/funnel/:fid ────────────────────────────────────────────────────
 {
   // manual spend first so manual_entries is non-empty (contract body: spend)
-  const ms = await req('POST', '/pnl/funnel/f_ct/spend-manual', { day: dayUtc(1), spend: 12.5, note: 'x' });
+  const ms = await req('POST', '/pnl/funnel/f_ct/spend-manual', { day: day(1), spend: 12.5, note: 'x' });
   ok(ms.status === 200, 'spend-manual: {day, spend, note} body accepted (B3)');
-  const legacy = await req('POST', '/pnl/funnel/f_ct/spend-manual', { day: dayUtc(1), amount: 12.5 });
+  const legacy = await req('POST', '/pnl/funnel/f_ct/spend-manual', { day: day(1), amount: 12.5 });
   ok(legacy.status === 422 && legacy.j.error.code === 'bad_spend', 'spend-manual: legacy {amount} body REFUSED (drift tripwire)');
-  const r = await req('GET', `/pnl/funnel/f_ct?start=${dayUtc(7)}&end=${dayUtc(0)}`);
+  const r = await req('GET', `/pnl/funnel/f_ct?start=${day(7)}&end=${day(0)}`);
   keysEq('pnl/funnel: data keys EXACT', r.j.data, ['totals', 'daily', 'campaigns', 'manual_entries']);
   keysEq('pnl/funnel: totals keys EXACT', r.j.data.totals, PNL_ROW_KEYS);
   ok(r.j.data.daily.length >= 1, 'pnl/funnel: daily non-empty');
   keysEq('pnl/funnel: daily row keys EXACT (np, not net_profit)', r.j.data.daily[0], DAILY_KEYS);
   keysEq('pnl/funnel: manual entry keys EXACT', r.j.data.manual_entries[0], MANUAL_KEYS);
-  const del = await req('DELETE', `/pnl/funnel/f_ct/spend-manual/${dayUtc(1)}`);
+  const del = await req('DELETE', `/pnl/funnel/f_ct/spend-manual/${day(1)}`);
   ok(del.status === 200, 'spend-manual DELETE unchanged');
 }
 
@@ -229,7 +235,7 @@ const SOURCE_KEYS = ['source', 'configured', 'last_sync', 'last_attempt', 'last_
 {
   const pin = await req('POST', '/campaign-map', { campaign_id: 'CC1', funnel_id: 'f_ct', action: 'pin' });
   ok(pin.status === 200, 'campaign-map: pin accepted');
-  const r = await req('GET', `/pnl/funnel/f_ct?start=${dayUtc(7)}&end=${dayUtc(0)}`);
+  const r = await req('GET', `/pnl/funnel/f_ct?start=${day(7)}&end=${day(0)}`);
   ok(r.j.data.campaigns.length === 1, 'pnl/funnel: pinned campaign listed');
   keysEq('pnl/funnel: campaign keys EXACT (bound_via + split + sessions)', r.j.data.campaigns[0], CAMPAIGN_KEYS);
   ok(r.j.data.campaigns[0].bound_via === 'pin', 'campaign row says HOW it is bound');

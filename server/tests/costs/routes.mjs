@@ -29,8 +29,14 @@ await admin`CREATE DATABASE puure_costs_routes`;
 await admin.end();
 const sql = postgres(DB, { ssl: false, onnotice: () => {} });
 
+// ── day helpers — REPORT-TZ calendar, the one the engine buckets in ─────────
+// (a UTC slice here disagrees with the engine 22:00-24:00 UTC every day)
+import { reportDaysAgo, reportDayStartIso } from '../../src/services/reportTz.js';
+const day = (n) => reportDaysAgo(n); // n days ago as a report-day key
+// An instant safely inside report-day day(n): 10h after report-tz midnight.
+const dayInstant = (n) => new Date(Date.parse(reportDayStartIso(day(n))) + 10 * 3600e3).toISOString();
+
 // ── mock Meta Graph (background sync target) ────────────────────────────────
-const dayUtc = (n) => new Date(Date.now() - n * 86400000).toISOString().slice(0, 10);
 const mock = http.createServer((req, res) => {
   res.setHeader('content-type', 'application/json');
   if (req.url.startsWith('/me/adaccounts')) {
@@ -38,7 +44,7 @@ const mock = http.createServer((req, res) => {
   }
   if (req.url.startsWith('/act_9/insights')) {
     return res.end(JSON.stringify({ data: [
-      { campaign_id: 'CR1', campaign_name: 'Routes Camp', spend: '77.70', date_start: dayUtc(1), date_stop: dayUtc(1) },
+      { campaign_id: 'CR1', campaign_name: 'Routes Camp', spend: '77.70', date_start: day(1), date_stop: day(1) },
     ] }));
   }
   res.statusCode = 404; res.end('{}');
@@ -84,11 +90,11 @@ const V1 = '555555555555';
 const V2 = '666666666666';
 
 // seed money: f_r1 sells V1 (2 sessions), f_r2 sells V2, all inside 7d
-const mkSess = (id, fid, daysAgo, lines, total, refunds = []) => sql`
+const mkSess = (id, fid, n, lines, total, refunds = []) => sql`
   INSERT INTO co_sessions (id, funnel_id, status, line_items, total, refunds, paid_at, created_at)
   VALUES (${id}, ${fid}, 'paid', ${sql.json(lines)}, ${total}, ${sql.json(refunds)},
-          ${new Date(Date.now() - daysAgo * 86400000).toISOString()},
-          ${new Date(Date.now() - daysAgo * 86400000).toISOString()})`;
+          ${dayInstant(n)},
+          ${dayInstant(n)})`;
 await mkSess('rt_1', 'f_r1', 1, [{ variant_id: V1, quantity: 1, price: 100, product_title: 'Lift' }], 100);
 await mkSess('rt_2', 'f_r1', 2, [{ variant_id: V1, quantity: 2, price: 100 }], 200);
 await mkSess('rt_3', 'f_r2', 1, [{ variant_id: V2, quantity: 1, price: 50 }], 50);
@@ -141,7 +147,7 @@ await mkSess('rt_3', 'f_r2', 1, [{ variant_id: V2, quantity: 1, price: 50 }], 50
   // known-free is an EXPLICIT zero. Backdated to the first sale so the P&L
   // window's sessions price at THIS rate (the later write wins the same-day
   // tie against the null-cogs row above — engine T3 semantics).
-  const r2 = await req('POST', '/rates', { variant_id: V1, unit_cogs: 20, ship: { default: 0 }, effective_from: dayUtc(2) });
+  const r2 = await req('POST', '/rates', { variant_id: V1, unit_cogs: 20, ship: { default: 0 }, effective_from: day(2) });
   ok(r2.status === 200 && Number(r2.j.data.rate.ship.default) === 0, 'R3 explicit ship 0 stored as 0 (known free)');
   // malformed → 4xx {error:{code}}
   const m1 = await req('POST', '/rates', { variant_id: V1, unit_cogs: 'abc' });
@@ -198,8 +204,8 @@ await mkSess('rt_3', 'f_r2', 1, [{ variant_id: V2, quantity: 1, price: 50 }], 50
 
 // ═══ R6: P&L endpoints ═════════════════════════════════════════════════════
 {
-  const start = dayUtc(7);
-  const end = dayUtc(0);
+  const start = day(7);
+  const end = day(0);
   const ov = await req('GET', `/pnl/overview?start=${start}&end=${end}`);
   ok(ov.status === 200 && ov.j.data.rows.length === 2, 'R6 overview has both funnels');
   const f1 = ov.j.data.rows.find((r) => r.fid === 'f_r1');
@@ -212,7 +218,7 @@ await mkSess('rt_3', 'f_r2', 1, [{ variant_id: V2, quantity: 1, price: 50 }], 50
   const bad = await req('GET', '/pnl/overview?start=2026-01-01');
   ok(bad.status === 422 && bad.j.error.code === 'bad_day', 'R6 missing end → 422 bad_day');
   // drill-in + manual spend
-  const ms = await req('POST', '/pnl/funnel/f_r1/spend-manual', { day: dayUtc(1), spend: 40, note: 'agency' });
+  const ms = await req('POST', '/pnl/funnel/f_r1/spend-manual', { day: day(1), spend: 40, note: 'agency' });
   ok(ms.status === 200 && ms.j.data.spend === 40, 'R6 manual spend upserted');
   const fp = await req('GET', `/pnl/funnel/f_r1?start=${start}&end=${end}`);
   ok(fp.status === 200 && fp.j.data.totals.spend === 40 && fp.j.data.totals.spend_known === true,
@@ -221,9 +227,9 @@ await mkSess('rt_3', 'f_r2', 1, [{ variant_id: V2, quantity: 1, price: 50 }], 50
   ok(fp.j.data.daily.length === 2 && fp.j.data.manual_entries.length === 1, 'R6 daily series + manual entries');
   const msBad = await req('POST', '/pnl/funnel/f_r1/spend-manual', { day: 'yesterday', spend: 1 });
   ok(msBad.status === 422 && msBad.j.error.code === 'bad_day', 'R6 bad manual day → 422');
-  const msBad2 = await req('POST', '/pnl/funnel/f_r1/spend-manual', { day: dayUtc(1), spend: 'lots' });
+  const msBad2 = await req('POST', '/pnl/funnel/f_r1/spend-manual', { day: day(1), spend: 'lots' });
   ok(msBad2.status === 422 && msBad2.j.error.code === 'bad_spend', 'R6 bad manual spend → 422 bad_spend');
-  const del = await req('DELETE', `/pnl/funnel/f_r1/spend-manual/${dayUtc(1)}`);
+  const del = await req('DELETE', `/pnl/funnel/f_r1/spend-manual/${day(1)}`);
   ok(del.status === 200 && del.j.data.deleted === true, 'R6 manual spend deleted');
   const fp2 = await req('GET', `/pnl/funnel/f_r1?start=${start}&end=${end}`);
   ok(fp2.j.data.totals.spend_known === false, 'R6 after delete spend is unknown again');
@@ -249,12 +255,12 @@ await mkSess('rt_3', 'f_r2', 1, [{ variant_id: V2, quantity: 1, price: 50 }], 50
   // campaign pin → spend routes to the pinned funnel
   const pin = await req('POST', '/campaign-map', { campaign_id: 'CR1', funnel_id: 'f_r2', action: 'pin' });
   ok(pin.status === 200 && pin.j.data.pinned === true, 'R7 pin stored');
-  const ov = await req('GET', `/pnl/overview?start=${dayUtc(7)}&end=${dayUtc(0)}`);
+  const ov = await req('GET', `/pnl/overview?start=${day(7)}&end=${day(0)}`);
   const f2 = ov.j.data.rows.find((r) => r.fid === 'f_r2');
   ok(f2.spend === 77.7 && f2.spend_known === true, `R7 pinned campaign spend lands on f_r2 (${f2.spend})`);
   const unpin = await req('POST', '/campaign-map', { campaign_id: 'CR1', action: 'unpin' });
   ok(unpin.status === 200 && unpin.j.data.pinned === false, 'R7 unpin');
-  const ov2 = await req('GET', `/pnl/overview?start=${dayUtc(7)}&end=${dayUtc(0)}`);
+  const ov2 = await req('GET', `/pnl/overview?start=${day(7)}&end=${day(0)}`);
   const f2b = ov2.j.data.rows.find((r) => r.fid === 'f_r2');
   ok(f2b.spend_known === false, 'R7 after unpin (no clicks to derive from) spend unknown again');
   const pinBad = await req('POST', '/campaign-map', { campaign_id: 'CR1', action: 'pin' });
