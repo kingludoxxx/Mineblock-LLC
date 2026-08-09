@@ -2056,3 +2056,43 @@ OUTPUT: Core: 27 passed, 0 failed. Route: 17 passed, 0 failed. vite: ✓ built i
 DECISIONS: DECISION MADE — dedupe joiners on the ROUTE path answer 204 if the shared render fails (same fail-open contract as the producer). DECISION MADE — idle-close timer double-guards (clears on shot start AND re-checks busyShots inside the callback) so a race between timer fire and shot start cannot kill an in-flight shot. DECISION MADE — data: URIs bypass the host check (no host), all other non-http(s) schemes abort. DECISION MADE — the core harness pins THUMB_BROWSER_IDLE_MS=1500 for T11; inter-shot gaps in the harness are ms-scale DB calls so earlier launch-count assertions remain valid.
 STATUS: COMPLETE
 ---
+
+---
+TIMESTAMP: 2026-08-09 17:55
+TASK: Phase-1 server-side tracking (feat/tracking-server)
+BUILT: Network CRUD in trackingAdmin.js (GET/PUT /:funnelId/networks[/:kind] with
+masked reads, AES-256-GCM capi_token at rest via gatewayConfigs encryptSecret,
+kind registry TRACKING_NETWORKS open for ga4/google_ads/gtm) + GET
+/:funnelId/tracking/summary (24h sent/failed/deduped/queued per kind, breaker
+state, server_channel_ready, click_id_params). trackingDelivery.js: duplicate
+branch now logs status='deduped'; Meta graph version defaults v23.0 with
+per-pixel config.graph_version override; gcm1: tokens decrypt at send, legacy
+plaintext passes through, decrypt failure is retryable. trackingService.js:
+fireUpsellPurchaseConversion(sessionId, chargeRowId, value), event_id
+pur_<sid>_u_<chargeRowId>, paid-gated, fire-and-forget (call-site is the
+integrator's). trackingRuntime.js: consent-gated fbq base loader for enabled
+native/hybrid meta pixels (template-literal-safe: no regex/backslash/backtick/
+dollar-brace). trackingSchema.js: UNIQUE (funnel_id, kind) on lb_pixels.
+TESTED: server/tests/tracking/admin-crud.mjs (37/37) + delivery-patches.mjs
+(35/35) against embedded PG 5433 + mock relay. Edge cases: 401 unauthed,
+unknown kind/mode 400, ''-vs-null token semantics, corrupt gcm1 ciphertext
+(queued, no throw, no wire), not-paid/missing session, non-finite value,
+double-fire idempotency. Regression: money-path seam-fixes 15/15,
+session-auth 9/9, shopify-order-create 66/66, shopify-refund-reflect 35/35,
+split-delivery 33/33, ssrf-guard 15/15; funnel-settings patch-settings 22/22,
+domains-tab 23/23; page-types 81/81; funnels 27/27+17/17; builder-metrics
+40/40; clone-page 92/92. node --check clean on all changed files.
+OUTPUT: all new checks PASS; render-settings byte-identity vs merge-base
+diverges BY DESIGN (fbq loader) — scratch delta-check proved the diff is
+confined to the inline tracking <script> in all 8 templates (self-heals when
+this branch merges and the merge-base moves). upsell-page.mjs 3 pre-existing
+fails reproduce identically on main (live-Shopify data dependency);
+review-regression.mjs needs an external :4003 harness server (env
+precondition, BLOCKED in this environment, unrelated to this change).
+DECISIONS: server_channel_ready additionally requires mode s2s|hybrid (native
+is browser-only, so it is not a ready SERVER channel) - DECISION MADE.
+token_decrypt_failed is retryable, not hard, so fixing CHECKOUT_CREDS_KEY
+heals the queued backlog - DECISION MADE. failed_24h counts skipped+error;
+queued_24h surfaced separately (pending retry is not failure) - DECISION MADE.
+STATUS: COMPLETE
+---

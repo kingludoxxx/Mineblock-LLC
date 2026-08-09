@@ -13,6 +13,7 @@ import dns from 'dns/promises';
 import { pgQuery } from '../db/pg.js';
 import { ensureTrackingTables } from './trackingSchema.js';
 import { emqScore, idkFrom } from './trackingAttribution.js';
+import { decryptSecret } from './gatewayConfigs.js';
 
 // Retry schedule AFTER the failed inline attempt: 1m, 5m, 15m, 1h, 3h, 6h,
 // 12h, 24h → dead. Nine total attempts (inline + 8 queued).
@@ -161,7 +162,18 @@ export async function breakerRecord(funnelId, scopeId, ok) {
 // SSRF posture: https-only in production; http allowed only for localhost in
 // dev/test (mirrors the reference's SSRF guard intent). Test override via
 // TRACKING_RELAY_OVERRIDE_URL so verification can point the relay at a 500.
-function resolveEndpoint(pixel) {
+// Meta Graph API version for the default CAPI endpoint. v19.0 (the old
+// hardcode) reaches end-of-support in Aug-2026 — the default now tracks a
+// supported release, and config.graph_version is a per-pixel override for
+// pinning/rollback. Sanitized: this value lands in a URL, so anything that
+// isn't a plain vNN.N falls back to the default.
+const GRAPH_VERSION_DEFAULT = 'v23.0';
+export function graphVersion(cfg) {
+  const v = String((cfg || {}).graph_version || '').trim();
+  return /^v\d{1,3}\.\d{1,3}$/.test(v) ? v : GRAPH_VERSION_DEFAULT;
+}
+
+export function resolveEndpoint(pixel) {  // exported for the delivery-patches harness
   const override = process.env.TRACKING_RELAY_OVERRIDE_URL || '';
   if (override) return override;
   const cfg = pixel.config || {};
@@ -169,9 +181,22 @@ function resolveEndpoint(pixel) {
   // Faithful default per kind (Meta CAPI); a real capi_token is required at
   // go-live. With no endpoint AND no token this returns '' → 'not_configured'.
   if (pixel.kind === 'meta_pixel' && cfg.capi_token) {
-    return `https://graph.facebook.com/v19.0/${encodeURIComponent(pixel.pixel_id)}/events`;
+    return `https://graph.facebook.com/${graphVersion(cfg)}/${encodeURIComponent(pixel.pixel_id)}/events`;
   }
   return '';
+}
+
+// The stored capi_token is EITHER encrypted at rest ('gcm1:' — written by the
+// trackingAdmin network CRUD via the gatewayConfigs pattern) OR legacy
+// plaintext (rows that predate the write surface). Decrypt only the former;
+// pass the latter through unchanged. Throws on a bad ciphertext/key — the
+// caller maps that to a retryable result so fixing CHECKOUT_CREDS_KEY heals
+// the queued backlog (queue rows re-read the pixel at send time, DECISIONS
+// #12). The token value itself is never logged in any branch.
+function resolveToken(pixel) {
+  const raw = String((pixel.config || {}).capi_token || '');
+  if (!raw) return '';
+  return raw.startsWith('gcm1:') ? decryptSecret(raw) : raw;
 }
 
 // Hostnames that must never be reachable, whatever they resolve to.
@@ -284,7 +309,16 @@ async function sendToPixel(pixel, envelope) {
   if (!url) return { ok: false, error: 'not_configured' };
   const guard = await endpointAllowed(url);
   if (guard !== true) return { ok: false, error: `unsafe_url:${guard}` };
-  const token = (pixel.config || {}).capi_token || '';
+  let token;
+  try {
+    token = resolveToken(pixel);
+  } catch {
+    // Wrong/rotated CHECKOUT_CREDS_KEY or corrupt ciphertext. Deliberately a
+    // RETRYABLE error (not in HARD_ERRORS): the operator fixing the key heals
+    // the backlog because queued rows re-read the pixel at send time. The
+    // ciphertext and the error detail are never logged.
+    return { ok: false, error: 'token_decrypt_failed' };
+  }
   const payload = {
     data: [{
       event_name: envelope.event_name,
@@ -352,7 +386,14 @@ export async function deliverToPixel({ funnelId, pixel, eventName, eventId, user
        ON CONFLICT (pixel_id, event_id) DO NOTHING RETURNING pixel_id`,
       [pixel.pixel_id, eventId]
     );
-    if (!claim.length) return 'duplicate';
+    if (!claim.length) {
+      // Honest counters: a dedup is an EVENT, not silence. Without this row
+      // the summary's deduped_24h undercounts and the dual-rail (webhook +
+      // browser + relay) looks like it silently dropped events. status
+      // 'deduped' — a correct outcome, never an error.
+      await logEvent({ funnelId, platform, pixelId: pixel.pixel_id, eventName, eventId, status: 'deduped', source, idk, value, error: null });
+      return 'duplicate';
+    }
 
     const envelope = {
       event_name: eventName, event_id: eventId,
@@ -458,4 +499,4 @@ export async function runDelivery({ limit = 200 } = {}) {
   return out;
 }
 
-export default { deliverToPixel, runDelivery, buildUserData, retryable, payloadRejected, breakerOpen, breakerRecord };
+export default { deliverToPixel, runDelivery, buildUserData, retryable, payloadRejected, breakerOpen, breakerRecord, resolveEndpoint, graphVersion };

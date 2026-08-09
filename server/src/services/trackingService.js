@@ -119,6 +119,79 @@ export async function firePurchaseConversion(sessionId, { source = 'webhook' } =
   }
 }
 
+// Fire the deterministic UPSELL Purchase conversion for a settled post-purchase
+// charge. event_id = pur_<session_id>_u_<charge_row_id> — distinct from the
+// main Purchase (pur_<session_id>) so an accepted upsell is a SECOND
+// conversion, and deterministic so a webhook redelivery / concurrent settle /
+// double-fire all resolve to the same id and the lb_tracking_sent
+// (pixel_id, event_id) claim dedupes to ONE send per pixel.
+//
+// Same posture as firePurchaseConversion: paid-gated (money only from
+// settlement — the parent session must be 'paid'), FIRE-AND-FORGET (a delivery
+// failure escalates for retry, never throws up the stack, DECISIONS #16).
+// `value` is the upsell CHARGE amount (not the session total) — the caller
+// (the checkoutSettle wiring, a later integrator task) passes the settled
+// charge row id + its amount. No click re-stamp here: the main Purchase
+// already stamped last-click attribution for this session.
+export async function fireUpsellPurchaseConversion(sessionId, chargeRowId, value, { source = 'webhook' } = {}) {
+  try {
+    await ensureTrackingTables();
+    const chargeId = String(chargeRowId || '').slice(0, 80);
+    if (!chargeId) return { ok: false, reason: 'no_charge_row' };
+    const amount = Number(value);
+    if (!Number.isFinite(amount) || amount < 0) return { ok: false, reason: 'bad_value' };
+    const rows = await pgQuery(
+      `SELECT id, funnel_id, status, currency, customer, tracking_net, vid, click_vault
+       FROM co_sessions WHERE id = $1`,
+      [String(sessionId || '').slice(0, 80)]
+    );
+    if (!rows.length) return { ok: false, reason: 'session_not_found' };
+    const s = rows[0];
+    // Money only from settlement: an upsell fires only under a paid session.
+    if (s.status !== 'paid') return { ok: false, reason: `not_paid:${s.status}` };
+
+    const eventId = `pur_${s.id}_u_${chargeId}`;
+    const net = (s.tracking_net && typeof s.tracking_net === 'object') ? s.tracking_net : {};
+    const cust = (s.customer && typeof s.customer === 'object') ? s.customer : {};
+    const ship = (cust.shipping && typeof cust.shipping === 'object') ? cust.shipping : {};
+    const vault = (s.click_vault && typeof s.click_vault === 'object') ? s.click_vault : {};
+    const clickIds = { ...vault };
+    if (!Object.keys(clickIds).length) {
+      const fbclid = fbclidFromFbc(net.fbc);
+      if (fbclid) clickIds.fbclid = fbclid;
+    }
+    const clickId = Object.values(clickIds)[0] || '';
+    const { user_data, idk } = buildUserData({
+      email: cust.email, phone: cust.phone,
+      first_name: cust.first_name, last_name: cust.last_name,
+      city: ship.city, state: ship.state, zip: ship.zip, country: ship.country,
+      external_id: s.id, fbp: net.fbp, fbc: net.fbc, ip: net.ip, ua: net.ua,
+      click_id: clickId,
+    });
+    // order_id carries the upsell suffix so platform-side reporting can tell
+    // the second conversion from the main order without sharing an event_id.
+    const customData = { value: amount, currency: s.currency, order_id: `${s.id}_u_${chargeId}` };
+
+    const pixels = await serverPixels(s.funnel_id);
+    if (!pixels.length) {
+      return { ok: true, fired: 0, event_id: eventId, reason: 'no_server_pixel' };
+    }
+    const results = [];
+    for (const px of pixels) {
+      const r = await deliverToPixel({
+        funnelId: s.funnel_id, pixel: px, eventName: 'Purchase', eventId,
+        userData: user_data, idk, customData, source, eventSourceUrl: net.url || '',
+      });
+      results.push({ pixel: px.pixel_id, result: r });
+    }
+    return { ok: true, fired: results.length, event_id: eventId, results };
+  } catch (err) {
+    // Never propagate — a tracking failure must never break settlement.
+    console.error('[tracking] fireUpsellPurchaseConversion failed (fail-open):', err.message);
+    return { ok: false, reason: 'error' };
+  }
+}
+
 // Relay a browser-beaconed event (/track/collect). The event NAME is checked
 // against the allow-list; the event_id echoes the browser's so native+relay
 // dedupe. Consent-denied beacons legitimately carry no identity → the delivery
@@ -157,4 +230,4 @@ export async function relayBrowserEvent({ funnelId, eventName, eventId, identity
   }
 }
 
-export default { firePurchaseConversion, relayBrowserEvent, ALLOWED_CLIENT_EVENTS };
+export default { firePurchaseConversion, fireUpsellPurchaseConversion, relayBrowserEvent, ALLOWED_CLIENT_EVENTS };
