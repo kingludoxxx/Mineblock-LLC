@@ -979,7 +979,12 @@ function prefillKey(){var b=billing();return emailValue()+'|'+b.name+'|'+b.line1
    buyer's receipt). Payments still reconcile by co_session_id metadata. */
 function doMount(){if(mounted){return;}mounted=true;
   var sid='';try{sid=(window.__fos_checkout.session||{}).session_id||'';}catch(e){}
-  var guestEmail='guest+'+(sid||'anon').replace(/[^a-z0-9_-]/gi,'').slice(0,40)+'@checkout.trypuure.co';
+  /* Whop VALIDATES email deliverability (live finding: 'does not accept
+     incoming mail' on a subdomain with no MX). info@trypuure.co is a real
+     Google-Workspace mailbox, so a plus-tagged per-session address passes
+     both the MX and the recipient check; Whop's own receipts land in the
+     store inbox, and the BUYER's receipt remains our Shopify email. */
+  var guestEmail='info+'+(sid||'anon').replace(/[^a-z0-9_-]/gi,'').slice(0,40)+'@trypuure.co';
   var v=emailValue();
   var b=billing();
   var bReal=billingReady();
