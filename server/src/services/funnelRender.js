@@ -896,12 +896,17 @@ function post(path,payload){return fetch(API+path,{method:'POST',headers:{'Conte
 function sessErr(code){if(code==='pricing_unavailable')return 'Payment is temporarily unavailable. Please try again in a moment.';if(code==='invalid_variant'||code==='empty_cart')return 'This item is currently unavailable.';if(code==='total_below_minimum')return 'This order is below the minimum amount.';if(code==='rate_limited')return 'Too many attempts. Please wait a moment and retry.';return 'We could not start checkout ('+code+').';}
 function embedErr(code){if(code==='gateway_not_configured')return 'Checkout is not fully set up yet. Please contact support.';if(code==='session_not_payable')return 'This checkout session has expired. Please refresh the page.';if(code==='gateway_error')return 'The payment provider is temporarily unavailable. Please try again shortly.';return 'We could not start the payment ('+code+').';}
 function mountEmbed(root,embed){try{var mount=root.querySelector('[data-fos-whop-mount]');if(!mount||!embed.whop_session_id){return;}
-/* The loader only reacts to nodes being ADDED — configuring a node it has
-   already scanned does nothing, which is why setting the session attribute
-   after the buyer filled the form left the iframe uncreated. Re-inserting the
-   fully-configured node is what actually triggers it (verified live: 0 -> 1
-   iframe the instant the node was replaced). */
-function activate(){var fresh=mount.cloneNode(true);mount.parentNode.replaceChild(fresh,mount);mount=fresh;}
+/* REMOUNT primitive. Decoded from Whop's index.js: eh(node) SKIPS any node
+   whose data-whop-checkout-mounted is set, and a node's removal deregisters
+   its frame — so re-inserting a DEEP clone (old iframe child + mounted marker
+   riding along) yields a dead, unregistered frame. A SHALLOW clone with the
+   loader's two markers stripped is a genuinely fresh mount: the observer
+   (live after index.js's initial scan) creates AND registers the new frame
+   (identifiedFrames.set(id, iframe)) because the node id is read at creation. */
+function activate(){var fresh=mount.cloneNode(false);
+  fresh.removeAttribute('data-whop-checkout-mounted');
+  fresh.removeAttribute('data-whop-checkout-identifier');
+  mount.parentNode.replaceChild(fresh,mount);mount=fresh;}
 /* The embed ships a COMPLETE checkout of its own (dark, browser-locale, its own
    email + billing + price + TOS + CTA). Dropped into our page that is a second
    checkout inside the first. Reduce it to the ONE thing only it can do - the
@@ -955,18 +960,19 @@ function prefillKey(){var b=billing();return emailValue()+'|'+b.name+'|'+b.line1
    as /^[^@s]+.../ and rejected every address containing the letter s,
    which is why the first live order never mounted a payment form.
    Plain string checks cannot be mangled by an escaping layer. */function valid(v){if(!v||v.indexOf(' ')!==-1)return false;var at=v.indexOf('@');if(at<1||at!==v.lastIndexOf('@'))return false;var dot=v.lastIndexOf('.');return dot>at+1&&dot<v.length-1;}
-/* Mount ONLY once we have a valid email + a complete address. This looks like
-   it just gates a placeholder, but it is load-bearing for the CHARGE: Whop's
-   loader identifies a frame (populates wco.identifiedFrames, which wco.submit
-   needs) by observing the mount node being ADDED — and its observer is not
-   live until index.js finishes loading. Mounting eagerly at page load ran
-   activate() before that observer existed, so the frame was never registered
-   and submit had nothing to target (verified live: identifiedFrames stayed
-   empty, the button hit its 8s watchdog). Waiting until the buyer has filled
-   the form gives index.js time to load first, so the single mount below is the
-   one Whop actually registers. */
-function doMount(){var v=emailValue();if(mounted||!valid(v)||!billingReady()){return;}mounted=true;
-  applyPrefill(billing(),v);
+/* IMMEDIATE mount, the loader-native way (decoded from Whop's index.js): at
+   startup index.js SCANS the document for [data-whop-checkout-session] nodes,
+   mounts each, and registers it in identifiedFrames under the node's id —
+   then starts its observer. So a node that is FULLY CONFIGURED before the
+   loader script is injected gets mounted AND registered with zero
+   re-insertion, and the card fields are visible the moment the iframe loads —
+   no waiting for the buyer's email. The email/address still ride the iframe
+   URL: remount() below re-creates the frame with the real values once typed
+   (the earlier eager attempt failed because it re-inserted the node BEFORE
+   index.js loaded AND its deep clone carried the mounted marker — both fixed:
+   no insertion here, and activate() now strips the markers). */
+function doMount(){if(mounted){return;}mounted=true;
+  applyPrefill(billing(),emailValue());
   mount.setAttribute('data-fos-prefill-key',prefillKey());
   mount.setAttribute('data-whop-checkout-session',embed.whop_session_id);
   /* Belt + braces with the plan's server-side redirect_url: also tell the
@@ -974,8 +980,7 @@ function doMount(){var v=emailValue();if(mounted||!valid(v)||!billingReady()){re
      page (wrong product, visitor locale) never wins. */
   if(embed.redirect_url){mount.setAttribute('data-whop-checkout-return-url',embed.redirect_url);}
   if(placeholder){placeholder.hidden=true;}
-  loadWhopLoader();
-  activate();}
+  loadWhopLoader();}
 /* If the buyer corrects the address after the form mounted, the baked-in value
    is stale - tear the frame down and rebuild it with the new one rather than
    charging a receipt to the wrong address. */
