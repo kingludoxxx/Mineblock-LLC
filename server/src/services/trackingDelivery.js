@@ -74,12 +74,23 @@ export function buildUserData(raw = {}) {
 }
 
 // ── error classification ─────────────────────────────────────────────────────
+// Review MINOR #3: an ECHOING endpoint (a legacy capi_endpoint row, a debug
+// relay) reflects our request body — which carries the plaintext access_token
+// — back at us, and errOf persists a body slice into admin-readable error
+// fields (lb_tracking_events.error, lb_postback_queue.last_error). Mask any
+// access_token value BEFORE slicing, so a mid-token cut can't leak partial
+// token bytes either.
+export function redactTokens(s) {
+  return String(s).replace(/(access_token\W{0,3})[A-Za-z0-9_.%\-]+/gi, '$1[REDACTED]');
+}
+
 export function errOf(res) {
   const r = res || {};
   if (r.error) return String(r.error);
   const bodyStr = r.body == null ? '' : (typeof r.body === 'string' ? r.body : (() => { try { return JSON.stringify(r.body); } catch { return String(r.body); } })());
-  if (Number.isInteger(r.status)) return `http_${r.status}${bodyStr ? `: ${bodyStr.slice(0, 200)}` : ''}`;
-  return bodyStr || 'unknown_error';
+  const safeBody = bodyStr ? redactTokens(bodyStr) : '';
+  if (Number.isInteger(r.status)) return `http_${r.status}${safeBody ? `: ${safeBody.slice(0, 200)}` : ''}`;
+  return safeBody || 'unknown_error';
 }
 
 // True when the platform rejected THIS event's payload (nothing matchable),
@@ -471,9 +482,26 @@ export async function runDelivery({ limit = 200 } = {}) {
     if (!pixels.length) res = { ok: false, error: 'pixel_gone' };
     else res = await sendToPixel(pixels[0], row.envelope || {});
     const scopeId = row.scope_id;
+    // Review MAJOR #1: a drained retry SETTLES the event, so it must write a
+    // ledger row like the inline path does — otherwise after any platform
+    // outage the summary shows the backlog as forever-queued even though the
+    // drain delivered (or dead-lettered) everything. Carry the ORIGINAL event
+    // fields from the queued envelope.
+    const env = row.envelope || {};
+    const px = pixels.length ? pixels[0] : null;
+    const logDrain = (status, error) => logEvent({
+      funnelId: row.funnel_id,
+      platform: px ? (px.kind || '').replace(/_pixel$/, '') : '',
+      pixelId: px ? px.pixel_id : '',
+      eventName: env.event_name, eventId: env.event_id,
+      status, source: 'drain',
+      idk: Array.isArray(env.idk) ? env.idk : [],
+      value: (env.custom_data || {}).value, error,
+    });
     if (res.ok) {
       await breakerRecord(row.funnel_id, scopeId, true);
       await pgQuery(`UPDATE lb_postback_queue SET status = 'done', last_error = NULL WHERE id = $1`, [id]);
+      await logDrain('sent', null);
       out.sent++;
       continue;
     }
@@ -483,6 +511,7 @@ export async function runDelivery({ limit = 200 } = {}) {
     if (!retryable(res) || attempts >= MAX_ATTEMPTS) {
       await pgQuery(`UPDATE lb_postback_queue SET status = 'dead', attempts = $2, last_error = $3 WHERE id = $1`,
         [id, attempts, err.slice(0, 300)]);
+      await logDrain('error', err);
       out.dead++;
     } else {
       const delay = RETRY_DELAYS_S[Math.min(attempts - 1, RETRY_DELAYS_S.length - 1)];

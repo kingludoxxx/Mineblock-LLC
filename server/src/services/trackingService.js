@@ -138,6 +138,10 @@ export async function fireUpsellPurchaseConversion(sessionId, chargeRowId, value
     await ensureTrackingTables();
     const chargeId = String(chargeRowId || '').slice(0, 80);
     if (!chargeId) return { ok: false, reason: 'no_charge_row' };
+    // Review MINOR #2: Number(null) === 0, so a caller passing null/undefined
+    // would silently fire a $0 Purchase and pollute value-based optimization.
+    // Refuse missing values explicitly; an EXPLICIT 0 stays legitimate.
+    if (value == null) return { ok: false, reason: 'no_value' };
     const amount = Number(value);
     if (!Number.isFinite(amount) || amount < 0) return { ok: false, reason: 'bad_value' };
     const rows = await pgQuery(

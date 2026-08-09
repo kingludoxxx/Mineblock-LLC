@@ -30,6 +30,8 @@ export const TRACKING_NETWORKS = {
     network: 'meta',
     secrets: ['capi_token'],
     plain: ['test_event_code', 'graph_version'],
+    // Garbage-in insurance (review MINOR #5): Meta pixel ids are numeric.
+    pixelIdRe: /^\d{5,20}$/,
   },
 };
 const PIXEL_MODES = new Set(['native', 's2s', 'hybrid']);
@@ -124,15 +126,20 @@ router.put('/:funnelId/networks/:kind', async (req, res) => {
     if (b.mode !== undefined && !PIXEL_MODES.has(b.mode)) {
       return res.status(400).json({ success: false, error: { code: 'invalid_mode' } });
     }
+    // Review NIT #6: Boolean("false") === true — accept ONLY JSON booleans.
+    if (b.enabled !== undefined && b.enabled !== true && b.enabled !== false) {
+      return res.status(400).json({ success: false, error: { code: 'invalid_enabled' } });
+    }
     const pixelId = b.pixel_id === undefined ? undefined : String(b.pixel_id || '').trim().slice(0, 64);
+    if (pixelId !== undefined && pixelId !== '' && spec.pixelIdRe && !spec.pixelIdRe.test(pixelId)) {
+      return res.status(400).json({ success: false, error: { code: 'invalid_pixel_id' } });
+    }
     await ensureTrackingTables();
     const funnelId = funnelParam(req);
     const existing = await loadPixelRow(funnelId, kind);
     // pixel_id is required for a NEW row; an existing row may omit it to keep
     // the stored value (same keep-on-undefined rule as the other fields).
-    const finalPixelId = pixelId !== undefined && pixelId !== '' ? pixelId
-      : (existing ? existing.pixel_id : '');
-    if (!finalPixelId) {
+    if (!(pixelId !== undefined && pixelId !== '') && !existing) {
       return res.status(400).json({ success: false, error: { code: 'pixel_id_required' } });
     }
     if (b.graph_version !== undefined && b.graph_version !== null && String(b.graph_version).trim() !== ''
@@ -140,36 +147,50 @@ router.put('/:funnelId/networks/:kind', async (req, res) => {
       return res.status(400).json({ success: false, error: { code: 'invalid_graph_version' } });
     }
 
-    const config = { ...((existing && existing.config && typeof existing.config === 'object') ? existing.config : {}) };
+    // Review MINOR #4: the merge happens SQL-SIDE, not read-merge-write. The
+    // request compiles into a PARTIAL patch (only the keys it sets) plus a
+    // list of keys it clears; the upsert applies
+    //   config = (stored - cleared) || patch
+    // atomically, so two concurrent PUTs writing DIFFERENT fields both
+    // survive — the patch content never depends on the read above (the read
+    // only backs validation), so a stale read cannot drop the other writer's
+    // keys. Same COALESCE rule for the scalar columns: null = keep stored.
+    const patch = {};
+    const cleared = [];
     for (const f of spec.secrets) {
       const v = b[f];
-      if (v === undefined) continue;              // absent → keep
-      if (v === null) { delete config[f]; continue; } // explicit null → clear
+      if (v === undefined) continue;               // absent → keep
+      if (v === null) { cleared.push(f); continue; } // explicit null → clear
       const t = String(v).trim();
-      if (t === '') continue;                     // '' → keep (masked re-submit)
-      config[f] = encryptSecret(t);
+      if (t === '') continue;                      // '' → keep (masked re-submit)
+      patch[f] = encryptSecret(t);
     }
     for (const f of spec.plain) {
       const v = b[f];
-      if (v === undefined) continue;              // absent → keep
+      if (v === undefined) continue;               // absent → keep
       const t = v === null ? '' : String(v).trim();
-      if (t === '') { delete config[f]; continue; } // null/'' → clear
-      config[f] = t.slice(0, 128);
+      if (t === '') { cleared.push(f); continue; } // null/'' → clear
+      patch[f] = t.slice(0, 128);
     }
 
-    const mode = b.mode !== undefined ? b.mode : (existing ? existing.mode : 'hybrid');
-    const enabled = b.enabled !== undefined ? Boolean(b.enabled) : (existing ? Boolean(existing.enabled) : true);
+    const pixelParam = pixelId !== undefined && pixelId !== '' ? pixelId : null;
+    const modeParam = b.mode !== undefined ? b.mode : null;
+    const enabledParam = b.enabled !== undefined ? b.enabled : null;
     const rows = await pgQuery(
       `INSERT INTO lb_pixels (id, funnel_id, kind, pixel_id, mode, enabled, config, created_at, updated_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, NOW(), NOW())
+       VALUES ($1, $2, $3, COALESCE($4, ''), COALESCE($5, 'hybrid'), COALESCE($6, TRUE), $7::jsonb, NOW(), NOW())
        ON CONFLICT (funnel_id, kind) DO UPDATE SET
-         pixel_id = EXCLUDED.pixel_id,
-         mode = EXCLUDED.mode,
-         enabled = EXCLUDED.enabled,
-         config = EXCLUDED.config,
+         pixel_id = COALESCE($4, lb_pixels.pixel_id),
+         mode = COALESCE($5, lb_pixels.mode),
+         enabled = COALESCE($6, lb_pixels.enabled),
+         config = (COALESCE(lb_pixels.config, '{}'::jsonb) - $8::text[]) || $7::jsonb,
          updated_at = NOW()
        RETURNING id, funnel_id, kind, pixel_id, mode, enabled, config, updated_at`,
-      [`px_${crypto.randomBytes(9).toString('hex')}`, funnelId, kind, finalPixelId, mode, enabled, config]
+      // NB: pass `patch` as the raw object — pgQuery (postgres.js) serializes
+      // jsonb params itself; pre-stringifying double-encodes into a jsonb
+      // STRING scalar and '- text[]' then throws 'cannot delete from scalar'.
+      [`px_${crypto.randomBytes(9).toString('hex')}`, funnelId, kind,
+        pixelParam, modeParam, enabledParam, patch, cleared]
     );
     return res.json({ success: true, data: { network: networkView(kind, rows[0]) } });
   } catch (err) {
@@ -183,14 +204,16 @@ router.put('/:funnelId/networks/:kind', async (req, res) => {
 // GET /:funnelId/tracking/summary — per-kind delivery health for the settings
 // UI: 24h counters from lb_tracking_events, breaker state, whether the SERVER
 // channel is actually ready to fire, and which URL params identify this
-// network's clicks. failed_24h counts terminal outcomes (skipped/error);
-// queued_24h is surfaced separately because a queued event is pending retry,
-// not failed.
+// network's clicks. failed_24h counts terminal outcomes (skipped/error).
+// queued_now is the LIVE queue depth (review MAJOR #1): rows currently
+// pending/retrying in lb_postback_queue — NOT a ledger count, which would
+// keep showing drained events as queued forever. The drain writes its own
+// sent/error ledger rows, so the 24h counters stay honest across an outage.
 router.get('/:funnelId/tracking/summary', async (req, res) => {
   try {
     await ensureTrackingTables();
     const funnelId = funnelParam(req);
-    const [pixelRows, countRows, breakerRows] = await Promise.all([
+    const [pixelRows, countRows, breakerRows, queueRows] = await Promise.all([
       pgQuery(
         `SELECT id, kind, pixel_id, mode, enabled, config FROM lb_pixels WHERE funnel_id = $1`,
         [funnelId]
@@ -199,8 +222,7 @@ router.get('/:funnelId/tracking/summary', async (req, res) => {
         `SELECT platform,
                 COUNT(*) FILTER (WHERE status = 'sent')::int AS sent_24h,
                 COUNT(*) FILTER (WHERE status IN ('skipped', 'error'))::int AS failed_24h,
-                COUNT(*) FILTER (WHERE status = 'deduped')::int AS deduped_24h,
-                COUNT(*) FILTER (WHERE status = 'queued')::int AS queued_24h
+                COUNT(*) FILTER (WHERE status = 'deduped')::int AS deduped_24h
          FROM lb_tracking_events
          WHERE funnel_id = $1 AND ts > NOW() - INTERVAL '24 hours'
          GROUP BY platform`,
@@ -210,9 +232,17 @@ router.get('/:funnelId/tracking/summary', async (req, res) => {
         `SELECT scope_id, fails, open_until FROM lb_postback_breakers WHERE funnel_id = $1`,
         [funnelId]
       ),
+      pgQuery(
+        `SELECT p.kind, COUNT(*)::int AS n
+         FROM lb_postback_queue q JOIN lb_pixels p ON p.id = q.pixel_row_id
+         WHERE q.funnel_id = $1 AND q.status IN ('queued', 'sending')
+         GROUP BY p.kind`,
+        [funnelId]
+      ),
     ]);
     const pixelByKind = new Map(pixelRows.map((r) => [r.kind, r]));
     const countByPlatform = new Map(countRows.map((r) => [r.platform, r]));
+    const queuedByKind = new Map(queueRows.map((r) => [r.kind, r.n]));
     const paramsByNetwork = {};
     for (const [param, network] of CLICK_ID_NETWORK) {
       (paramsByNetwork[network] = paramsByNetwork[network] || []).push(param);
@@ -233,7 +263,7 @@ router.get('/:funnelId/tracking/summary', async (req, res) => {
         sent_24h: c.sent_24h || 0,
         failed_24h: c.failed_24h || 0,
         deduped_24h: c.deduped_24h || 0,
-        queued_24h: c.queued_24h || 0,
+        queued_now: queuedByKind.get(kind) || 0,
         breaker: { state: open ? 'open' : 'closed', fails: breaker ? breaker.fails : 0, open_until: breaker ? breaker.open_until : null },
         // Ready = the server channel can actually fire: enabled, a pixel id,
         // a stored token, AND a mode that relays server events (native fires

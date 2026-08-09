@@ -39,10 +39,38 @@ await sql`INSERT INTO roles (id, name, permissions) VALUES ('r_trk_test', 'track
 await sql`DELETE FROM user_roles WHERE user_id = 'u_trk_test'`;
 await sql`INSERT INTO user_roles (user_id, role_id) VALUES ('u_trk_test', 'r_trk_test')`;
 
+let pass = 0, fail = 0;
+const check = (name, ok, extra = '') => { if (ok) { pass++; console.log(`PASS  ${name}`); } else { fail++; console.log(`FAIL  ${name}  ${extra}`); } };
+
+// ── T0 (NIT #7): dupe insurance — must run BEFORE this process's single
+// ensureTrackingTables pass. Mirror the lb_pixels DDL (same pattern as
+// split-delivery's funnel_pages mirror) so a fresh DB doesn't fail seeding,
+// drop the unique index, hand-insert two dupes, then let ensure dedupe
+// (keeping the NEWEST) and recreate the index.
+await sql`CREATE TABLE IF NOT EXISTS lb_pixels (
+  id TEXT PRIMARY KEY, funnel_id TEXT NOT NULL, kind TEXT NOT NULL,
+  pixel_id TEXT NOT NULL, mode TEXT NOT NULL DEFAULT 'hybrid',
+  enabled BOOLEAN NOT NULL DEFAULT TRUE, config JSONB NOT NULL DEFAULT '{}',
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+)`;
+await sql`DROP INDEX IF EXISTS uq_lb_pixels_funnel_kind`;
+await sql`DELETE FROM lb_pixels WHERE funnel_id = 'fnl_trkdupe'`;
+await sql`INSERT INTO lb_pixels (id, funnel_id, kind, pixel_id, updated_at) VALUES
+  ('px_dupe_old', 'fnl_trkdupe', 'meta_pixel', '10000001', NOW() - INTERVAL '1 hour'),
+  ('px_dupe_new', 'fnl_trkdupe', 'meta_pixel', '10000002', NOW())`;
+
 const trackingAdminRouter = (await import('../../src/routes/trackingAdmin.js')).default;
 const { decryptSecret } = await import('../../src/services/gatewayConfigs.js');
 const { ensureTrackingTables } = await import('../../src/services/trackingSchema.js');
 await ensureTrackingTables();
+
+{
+  const rows = await sql`SELECT id FROM lb_pixels WHERE funnel_id = 'fnl_trkdupe'`;
+  check('T0 dedupe kept exactly the NEWEST row', rows.length === 1 && rows[0].id === 'px_dupe_new', JSON.stringify(rows));
+  const idx = await sql`SELECT indexname FROM pg_indexes WHERE indexname = 'uq_lb_pixels_funnel_kind'`;
+  check('T0 unique index recreated', idx.length === 1, JSON.stringify(idx));
+  await sql`DELETE FROM lb_pixels WHERE funnel_id = 'fnl_trkdupe'`;
+}
 
 const app = express();
 app.use(express.json());
@@ -54,8 +82,6 @@ const B = `http://127.0.0.1:${PORT}/api/v1/tracking-admin`;
 const token = jwt.sign({ userId: 'u_trk_test' }, process.env.JWT_ACCESS_SECRET, { expiresIn: '10m' });
 const H = { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' };
 
-let pass = 0, fail = 0;
-const check = (name, ok, extra = '') => { if (ok) { pass++; console.log(`PASS  ${name}`); } else { fail++; console.log(`FAIL  ${name}  ${extra}`); } };
 const req = async (method, path, body, headers = H) => {
   const r = await fetch(`${B}${path}`, { method, headers, body: body === undefined ? undefined : JSON.stringify(body) });
   let j = null; let text = '';
@@ -82,16 +108,23 @@ await sql`DELETE FROM lb_postback_breakers WHERE funnel_id = ${FID}`;
 
 // ── T2: validation refusals ─────────────────────────────────────────────────
 {
-  const r = await req('PUT', `/${FID}/networks/tiktok_pixel`, { pixel_id: '1' });
+  const r = await req('PUT', `/${FID}/networks/tiktok_pixel`, { pixel_id: '712000123' });
   check('T2 unknown kind → 400 unknown_kind', r.status === 400 && r.j?.error?.code === 'unknown_kind', JSON.stringify(r.j));
-  const r2 = await req('PUT', `/${FID}/networks/meta_pixel`, { pixel_id: '1', mode: 'browser' });
+  const r2 = await req('PUT', `/${FID}/networks/meta_pixel`, { pixel_id: '712000123', mode: 'browser' });
   check('T2 bad mode → 400 invalid_mode', r2.status === 400 && r2.j?.error?.code === 'invalid_mode', JSON.stringify(r2.j));
   const r3 = await req('PUT', `/${FID}/networks/meta_pixel`, { enabled: true });
   check('T2 new row without pixel_id → 400 pixel_id_required', r3.status === 400 && r3.j?.error?.code === 'pixel_id_required', JSON.stringify(r3.j));
-  const r4 = await req('PUT', `/${FID}/networks/meta_pixel`, { pixel_id: '1', graph_version: 'nineteen' });
+  const r4 = await req('PUT', `/${FID}/networks/meta_pixel`, { pixel_id: '712000123', graph_version: 'nineteen' });
   check('T2 bad graph_version → 400', r4.status === 400 && r4.j?.error?.code === 'invalid_graph_version', JSON.stringify(r4.j));
   const r5 = await req('GET', `/${FID}/networks/ga4`);
   check('T2 GET unknown kind → 400', r5.status === 400 && r5.j?.error?.code === 'unknown_kind', JSON.stringify(r5.j));
+  // review MINOR #5 + NIT #6
+  const r6 = await req('PUT', `/${FID}/networks/meta_pixel`, { pixel_id: 'abc123' });
+  check('T2 non-numeric pixel_id → 400 invalid_pixel_id', r6.status === 400 && r6.j?.error?.code === 'invalid_pixel_id', JSON.stringify(r6.j));
+  const r7 = await req('PUT', `/${FID}/networks/meta_pixel`, { pixel_id: '1234' });
+  check('T2 too-short pixel_id → 400 invalid_pixel_id', r7.status === 400 && r7.j?.error?.code === 'invalid_pixel_id', JSON.stringify(r7.j));
+  const r8 = await req('PUT', `/${FID}/networks/meta_pixel`, { pixel_id: '712000123', enabled: 'false' });
+  check('T2 string "false" enabled → 400 invalid_enabled', r8.status === 400 && r8.j?.error?.code === 'invalid_enabled', JSON.stringify(r8.j));
 }
 
 // ── T3: PUT round-trip, masked reads, token never echoed ────────────────────
@@ -151,6 +184,25 @@ let cipherBefore = '';
     r2.status === 200 && !('graph_version' in row.config) && !('test_event_code' in row.config), JSON.stringify(row.config));
 }
 
+// ── T7b (review MINOR #4): partial PUTs merge SQL-side — no lost update ─────
+// Deterministic proxy for the concurrent-PUT race: each request compiles into
+// a partial jsonb patch whose CONTENT never depends on the row it read (the
+// read only backs validation/defaults), and the upsert applies
+// config = (stored - cleared) || patch atomically in one statement. So an
+// interleaved read cannot make one writer clobber the other's field — the
+// sequential form below exercises the exact statement the racers would run.
+{
+  await req('PUT', `/${FID}/networks/meta_pixel`, { capi_token: SECRET, test_event_code: 'TE_A' });
+  await req('PUT', `/${FID}/networks/meta_pixel`, { graph_version: 'v21.0' });   // writer A: only graph_version
+  await req('PUT', `/${FID}/networks/meta_pixel`, { test_event_code: 'TE_B' }); // writer B: only test_event_code
+  const [row] = await sql`SELECT config FROM lb_pixels WHERE funnel_id = ${FID} AND kind = 'meta_pixel'`;
+  check('T7b every field survives disjoint partial PUTs',
+    String(row.config.capi_token || '').startsWith('gcm1:') && row.config.graph_version === 'v21.0' && row.config.test_event_code === 'TE_B',
+    JSON.stringify(Object.keys(row.config)));
+  // reset plains for the tests below
+  await req('PUT', `/${FID}/networks/meta_pixel`, { graph_version: null, test_event_code: null, capi_token: null });
+}
+
 // ── T8: upsert is ONE row per (funnel, kind) ────────────────────────────────
 {
   const rows = await sql`SELECT id FROM lb_pixels WHERE funnel_id = ${FID} AND kind = 'meta_pixel'`;
@@ -170,12 +222,23 @@ let cipherBefore = '';
   await seed('sent', 1); await seed('sent', 2); await seed('skipped', 1);
   await seed('error', 3); await seed('deduped', 1); await seed('queued', 1);
   await seed('sent', 48); // outside 24h
+  // review MAJOR #1: queued_now reads the LIVE queue, not the ledger — the
+  // ledger 'queued' row above must NOT count; this pending queue row must.
+  const [pxRow] = await sql`SELECT id FROM lb_pixels WHERE funnel_id = ${FID} AND kind = 'meta_pixel'`;
+  await sql`DELETE FROM lb_postback_queue WHERE funnel_id = ${FID}`;
+  await sql`INSERT INTO lb_postback_queue (id, funnel_id, scope_id, status, envelope, pixel_row_id, attempts, next_at)
+            VALUES ('pbq_trkadm_live', ${FID}, ${`${FID}:${pxRow.id}`}, 'queued', '{}', ${pxRow.id}, 1, NOW() + INTERVAL '1 minute')`;
   const r = await req('GET', `/${FID}/tracking/summary`);
   const meta = (r.j?.data?.networks || []).find((x) => x.kind === 'meta_pixel');
   check('T9 sent_24h = 2 (48h row excluded)', meta?.sent_24h === 2, JSON.stringify(meta));
   check('T9 failed_24h = 2 (skipped+error)', meta?.failed_24h === 2, JSON.stringify(meta));
   check('T9 deduped_24h = 1', meta?.deduped_24h === 1, JSON.stringify(meta));
-  check('T9 queued_24h = 1', meta?.queued_24h === 1, JSON.stringify(meta));
+  check('T9 queued_now = 1 from LIVE queue (ledger row ignored)', meta?.queued_now === 1, JSON.stringify(meta));
+  // the drain settling the row flips the summary: queued_now → 0
+  await sql`UPDATE lb_postback_queue SET status = 'done' WHERE id = 'pbq_trkadm_live'`;
+  const r2 = await req('GET', `/${FID}/tracking/summary`);
+  const meta2 = (r2.j?.data?.networks || []).find((x) => x.kind === 'meta_pixel');
+  check('T9 settled queue row → queued_now = 0', meta2?.queued_now === 0, JSON.stringify(meta2));
   check('T9 server_channel_ready true (enabled+pixel+token+hybrid)', meta?.server_channel_ready === true, JSON.stringify(meta));
   check('T9 click_id_params names fbclid', Array.isArray(meta?.click_id_params) && meta.click_id_params.includes('fbclid'), JSON.stringify(meta?.click_id_params));
   check('T9 breaker closed by default', meta?.breaker?.state === 'closed', JSON.stringify(meta?.breaker));
@@ -212,6 +275,7 @@ let cipherBefore = '';
 await sql`DELETE FROM lb_pixels WHERE funnel_id = ${FID}`;
 await sql`DELETE FROM lb_tracking_events WHERE funnel_id = ${FID}`;
 await sql`DELETE FROM lb_postback_breakers WHERE funnel_id = ${FID}`;
+await sql`DELETE FROM lb_postback_queue WHERE funnel_id = ${FID}`;
 await sql`DELETE FROM user_roles WHERE user_id = 'u_trk_test'`;
 await sql`DELETE FROM roles WHERE id = 'r_trk_test'`;
 await sql`DELETE FROM users WHERE id = 'u_trk_test'`;

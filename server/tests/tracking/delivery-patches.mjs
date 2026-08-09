@@ -25,7 +25,7 @@ const NM = '/Users/ludo/Mineblock-LLC/node_modules';
 const postgres = (await import(`${NM}/postgres/src/index.js`)).default;
 const sql = postgres(process.env.DATABASE_URL, { onnotice: () => {} });
 
-const { deliverToPixel, resolveEndpoint, graphVersion } = await import('../../src/services/trackingDelivery.js');
+const { deliverToPixel, runDelivery, resolveEndpoint, graphVersion, redactTokens } = await import('../../src/services/trackingDelivery.js');
 const { encryptSecret } = await import('../../src/services/gatewayConfigs.js');
 const { fireUpsellPurchaseConversion, firePurchaseConversion } = await import('../../src/services/trackingService.js');
 const { ensureTrackingTables } = await import('../../src/services/trackingSchema.js');
@@ -42,29 +42,45 @@ const FID = 'fnl_trkdel';
 const IDK = ['em', 'fbp'];
 const UD = { em: 'hash_em', fbp: 'fb.1.1.abc' };
 
-// mock relay — records every request; response controllable per-call
+// mock relay — records every request. Response controllable two ways:
+//   nextStatus       one-shot global override (legacy tests)
+//   modeByEventId    per-event override keyed on data[0].event_id, so drain
+//                    tests stay deterministic whatever order rows drain in.
+//                    Value: a status number, or 'echo400' (respond 400 with a
+//                    compact body that ECHOES the access_token — the
+//                    redaction fixture).
 const captured = [];
 let nextStatus = 200;
+const modeByEventId = {};
 const relay = http.createServer((req, res) => {
   let b = '';
   req.on('data', (d) => { b += d; });
   req.on('end', () => {
     captured.push({ url: req.url, auth: req.headers.authorization || '', body: b });
-    const status = nextStatus; nextStatus = 200;
-    res.statusCode = status;
+    let parsed = null;
+    try { parsed = JSON.parse(b); } catch { parsed = null; }
+    const eid = parsed && parsed.data && parsed.data[0] ? parsed.data[0].event_id : '';
+    let mode = modeByEventId[eid];
+    if (mode === undefined) { mode = nextStatus; nextStatus = 200; }
     res.setHeader('content-type', 'application/json');
-    res.end(JSON.stringify(status === 200 ? { events_received: 1 } : { error: { message: 'boom' } }));
+    if (mode === 'echo400') {
+      res.statusCode = 400;
+      res.end(JSON.stringify({ echo: { access_token: parsed ? parsed.access_token : '' } }));
+      return;
+    }
+    res.statusCode = mode;
+    res.end(JSON.stringify(mode === 200 ? { events_received: 1 } : { error: { message: 'boom' } }));
   });
 });
 await new Promise((r) => relay.listen(0, '127.0.0.1', r));
 const RELAY = `http://127.0.0.1:${relay.address().port}/events`;
 
 // clean slate
-await sql`DELETE FROM lb_tracking_events WHERE funnel_id IN (${FID}, 'fnl_updel')`;
+await sql`DELETE FROM lb_tracking_events WHERE funnel_id IN (${FID}, 'fnl_updel', 'fnl_trkdrain_a', 'fnl_trkdrain_b')`;
 await sql`DELETE FROM lb_tracking_sent WHERE pixel_id LIKE 'PXDEL%'`;
-await sql`DELETE FROM lb_postback_queue WHERE funnel_id IN (${FID}, 'fnl_updel')`;
-await sql`DELETE FROM lb_postback_breakers WHERE funnel_id IN (${FID}, 'fnl_updel')`;
-await sql`DELETE FROM lb_pixels WHERE funnel_id = 'fnl_updel'`;
+await sql`DELETE FROM lb_postback_queue WHERE funnel_id IN (${FID}, 'fnl_updel', 'fnl_trkdrain_a', 'fnl_trkdrain_b')`;
+await sql`DELETE FROM lb_postback_breakers WHERE funnel_id IN (${FID}, 'fnl_updel', 'fnl_trkdrain_a', 'fnl_trkdrain_b')`;
+await sql`DELETE FROM lb_pixels WHERE funnel_id IN ('fnl_updel', 'fnl_trkdrain_a', 'fnl_trkdrain_b')`;
 await sql`DELETE FROM co_sessions WHERE id LIKE 'sess_updel%'`;
 
 // ── T1: graph version — default, override, bad-value fallback ───────────────
@@ -146,6 +162,63 @@ const deliver = (pixel, eventId) => deliverToPixel({
   check('T6 http 500 → queued', String(r).startsWith('queued:http_500'), r);
 }
 
+// ── T6b (review MAJOR #1): drained retries write ledger rows ────────────────
+// After an outage the drain SETTLES the backlog — the ledger must show it.
+// Two real lb_pixels rows (distinct funnels — the unique (funnel_id, kind)
+// index allows one meta row per funnel) so the drain can re-read them.
+{
+  const FA = 'fnl_trkdrain_a', FB = 'fnl_trkdrain_b';
+  const pxOK = { id: `pxdrain_ok_${RUN}`, funnel_id: FA, kind: 'meta_pixel', pixel_id: 'PXDEL_DRAIN_OK', mode: 's2s', config: { capi_token: 'LEGACY_TOK' } };
+  const pxDEAD = { id: `pxdrain_dead_${RUN}`, funnel_id: FB, kind: 'meta_pixel', pixel_id: 'PXDEL_DRAIN_DEAD', mode: 's2s', config: { capi_token: 'LEGACY_TOK' } };
+  for (const p of [pxOK, pxDEAD]) {
+    await sql`INSERT INTO lb_pixels (id, funnel_id, kind, pixel_id, mode, enabled, config)
+              VALUES (${p.id}, ${p.funnel_id}, ${p.kind}, ${p.pixel_id}, ${p.mode}, TRUE, ${sql.json(p.config)})`;
+  }
+  const eOK = `ev_drain_ok_${RUN}`, eDEAD = `ev_drain_dead_${RUN}`;
+  modeByEventId[eOK] = 500; modeByEventId[eDEAD] = 500;
+  const fire = (px, eid) => deliverToPixel({
+    funnelId: px.funnel_id, pixel: px, eventName: 'Purchase', eventId: eid,
+    userData: UD, idk: IDK, customData: { value: 10, currency: 'USD' }, source: 'webhook',
+  });
+  const q1 = await fire(pxOK, eOK);
+  const q2 = await fire(pxDEAD, eDEAD);
+  check('T6b outage queues both events', String(q1).startsWith('queued:http_500') && String(q2).startsWith('queued:http_500'), JSON.stringify({ q1, q2 }));
+  // outage over for A; B's endpoint now hard-rejects (400 = non-retryable)
+  modeByEventId[eOK] = 200; modeByEventId[eDEAD] = 400;
+  await sql`UPDATE lb_postback_queue SET next_at = NOW() WHERE funnel_id IN (${FA}, ${FB})`;
+  const out = await runDelivery({ limit: 500 });
+  check('T6b drain settled one sent + one dead', out.sent >= 1 && out.dead >= 1, JSON.stringify(out));
+  const [qa] = await sql`SELECT status FROM lb_postback_queue WHERE funnel_id = ${FA}`;
+  const [qb] = await sql`SELECT status FROM lb_postback_queue WHERE funnel_id = ${FB}`;
+  check('T6b queue rows done / dead', qa?.status === 'done' && qb?.status === 'dead', JSON.stringify({ qa, qb }));
+  const evA = await sql`SELECT status, source, pixel_id, value FROM lb_tracking_events WHERE event_id = ${eOK} AND status = 'sent'`;
+  check('T6b ledger row: drained success logged as sent (source drain, original fields)',
+    evA.length === 1 && evA[0].source === 'drain' && evA[0].pixel_id === 'PXDEL_DRAIN_OK' && Number(evA[0].value) === 10, JSON.stringify(evA));
+  const evB = await sql`SELECT status, source, error FROM lb_tracking_events WHERE event_id = ${eDEAD} AND status = 'error'`;
+  check('T6b ledger row: dead-letter logged as error with the classified cause',
+    evB.length === 1 && evB[0].source === 'drain' && String(evB[0].error).startsWith('http_400'), JSON.stringify(evB));
+  // the summary's live-queue source: nothing pending any more for A or B
+  const [live] = await sql`SELECT COUNT(*)::int AS n FROM lb_postback_queue WHERE funnel_id IN (${FA}, ${FB}) AND status IN ('queued', 'sending')`;
+  check('T6b live queue depth back to 0 (summary flips queued→settled)', live.n === 0, String(live.n));
+  captured.length = 0;
+}
+
+// ── T6c (review MINOR #3): an echoing endpoint can't persist the token ──────
+{
+  const full = JSON.stringify({ data: [{ event_id: 'x' }], access_token: 'SECRET_PLAIN_TOK' });
+  const red = redactTokens(full);
+  check('T6c unit: full echoed body redacts before any slice', !red.includes('SECRET_PLAIN_TOK') && red.includes('[REDACTED]'), red);
+  const eR = `ev_echo_${RUN}`;
+  modeByEventId[eR] = 'echo400';
+  const px = mkPixel('echo', { capi_token: 'SECRET_PLAIN_TOK' });
+  const r = await deliver(px, eR);
+  captured.pop();
+  check('T6c echoing 400 dead-letters', String(r).startsWith('dead:http_400'), r);
+  const [ev] = await sql`SELECT error FROM lb_tracking_events WHERE funnel_id = ${FID} AND event_id = ${eR}`;
+  check('T6c stored error: access_token key at most, NEVER the token bytes',
+    String(ev?.error || '').includes('access_token') && !String(ev?.error || '').includes('SECRET_PLAIN_TOK') && String(ev?.error || '').includes('[REDACTED]'), ev?.error);
+}
+
 // ── T7: upsell Purchase — deterministic id, claim idempotency, gating ───────
 {
   const SID = `sess_updel_${RUN}`;
@@ -188,6 +261,15 @@ const deliver = (pixel, eventId) => deliverToPixel({
   check('T7 missing charge row refused', g3.ok === false && g3.reason === 'no_charge_row', JSON.stringify(g3));
   const g4 = await fireUpsellPurchaseConversion(SID, 'upc_4', 'NaN-ish');
   check('T7 non-finite value refused', g4.ok === false && g4.reason === 'bad_value', JSON.stringify(g4));
+  // review MINOR #2: Number(null) === 0 must never fire a $0 Purchase
+  const g5 = await fireUpsellPurchaseConversion(SID, 'upc_5', null);
+  check('T7 null value refused (no $0 Purchase)', g5.ok === false && g5.reason === 'no_value', JSON.stringify(g5));
+  const g6 = await fireUpsellPurchaseConversion(SID, 'upc_6', undefined);
+  check('T7 undefined value refused', g6.ok === false && g6.reason === 'no_value', JSON.stringify(g6));
+  const g7 = await fireUpsellPurchaseConversion(SID, 'upc_7', 0);
+  const c7 = captured.pop();
+  check('T7 EXPLICIT 0 stays legitimate and sends value 0',
+    g7.ok === true && g7.results?.[0]?.result === 'sent' && JSON.parse(c7.body).data[0].custom_data.value === 0, JSON.stringify(g7));
 }
 
 // ── T8: runtime fbq base loader — emitted, valid JS, house rules kept ───────
@@ -207,11 +289,11 @@ const deliver = (pixel, eventId) => deliverToPixel({
 }
 
 // cleanup
-await sql`DELETE FROM lb_tracking_events WHERE funnel_id IN (${FID}, 'fnl_updel')`;
+await sql`DELETE FROM lb_tracking_events WHERE funnel_id IN (${FID}, 'fnl_updel', 'fnl_trkdrain_a', 'fnl_trkdrain_b')`;
 await sql`DELETE FROM lb_tracking_sent WHERE pixel_id LIKE 'PXDEL%'`;
-await sql`DELETE FROM lb_postback_queue WHERE funnel_id IN (${FID}, 'fnl_updel')`;
-await sql`DELETE FROM lb_postback_breakers WHERE funnel_id IN (${FID}, 'fnl_updel')`;
-await sql`DELETE FROM lb_pixels WHERE funnel_id = 'fnl_updel'`;
+await sql`DELETE FROM lb_postback_queue WHERE funnel_id IN (${FID}, 'fnl_updel', 'fnl_trkdrain_a', 'fnl_trkdrain_b')`;
+await sql`DELETE FROM lb_postback_breakers WHERE funnel_id IN (${FID}, 'fnl_updel', 'fnl_trkdrain_a', 'fnl_trkdrain_b')`;
+await sql`DELETE FROM lb_pixels WHERE funnel_id IN ('fnl_updel', 'fnl_trkdrain_a', 'fnl_trkdrain_b')`;
 await sql`DELETE FROM co_sessions WHERE id LIKE 'sess_updel%'`;
 await sql.end();
 relay.close();

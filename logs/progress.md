@@ -2096,3 +2096,38 @@ heals the queued backlog - DECISION MADE. failed_24h counts skipped+error;
 queued_24h surfaced separately (pending retry is not failure) - DECISION MADE.
 STATUS: COMPLETE
 ---
+
+---
+TIMESTAMP: 2026-08-09 18:20
+TASK: Phase-1 tracking — adversarial review fixes (1 MAJOR + 4 MINOR + 2 NIT)
+BUILT: MAJOR#1 runDelivery drain now writes ledger rows on settle (sent on
+success, error on dead, source='drain', original envelope fields) and summary
+queued_now derives from LIVE lb_postback_queue (queued/sending joined to
+lb_pixels by kind) instead of the ledger. MINOR#2 fireUpsellPurchaseConversion
+refuses null/undefined value (no_value) — explicit 0 stays legal. MINOR#3
+errOf redacts access_token values (redactTokens, before slicing) so an echoing
+endpoint can never persist token bytes into error fields. MINOR#4 PUT network
+config merges SQL-side: config = (stored - cleared::text[]) || patch::jsonb,
+scalars via COALESCE(null=keep) — no read-merge-write lost updates. MINOR#5
+per-network pixel_id regex (meta ^\d{5,20}$) → 400 invalid_pixel_id. NIT#6
+enabled accepts only JSON booleans → 400 invalid_enabled. NIT#7
+ensureTrackingTables dedupes lb_pixels (keep newest per funnel+kind) before
+creating the unique index.
+TESTED: admin-crud.mjs 44/44 ×2 (incl. T0 dedupe+index, T7b disjoint partial
+PUTs all survive, T9 live queued_now flip 1→0); delivery-patches.mjs 47/47 ×2
+(incl. T6b outage→drain: queue done/dead + ledger sent/error rows + live depth
+0; T6c echo-endpoint redaction on the wire and at rest; T7 null/undefined
+refused, explicit 0 sends). money-path: 15/15, 9/9, 66/66, 35/35, 33/33,
+15/15, upsell-page 46/3 (same 3 pre-existing live-Shopify fails as main).
+node --check clean on all 7 files.
+OUTPUT: one implementation bug caught BY EXECUTION mid-fix: pre-stringifying
+the jsonb patch double-encoded it into a jsonb string scalar ('cannot delete
+from scalar') — postgres.js serializes jsonb params itself; fixed by passing
+the raw object (documented at the call site).
+DECISIONS: queue counter renamed queued_24h → queued_now because its meaning
+changed to live queue depth (a 24h suffix would misdescribe it; no consumer
+existed yet — field was introduced this same branch) - DECISION MADE. Drain
+dead-letters log status 'error' per reviewer wording, distinct from inline
+'skipped' hard errors - DECISION MADE.
+STATUS: COMPLETE
+---
