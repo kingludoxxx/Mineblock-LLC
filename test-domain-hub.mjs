@@ -30,7 +30,10 @@ const { default: express } = await import('express');
 const { pgQuery } = await import('./server/src/db/pg.js');
 const { signAccessToken } = await import('./server/src/utils/jwt.js');
 const { setResolver, resetResolver } = await import('./server/src/services/domainHub/dnsInspect.js');
-const { resolveCustomHost, invalidateHostCache, customDomainMiddleware } = await import('./server/src/services/domainHub/hostRouting.js');
+const {
+  resolveCustomHost, invalidateHostCache, customDomainMiddleware,
+  isPlausibleHost, setHostQueryRunner, resetHostQueryRunner, hostCacheStats,
+} = await import('./server/src/services/domainHub/hostRouting.js');
 const { sweepOnce, startDomainSweep, stopDomainSweep } = await import('./server/src/services/domainHub/verifySweep.js');
 const { default: domainHubRoutes } = await import('./server/src/routes/domainHub.js');
 
@@ -432,6 +435,119 @@ try {
     const req4 = { method: 'GET', path: '/', url: '/', hostname: 'unrelated-example.org', headers: { host: 'unrelated-example.org' } };
     await new Promise((resolve) => mw(req4, {}, resolve));
     check('middleware leaves unknown host untouched', req4.url === '/');
+  }
+
+  console.log('\n── HARDENING 1: junk-Host flood costs ZERO queries ──');
+  {
+    // Syntactic gate, unit level.
+    for (const bad of [
+      'nodot', '../../etc/passwd', 'a'.repeat(260) + '.com', 'UPPER.com',
+      'has space.com', 'xn-- .com', '-lead.com', 'trail-.com',
+      '.leadingdot.com', 'trailingdot.com.'.replace(/$/, '.'),
+      'label' + 'x'.repeat(64) + '.com', 'ünicode.com', 'a..b.com',
+      'semi;colon.com', "quote'.com", '<script>.com',
+    ]) {
+      check(`isPlausibleHost rejects ${JSON.stringify(bad.slice(0, 24))}`, isPlausibleHost(bad) === false);
+    }
+    check('isPlausibleHost accepts a real host', isPlausibleHost('shop.brandsite-example.com') === true);
+    check('isPlausibleHost accepts an apex', isPlausibleHost('brandsite-example.com') === true);
+    check('isPlausibleHost accepts punycode', isPlausibleHost('xn--bcher-kva.com') === true);
+
+    // Warm a real connected domain into the POSITIVE cache first.
+    invalidateHostCache();
+    const warm = await resolveCustomHost(APEX);
+    check('connected domain warm in cache before flood', warm?.funnelId === 'f1', JSON.stringify(warm));
+
+    // Count every query the resolver would execute.
+    let queries = 0;
+    setHostQueryRunner(async (...args) => { queries++; return pgQuery(...args); });
+
+    // 10k DISTINCT junk hosts — none syntactically plausible.
+    const junkShapes = [
+      (i) => `junk${i}`,                     // no dot
+      (i) => `../../etc/passwd${i}`,         // traversal
+      (i) => `bad host ${i}.com`,            // space
+      (i) => `${'x'.repeat(70)}${i}.com`,    // over-long label
+      (i) => `-${i}.com`,                    // leading hyphen
+    ];
+    for (let i = 0; i < 10_000; i++) {
+      const h = junkShapes[i % junkShapes.length](i);
+      const r = await resolveCustomHost(h);
+      if (r !== null) { check(`junk host ${h} resolved (should be null)`, false); break; }
+    }
+    check('10k distinct junk Hosts → ZERO queries executed', queries === 0, `queries=${queries}`);
+    const statsAfterJunk = hostCacheStats();
+    check('junk left NO cache entries', statsAfterJunk.negative === 0 && statsAfterJunk.positive === 1,
+      JSON.stringify(statsAfterJunk));
+    const stillCached = await resolveCustomHost(APEX);
+    check('connected domain still resolves FROM CACHE after the flood',
+      stillCached?.funnelId === 'f1' && queries === 0, `q=${queries} ${JSON.stringify(stillCached)}`);
+
+    // Plausible-but-unattached hosts DO query — and their negatives are capped
+    // in their own map, so they still cannot evict the connected entry.
+    for (let i = 0; i < 700; i++) {
+      await resolveCustomHost(`nobody-${i}.plausible-example.com`);
+    }
+    // 2 queries per miss: the exact host, then its www sibling (funnel-os
+    // apex/www semantics). 700 × 2 = 1400 — this is the path a junk flood
+    // WOULD have taken had the syntactic gate not stopped it.
+    check('plausible unknown hosts do query (negative path alive)', queries === 1400, `queries=${queries}`);
+    const statsAfterNeg = hostCacheStats();
+    check('negative cache capped at its own bound', statsAfterNeg.negative <= 500, JSON.stringify(statsAfterNeg));
+    check('positive entry SURVIVED negative churn', statsAfterNeg.positive === 1, JSON.stringify(statsAfterNeg));
+    const afterChurn = await resolveCustomHost(APEX);
+    check('connected domain still cached after 700 negatives', afterChurn?.funnelId === 'f1' && queries === 1400,
+      `q=${queries}`);
+    resetHostQueryRunner();
+  }
+
+  console.log('\n── HARDENING 2: production refuses degraded connect ──');
+  {
+    const P = 'prodgate.hardening-example.com';
+    const savedKey = process.env.RENDER_API_KEY;
+    const savedSvc = process.env.RENDER_SERVICE_ID;
+    const savedEnv = process.env.NODE_ENV;
+
+    // (a) production + NO Render creds → held at verifying WITH the reason.
+    // Attach FIRST with no DNS so the attach-time verify can't connect it,
+    // then point DNS and flip the env — the gate is what we're measuring.
+    await api('POST', '/attach', { domain: P, funnel_id: 'f1' });
+    dns.cname[P] = ['puure-dashboard.onrender.com'];
+    delete process.env.RENDER_API_KEY;
+    delete process.env.RENDER_SERVICE_ID;
+    process.env.NODE_ENV = 'production';
+    const rProd = await api('POST', `/${P}/verify`);
+    check('prod + no Render creds → status verifying (NOT connected)',
+      rProd.json?.data?.status === 'verifying', `got ${rProd.json?.data?.status}`);
+    check('reason surfaced in error_detail',
+      String(rProd.json?.data?.error_detail || '').startsWith('render_not_configured'),
+      `got ${rProd.json?.data?.error_detail}`);
+    check('blocked row does NOT serve any host', (await resolveCustomHost(P)) === null);
+
+    // (b) same env, creds restored → connects as before.
+    process.env.RENDER_API_KEY = savedKey;
+    process.env.RENDER_SERVICE_ID = savedSvc;
+    const rCreds = await api('POST', `/${P}/verify`);
+    check('prod + Render creds → connected as today', rCreds.json?.data?.status === 'connected',
+      `got ${rCreds.json?.data?.status} ${rCreds.json?.data?.error_detail || ''}`);
+    check('error_detail cleared on success', rCreds.json?.data?.error_detail === null);
+
+    // (c) non-production without creds → degraded connect unchanged.
+    const D = 'devgate.hardening-example.com';
+    process.env.NODE_ENV = 'test';
+    await api('POST', '/attach', { domain: D, funnel_id: 'f1' }); // no DNS yet
+    dns.cname[D] = ['puure-dashboard.onrender.com'];
+    delete process.env.RENDER_API_KEY;
+    delete process.env.RENDER_SERVICE_ID;
+    const rDev = await api('POST', `/${D}/verify`);
+    check('non-prod + no creds → degraded connect UNCHANGED', rDev.json?.data?.status === 'connected',
+      `got ${rDev.json?.data?.status}`);
+    const ev = await api('GET', `/events?domain=${D}`);
+    check('degraded connect is audited', (ev.json?.data || []).some((e) => e.event === 'connected_degraded_no_render'));
+
+    process.env.RENDER_API_KEY = savedKey;
+    process.env.RENDER_SERVICE_ID = savedSvc;
+    process.env.NODE_ENV = savedEnv;
   }
 
   console.log('\n── registrar: search + purchase gates ──');

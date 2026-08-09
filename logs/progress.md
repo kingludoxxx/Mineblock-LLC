@@ -1931,3 +1931,34 @@ simplified); logs/progress.md append is the only shared-file write beyond the tw
 flagged App.jsx/Sidebar lines.
 STATUS: COMPLETE (module-only; integration hooks documented, wired at merge)
 ---
+
+---
+TIMESTAMP: 2026-08-09 02:40
+TASK: Domain Hub lane — review hardening (pre-auth host DoS + prod degraded-connect)
+BUILT: (1) hostRouting.js — isPlausibleHost() syntactic gate runs BEFORE any DB
+round-trip and before any cache insert (must contain '.', /^[a-z0-9.-]+$/, <=253,
+no leading/trailing '-' or '.', labels 1..63 and not hyphen-edged); split the single
+shared cache into positiveCache (cap 1000, connected rows) + negativeCache (cap 500)
+so junk churn can never evict a real domain; added setHostQueryRunner/hostCacheStats
+seams. (2) attachService.js — NODE_ENV=production && !renderConfigured() no longer
+flips to connected: holds at 'verifying' with error_detail 'render_not_configured…'
+(Render's apex IP is shared across all Render customers, so DNS-pointing alone is not
+ownership) and logs loudly; non-production degraded behaviour unchanged and audited.
+(3) UI — a reason on a non-error status renders yellow, not red. (4) header note: a
+non-GET/HEAD request to a page-relative path on a custom host is deliberately not
+rewritten (funnel forms post to /api/*, a passthrough prefix).
+TESTED: test-domain-hub.mjs extended 93 → 127 assertions. New: 19 isPlausibleHost
+unit cases; 10k distinct junk Hosts through resolveCustomHost with an injected
+counting query runner; 700 plausible-unknown hosts to prove the negative path still
+queries and stays capped; prod-without-creds / prod-with-creds / non-prod matrix.
+UI re-verified in browser (verifying+reason row renders yellow, distinct from error).
+OUTPUT: 127 passed, 0 failed. 10k junk Hosts → queries=0 and cache {positive:1,
+negative:0}; connected domain still served from cache afterwards. 700 plausible
+misses → queries=1400 (2/miss: exact + www sibling, pre-existing semantics),
+negative cache <=500, positive entry survived. Prod without Render creds → status
+verifying + 'render_not_configured…', host resolves to null; with creds → connected,
+error_detail cleared; non-prod → connected (degraded) + audit event. vite build green.
+DECISIONS: 2 queries per plausible miss left as-is (apex/www resolution is required
+behaviour); the assertion, not the code, was corrected after it first failed at 1400.
+STATUS: COMPLETE
+---

@@ -292,8 +292,14 @@ export function ConnectedTab({ onAttachNew, onShowRecords, refreshKey }) {
                       </a>
                     )}
                   </div>
+                  {/* A reason can accompany a NON-error status too — e.g. a
+                      production deploy with no Render credentials holds the row
+                      at `verifying` and says why. Only style it as a failure
+                      when the row actually parked at `error`. */}
                   {d.error_detail && (
-                    <p className="text-[11px] text-danger mt-0.5">{d.error_detail}</p>
+                    <p className={`text-[11px] mt-0.5 ${d.status === 'error' ? 'text-danger' : 'text-yellow-400'}`}>
+                      {d.error_detail}
+                    </p>
                   )}
                 </td>
                 <td className="px-4 py-2.5 text-text-muted">{d.funnel_id}</td>

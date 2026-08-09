@@ -131,7 +131,7 @@ const { ensureDomainTables } = await import('./server/src/services/domainHub/sch
 await ensureDomainTables();
 await pgQuery(`INSERT INTO lb_domains (id, domain, funnel_id, status, verification_token, dns_provider, render_domain_id, verify_attempts, last_check, error_detail) VALUES
   ('dom-1', 'shop.glowbrand-demo.com', 'f1', 'connected', 'puure-verify-demo1', 'namecheap', 'cdm-glow', 0, NOW(), NULL),
-  ('dom-2', 'lushlift-demo.com', 'f2', 'verifying', 'puure-verify-demo2', 'cloudflare', 'cdm-lush', 3, NOW() - interval '40 seconds', NULL),
+  ('dom-2', 'lushlift-demo.com', 'f2', 'verifying', 'puure-verify-demo2', 'cloudflare', 'cdm-lush', 3, NOW() - interval '40 seconds', 'render_not_configured: set RENDER_API_KEY and RENDER_SERVICE_ID — a domain cannot be verified as ours without Render (its apex IP is shared across all Render customers)'),
   ('dom-3', 'try.brandsite-demo.com', 'f3', 'pending_dns', 'puure-verify-demo3', 'godaddy', NULL, 6, NOW() - interval '55 seconds', NULL),
   ('dom-4', 'oldshop-demo.net', 'f1', 'error', 'puure-verify-demo4', NULL, NULL, 240, NOW() - interval '2 hours', 'dns_never_pointed: retries exhausted — check the records, then Verify now')`);
 await pgQuery(`INSERT INTO domain_whois_contact (id, contact) VALUES ('default',

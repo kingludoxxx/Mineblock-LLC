@@ -248,16 +248,37 @@ export async function verifyDomain(domain, { actor = null, resetAttempts = false
     }
   }
 
-  // Status: with Render configured, `connected` requires Render's own
-  // verification; until then the row sits at `verifying` (TLS in flight).
-  // Without Render creds (local/dev), DNS-pointing alone connects — degraded
-  // mode, logged so it is never mistaken for the real thing.
+  // Status:
+  //  • Render configured  → `connected` requires RENDER's own verification;
+  //    until then the row sits at `verifying` (registration + TLS in flight).
+  //  • Render NOT configured, PRODUCTION → the row must NOT connect. Render's
+  //    apex IP and service host are SHARED across every Render customer, so
+  //    "this host resolves to a Render address" is NOT proof that it belongs
+  //    to this service — only Render's own custom-domain verification is.
+  //    Connecting on DNS-pointing alone would let any host that happens to
+  //    point at Render's shared edge serve one of our funnels. Hold at
+  //    `verifying` with the reason surfaced, and log loudly.
+  //  • Render NOT configured, non-production → keep the degraded local/dev
+  //    behaviour (DNS-pointing connects) so the flow is testable offline.
+  const isProd = String(process.env.NODE_ENV || '').toLowerCase() === 'production';
   let status;
+  let errorDetail = null;
   if (!renderConfigured()) {
-    status = 'connected';
-    await logDomainEvent(domain, 'connected_degraded_no_render', {
-      note: 'RENDER_API_KEY/RENDER_SERVICE_ID absent — connected on DNS-pointing alone',
-    }, actor);
+    if (isProd) {
+      status = 'verifying';
+      errorDetail = 'render_not_configured: set RENDER_API_KEY and RENDER_SERVICE_ID — a domain cannot be verified as ours without Render (its apex IP is shared across all Render customers)';
+      console.error('[domainHub] REFUSING to connect %s — NODE_ENV=production with no Render credentials; DNS-pointing alone is not ownership.', domain);
+      await logDomainEvent(domain, 'connect_blocked_render_not_configured', {
+        note: 'production + no RENDER_API_KEY/RENDER_SERVICE_ID — held at verifying',
+      }, actor);
+    } else {
+      status = 'connected';
+      console.warn('[domainHub] %s connected in DEGRADED mode (no Render credentials, NODE_ENV=%s) — DNS-pointing only, NOT ownership-verified.',
+        domain, process.env.NODE_ENV || 'unset');
+      await logDomainEvent(domain, 'connected_degraded_no_render', {
+        note: 'RENDER_API_KEY/RENDER_SERVICE_ID absent — connected on DNS-pointing alone (non-production only)',
+      }, actor);
+    }
   } else if (renderVerified === true) {
     status = 'connected';
   } else {
@@ -266,9 +287,9 @@ export async function verifyDomain(domain, { actor = null, resetAttempts = false
 
   await pgQuery(
     `UPDATE lb_domains SET status = $2, render_domain_id = $3,
-       verify_attempts = 0, last_check = NOW(), error_detail = NULL, updated_at = NOW()
+       verify_attempts = 0, last_check = NOW(), error_detail = $4, updated_at = NOW()
      WHERE domain = $1`,
-    [domain, status, renderDomainId]
+    [domain, status, renderDomainId, errorDetail]
   );
   if (status === 'connected' && row.status !== 'connected') {
     await logDomainEvent(domain, 'connected', { render_domain_id: renderDomainId }, actor);
