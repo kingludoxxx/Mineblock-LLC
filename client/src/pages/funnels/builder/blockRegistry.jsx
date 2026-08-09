@@ -56,10 +56,23 @@ export const CATEGORIES = [
 ];
 
 // Field kinds understood by the props panel:
-//   text | textarea | number | select | url | items (one-per-line string list)
-//   json (raw JSON sub-structure, validated before commit)
+//   text | textarea | number | select | url | color | variant
+//   items         one-per-line string list
+//   json          raw JSON sub-structure, validated before commit
+//   rows          repeating OBJECT list — add / remove / reorder, with a
+//                 nested editor per `itemFields`. Used by the list-shaped
+//                 blocks (faq, ranking, product_grid).
+//   compare_rows  the `rows` editor PLUS a column manager, for comparison_table
+//                 (its columns are data — the first row's keys ARE the headers).
+//   datetime      local date+time picker that stores a UTC ISO instant.
 // `htmlSink: true` marks fields the server emits VERBATIM on the public page —
 // the panel labels them accordingly and the canvas previews them sandboxed.
+//
+// THE FIELD SET IS THE RENDERER CONTRACT, NOT A WISHLIST. Every key below is
+// one funnelRender.js actually reads for that block type; a field the renderer
+// ignores would let an operator write copy that never appears on the page.
+// Where the reference tool offers more than this renderer consumes, the extra
+// field is omitted and the omission is commented at the block.
 export const BLOCK_DEFS = {
   // ---- BASIC ----------------------------------------------------------------
   heading: {
@@ -210,24 +223,49 @@ export const BLOCK_DEFS = {
     defaults: () => ({ items: ['Benefit one', 'Benefit two'] }),
     fields: [{ key: 'items', label: 'Items (one per line)', kind: 'items' }],
   },
+  // TESTIMONIAL is the Quote block. Its two fields are already the WHOLE
+  // renderer contract: funnelRender.js emits <blockquote><p>{quote}</p>
+  // <footer>— {author}</footer></blockquote> and reads nothing else. The
+  // reference tool also offers an `avatar` image; this renderer emits no <img>
+  // inside the quote, so no avatar field is offered here — it would write a
+  // prop the published page silently drops.
   testimonial: {
-    label: 'Testimonial',
+    label: 'Testimonial (Quote)',
     category: 'blocks',
     icon: Quote,
     defaults: () => ({ quote: 'This changed everything for me.', author: 'Happy customer' }),
     fields: [
       { key: 'quote', label: 'Quote', kind: 'textarea' },
-      { key: 'author', label: 'Author', kind: 'text' },
+      {
+        key: 'author', label: 'Author', kind: 'text',
+        help: 'Printed after an em-dash. Left blank, the page prints “Anonymous”.',
+      },
     ],
   },
   faq: {
     label: 'FAQ',
     category: 'blocks',
     icon: HelpCircle,
-    defaults: () => ({ title: 'FAQ', items: [{ q: 'Question?', a: 'Answer.' }] }),
+    defaults: () => ({
+      title: 'FAQ',
+      items: [
+        { q: 'How long does shipping take?', a: 'Most orders arrive in 3-5 business days.' },
+        { q: 'What is your return policy?', a: '30 days, no questions asked.' },
+      ],
+    }),
     fields: [
       { key: 'title', label: 'Title', kind: 'text' },
-      { key: 'items', label: 'Items', kind: 'json', help: 'Array of { "q": "…", "a": "…" }' },
+      {
+        key: 'items', label: 'Questions', kind: 'rows', rowLabel: 'Question',
+        // Renderer contract (funnelRender.js `faq`): <summary>{q}</summary><p>{a}</p>.
+        // q + a are the ONLY keys it reads — anything else would never print.
+        itemFields: [
+          { key: 'q', label: 'Question', kind: 'text' },
+          { key: 'a', label: 'Answer', kind: 'textarea' },
+        ],
+        defaultItem: { q: 'New question?', a: 'Answer here.' },
+        help: 'Each row renders as an expandable <details> on the public page.',
+      },
     ],
   },
   ranking: {
@@ -237,26 +275,80 @@ export const BLOCK_DEFS = {
     defaults: () => ({ title: 'Top Picks', items: [{ rank: 1, name: 'Product', summary: 'Why it wins', score: 9.8 }] }),
     fields: [
       { key: 'title', label: 'Title', kind: 'text' },
-      { key: 'items', label: 'Items', kind: 'json', help: 'Array of { rank, name, summary, score }' },
+      {
+        key: 'items', label: 'Ranked items', kind: 'rows', rowLabel: 'Item',
+        // Renderer contract (funnelRender.js `ranking`): rank, name, summary,
+        // score — and NOTHING else. The reference tool also offers image /
+        // cta_text / cta_href per item; this renderer emits no <img> and no
+        // <a> inside a ranking card, so those fields are deliberately ABSENT
+        // rather than written as props the page would drop on the floor.
+        itemFields: [
+          { key: 'rank', label: 'Rank', kind: 'number', min: 1, max: 100, coerce: 'int' },
+          { key: 'name', label: 'Name', kind: 'text' },
+          { key: 'score', label: 'Score (out of 10)', kind: 'number', min: 0, max: 10, step: 0.1 },
+          { key: 'summary', label: 'Summary', kind: 'textarea' },
+        ],
+        defaultItem: { rank: 1, name: 'New product', score: 9, summary: '' },
+        help: 'Score prints as “x/10”. Rank also becomes the card’s anchor id on the page.',
+      },
     ],
   },
   comparison_table: {
     label: 'Comparison table',
     category: 'blocks',
     icon: Table2,
-    defaults: () => ({ title: 'Comparison', rows: [{ feature: 'Feature A', Us: 'Yes', Them: 'No' }] }),
+    defaults: () => ({
+      title: 'Comparison',
+      rows: [
+        { feature: 'Feature A', Us: 'Yes', Them: 'No' },
+        { feature: 'Feature B', Us: 'Yes', Them: 'No' },
+      ],
+    }),
     fields: [
       { key: 'title', label: 'Title', kind: 'text' },
-      { key: 'rows', label: 'Rows', kind: 'json', help: 'Array of objects; "feature" + one key per column.' },
+      {
+        key: 'rows', label: 'Rows', kind: 'compare_rows',
+        help:
+          'The FIRST row decides the columns — the published table reads its keys as the headers, ' +
+          'so renaming a column here rewrites every row at once.',
+      },
     ],
   },
   product_grid: {
     label: 'Product grid',
     category: 'blocks',
     icon: LayoutGrid,
-    defaults: () => ({ items: [{ image: '', name: 'Product', summary: '', href: '#', cta: 'View' }] }),
+    // No `title` field: funnelRender.js `product_grid` emits the cards only —
+    // it never reads a title, so an editor for one would write a dead prop.
+    // Put a Heading block above the grid instead.
+    defaults: () => ({
+      items: [
+        { image: '', name: 'Product', summary: '', href: '#', cta: 'View' },
+        { image: '', name: 'Product', summary: '', href: '#', cta: 'View' },
+      ],
+    }),
     fields: [
-      { key: 'items', label: 'Items', kind: 'json', help: 'Array of { image, name, summary, href, cta }' },
+      {
+        key: 'items', label: 'Products', kind: 'rows', rowLabel: 'Product',
+        // The two url fields are NOT treated alike by the renderer, and the
+        // help says so per field rather than making one blanket claim: `href`
+        // goes through safeHref() (scheme allow-list), `image` is only
+        // HTML-escaped into the src attribute.
+        itemFields: [
+          { key: 'name', label: 'Name', kind: 'text' },
+          { key: 'summary', label: 'Summary', kind: 'textarea' },
+          {
+            key: 'image', label: 'Image URL', kind: 'url',
+            help: 'Escaped into the img src as written — not scheme-checked. Use a plain http(s) URL.',
+          },
+          { key: 'cta', label: 'CTA label', kind: 'text' },
+          {
+            key: 'href', label: 'CTA link', kind: 'url', placeholder: '#fos-next',
+            help: 'Sanitized on the public page — only http(s), mailto, tel and relative URLs survive; anything else becomes “#”.',
+          },
+        ],
+        defaultItem: { image: '', name: 'New product', summary: '', href: '#', cta: 'View' },
+      },
     ],
   },
   table: {
@@ -270,28 +362,64 @@ export const BLOCK_DEFS = {
     label: 'Countdown',
     category: 'blocks',
     icon: Timer,
-    defaults: () => ({ label: 'Offer ends in', deadline: '' }),
+    // Seeded a WEEK OUT rather than blank. An empty deadline is not a
+    // countdown at rest — funnelRender's runtime finds no parseable instant
+    // and leaves the clock on its static em-dash forever, so a freshly
+    // inserted block looked broken. Any date is editable; none is not.
+    defaults: () => ({
+      label: 'Offer ends in',
+      deadline: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(),
+    }),
     fields: [
       { key: 'label', label: 'Label', kind: 'text' },
-      { key: 'deadline', label: 'Deadline (ISO date)', kind: 'text', placeholder: '2026-12-31T23:59:59Z' },
+      {
+        key: 'deadline', label: 'Deadline', kind: 'datetime',
+        help:
+          'Picked in YOUR timezone and stored as a UTC instant, so every visitor counts down to the same moment. ' +
+          'The picker has no seconds — the deadline always lands on :00. ' +
+          'Once it passes the clock reads “Offer expired” and stays there; a new block is seeded a week out, ' +
+          'so set your real date before publishing.',
+      },
     ],
   },
   sticky_cta: {
     label: 'Sticky CTA',
     category: 'blocks',
     icon: Pin,
-    defaults: () => ({ text: 'Buy Now', href: '#' }),
+    defaults: () => ({ text: 'Buy Now', href: '#fos-next' }),
     fields: [
       { key: 'text', label: 'Label', kind: 'text' },
-      { key: 'href', label: 'Link', kind: 'url' },
+      {
+        key: 'href', label: 'Link', kind: 'url',
+        help: 'Use #fos-next / #fos-fallback to follow the funnel flow.',
+      },
     ],
+    help: 'Floats fixed at the bottom-centre of the live page, above everything else.',
   },
   html: {
     label: 'Raw HTML / Embed',
     category: 'blocks',
     icon: FileCode2,
+    // EMPTY ON PURPOSE. An earlier pass seeded visible placeholder markup so a
+    // fresh block was not invisible — but this prop renders VERBATIM to
+    // buyers, so that placeholder was one forgotten block away from shipping
+    // "Paste your embed code here" onto a live page. The hint belongs in the
+    // builder, not in the document: BlockPreview draws it on the canvas while
+    // html is empty, which is visible to the operator and invisible to buyers.
     defaults: () => ({ html: '' }),
-    fields: [{ key: 'html', label: 'HTML', kind: 'textarea', mono: true, htmlSink: true }],
+    fields: [
+      {
+        key: 'html', label: 'HTML / embed code', kind: 'textarea', mono: true, htmlSink: true,
+        help:
+          'Rendered VERBATIM on the public page — <script> tags included, which is what makes third-party ' +
+          'embed snippets work. Nothing is escaped or filtered, so paste only code you trust. ' +
+          'The canvas previews it inside a sandboxed frame (no scripts, no page access), so what runs ' +
+          'here is never what runs live.',
+      },
+    ],
+    // NOTE: this block has NO css prop. funnelRender's `html`/`embed` case
+    // returns p.html alone — only custom_html emits a companion <style>. Put
+    // your CSS in a <style> tag inside the HTML above, or use Custom HTML.
   },
 
   // ---- MONEY BLOCKS ---------------------------------------------------------

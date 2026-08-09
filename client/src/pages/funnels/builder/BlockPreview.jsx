@@ -7,9 +7,11 @@
 // (custom_html / html / section html / row columns) preview inside a fully
 // sandboxed iframe (sandbox="" — no scripts, no same-origin) so hostile HTML
 // typed into a prop can never execute in the admin surface.
-import { useMemo } from 'react';
+import { useMemo, useState, useEffect } from 'react';
 import { CreditCard, ReceiptText, Film, Image as ImageIcon, Code2 } from 'lucide-react';
-import { bumpHeadline, bumpUnconfigured, bumpNameColor, parseInlineMarkup } from './builderModel';
+import {
+  bumpHeadline, bumpUnconfigured, bumpNameColor, parseInlineMarkup, countdownPreview,
+} from './builderModel';
 
 const T = {
   text: '#374151',
@@ -91,6 +93,41 @@ function Btn({ children, block: blk }) {
     >
       {children}
     </span>
+  );
+}
+
+// COUNTDOWN — a real clock, not a picture of one.
+//
+// This used to print a fixed `23:59:59` whatever the deadline said, which made
+// every countdown look configured: an empty deadline, a typo'd one and an
+// expired one all showed the same healthy-looking clock, while the published
+// page showed a dead em-dash. countdownPreview() mirrors the renderer's
+// emitted runtime (same Date.parse, same d/HH:MM:SS formatting, same "Offer
+// expired" string), so the canvas now fails in the same three ways the page
+// does — visibly, and with the reason named.
+//
+// Its own component because it needs hooks, and BlockPreview dispatches inside
+// a switch where a hook could not be called unconditionally.
+function CountdownPreview({ label, deadline }) {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, []);
+  const { state, text } = countdownPreview(deadline, now);
+  const dead = state !== 'live';
+  const note = {
+    unset: 'No deadline set — the clock stays blank on the live page',
+    invalid: 'Deadline is not a readable date — the clock stays blank on the live page',
+    expired: 'Deadline has passed',
+    live: 'Ticks live on the public page',
+  }[state];
+  return (
+    <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap', color: T.text, fontSize: 15 }}>
+      <span>{String(label || 'Offer ends in')}</span>
+      <span style={{ fontWeight: 700, fontFamily: 'monospace', color: dead ? T.faint : T.dark }}>{text}</span>
+      <span style={{ fontSize: 11, color: state === 'invalid' ? '#b91c1c' : T.faint }}>({note})</span>
+    </div>
   );
 }
 
@@ -190,6 +227,19 @@ export default function BlockPreview({ block, pageCss = '' }) {
       );
     case 'html':
     case 'embed':
+      // BUILDER-ONLY hint while the prop is empty. The html prop renders
+      // VERBATIM to buyers, so the "paste your code here" nudge must live
+      // here on the canvas and never in the prop itself — an operator who
+      // forgets this block ships an empty div, not placeholder copy.
+      if (!String(p.html || '').trim()) {
+        return (
+          <div style={{ border: `1px dashed ${T.border}`, borderRadius: 10, padding: 22, textAlign: 'center', color: T.faint, fontSize: 13, background: T.muted }}>
+            <Code2 size={18} />
+            <div style={{ marginTop: 6 }}>Empty embed — paste your HTML in the panel.</div>
+            <div style={{ fontSize: 11, marginTop: 2 }}>Renders nothing on the live page until you do.</div>
+          </div>
+        );
+      }
       return (
         <div>
           <HtmlChip label="Raw HTML / Embed — sandboxed preview (scripts run only on the live page)" />
@@ -311,20 +361,16 @@ export default function BlockPreview({ block, pageCss = '' }) {
       );
     }
     case 'countdown':
-      return (
-        <div style={{ display: 'flex', gap: 10, alignItems: 'center', color: T.text, fontSize: 15 }}>
-          <span>{String(p.label || 'Offer ends in')}</span>
-          <span style={{ fontWeight: 700, fontFamily: 'monospace', color: T.dark }}>23:59:59</span>
-          <span style={{ fontSize: 11, color: T.faint }}>(live on the public page)</span>
-        </div>
-      );
+      return <CountdownPreview label={p.label} deadline={p.deadline} />;
     case 'sticky_cta':
       return (
         <div style={{ textAlign: 'center' }}>
           <span style={{ display: 'inline-block', background: T.primary, color: '#fff', padding: '10px 24px', borderRadius: 999, fontWeight: 600, fontSize: 14, boxShadow: '0 4px 16px rgba(0,0,0,0.15)' }}>
             {String(p.text || 'Buy Now')}
           </span>
-          <div style={{ fontSize: 11, color: T.faint, marginTop: 4 }}>Sticky — floats at the bottom of the live page</div>
+          <div style={{ fontSize: 11, color: T.faint, marginTop: 4 }}>
+            Sticky — floats at the bottom of the live page · → {String(p.href || '#')}
+          </div>
         </div>
       );
     case 'whop_checkout': {

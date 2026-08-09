@@ -20,8 +20,8 @@
 // props.mobile_styles is honored in BOTH places: the canvas applies it at the
 // mobile device preview, and funnelRender.js emits it as a
 // `@media (max-width:767px)` rule from the same sanitizer.
-import { useState } from 'react';
-import { Trash2, Copy, ShieldAlert, AlertTriangle, Info } from 'lucide-react';
+import { useState, useEffect } from 'react';
+import { Trash2, Copy, ShieldAlert, AlertTriangle, Info, Plus, ArrowUp, ArrowDown } from 'lucide-react';
 import { BLOCK_DEFS } from './blockRegistry';
 import {
   FONT_FAMILIES, FONT_WEIGHTS, MOBILE_MAX_PX,
@@ -29,7 +29,13 @@ import {
 } from './styleUtils';
 import { BreakpointSwitch, MobileScopeNote, AlignmentControls } from './BreakpointControls';
 import VariantPicker from './VariantPicker';
-import { isSlugCollision } from './builderModel';
+import {
+  isSlugCollision,
+  listRows, addListRow, removeListRow, moveListRow, setListCell,
+  comparisonColumns, addComparisonColumn, renameComparisonColumn,
+  removeComparisonColumn, comparisonDefaultRow, moveWouldChangeColumns,
+  isoFromLocalInput, localInputFromIso, localInputAnomaly, countdownPreview,
+} from './builderModel';
 import { AiMediaDialog } from '../../../components/media';
 
 const inputCls =
@@ -104,8 +110,415 @@ function JsonField({ value, onCommit }) {
   );
 }
 
+// ---------------------------------------------------------------------------
+// Repeating OBJECT lists — FAQ / Ranking / Product grid / Comparison rows.
+//
+// These replace what used to be a raw `json` textarea. The JSON editor is
+// still the right tool for a free-shaped bag (row columns, checkout line
+// items); it is the wrong tool for a fixed row schema, where it made the
+// operator hand-write braces to add one FAQ entry and silently refused the
+// whole block on a missing comma.
+//
+// EVERY MUTATION GOES THROUGH builderModel.js. Those helpers are pure, total
+// and node-testable, and they are where the two non-obvious rules live: an
+// out-of-range move returns the SAME array (so ↑ on row 1 writes nothing at
+// all, rather than recording an empty undo step), and a cleared text cell
+// keeps its key (so emptying a comparison cell cannot delete a column).
+// ---------------------------------------------------------------------------
+function RowCard({ index, count, label, onMove, onRemove, children }) {
+  return (
+    <div className="rounded-lg border border-border-default bg-bg-elevated/60 p-2.5 space-y-2.5">
+      <div className="flex items-center justify-between gap-2">
+        <span className="text-[10px] uppercase tracking-wider text-text-faint font-semibold">
+          {label} {index + 1}
+        </span>
+        <div className="flex items-center gap-0.5 shrink-0">
+          {/* Disabled at the ends rather than hidden: a control that vanishes
+              reads as a bug, one that greys out reads as a boundary. */}
+          <button
+            type="button"
+            onClick={() => onMove(-1)}
+            disabled={index === 0}
+            title="Move up"
+            className="p-1 rounded text-text-muted hover:text-text-primary hover:bg-bg-hover disabled:opacity-30 disabled:hover:bg-transparent disabled:cursor-default cursor-pointer"
+          >
+            <ArrowUp className="w-3 h-3" />
+          </button>
+          <button
+            type="button"
+            onClick={() => onMove(1)}
+            disabled={index === count - 1}
+            title="Move down"
+            className="p-1 rounded text-text-muted hover:text-text-primary hover:bg-bg-hover disabled:opacity-30 disabled:hover:bg-transparent disabled:cursor-default cursor-pointer"
+          >
+            <ArrowDown className="w-3 h-3" />
+          </button>
+          <button
+            type="button"
+            onClick={onRemove}
+            title="Remove"
+            className="p-1 rounded text-text-muted hover:text-danger hover:bg-bg-hover cursor-pointer"
+          >
+            <Trash2 className="w-3 h-3" />
+          </button>
+        </div>
+      </div>
+      {children}
+    </div>
+  );
+}
+
+function AddRowButton({ label, onClick }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className="w-full flex items-center justify-center gap-1.5 px-2 py-1.5 rounded-md border border-dashed border-border-default text-xs text-text-muted hover:text-text-primary hover:border-border-strong cursor-pointer"
+    >
+      <Plus className="w-3 h-3" /> {label}
+    </button>
+  );
+}
+
+function EmptyRows({ what }) {
+  return (
+    <p className="px-2 py-3 rounded-md border border-dashed border-border-default text-center text-[11px] text-text-faint">
+      No {what} yet — this block renders empty on the page until you add one.
+    </p>
+  );
+}
+
+function RowsField({ field, value, onChange }) {
+  const rows = listRows(value);
+  const itemFields = Array.isArray(field.itemFields) ? field.itemFields : [];
+  const rowLabel = field.rowLabel || 'Item';
+  // A helper that returns the SAME array means nothing moved — writing it
+  // anyway would push an identical props value through commit() and land an
+  // undo step that undoes nothing.
+  const write = (next) => { if (next !== rows) onChange(next); };
+
+  return (
+    <div className="space-y-2">
+      {rows.length === 0 && (
+        <>
+          <EmptyRows what={rowLabel.toLowerCase() + 's'} />
+          {/* The per-field notes (which link is sanitized, which is only
+              escaped) live on the first row's fields — so with no rows they
+              vanished exactly when an operator is deciding what to type. */}
+          {itemFields.some((f) => f.help) && (
+            <div className="px-2 space-y-1">
+              {itemFields.filter((f) => f.help).map((f) => (
+                <p key={f.key} className="text-[11px] text-text-faint leading-relaxed">
+                  <span className="text-text-muted">{f.label}:</span> {f.help}
+                </p>
+              ))}
+            </div>
+          )}
+        </>
+      )}
+      {rows.map((row, i) => (
+        <RowCard
+          key={i}
+          index={i}
+          count={rows.length}
+          label={rowLabel}
+          onMove={(d) => write(moveListRow(rows, i, d))}
+          onRemove={() => write(removeListRow(rows, i))}
+        >
+          {itemFields.map((f) => (
+            <div key={f.key}>
+              <label className={labelCls}>{f.label}</label>
+              {/* No onRequestMedia inside a row: the AI Media dialog writes to
+                  a TOP-LEVEL prop key, so offering it on a row's image field
+                  would drop the URL on the block instead of the row. */}
+              <Field
+                field={f}
+                value={row[f.key]}
+                onChange={(v) => write(setListCell(rows, i, f.key, v))}
+              />
+              {/* Per-field help, shown on the FIRST row only: repeating it on
+                  every card would bury the fields it is explaining. */}
+              {f.help && i === 0 && <p className="mt-1 text-[11px] text-text-faint">{f.help}</p>}
+            </div>
+          ))}
+        </RowCard>
+      ))}
+      <AddRowButton
+        label={`Add ${rowLabel.toLowerCase()}`}
+        onClick={() => onChange(addListRow(rows, field.defaultItem))}
+      />
+    </div>
+  );
+}
+
+// Comparison table: the COLUMNS are data. funnelRender.js reads the header set
+// off `Object.keys(rows[0])`, so a column is created/renamed/dropped by
+// rewriting that key across every row — which is why this editor manages
+// columns explicitly instead of leaving the operator to keep N row objects in
+// agreement by hand.
+function CompareRowsField({ value, onChange }) {
+  const rows = listRows(value);
+  const cols = comparisonColumns(rows);
+  // PER-COLUMN nonce. Bumped when THAT column's rename is refused, and it
+  // rides only in that column's key. A single shared counter remounted every
+  // column input at once, so refusing a rename in one box destroyed the focus
+  // and the uncommitted text in whichever sibling the operator had just
+  // clicked into.
+  const [refusalNonces, setRefusalNonces] = useState({});
+  const bumpRefusal = (col) => setRefusalNonces((m) => ({ ...m, [col]: (m[col] || 0) + 1 }));
+
+  // Prose for a reorder that was BLOCKED because it would have rewritten the
+  // published headers.
+  //
+  // CLEARED WHENEVER THE DATA MOVES, not just on the next successful move.
+  // The message names a specific before/after column set, so it stops being
+  // true the moment anything is edited — and the edit it most invites (Add
+  // column, the remedy the message itself prescribes) used to leave it on
+  // screen asserting a column change that no longer applied. Adjusted DURING
+  // RENDER, the same pattern PageSettings uses for the slug; an effect would
+  // render once with the stale message and then immediately re-render.
+  const [moveBlocked, setMoveBlocked] = useState(null);
+  const [lastSeenValue, setLastSeenValue] = useState(value);
+  if (value !== lastSeenValue) {
+    setLastSeenValue(value);
+    if (moveBlocked) setMoveBlocked(null);
+  }
+
+  const write = (next) => { if (next !== rows) onChange(next); };
+
+  const renameColumn = (from, typed) => {
+    const next = renameComparisonColumn(rows, from, typed);
+    if (next === rows) {
+      // Refused (blank / duplicate / `feature`) or a no-change edit. Either
+      // way the STORED name is what must be on screen — so the test is
+      // "does the box still hold something other than the stored name?",
+      // compared RAW. Comparing trimmed let ' Us ' through: the rename is
+      // refused as a duplicate, the trimmed text equals the stored name, no
+      // remount fired, and the box kept the padded text it had rejected.
+      if (String(typed) !== from) bumpRefusal(from);
+      return;
+    }
+    onChange(next);
+  };
+
+  const addColumn = () => {
+    // Name it around the CURRENT count and keep going until it is free, so a
+    // table that already has a "Column 2" gets "Column 3" rather than silently
+    // refusing the click (addComparisonColumn rejects duplicates).
+    let n = cols.length + 1;
+    while (cols.includes(`Column ${n}`)) n += 1;
+    write(addComparisonColumn(rows, `Column ${n}`));
+  };
+
+  const moveRow = (i, d) => {
+    // A reorder is only cosmetic when every row carries the same keys. Row 0
+    // IS the header source, so on a heterogeneous table a move can silently
+    // change what the published table's columns are. Blocked rather than
+    // confirmed: the operator asked to reorder, not to redefine the table.
+    if (moveWouldChangeColumns(rows, i, d)) {
+      const after = moveListRow(rows, i, d);
+      setMoveBlocked(
+        `That move would change the published columns from ${cols.join(' / ') || '(none)'} to ` +
+        `${comparisonColumns(after).join(' / ') || '(none)'}, because the first row decides the headers. ` +
+        `Give the rows matching columns first, then reorder.`
+      );
+      return;
+    }
+    setMoveBlocked(null);
+    write(moveListRow(rows, i, d));
+  };
+
+  return (
+    <div className="space-y-2.5">
+      <div className="rounded-lg border border-border-default bg-bg-elevated/60 p-2.5 space-y-2">
+        <div className="text-[10px] uppercase tracking-wider text-text-faint font-semibold">
+          Columns
+        </div>
+        {rows.length === 0 ? (
+          <p className="text-[11px] text-text-faint leading-relaxed">
+            Columns live inside the rows, so there is nowhere to put one yet — add a row first.
+            {' '}A table with no rows renders nothing at all on the page.
+          </p>
+        ) : cols.length === 0 ? (
+          <p className="text-[11px] text-text-faint">
+            No columns — the table renders with the Feature column alone.
+          </p>
+        ) : (
+          cols.map((c) => (
+            // key includes THIS column's nonce so a REJECTED rename remounts
+            // only this box and restores the stored name; the name alone would
+            // not change on a refusal, so the typed text would survive.
+            <div key={`${c}:${refusalNonces[c] || 0}`} className="flex items-center gap-1.5">
+              <input
+                defaultValue={c}
+                onBlur={(e) => renameColumn(c, e.target.value)}
+                onKeyDown={(e) => { if (e.key === 'Enter') e.currentTarget.blur(); }}
+                spellCheck={false}
+                className={inputCls}
+              />
+              <button
+                type="button"
+                onClick={() => write(removeComparisonColumn(rows, c))}
+                title={`Remove the ${c} column from every row`}
+                className="shrink-0 p-1.5 rounded text-text-muted hover:text-danger hover:bg-bg-hover cursor-pointer"
+              >
+                <Trash2 className="w-3 h-3" />
+              </button>
+            </div>
+          ))
+        )}
+        {rows.length > 0 && <AddRowButton label="Add column" onClick={addColumn} />}
+        {/* The snap-back footnote describes renaming a column box. With no
+            rows there are no boxes, so it would be explaining a control that
+            is not on screen. */}
+        {rows.length > 0 && (
+          <p className="text-[11px] text-text-faint leading-relaxed">
+            A blank name, a duplicate, or the reserved word <code className="font-mono">feature</code> is
+            refused and the name snaps back — the published headers can never collide.
+          </p>
+        )}
+      </div>
+
+      {moveBlocked && (
+        <p className="flex items-start gap-1.5 text-[11px] text-amber-400/90 leading-snug">
+          <AlertTriangle className="w-3 h-3 mt-0.5 shrink-0" />
+          <span>{moveBlocked}</span>
+        </p>
+      )}
+
+      {rows.length === 0 && <EmptyRows what="rows" />}
+      {rows.map((row, i) => (
+        <RowCard
+          key={i}
+          index={i}
+          count={rows.length}
+          label="Row"
+          onMove={(d) => moveRow(i, d)}
+          onRemove={() => write(removeListRow(rows, i))}
+        >
+          <div>
+            <label className={labelCls}>
+              Feature
+              {i === 0 && (
+                <span className="ml-1.5 normal-case tracking-normal text-text-faint/80">
+                  this row sets the headers
+                </span>
+              )}
+            </label>
+            <input
+              value={row.feature ?? ''}
+              onChange={(e) => write(setListCell(rows, i, 'feature', e.target.value))}
+              className={inputCls}
+            />
+          </div>
+          {cols.map((c) => (
+            <div key={c}>
+              <label className={labelCls}>{c}</label>
+              <input
+                value={row[c] ?? ''}
+                onChange={(e) => write(setListCell(rows, i, c, e.target.value))}
+                className={inputCls}
+              />
+            </div>
+          ))}
+        </RowCard>
+      ))}
+      <AddRowButton
+        label="Add row"
+        onClick={() => onChange(addListRow(rows, comparisonDefaultRow(rows)))}
+      />
+    </div>
+  );
+}
+
+// Countdown deadline. The picker is LOCAL (that is how an operator thinks
+// about "ends Friday at midnight"); the stored prop is a UTC ISO instant,
+// which is what funnelRender's emitted runtime feeds to Date.parse. An
+// unparseable existing value is NOT rewritten — it is shown verbatim with a
+// warning, because silently replacing a deadline is a change to what the page
+// promises the buyer.
+function DateTimeField({ value, onChange }) {
+  // `now` is STATE fed by an interval, not a Date.now() read during render.
+  // Reading the clock while rendering is impure — it makes the output depend
+  // on when React happened to re-render — and it is also what would let this
+  // readout sit on "2h left" long after the deadline passed while the panel
+  // stayed open. Ticking it keeps the inspector and the canvas agreeing.
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, []);
+  // Set when the picked wall-clock time is not the one that got stored — the
+  // DST gap / ambiguous hour. Detectable only at the moment of the pick,
+  // because once stored the instant round-trips cleanly.
+  const [dst, setDst] = useState(null);
+  const raw = value == null ? '' : String(value);
+  const local = localInputFromIso(raw);
+  // The PAGE cannot read it only when Date.parse says NaN on the TRIMMED
+  // value — the renderer trims at emission, so surrounding whitespace is no
+  // longer a failure mode and must not be reported as one.
+  const { state, text } = countdownPreview(raw, now);
+  const unreadable = state === 'invalid';
+
+  const pick = (typed) => {
+    setDst(localInputAnomaly(typed));
+    onChange(isoFromLocalInput(typed) || undefined);
+  };
+
+  return (
+    <div className="space-y-1.5">
+      {/* step=60 pins the control to MINUTE resolution, which is what
+          localInputAnomaly compares against. Without it a browser may offer a
+          seconds spinner, and every value carrying seconds would round-trip
+          one component shorter and raise a false DST warning. */}
+      <input
+        type="datetime-local"
+        step={60}
+        value={local}
+        onChange={(e) => pick(e.target.value)}
+        className={inputCls}
+      />
+      {unreadable ? (
+        <p className="flex items-start gap-1.5 text-[11px] text-danger leading-snug">
+          <AlertTriangle className="w-3 h-3 mt-0.5 shrink-0" />
+          <span>
+            The saved deadline <code className="font-mono">{raw}</code> is not a date the page can
+            read, so the clock stays blank there. Pick one above to replace it.
+          </span>
+        </p>
+      ) : (
+        <p className="text-[11px] text-text-faint font-mono truncate">
+          {state === 'unset' && 'No deadline — the clock stays blank on the page.'}
+          {state === 'expired' && 'Already passed — the page shows “Offer expired”.'}
+          {state === 'live' && `${text} left · stored as ${raw}`}
+        </p>
+      )}
+      {dst && (
+        <p className="flex items-start gap-1.5 text-[11px] text-amber-400/90 leading-snug">
+          <AlertTriangle className="w-3 h-3 mt-0.5 shrink-0" />
+          {/* Says ONLY what the check can actually see. The ambiguous
+              fall-back hour round-trips cleanly, so it never reaches here —
+              claiming "or happens twice" would advertise a detection that
+              does not exist. */}
+          <span>
+            The clocks change that day and that local time does not exist — it was stored
+            as <code className="font-mono">{dst.stored.replace('T', ' ')}</code> instead.
+            On the repeated hour after a clock change, the earlier of the two is used.
+          </span>
+        </p>
+      )}
+    </div>
+  );
+}
+
 function Field({ field, value, onChange, onPick, onRequestMedia }) {
   switch (field.kind) {
+    case 'rows':
+      return <RowsField field={field} value={value} onChange={onChange} />;
+    case 'compare_rows':
+      return <CompareRowsField value={value} onChange={onChange} />;
+    case 'datetime':
+      return <DateTimeField value={value} onChange={onChange} />;
     case 'textarea':
       return (
         <textarea
@@ -123,7 +536,14 @@ function Field({ field, value, onChange, onPick, onRequestMedia }) {
           value={value ?? ''}
           min={field.min}
           max={field.max}
+          step={field.step}
           onChange={(e) => {
+            // An EMPTIED box clears the prop, in BOTH coerce modes. Without the
+            // explicit blank test the float path ran `Number('')`, which is 0
+            // and finite — so a cleared score snapped to 0 and could never be
+            // emptied again, while the int path (parseInt('') → NaN) cleared
+            // correctly. Same control, two behaviours.
+            if (e.target.value === '') return onChange(undefined);
             const n = field.coerce === 'int' ? parseInt(e.target.value, 10) : Number(e.target.value);
             onChange(Number.isFinite(n) ? n : undefined);
           }}

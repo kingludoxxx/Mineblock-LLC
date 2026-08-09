@@ -468,6 +468,358 @@ export function clearRefusals(refusals, fields) {
 }
 
 // ---------------------------------------------------------------------------
+// Structured list fields — FAQ / Ranking / Comparison / Product grid
+//
+// These four blocks are LIST-SHAPED: their content prop is an array of row
+// objects the server renderer walks. Every helper below is TOTAL, for the
+// usual reason — the array is operator/AI-authored JSON and can legally hold
+// a null, a string, or a nested array.
+//
+// FILTERING IS DELIBERATE AND MIRRORS THE RENDERER. funnelRender.js does
+// `.filter(isPlainObject)` on ranking.items, faq.items, comparison_table.rows
+// and product_grid.items — a non-object row is ALREADY invisible on the public
+// page. Showing it in the editor would be the panel promising to edit
+// something the page will never print, so `listRows` drops it on read and the
+// first edit normalizes it away.
+// ---------------------------------------------------------------------------
+
+/** A plain object — not null, not an array. Same test the renderer applies. */
+function isRowObject(v) {
+  return !!v && typeof v === 'object' && !Array.isArray(v);
+}
+
+/**
+ * The rows a list-shaped prop actually renders as: plain objects only.
+ * Anything else (null, string, nested array) is dropped, exactly as
+ * funnelRender.js drops it.
+ *
+ * RETURNS THE INPUT ARRAY UNCHANGED when there is nothing to drop, and that
+ * identity is load-bearing rather than an optimization. Every mutation helper
+ * below returns `listRows(rows)` on a no-op path, and RowsField writes only
+ * when the result is a DIFFERENT array — so `↑` on the first row, a remove
+ * past the end, or a refused column rename must come back as the very same
+ * array or the panel would push an identical props value through commit() and
+ * bank an undo step that undoes nothing.
+ */
+export function listRows(value) {
+  if (!Array.isArray(value)) return [];
+  return value.every(isRowObject) ? value : value.filter(isRowObject);
+}
+
+/** Append a row. `defaultRow` is shallow-copied so the registry's literal is never shared. */
+export function addListRow(rows, defaultRow) {
+  return [...listRows(rows), isRowObject(defaultRow) ? { ...defaultRow } : {}];
+}
+
+/**
+ * Drop row `index`. An out-of-range index returns the SAME array identity, so
+ * the caller can skip the write and no empty history entry is recorded.
+ */
+export function removeListRow(rows, index) {
+  const list = listRows(rows);
+  if (!Number.isInteger(index) || index < 0 || index >= list.length) return list;
+  return list.filter((_, i) => i !== index);
+}
+
+/**
+ * Move row `index` by `delta` (-1 up, +1 down). A move that would leave the
+ * array returns the SAME array identity — that is what makes the ↑ on the
+ * first row a no-op rather than a silent reorder or a crash.
+ */
+export function moveListRow(rows, index, delta) {
+  const list = listRows(rows);
+  const to = index + delta;
+  if (!Number.isInteger(index) || !Number.isInteger(delta) || delta === 0) return list;
+  if (index < 0 || index >= list.length || to < 0 || to >= list.length) return list;
+  const next = list.slice();
+  const [moved] = next.splice(index, 1);
+  next.splice(to, 0, moved);
+  return next;
+}
+
+/**
+ * Write one cell.
+ *
+ * `undefined` DELETES the key; an empty STRING is kept. The difference is
+ * load-bearing for comparison tables: the renderer derives the column set from
+ * `Object.keys(rows[0])`, so letting a cleared text cell delete its key would
+ * make emptying the first row's cell delete the whole COLUMN from the page.
+ */
+export function setListCell(rows, index, key, value) {
+  const list = listRows(rows);
+  if (!Number.isInteger(index) || index < 0 || index >= list.length) return list;
+  if (typeof key !== 'string' || !key) return list;
+  return list.map((row, i) => {
+    if (i !== index) return row;
+    const next = { ...row };
+    if (value === undefined) delete next[key];
+    else next[key] = value;
+    return next;
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Comparison table columns
+//
+// MIRRORS THE RENDERER EXACTLY. funnelRender.js comparison_table reads
+//   const cols = Object.keys(rows[0]).filter((k) => k !== 'feature');
+// — the FIRST row alone decides the columns, and every later row is read as
+// `r[c] ?? ''`. So a key present only on row 3 is invisible on the page, and
+// the editor must not draw a cell for it. Every mutation below therefore
+// applies to EVERY row, which is what keeps row 0 (the header source) and the
+// body in agreement.
+// ---------------------------------------------------------------------------
+
+/** The column names the published page will print, in the order it prints them. */
+export function comparisonColumns(rows) {
+  const list = listRows(rows);
+  if (!list.length) return [];
+  return Object.keys(list[0]).filter((k) => k !== 'feature');
+}
+
+/** Refuse blank names, the reserved `feature` key, and duplicates. */
+function columnNameUsable(rows, name) {
+  const n = typeof name === 'string' ? name.trim() : '';
+  if (!n || n === 'feature') return null;
+  if (comparisonColumns(rows).includes(n)) return null;
+  return n;
+}
+
+/**
+ * Append a column to EVERY row (empty cell). Identity when the name is
+ * unusable — or when there are NO ROWS.
+ *
+ * The empty case is not a nicety. A column lives inside the row objects, so
+ * with zero rows there is nowhere to write it: `[].map()` would hand back a
+ * fresh empty array, the panel would see a "change", and every click would
+ * bank an undo step for a button that cannot do anything. Worse, the table
+ * renders NOTHING at zero rows (funnelRender returns '' before it ever looks
+ * at the columns), so the honest move is to make the caller add a row first.
+ */
+export function addComparisonColumn(rows, name) {
+  const list = listRows(rows);
+  if (!list.length) return list;
+  const n = columnNameUsable(list, name);
+  if (!n) return list;
+  return list.map((r) => ({ ...r, [n]: '' }));
+}
+
+/**
+ * True when reordering would change the PUBLISHED column set.
+ *
+ * Row 0 is the header source, so moving a row with different keys into (or out
+ * of) position 0 silently rewrites the live table's columns — a reorder that
+ * looks cosmetic but is not. Rows are homogeneous when this editor authored
+ * them; they need not be when an AI batch or a hand-edited paste did.
+ */
+export function moveWouldChangeColumns(rows, index, delta) {
+  const before = listRows(rows);
+  const after = moveListRow(before, index, delta);
+  if (after === before) return false;
+  return JSON.stringify(comparisonColumns(before)) !== JSON.stringify(comparisonColumns(after));
+}
+
+/**
+ * Rename a column IN PLACE on every row — key order is rebuilt rather than
+ * patched, because `{...r, [to]: v}` after a delete would move the column to
+ * the END and silently reorder the published table's headers.
+ */
+export function renameComparisonColumn(rows, from, to) {
+  const list = listRows(rows);
+  if (typeof from !== 'string' || !comparisonColumns(list).includes(from)) return list;
+  const n = columnNameUsable(list, to);
+  if (!n || n === from) return list;
+  return list.map((r) => {
+    const next = {};
+    for (const k of Object.keys(r)) {
+      if (k === from) next[n] = r[k];
+      else next[k] = r[k];
+    }
+    return next;
+  });
+}
+
+/** Drop a column from every row. Identity when the column is not present. */
+export function removeComparisonColumn(rows, name) {
+  const list = listRows(rows);
+  if (typeof name !== 'string' || !comparisonColumns(list).includes(name)) return list;
+  return list.map((r) => {
+    const next = { ...r };
+    delete next[name];
+    return next;
+  });
+}
+
+/**
+ * The row a comparison table's "Add row" must insert: `feature` plus one EMPTY
+ * cell per CURRENT column. A row that skipped the columns would render as a
+ * line of blanks and — if it ever became row 0 — would delete every column
+ * from the page.
+ */
+export function comparisonDefaultRow(rows, feature) {
+  const out = { feature: typeof feature === 'string' ? feature : 'New feature' };
+  for (const c of comparisonColumns(rows)) out[c] = '';
+  return out;
+}
+
+// ---------------------------------------------------------------------------
+// Countdown deadline
+//
+// The renderer emits the deadline as an ATTRIBUTE (`data-deadline`, esc()'d)
+// and its runtime reads it with getAttribute + Date.parse. The value is never
+// spliced into the emitted JS, so no backtick/${}/backslash constraint applies
+// to it — but it MUST be something Date.parse understands, which is why the
+// panel stores a full ISO instant rather than the browser's zone-less
+// `datetime-local` string.
+//
+// THE TRIM IS THE SHARED CONTRACT, AND IT LIVES AT EMISSION.
+// funnelRender.js renders the attribute as
+//   data-deadline='${esc(String(p.deadline || '').trim())}'
+// so the runtime never sees the padding: it reads an already-trimmed value and
+// runs `if(!raw) return;` then `Date.parse(raw)`. Everything here is measured
+// against THAT — the trimmed value — because that is what reaches the page.
+//
+// This used to be the other way round. Before the renderer trimmed, a padded
+// deadline was genuinely dead on the page (V8 answers NaN for
+// `Date.parse(' 2026-01-01T00:00:00Z ')`), and this preview had to refuse to
+// draw a clock for it. The renderer now trims at emission, which revived every
+// legacy padded value — so a preview that still called them dead would state
+// the falsehood in the opposite direction. It trims again, in step.
+//
+// isoFromLocalInput — the WRITE — also trims, so values this editor stores are
+// clean at rest as well as at emission. Two independent guarantees, both kept.
+//
+// ZONE HANDLING IS NOT UNIFORM, and the doc used to claim it was. Per the ES
+// spec, a DATE-ONLY string is UTC while a date-TIME string without a zone is
+// LOCAL — verified in this runtime (Europe/Madrid):
+//   Date.parse('2026-01-01')          → 2026-01-01T00:00:00.000Z  (UTC)
+//   Date.parse('2026-01-01T00:00:00') → 2025-12-31T23:00:00.000Z  (local)
+// The picker always supplies a date-TIME, so the local reading is the one that
+// applies here; the date-only case is reachable only through legacy values.
+// ---------------------------------------------------------------------------
+
+/**
+ * `datetime-local` value (`2026-12-31T23:59`) → ISO instant.
+ *
+ * A date-TIME without a zone is read as LOCAL — the zone the operator typed it
+ * in. Blank or unparseable returns '' so the caller deletes the prop instead of
+ * writing a deadline the runtime would ignore.
+ *
+ * TRIMS ON PURPOSE: this is the write path, and it is what guarantees every
+ * value this editor stores is one `Date.parse` accepts on the public page.
+ *
+ * The picker carries no seconds, so a stored deadline always lands on :00.
+ */
+export function isoFromLocalInput(value) {
+  const raw = typeof value === 'string' ? value.trim() : '';
+  if (!raw) return '';
+  const ms = Date.parse(raw);
+  if (!Number.isFinite(ms)) return '';
+  return new Date(ms).toISOString();
+}
+
+/**
+ * ISO instant → the `datetime-local` string the input renders, in the
+ * operator's LOCAL zone. Unparseable returns '' — an invalid deadline shows as
+ * an empty picker, and the raw value is surfaced next to it rather than
+ * silently rewritten.
+ *
+ * The year is zero-padded to four digits: `getFullYear()` returns 41 for a
+ * year-41 instant, and `41-01-01T00:00` is not a value the input will accept.
+ */
+export function localInputFromIso(value) {
+  const raw = typeof value === 'string' ? value.trim() : '';
+  if (!raw) return '';
+  const ms = Date.parse(raw);
+  if (!Number.isFinite(ms)) return '';
+  const d = new Date(ms);
+  const p = (n) => (n < 10 ? '0' : '') + n;
+  const year = String(d.getFullYear()).padStart(4, '0');
+  return `${year}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+
+// Strips a SECONDS component (and any fraction) from a datetime-local string,
+// leaving `YYYY-MM-DDTHH:MM`. Anchored on the whole shape so it can only ever
+// remove a third `:SS` group — a naive `/:\d{2}$/` would eat the MINUTES off
+// `2026-06-15T12:00`.
+const LOCAL_SECONDS_TAIL_RE = /^(\d{4,}-\d{2}-\d{2}T\d{2}:\d{2}):\d{2}(?:\.\d+)?$/;
+
+/**
+ * DST honesty check for a value the operator just picked.
+ *
+ * WHAT THIS DETECTS: the spring-forward GAP. Once a year a local wall clock
+ * time simply does not happen (02:30 on the changeover date), and `Date.parse`
+ * resolves it silently to a different time — so the picker would snap an hour
+ * without explanation. Round-tripping catches it: what comes back out is not
+ * what went in.
+ *
+ * WHAT THIS DOES NOT DETECT, and the copy must not claim it does: the
+ * AMBIGUOUS fall-back hour. When 02:30 happens twice, both occurrences render
+ * back as the same local string, so the round trip is clean and nothing fires.
+ * Verified in Europe/Madrid — 2026-10-25T02:00, T02:30 and T01:30 all return
+ * null, and the stored instant is the FIRST (pre-change) occurrence. That is a
+ * real silent choice; it is simply not one this check can see.
+ *
+ * SECONDS ARE NOT AN ANOMALY. The picker is minute-resolution (step=60), so a
+ * value carrying `:30` seconds round-trips to a string one component shorter.
+ * Comparing raw would have raised a DST warning on every such value.
+ *
+ * @returns {null|{stored:string}} null when the pick round-trips to the same
+ *          wall-clock MINUTE.
+ */
+export function localInputAnomaly(value) {
+  const raw = typeof value === 'string' ? value.trim() : '';
+  if (!raw) return null;
+  const iso = isoFromLocalInput(raw);
+  if (!iso) return null;
+  const back = localInputFromIso(iso);
+  const atMinute = raw.replace(LOCAL_SECONDS_TAIL_RE, '$1');
+  return back === atMinute ? null : { stored: back };
+}
+
+/**
+ * What the countdown clock reads, for the canvas preview.
+ *
+ * MIRRORS THE WHOLE PIPELINE funnelRender.js SHIPS — emission AND runtime:
+ * the block's `.trim()` at emission, then countdownRuntimeScript()'s
+ * `if(!raw) return`, its `Date.parse`, its
+ * `(d>0?d+'d ':'')+pad(h)+':'+pad(m)+':'+pad(s)` clock, and the literal
+ * 'Offer expired' once the instant is past. A preview that formatted it
+ * differently would be a preview of a page that does not exist — which is
+ * exactly what the old hard-coded `23:59:59` was.
+ *
+ * `state` lets the canvas distinguish the three NON-TICKING cases the runtime
+ * treats as one silent no-op: no deadline, an unparseable deadline, and a real
+ * expiry. Only the last one is the block working as intended.
+ *
+ * @returns {{state:'unset'|'invalid'|'expired'|'live', text:string}}
+ */
+export function countdownPreview(deadline, nowMs) {
+  // TRIMMED, because the RENDERER trims at emission — `String(p.deadline ||
+  // '').trim()` — so the trimmed value is what the attribute carries and what
+  // the runtime parses. Two consequences follow directly from that expression
+  // and are asserted against it in the harness:
+  //   · a padded but otherwise valid instant reaches the page intact → LIVE
+  //   · a whitespace-ONLY value trims to '', so the attribute is empty and the
+  //     runtime's `if(!raw) return` fires → indistinguishable from unset, and
+  //     reported as unset rather than as a separate broken state
+  const raw = deadline == null ? '' : String(deadline).trim();
+  if (!raw) return { state: 'unset', text: '—' };
+  const end = Date.parse(raw);
+  if (!Number.isFinite(end)) return { state: 'invalid', text: '—' };
+  const now = Number.isFinite(nowMs) ? nowMs : Date.now();
+  const ms = end - now;
+  if (ms <= 0) return { state: 'expired', text: 'Offer expired' };
+  const total = Math.floor(ms / 1000);
+  const d = Math.floor(total / 86400);
+  const h = Math.floor((total % 86400) / 3600);
+  const m = Math.floor((total % 3600) / 60);
+  const s = total % 60;
+  const pad = (n) => (n < 10 ? '0' : '') + n;
+  return { state: 'live', text: `${d > 0 ? `${d}d ` : ''}${pad(h)}:${pad(m)}:${pad(s)}` };
+}
+
+// ---------------------------------------------------------------------------
 // AI op wiring floor
 // ---------------------------------------------------------------------------
 

@@ -8,6 +8,11 @@
 // without throwing — a render pass that throws white-screens the builder.
 //
 // Run:  node server/tests/builder/builder-model.mjs
+//
+// One case reads funnelRender.js as TEXT (never imports it): the countdown
+// preview mirrors a contract that lives in the renderer's emission line, and
+// pinning that line is what stops the two drifting apart silently.
+import { readFileSync } from 'node:fs';
 import {
   buildOutline, defaultLabel, blockCodeSections, editableCount, safeJson,
   parseInlineMarkup, bumpHeadline, bumpUnconfigured, blockNameAttr,
@@ -15,6 +20,10 @@ import {
   refusedSaveField, retryFieldsAfterRefusal, mergeReplaceProps, WIRING_KEYS,
   resyncMeta, metaFromPage, recordRefusal, clearRefusals, META_FIELDS,
   BUMP_DEFAULT_HEADLINE, BUMP_DEFAULT_NAME_COLOR, SERVER_GENERATED_NOTE,
+  listRows, addListRow, removeListRow, moveListRow, setListCell,
+  comparisonColumns, addComparisonColumn, renameComparisonColumn,
+  removeComparisonColumn, comparisonDefaultRow, moveWouldChangeColumns,
+  isoFromLocalInput, localInputFromIso, localInputAnomaly, countdownPreview,
 } from '../../../client/src/pages/funnels/builder/builderModel.js';
 
 let pass = 0, fail = 0;
@@ -545,6 +554,462 @@ ok(
   'F4: every key the review named is on the floor'
 );
 ok(Object.isFrozen(WIRING_KEYS), 'F4: the floor is frozen — a caller cannot widen it at runtime');
+
+// ===========================================================================
+// Structured list fields — the row editors behind FAQ / Ranking /
+// Product grid / Comparison table.
+// ===========================================================================
+
+{
+  // listRows mirrors the RENDERER's filter. funnelRender.js does
+  // `.filter(isPlainObject)` on every one of these arrays, so a null or a
+  // string row is already invisible on the published page — the editor must
+  // not draw a card for it.
+  eq(listRows([{ a: 1 }, null, 'x', [1], { b: 2 }]), [{ a: 1 }, { b: 2 }],
+    'rows: only plain objects survive — same filter the renderer applies');
+  eq(listRows(null), [], 'rows: null → []');
+  eq(listRows('nope'), [], 'rows: a string prop → []');
+  eq(listRows(undefined), [], 'rows: absent prop → []');
+  eq(listRows([]), [], 'rows: empty stays empty');
+  // The identity every no-op path is built on: an already-clean array comes
+  // back AS ITSELF, so `helper(rows) === rows` is a reliable "nothing changed".
+  const clean = [{ a: 1 }, { b: 2 }];
+  ok(listRows(clean) === clean, 'rows: an already-clean array is returned by IDENTITY, not copied');
+  const dirty = [{ a: 1 }, null];
+  ok(listRows(dirty) !== dirty, 'rows: an array with junk IS copied — the junk is really dropped');
+}
+
+{
+  const rows = [{ q: 'a' }];
+  const next = addListRow(rows, { q: 'new', a: '' });
+  eq(next, [{ q: 'a' }, { q: 'new', a: '' }], 'rows: add appends the default row');
+  eq(rows, [{ q: 'a' }], 'rows: add does not mutate the input');
+  // The registry literal is shared across every insert — a row that aliased it
+  // would let editing one FAQ entry edit the default for the next one.
+  const d = { q: 'new' };
+  ok(addListRow([], d)[0] !== d, 'rows: the default row is COPIED, never aliased');
+  eq(addListRow(null, { x: 1 }), [{ x: 1 }], 'rows: add onto a non-array prop still works');
+  eq(addListRow([], null), [{}], 'rows: a missing defaultItem adds an empty row, never throws');
+}
+
+{
+  const rows = [{ n: 0 }, { n: 1 }, { n: 2 }];
+  eq(removeListRow(rows, 1), [{ n: 0 }, { n: 2 }], 'rows: remove drops the named index');
+  // REFERENCE IDENTITY, not deep equality. RowsField writes only when the
+  // returned array is a DIFFERENT object, so a no-op that allocated a fresh
+  // equal array would still push a props write and bank an undo step that
+  // undoes nothing. `eq` (JSON) cannot see that difference — `ok(x === rows)`
+  // can, and this is the assertion that caught it.
+  ok(removeListRow(rows, 9) === rows, 'rows: an out-of-range remove returns the SAME array (no write)');
+  ok(removeListRow(rows, -1) === rows, 'rows: a negative index returns the SAME array');
+  ok(removeListRow(rows, 1.5) === rows, 'rows: a fractional index returns the SAME array');
+  eq(rows, [{ n: 0 }, { n: 1 }, { n: 2 }], 'rows: remove does not mutate the input');
+}
+
+{
+  const rows = [{ n: 0 }, { n: 1 }, { n: 2 }];
+  eq(moveListRow(rows, 0, 1), [{ n: 1 }, { n: 0 }, { n: 2 }], 'rows: move down swaps with the next');
+  eq(moveListRow(rows, 2, -1), [{ n: 0 }, { n: 2 }, { n: 1 }], 'rows: move up swaps with the previous');
+  eq(moveListRow(rows, 0, 2), [{ n: 1 }, { n: 2 }, { n: 0 }], 'rows: a multi-step move is honoured');
+  // The ends are the whole reason move returns identity — ↑ on the first row
+  // must write NOTHING, not wrap the row around to the bottom.
+  ok(moveListRow(rows, 0, -1) === rows, 'rows: ↑ on the first row returns the SAME array — no wrap, no write');
+  ok(moveListRow(rows, 2, 1) === rows, 'rows: ↓ on the last row returns the SAME array');
+  ok(moveListRow(rows, 0, 0) === rows, 'rows: a zero delta returns the SAME array');
+  ok(moveListRow(rows, 0, 1.5) === rows, 'rows: a fractional delta returns the SAME array');
+  eq(rows, [{ n: 0 }, { n: 1 }, { n: 2 }], 'rows: move does not mutate the input');
+}
+
+{
+  const rows = [{ q: 'a', a: 'b' }, { q: 'c', a: 'd' }];
+  eq(setListCell(rows, 0, 'q', 'z'), [{ q: 'z', a: 'b' }, { q: 'c', a: 'd' }],
+    'rows: a cell write lands on the named row only');
+  // THE COMPARISON-TABLE TRAP. The renderer derives the column set from
+  // `Object.keys(rows[0])`. If clearing a text cell deleted its key, emptying
+  // the first row's "Us" box would delete the entire Us COLUMN from the
+  // published table — so '' is a value and only undefined is a delete.
+  eq(setListCell(rows, 0, 'a', ''), [{ q: 'a', a: '' }, { q: 'c', a: 'd' }],
+    'rows: an EMPTY STRING keeps the key — clearing a cell never drops a column');
+  eq(setListCell(rows, 0, 'a', undefined), [{ q: 'a' }, { q: 'c', a: 'd' }],
+    'rows: undefined DELETES the key (an unset number)');
+  eq(setListCell(rows, 0, 'a', 0), [{ q: 'a', a: 0 }, { q: 'c', a: 'd' }],
+    'rows: 0 is a value, not a delete');
+  ok(setListCell(rows, 5, 'q', 'z') === rows, 'rows: a cell write off the end returns the SAME array');
+  ok(setListCell(rows, 0, '', 'z') === rows, 'rows: an empty key returns the SAME array');
+  ok(setListCell(rows, 0, null, 'z') === rows, 'rows: a non-string key returns the SAME array');
+  eq(rows, [{ q: 'a', a: 'b' }, { q: 'c', a: 'd' }], 'rows: a cell write does not mutate the input');
+}
+
+// ===========================================================================
+// Comparison table columns — MIRRORS funnelRender.js:
+//   const cols = Object.keys(rows[0]).filter((k) => k !== 'feature');
+// ===========================================================================
+
+{
+  const rows = [{ feature: 'Price', Us: '$9', Them: '$19' }, { feature: 'Support', Us: 'Yes', Them: 'No' }];
+  eq(comparisonColumns(rows), ['Us', 'Them'], 'cols: read off row 0, feature excluded');
+  eq(comparisonColumns([]), [], 'cols: no rows → no columns');
+  eq(comparisonColumns(null), [], 'cols: a non-array prop → no columns');
+  eq(comparisonColumns([{ feature: 'x' }]), [], 'cols: feature-only row → no columns');
+  // Row 0 ALONE decides. A key that exists only on row 2 is never printed by
+  // the renderer, so the editor must not offer a box for it either.
+  eq(comparisonColumns([{ feature: 'a', Us: '1' }, { feature: 'b', Us: '1', Extra: '9' }]), ['Us'],
+    'cols: a key present only on a LATER row is not a column — row 0 is the header source');
+}
+
+{
+  const rows = [{ feature: 'Price', Us: '$9' }, { feature: 'Support', Us: 'Yes' }];
+  eq(addComparisonColumn(rows, 'Them'),
+    [{ feature: 'Price', Us: '$9', Them: '' }, { feature: 'Support', Us: 'Yes', Them: '' }],
+    'cols: add writes an empty cell on EVERY row, not just row 0');
+  eq(addComparisonColumn(rows, '  Them  '),
+    [{ feature: 'Price', Us: '$9', Them: '' }, { feature: 'Support', Us: 'Yes', Them: '' }],
+    'cols: the new name is trimmed');
+  // F1. THE EMPTY CASE. A column lives inside the row objects, so with zero
+  // rows there is nowhere to put one — and `[].map()` hands back a FRESH empty
+  // array, which the panel reads as a change and banks an undo step for. Every
+  // sibling helper had an identity assertion for its refusal path; add only
+  // had populated-case ones, which is exactly how this slipped through.
+  const noRows = [];
+  ok(addComparisonColumn(noRows, 'X') === noRows, 'F1 cols: add with NO ROWS returns the SAME array — no phantom undo step');
+  eq(addComparisonColumn(noRows, 'X'), [], 'F1 cols: add with no rows adds nothing');
+  ok(addComparisonColumn(null, 'X').length === 0, 'F1 cols: add onto a non-array prop yields no columns and does not throw');
+  // Refusals return the SAME array, so a rejected click writes nothing at all.
+  ok(addComparisonColumn(rows, 'Us') === rows, 'cols: a duplicate name is refused (same array)');
+  ok(addComparisonColumn(rows, 'feature') === rows, 'cols: the reserved `feature` key is refused');
+  ok(addComparisonColumn(rows, '   ') === rows, 'cols: a blank name is refused');
+  ok(addComparisonColumn(rows, null) === rows, 'cols: a non-string name is refused');
+}
+
+{
+  const rows = [{ feature: 'Price', Us: '$9', Them: '$19' }, { feature: 'Support', Us: 'Yes', Them: 'No' }];
+  const renamed = renameComparisonColumn(rows, 'Them', 'Brand X');
+  eq(renamed, [{ feature: 'Price', Us: '$9', 'Brand X': '$19' }, { feature: 'Support', Us: 'Yes', 'Brand X': 'No' }],
+    'cols: rename rewrites every row and KEEPS the values');
+  // KEY ORDER IS THE HEADER ORDER. A rename done as delete-then-spread would
+  // push the renamed column to the end and silently reorder the published
+  // table's headers.
+  eq(Object.keys(renamed[0]), ['feature', 'Us', 'Brand X'],
+    'cols: rename preserves key ORDER — the published headers do not shuffle');
+  ok(renameComparisonColumn(rows, 'Them', 'Us') === rows, 'cols: renaming onto an existing column is refused (same array)');
+  ok(renameComparisonColumn(rows, 'Them', 'feature') === rows, 'cols: renaming to `feature` is refused');
+  ok(renameComparisonColumn(rows, 'Them', '') === rows, 'cols: renaming to blank is refused');
+  ok(renameComparisonColumn(rows, 'Them', 'Them') === rows, 'cols: renaming to itself is a no-op');
+  ok(renameComparisonColumn(rows, 'Nope', 'X') === rows, 'cols: renaming a column that is not there is a no-op');
+  eq(rows[0], { feature: 'Price', Us: '$9', Them: '$19' }, 'cols: rename does not mutate the input');
+}
+
+{
+  const rows = [{ feature: 'Price', Us: '$9', Them: '$19' }, { feature: 'Support', Us: 'Yes', Them: 'No' }];
+  eq(removeComparisonColumn(rows, 'Them'), [{ feature: 'Price', Us: '$9' }, { feature: 'Support', Us: 'Yes' }],
+    'cols: remove drops the key from EVERY row');
+  ok(removeComparisonColumn(rows, 'feature') === rows, 'cols: `feature` is not a column and cannot be removed');
+  ok(removeComparisonColumn(rows, 'Nope') === rows, 'cols: removing an absent column is a no-op');
+  eq(rows[0], { feature: 'Price', Us: '$9', Them: '$19' }, 'cols: remove does not mutate the input');
+}
+
+{
+  // A new row must carry the CURRENT column set. A row without those keys
+  // renders as blanks — and if it ever became row 0 (delete the one above it)
+  // it would take every column off the published table with it.
+  const rows = [{ feature: 'Price', Us: '$9', Them: '$19' }];
+  eq(comparisonDefaultRow(rows), { feature: 'New feature', Us: '', Them: '' },
+    'cols: a new row is seeded with every current column');
+  eq(Object.keys(comparisonDefaultRow(rows)), ['feature', 'Us', 'Them'],
+    'cols: a new row carries the columns in header order');
+  eq(comparisonDefaultRow([]), { feature: 'New feature' }, 'cols: with no rows, a new row is feature-only');
+  eq(comparisonDefaultRow(null), { feature: 'New feature' }, 'cols: a non-array prop still yields a usable row');
+  eq(comparisonDefaultRow(rows, 'Warranty').feature, 'Warranty', 'cols: the feature label is overridable');
+  // The round trip the "Add row" button actually performs.
+  eq(comparisonColumns(addListRow(rows, comparisonDefaultRow(rows))), ['Us', 'Them'],
+    'cols: adding a row leaves the column set untouched');
+}
+
+{
+  // F5. Row 0 IS the header source, so on a HETEROGENEOUS table a reorder is
+  // not cosmetic — it can rewrite the published columns. The panel blocks
+  // those moves and says why.
+  const mixed = [{ feature: 'a', Us: '1' }, { feature: 'b', Them: '2' }];
+  ok(moveWouldChangeColumns(mixed, 0, 1), 'F5 cols: moving a differently-keyed row into position 0 is flagged');
+  ok(moveWouldChangeColumns(mixed, 1, -1), 'F5 cols: the same move from the other direction is flagged');
+  eq(comparisonColumns(mixed), ['Us'], 'F5 cols: before the move the headers are Us');
+  eq(comparisonColumns(moveListRow(mixed, 0, 1)), ['Them'], 'F5 cols: the move WOULD have republished them as Them');
+  // A homogeneous table — the case this editor authors — reorders freely.
+  const same = [{ feature: 'a', Us: '1' }, { feature: 'b', Us: '2' }, { feature: 'c', Us: '3' }];
+  ok(!moveWouldChangeColumns(same, 0, 1), 'F5 cols: a matching-column table reorders freely');
+  ok(!moveWouldChangeColumns(same, 1, 1), 'F5 cols: a move that never touches row 0 is never blocked');
+  // A no-op move cannot change anything, so it must not be flagged either —
+  // otherwise ↑ on row 0 would show a scary column warning instead of nothing.
+  ok(!moveWouldChangeColumns(mixed, 0, -1), 'F5 cols: a no-op move at the top is NOT flagged');
+  ok(!moveWouldChangeColumns(mixed, 1, 1), 'F5 cols: a no-op move at the bottom is NOT flagged');
+  ok(!moveWouldChangeColumns([], 0, 1), 'F5 cols: an empty table is not flagged and does not throw');
+  // Column ORDER counts as a change: same names, different header order is
+  // still a different published table.
+  const reordered = [{ feature: 'a', Us: '1', Them: '2' }, { feature: 'b', Them: '2', Us: '1' }];
+  ok(moveWouldChangeColumns(reordered, 0, 1), 'F5 cols: a change in column ORDER is flagged too');
+}
+
+{
+  // F5-2. THE STALE-MESSAGE INVARIANT.
+  //
+  // The blocked-move prose names a specific before/after column set, so it
+  // must not outlive the data it describes. The panel clears it whenever the
+  // `value` prop changes identity — which only works if every remedying edit
+  // actually PRODUCES a new array. That is the claim under test here; it is
+  // what makes the render-phase clear fire for Add column (the remedy the
+  // message itself prescribes), row removal and cell edits alike.
+  const mixed = [{ feature: 'a', Us: '1' }, { feature: 'b', Them: '2' }];
+  ok(addComparisonColumn(mixed, 'Them') !== mixed, 'F5-2: Add column — the prescribed remedy — yields a NEW array, so the stale message clears');
+  ok(removeListRow(mixed, 1) !== mixed, 'F5-2: removing a row yields a NEW array, so the stale message clears');
+  ok(setListCell(mixed, 0, 'Us', 'x') !== mixed, 'F5-2: editing a cell yields a NEW array, so the stale message clears');
+  ok(removeComparisonColumn(mixed, 'Us') !== mixed, 'F5-2: removing a column yields a NEW array, so the stale message clears');
+  ok(moveWouldChangeColumns(mixed, 0, 1), 'F5-2: before any remedy the move is blocked');
+  const remedied = addComparisonColumn(mixed, 'Them');
+  ok(remedied.every((r) => 'Them' in r), 'F5-2: Add column writes the named key onto EVERY row');
+  // NOTE THE PARTIAL CASE, found by this assertion failing: one Add column
+  // does not make a heterogeneous table homogeneous. Row 1 gains `Them` but
+  // still lacks `Us`, and a spread keeps each row's own key ORDER — so the
+  // move can still be blocked afterwards. That is precisely why the message
+  // must not be STORED: it is recomputed against current data on the next
+  // attempt, with whatever the column sets are by then.
+  ok(moveWouldChangeColumns(remedied, 0, 1),
+    'F5-2: a PARTIAL remedy can still be blocked — so a stored message would have been stale AND wrong');
+  // Fully homogeneous — same keys in the same order — is never blocked.
+  const homogeneous = [{ feature: 'a', Us: '1', Them: '' }, { feature: 'b', Us: '', Them: '2' }];
+  ok(!moveWouldChangeColumns(homogeneous, 0, 1),
+    'F5-2: once every row carries the same columns in the same order, the move is allowed');
+}
+
+// ===========================================================================
+// Countdown deadline — the picker is LOCAL, the stored prop is a UTC instant,
+// and funnelRender's emitted runtime parses it with Date.parse.
+// ===========================================================================
+
+{
+  // TZ-INDEPENDENT BY CONSTRUCTION: asserting an absolute UTC string here
+  // would pin the harness to whatever zone the runner happens to be in, so
+  // the property under test is the ROUND TRIP the panel performs.
+  const local = '2026-12-31T23:59';
+  const iso = isoFromLocalInput(local);
+  ok(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(iso), 'countdown: a picked local time stores as a UTC ISO instant');
+  eq(localInputFromIso(iso), local, 'countdown: ISO → picker → ISO round-trips to the same wall clock');
+  ok(Number.isFinite(Date.parse(iso)), 'countdown: the stored value is Date.parse-able — what the emitted runtime calls');
+}
+
+{
+  eq(isoFromLocalInput(''), '', 'countdown: a cleared picker stores nothing');
+  eq(isoFromLocalInput('   '), '', 'countdown: whitespace stores nothing');
+  eq(isoFromLocalInput('not a date'), '', 'countdown: an unparseable value stores nothing, never "Invalid Date"');
+  eq(isoFromLocalInput(null), '', 'countdown: a null value stores nothing');
+  eq(isoFromLocalInput(42), '', 'countdown: a non-string value stores nothing');
+  eq(localInputFromIso(''), '', 'countdown: no deadline → empty picker');
+  eq(localInputFromIso('garbage'), '', 'countdown: an unreadable saved deadline → empty picker (and the panel warns)');
+  eq(localInputFromIso(null), '', 'countdown: a null deadline → empty picker');
+  // A zone-less ISO already on a block still opens the picker rather than
+  // reading as corrupt — Date.parse takes it as local time.
+  ok(localInputFromIso('2026-06-01T12:00:00') !== '', 'countdown: a zone-less saved deadline is still readable');
+}
+
+{
+  // MIRRORS countdownRuntimeScript() IN funnelRender.js: same formatting,
+  // same 'Offer expired' literal, same <= 0 boundary.
+  const t0 = Date.parse('2026-01-01T00:00:00Z');
+  const at = (ms) => countdownPreview('2026-01-01T00:00:00Z', t0 - ms);
+  eq(at(1000), { state: 'live', text: '00:00:01' }, 'countdown: one second out formats zero-padded');
+  eq(at(61000), { state: 'live', text: '00:01:01' }, 'countdown: minutes and seconds pad');
+  eq(at(3600000), { state: 'live', text: '01:00:00' }, 'countdown: a whole hour');
+  eq(at(86400000), { state: 'live', text: '1d 00:00:00' }, 'countdown: a day prefixes "1d "');
+  eq(at(90061000), { state: 'live', text: '1d 01:01:01' }, 'countdown: days + padded clock');
+  eq(at(10 * 3600000), { state: 'live', text: '10:00:00' }, 'countdown: a two-digit hour is not double-padded');
+  // The boundary is the runtime's: `if(ms<=0)`. Exactly ON the deadline is
+  // EXPIRED, not a live 00:00:00.
+  eq(at(0), { state: 'expired', text: 'Offer expired' }, 'countdown: the deadline instant itself reads expired');
+  eq(at(-5000), { state: 'expired', text: 'Offer expired' }, 'countdown: a past deadline reads expired');
+}
+
+{
+  // The three states the RUNTIME collapses into one silent no-op. The canvas
+  // separates them because only one of them is the block working.
+  eq(countdownPreview('', 0).state, 'unset', 'countdown: no deadline is its own state');
+  eq(countdownPreview(null, 0).state, 'unset', 'countdown: a null deadline is unset');
+  eq(countdownPreview('next tuesday', 0).state, 'invalid', 'countdown: an unparseable deadline is INVALID, not unset');
+  eq(countdownPreview('', 0).text, '—', 'countdown: unset shows the renderer\'s static em-dash');
+  eq(countdownPreview('next tuesday', 0).text, '—', 'countdown: invalid shows the same em-dash the page shows');
+  // Totality — the prop is operator/AI-authored and need not be a string.
+  eq(countdownPreview({}, 0).state, 'invalid', 'countdown: an object deadline degrades, never throws');
+  eq(countdownPreview([], 0).state, 'unset', 'countdown: an empty array stringifies to blank → unset');
+  ok(['live', 'expired'].includes(countdownPreview('2026-01-01T00:00:00Z').state),
+    'countdown: an omitted `now` falls back to the real clock without throwing');
+}
+
+{
+  // F3 (REWORKED — the renderer now trims at EMISSION).
+  //
+  // funnelRender.js emits
+  //   data-deadline='${esc(String(p.deadline || '').trim())}'
+  // so the runtime never sees surrounding whitespace. A padded-but-valid
+  // deadline is therefore LIVE on the page, and a preview calling it dead
+  // would be false in the opposite direction to the bug this replaces.
+  //
+  // THE TRIM IS PINNED AGAINST THE RENDERER SOURCE, not just described. If the
+  // integrator ever drops it, this assertion fails here rather than the
+  // builder silently going back to lying about legacy deadlines.
+  const renderSrc = readFileSync(
+    new URL('../../src/services/funnelRender.js', import.meta.url), 'utf8'
+  );
+  const emitLine = renderSrc.split('\n').find((l) => l.includes("data-deadline='"));
+  ok(!!emitLine, 'F3 contract: the countdown emission line was located in funnelRender.js');
+  ok(/\.trim\(\)/.test(String(emitLine)),
+    `F3 contract: the renderer TRIMS the deadline at emission — the shared contract this preview mirrors\n      emit ${String(emitLine).trim()}`);
+
+  // A faithful model of the shipped pipeline: emission, then the runtime's own
+  // two guards. countdownPreview must agree with this for every input.
+  const emit = (p) => String(p == null ? '' : p).trim();           // funnelRender block
+  const runtimeIsDead = (attr) => !attr || !Number.isFinite(Date.parse(attr)); // if(!raw)return; Date.parse
+  const good = '2026-01-01T00:00:00Z';
+  const t0 = Date.parse(good);
+
+  // NEGATIVE CONTROL, now mirroring the renderer: the parse is applied to the
+  // EMITTED (trimmed) attribute, which is what actually reaches the page.
+  ok(Number.isFinite(Date.parse(emit(` ${good} `))),
+    'F3 countdown: NEGATIVE CONTROL — the EMITTED (trimmed) attribute parses, so the page ticks');
+  ok(!Number.isFinite(Date.parse(` ${good} `)),
+    'F3 countdown: ...while the untrimmed string still would not — which is exactly what the emission trim fixes');
+
+  for (const [padVal, what] of [[` ${good} `, 'spaces'], [`\t${good}`, 'a tab'], [`${good}\n`, 'a newline'], [` ${good}`, 'a leading space']]) {
+    const r = countdownPreview(padVal, t0 - 60000);
+    eq(r.state, 'live', `F3 countdown: a deadline padded with ${what} previews LIVE — the renderer trimmed it`);
+    eq(r.text, '00:01:00', `F3 countdown: ...and draws the same clock the page draws (${what})`);
+    eq(runtimeIsDead(emit(padVal)), false, `F3 countdown: ...and the modelled page pipeline agrees it is alive (${what})`);
+    ok(!('padded' in r), `F3 countdown: ...and no stale padded flag is reported (${what})`);
+  }
+
+  // Whitespace-ONLY trims to '', so the attribute is empty and the runtime's
+  // `if(!raw) return` fires — indistinguishable from having no deadline.
+  eq(emit('   '), '', 'F3 countdown: a whitespace-only deadline emits an EMPTY attribute');
+  eq(countdownPreview('   ', 0).state, 'unset', 'F3 countdown: ...so it previews as unset, matching the runtime\'s !raw branch');
+  eq(runtimeIsDead(emit('   ')), true, 'F3 countdown: ...and the modelled pipeline agrees the clock stays blank');
+
+  // A genuinely unparseable value is still invalid AFTER trimming.
+  eq(countdownPreview('  next tuesday  ', 0).state, 'invalid', 'F3 countdown: trimming does not rescue an unparseable deadline');
+  eq(runtimeIsDead(emit('  next tuesday  ')), true, 'F3 countdown: ...and the modelled pipeline agrees it is dead');
+
+  // FULL AGREEMENT TABLE — preview vs the modelled emission+runtime pipeline.
+  const cases = ['', '   ', good, ` ${good} `, `\t${good}\n`, 'next tuesday', '  next tuesday  ', '2026-01-01', null, undefined];
+  const disagreements = cases.filter((v) => {
+    const previewDead = countdownPreview(v, t0 - 60000).state !== 'live';
+    return previewDead !== runtimeIsDead(emit(v));
+  });
+  eq(disagreements, [], 'F3 countdown: the preview agrees with the modelled emission+runtime pipeline on EVERY case');
+
+  // THE WRITE PATH STILL CLEANS — a second, independent guarantee that does
+  // not depend on the renderer continuing to trim.
+  const written = isoFromLocalInput('  2026-12-31T23:59  ');
+  ok(Number.isFinite(Date.parse(written)), 'F3 countdown: the WRITE path trims, so stored values parse even untrimmed');
+  eq(written, written.trim(), 'F3 countdown: a stored value never carries whitespace');
+  eq(countdownPreview(written, 0).state, 'live', 'F3 countdown: a value this editor wrote always previews live');
+}
+
+{
+  // F4. DST — the spring-forward gap and the ambiguous fall-back hour.
+  // Date.parse resolves both silently; round-tripping is what exposes it.
+  // Asserted against the RUNNER's own zone rather than a hard-coded one, so
+  // the case holds wherever CI runs: find a local time that does not survive
+  // the round trip, and require it to be reported.
+  eq(localInputAnomaly('2026-06-15T12:00'), null, 'F4 dst: an ordinary local time round-trips exactly');
+  eq(localInputAnomaly(''), null, 'F4 dst: a blank pick reports nothing');
+  eq(localInputAnomaly(null), null, 'F4 dst: a null pick reports nothing');
+  eq(localInputAnomaly('garbage'), null, 'F4 dst: an unparseable pick is not a DST anomaly (it is handled as invalid)');
+
+  // Sweep a FIXED grid of local times; any that does not round-trip is a clock
+  // change. A DST zone has at least one, UTC has none — and the harness must
+  // emit the SAME NUMBER OF ASSERTIONS either way, or "317 expected" stops
+  // being a usable merge gate the moment CI runs in a different zone. So the
+  // sweep size is asserted, and BOTH branches below assert exactly once.
+  const p2 = (n) => (n < 10 ? '0' : '') + n;
+  const candidates = [];
+  for (let day = 0; day < 365; day += 1) {
+    const d = new Date(2026, 0, 1 + day, 12, 0, 0);
+    for (const [hh, mm] of [[1, 30], [2, 0], [2, 30], [3, 0]]) {
+      candidates.push(`${d.getFullYear()}-${p2(d.getMonth() + 1)}-${p2(d.getDate())}T${p2(hh)}:${p2(mm)}`);
+    }
+  }
+  eq(candidates.length, 1460, 'F4 dst: the sweep examined a fixed 1460 candidate local times');
+  const offenders = candidates
+    .map((v) => [v, localInputAnomaly(v)])
+    .filter(([, a]) => a)
+    .map(([v, a]) => [v, a.stored]);
+  const zone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  // Exactly two assertions, whatever the zone. In a no-DST zone `offenders` is
+  // empty and `every` is vacuously true — which is the correct claim there.
+  ok(offenders.every(([, stored]) => typeof stored === 'string' && stored !== ''),
+    `F4 dst: every non-round-tripping local time reports what WAS stored (zone ${zone}, ${offenders.length} found${offenders.length ? `, e.g. ${offenders[0][0]} → ${offenders[0][1]}` : ''})`);
+  ok(offenders.every(([v, stored]) => v !== stored),
+    'F4 dst: the reported stored value always differs from the pick — which is the whole warning');
+}
+
+{
+  // F4-2. SECONDS ARE NOT A CLOCK CHANGE. The picker is minute-resolution
+  // (step=60), so a value carrying seconds round-trips one component shorter.
+  // Comparing raw made every :30 value raise a false DST warning.
+  eq(localInputAnomaly('2026-06-15T12:00:30'), null, 'F4-2 dst: a SECONDS component is not a DST anomaly');
+  eq(localInputAnomaly('2026-06-15T12:00:00'), null, 'F4-2 dst: an explicit :00 seconds component is not an anomaly');
+  eq(localInputAnomaly('2026-06-15T12:00:30.500'), null, 'F4-2 dst: fractional seconds are not an anomaly');
+  eq(localInputAnomaly('2026-06-15T12:00'), null, 'F4-2 dst: the minute-precision form is still clean');
+  // ...and the minute-stripping must not eat the MINUTES off a bare value: a
+  // naive /:\d{2}$/ would turn 12:00 into 12, which round-trips to nothing.
+  eq(localInputAnomaly('2026-06-15T00:00'), null, 'F4-2 dst: midnight (:00 minutes) is not mangled by the seconds strip');
+  // A real gap is STILL reported even when the value carries seconds.
+  const gap = [];
+  for (let day = 0; day < 365; day += 1) {
+    const d = new Date(2026, 0, 1 + day, 12, 0, 0);
+    const pz = (n) => (n < 10 ? '0' : '') + n;
+    const v = `${d.getFullYear()}-${pz(d.getMonth() + 1)}-${pz(d.getDate())}T02:30`;
+    if (localInputAnomaly(v)) { gap.push(v); }
+  }
+  ok(gap.every((v) => localInputAnomaly(`${v}:00`) !== null),
+    `F4-2 dst: a genuine gap is still detected when the value carries seconds (${gap.length} gap day(s) in this zone)`);
+}
+
+{
+  // F4-3. The AMBIGUOUS fall-back hour is NOT detected — both occurrences
+  // render back as the same local string, so the round trip is clean. Pinned
+  // so the UI copy can never drift back into claiming otherwise.
+  const ambiguous = [];
+  for (let day = 0; day < 365; day += 1) {
+    const d = new Date(2026, 0, 1 + day, 12, 0, 0);
+    const pz = (n) => (n < 10 ? '0' : '') + n;
+    const stamp = `${d.getFullYear()}-${pz(d.getMonth() + 1)}-${pz(d.getDate())}`;
+    // A fall-back day is one where a local hour maps to two instants: the
+    // offset at 00:00 differs from the offset at 12:00 the NEXT day is not a
+    // reliable probe, so detect it directly via the UTC gap across the hour.
+    const a = new Date(`${stamp}T01:30:00`).getTime();
+    const b = new Date(`${stamp}T03:30:00`).getTime();
+    if (b - a === 3 * 3600000) ambiguous.push(`${stamp}T02:30`);
+  }
+  ok(ambiguous.every((v) => localInputAnomaly(v) === null),
+    `F4-3 dst: the ambiguous fall-back hour round-trips cleanly and is NOT reported (${ambiguous.length} such day(s) in this zone)`);
+}
+
+{
+  // F4. Zero-padded years. getFullYear() returns 41 for a year-41 instant, and
+  // `41-01-01T00:00` is not a value a datetime-local input will accept — the
+  // picker would silently render empty.
+  const early = localInputFromIso('0041-06-15T12:00:00Z');
+  ok(/^\d{4}-/.test(early), `F4 dates: a year under 1000 is zero-padded to four digits (got ${early})`);
+  ok(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(localInputFromIso('2026-06-15T12:00:00Z')),
+    'F4 dates: an ordinary year keeps the exact datetime-local shape');
+  // The documented zone split, pinned so the doc cannot drift from the engine:
+  // date-ONLY is UTC, date-TIME without a zone is LOCAL.
+  eq(new Date(Date.parse('2026-01-01')).toISOString(), '2026-01-01T00:00:00.000Z',
+    'F4 dates: a DATE-ONLY string is parsed as UTC (as the doc now says)');
+  const localNoon = Date.parse('2026-06-15T12:00:00');
+  eq(new Date(localNoon).getHours(), 12,
+    'F4 dates: a date-TIME string with no zone is parsed as LOCAL (as the doc now says)');
+  // Seconds truncation is accepted and documented in the field help.
+  eq(isoFromLocalInput('2026-06-15T12:00').endsWith(':00.000Z') || localInputFromIso(isoFromLocalInput('2026-06-15T12:00')) === '2026-06-15T12:00', true,
+    'F4 dates: the picker carries no seconds, so a stored deadline lands on :00');
+}
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
