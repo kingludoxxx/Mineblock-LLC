@@ -235,6 +235,11 @@ export default function AbandonedCheckoutsPage() {
   const [detailLoading, setDetailLoading] = useState(false);
   const [detailOpen, setDetailOpen] = useState(false);
   const debounceRef = useRef(null);
+  // Every filter change fires a new load, and the first request is often the
+  // SLOW one (it may trigger a Shopify sync). Without a sequence guard a stale
+  // response lands last and repaints the table with results for a filter the
+  // operator already moved off — which reads as "the filter is broken".
+  const reqSeq = useRef(0);
 
   const page = Math.max(parseInt(searchParams.get('page'), 10) || 1, 1);
   const days = parseInt(searchParams.get('days'), 10) || 7;
@@ -251,21 +256,24 @@ export default function AbandonedCheckoutsPage() {
 
   const load = useCallback(
     async (nosync = false) => {
+      const seq = ++reqSeq.current;
       setLoading(true);
       setError(null);
       try {
         const res = await api.get('/abandoned', {
           params: nosync ? { ...queryParams, nosync: '1' } : queryParams,
         });
+        if (seq !== reqSeq.current) return; // a newer request has superseded this one
         const d = res.data?.data || {};
         setRows(d.checkouts || []);
         setStats(d);
         setPages(d.pages || 1);
       } catch (err) {
+        if (seq !== reqSeq.current) return;
         setError(err.response?.data?.error || 'Failed to load abandoned checkouts');
         setRows([]);
       } finally {
-        setLoading(false);
+        if (seq === reqSeq.current) setLoading(false);
       }
     },
     [queryParams]
@@ -306,7 +314,9 @@ export default function AbandonedCheckoutsPage() {
       const res = await api.post('/abandoned/detector/run', { days: 14 });
       const d = res.data?.data || {};
       setNotice(
-        `Detector scanned ${d.scanned ?? 0} · sent ${d.sent ?? 0} · skipped ${d.skipped ?? 0}` +
+        `Sweep scanned ${d.scanned ?? 0} · sent ${d.sent ?? 0} · skipped ${d.skipped ?? 0}` +
+          (d.healed ? ` · ${d.healed} repaired` : '') +
+          (d.settled_mid_sweep ? ` · ${d.settled_mid_sweep} paid mid-sweep (not emailed)` : '') +
           (d.undeliverable ? ` · ${d.undeliverable} with no usable email` : '') +
           (d.reconciled?.recovered ? ` · ${d.reconciled.recovered} newly recovered` : '')
       );

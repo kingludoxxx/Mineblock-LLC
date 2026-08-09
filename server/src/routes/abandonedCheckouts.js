@@ -54,14 +54,17 @@ import { Router } from 'express';
 import { pgQuery } from '../db/pg.js';
 import { authenticate } from '../middleware/auth.js';
 import { requirePermission } from '../middleware/rbac.js';
+import { checkRateLimit } from '../middleware/rateLimiter.js';
 import {
   RECOVERY_STATUSES,
+  RecoverySecretError,
   SOURCES,
   abandonGraceSeconds,
   buildRecoveryRecord,
   cartSummary,
   classifyCheckout,
   ensureRecoveryTables,
+  hasRecoverySecret,
   markUndeliverable,
   readRecoveryMeta,
   recoveryWindowDays,
@@ -73,6 +76,20 @@ import {
 const router = Router();
 
 router.use(authenticate, requirePermission('orders', 'access'));
+
+// Per-operator rate limits. Every one of these endpoints can send REAL email
+// (the sweep up to 500 in a press) or hammer Shopify, so the gate is on the
+// user id, not the IP — two operators behind one office NAT must not share a
+// budget, and one operator on two devices must not get double.
+async function rateLimit(req, res, bucket, limit, windowSec) {
+  const who = req.user?.id || req.user?.userId || 'unknown';
+  const { allowed, retryAfter } = await checkRateLimit(`abandoned:${bucket}:${who}`, limit, windowSec);
+  if (!allowed) {
+    res.status(429).json({ error: `Too many ${bucket} requests — retry in ${retryAfter}s`, retryAfter });
+    return false;
+  }
+  return true;
+}
 
 let tablesReadyPromise = null;
 
@@ -123,6 +140,35 @@ const clampInt = (raw, def, lo, hi) => {
   return Math.max(lo, Math.min(Number.isFinite(n) ? n : def, hi));
 };
 
+const SECRET_UNSET_MESSAGE =
+  'CHECKOUT_RESUME_SECRET is not set — recovery links would be forgeable, so none will be issued. Set it in the environment and retry.';
+
+// A missing signing secret is a CONFIGURATION fault, not a bug: answer 503 with
+// the fix, never a generic 500 that sends the operator reading logs.
+function handleRouteError(res, err, where, fallback) {
+  if (err instanceof RecoverySecretError) {
+    return res.status(503).json({ error: SECRET_UNSET_MESSAGE });
+  }
+  console.error(`[abandoned] ${where} failed:`, err);
+  return res.status(500).json({ error: fallback });
+}
+
+// Shopify's checkouts feed.
+//
+// status=ANY, not status=open. The open feed is a feed of things that have NOT
+// happened yet: the moment a buyer pays, their checkout LEAVES it. With
+// status=open as the only writer, `completed_at` on our mirror stayed NULL
+// forever — so a Shopify buyer who paid kept getting nudged every sweep, and a
+// self-recovery could never be credited. `any` is the only value that lets a
+// completion reach the row at all.
+//
+// Bounded by created_at_min: the list can never show a checkout older than its
+// 90-day maximum window, and the detector only looks back 30, so a completion
+// older than that changes nothing we display. Rows outside the window are
+// never deleted — the upsert simply stops refreshing them.
+const SYNC_LOOKBACK_DAYS = 90;
+const MAX_429_RETRIES = 5;
+
 async function syncFromShopify() {
   const store = process.env.PUURE_SHOPIFY_STORE || process.env.SHOPIFY_STORE_DOMAIN;
   const token = process.env.PUURE_SHOPIFY_TOKEN || process.env.SHOPIFY_ACCESS_TOKEN;
@@ -130,16 +176,26 @@ async function syncFromShopify() {
   if (!store || !token) {
     throw new Error('Shopify not configured (SHOPIFY_STORE_DOMAIN / SHOPIFY_ACCESS_TOKEN)');
   }
-  let url = `https://${store}/admin/api/${apiVersion}/checkouts.json?limit=250&status=open`;
+  const since = new Date(Date.now() - SYNC_LOOKBACK_DAYS * 86400000).toISOString();
+  let url = `https://${store}/admin/api/${apiVersion}/checkouts.json?limit=250&status=any`
+    + `&created_at_min=${encodeURIComponent(since)}`;
   let imported = 0;
   let pages = 0;
+  let throttled = 0;
   while (url && pages < 40) {
     const resp = await fetch(url, { headers: { 'X-Shopify-Access-Token': token } });
     if (resp.status === 429) {
+      // `continue` does NOT advance `pages`, so without its own counter a
+      // shop that stays throttled spins here forever, holding the request.
+      throttled += 1;
+      if (throttled > MAX_429_RETRIES) {
+        throw new Error(`Shopify rate limit: still 429 after ${MAX_429_RETRIES} retries — try again later`);
+      }
       const wait = parseFloat(resp.headers.get('retry-after') || '2') * 1000;
-      await new Promise((r) => setTimeout(r, wait));
+      await new Promise((r) => setTimeout(r, Math.min(Number.isFinite(wait) ? wait : 2000, 10000)));
       continue;
     }
+    throttled = 0;
     if (!resp.ok) {
       const body = (await resp.text()).slice(0, 200);
       throw new Error(`Shopify checkouts fetch failed: HTTP ${resp.status} ${body}`);
@@ -199,6 +255,33 @@ async function syncFromShopify() {
   return imported;
 }
 
+// The inline auto-sync on GET / used to be unlocked: two operators opening the
+// page together (or one double-clicking) each ran a full 40-page Shopify crawl
+// concurrently, and the losers' writes were pure waste. One in-process promise
+// serializes them, and a recency floor makes the second caller a no-op instead
+// of a second crawl. Explicit POST /sync bypasses the floor (but not the lock)
+// — pressing "Sync now" must actually sync.
+let syncInFlight = null;
+let lastSyncAt = 0;
+const SYNC_MIN_INTERVAL_MS = 60_000;
+
+function syncFromShopifyGuarded({ force = false } = {}) {
+  if (!force && Date.now() - lastSyncAt < SYNC_MIN_INTERVAL_MS && !syncInFlight) {
+    return Promise.resolve({ imported: 0, skipped: 'recent' });
+  }
+  if (!syncInFlight) {
+    syncInFlight = syncFromShopify()
+      .then((imported) => {
+        lastSyncAt = Date.now();
+        return { imported };
+      })
+      .finally(() => {
+        syncInFlight = null;
+      });
+  }
+  return syncInFlight;
+}
+
 // ── the unified read model ──────────────────────────────────────────────────
 // One CTE per population, UNION ALL, then the recovery sidecar joined on
 // (source, ref_id). BOTH legs are windowed on created_at — the funnel leg
@@ -225,6 +308,8 @@ const UNIFIED_CTE = `
       NULLIF(s.customer->'shipping'->>'city', '')     AS destination_city,
       NULLIF(s.customer->'shipping'->>'state', '')    AS destination_state,
       NULLIF(s.customer->'shipping'->>'country', '')  AS destination_country,
+      s.status                                    AS status,
+      s.paid_at                                   AS paid_at,
       s.created_at                                AS created_at
     FROM co_sessions s
     WHERE s.status <> 'paid'
@@ -249,6 +334,8 @@ const UNIFIED_CTE = `
       c.destination_city,
       c.destination_state,
       c.destination_country,
+      NULL::text                                  AS status,
+      c.completed_at                              AS paid_at,
       c.created_at
     FROM crm_abandoned_checkouts c
     WHERE c.completed_at IS NULL
@@ -343,7 +430,7 @@ async function reconcileRecovered({ windowDays }) {
   const sent = await pgQuery(
     `SELECT source, ref_id, sent_at FROM crm_recovery_meta
      WHERE recovery_status = 'Sent' AND sent_at IS NOT NULL AND sent_at >= $1
-     ORDER BY sent_at DESC LIMIT 1000`,
+     ORDER BY sent_at DESC, source ASC, ref_id ASC LIMIT 1000`,
     [since]
   );
   if (!sent.length) return { checked: 0, recovered: 0 };
@@ -351,33 +438,41 @@ async function reconcileRecovered({ windowDays }) {
   const funnelRefs = sent.filter((r) => r.source === 'funnel').map((r) => r.ref_id);
   const shopRefs = sent.filter((r) => r.source === 'shopify').map((r) => r.ref_id);
 
-  const emails = new Map(); // `${source}:${ref}` -> email
+  const carts = new Map(); // `${source}:${ref}` -> { email, funnel_id, completed_at, total }
   if (funnelRefs.length) {
     const rows = await pgQuery(
-      `SELECT id::text AS ref_id, lower(NULLIF(customer->>'email','')) AS email
+      `SELECT id::text AS ref_id, lower(NULLIF(customer->>'email','')) AS email, funnel_id, created_at
        FROM co_sessions WHERE id = ANY($1)`,
       [funnelRefs]
     );
-    for (const r of rows) emails.set(`funnel:${r.ref_id}`, r.email || '');
+    for (const r of rows) {
+      carts.set(`funnel:${r.ref_id}`, {
+        email: r.email || '', funnel_id: r.funnel_id || null, created_at: r.created_at,
+      });
+    }
   }
-  const completedShopify = new Set();
   if (shopRefs.length) {
     const rows = await pgQuery(
-      `SELECT checkout_id::text AS ref_id, lower(email) AS email, completed_at, total_price
+      `SELECT checkout_id::text AS ref_id, lower(email) AS email, completed_at, total_price, created_at
        FROM crm_abandoned_checkouts WHERE checkout_id::text = ANY($1)`,
       [shopRefs]
     );
     for (const r of rows) {
-      emails.set(`shopify:${r.ref_id}`, r.email || '');
-      if (r.completed_at) completedShopify.add(r.ref_id);
+      carts.set(`shopify:${r.ref_id}`, {
+        email: r.email || '',
+        funnel_id: null,
+        completed_at: r.completed_at,
+        total: r.total_price,
+        created_at: r.created_at,
+      });
     }
   }
 
   const paid = await pgQuery(
-    `SELECT id, lower(NULLIF(customer->>'email','')) AS email, paid_at, total
+    `SELECT id, lower(NULLIF(customer->>'email','')) AS email, funnel_id, paid_at, total
      FROM co_sessions
      WHERE status = 'paid' AND paid_at IS NOT NULL AND paid_at >= $1
-     ORDER BY paid_at DESC LIMIT 2000`,
+     ORDER BY paid_at ASC LIMIT 2000`,
     [since]
   );
   const paidByEmail = new Map();
@@ -386,20 +481,69 @@ async function reconcileRecovered({ windowDays }) {
     if (!paidByEmail.has(p.email)) paidByEmail.set(p.email, []);
     paidByEmail.get(p.email).push(p);
   }
+  // ONE payment can only recover ONE cart. Without this, a buyer who abandoned
+  // three carts and then paid once had all three credited — a single $500 order
+  // reported as $1,500 of recovered revenue. A matched payment is CONSUMED, so
+  // the second cart looking at the same email finds nothing.
+  //
+  // The set is SEEDED FROM THE DATABASE, not merely built inside this loop. A
+  // cart credited on an earlier sweep has left the 'Sent' population, so an
+  // in-memory-only guard would hand the very same payment to the NEXT cart on
+  // the next run — the KPI would then climb by one cart per sweep, forever, on
+  // completely static data. `recovered_by` is the durable record of which
+  // payment has already been spent.
+  const consumed = new Set();
+  const alreadyCredited = await pgQuery(
+    `SELECT recovered_by FROM crm_recovery_meta
+     WHERE recovered_by IS NOT NULL AND recovered_at IS NOT NULL AND recovered_at >= $1`,
+    [since]
+  );
+  for (const r of alreadyCredited) consumed.add(r.recovered_by);
+
+  // WHICH cart gets the credit when a serial abandoner finally buys: the one
+  // they abandoned MOST RECENTLY. That is the cart closest to the purchase and
+  // the likeliest to be what they actually came back for.
+  //
+  // Ordering on the cart's created_at — not on sent_at — is deliberate. A
+  // single sweep stamps every row it nudges within the same millisecond, so
+  // sent_at carries no usable order, and whatever order it appeared to have
+  // was an artifact of the sweep's own row ordering. The (source, ref_id)
+  // tiebreaker then makes the result reproducible run to run, which matters
+  // because this decides a money-reporting KPI.
+  const cartAge = (r) => {
+    const t = new Date(carts.get(`${r.source}:${r.ref_id}`)?.created_at ?? NaN).getTime();
+    return Number.isFinite(t) ? t : 0;
+  };
+  const ordered = [...sent].sort((a, b) => {
+    const d = cartAge(b) - cartAge(a);        // newest cart first
+    if (d) return d;
+    if (a.source !== b.source) return a.source < b.source ? -1 : 1;
+    return a.ref_id < b.ref_id ? -1 : a.ref_id > b.ref_id ? 1 : 0;
+  });
 
   let recovered = 0;
-  for (const row of sent) {
+  for (const row of ordered) {
     const key = `${row.source}:${row.ref_id}`;
-    const email = emails.get(key) || '';
+    const cart = carts.get(key);
+    if (!cart) continue;
     const sentAt = new Date(row.sent_at).getTime();
     let match = null;
-    if (row.source === 'shopify' && completedShopify.has(row.ref_id)) {
-      match = { id: `shopify:${row.ref_id}`, total: null };
-    } else if (email) {
-      // The paying session must be a DIFFERENT row and must have settled AFTER
-      // the nudge — a payment that predates the email is not a recovery.
-      match = (paidByEmail.get(email) || []).find(
-        (p) => p.id !== row.ref_id && new Date(p.paid_at).getTime() > sentAt
+    // A Shopify checkout that COMPLETED after the nudge recovered itself —
+    // there is no separate paying session to consume. `completed_at > sent_at`
+    // is load-bearing: a checkout that completed BEFORE the nudge was never
+    // recovered by it (that is a nudge we should not have sent at all).
+    if (row.source === 'shopify' && cart.completed_at
+        && new Date(cart.completed_at).getTime() > sentAt) {
+      match = { id: `shopify:${row.ref_id}`, total: cart.total };
+    } else if (cart.email) {
+      // The paying session must be a DIFFERENT row, must have settled AFTER
+      // the nudge, must not already be credited elsewhere, and — when both
+      // sides name a funnel — must be the same funnel.
+      match = (paidByEmail.get(cart.email) || []).find(
+        (p) => p.id !== row.ref_id
+          && !consumed.has(p.id)
+          && new Date(p.paid_at).getTime() > sentAt
+          && (!cart.funnel_id || !p.funnel_id || cart.funnel_id === p.funnel_id)
       ) || null;
     }
     if (!match) continue;
@@ -411,7 +555,12 @@ async function reconcileRecovered({ windowDays }) {
        RETURNING ref_id`,
       [row.source, row.ref_id, String(match.id).slice(0, 128), match.total == null ? null : Number(match.total)]
     );
-    if (res.length) recovered += 1;
+    // Consume only on a credit that actually landed: if the row had already
+    // moved off 'Sent', the payment is still available to the next cart.
+    if (res.length) {
+      recovered += 1;
+      consumed.add(match.id);
+    }
   }
   return { checked: sent.length, recovered };
 }
@@ -426,7 +575,7 @@ router.get('/', async (req, res) => {
     );
     if (stale[0].stale && req.query.nosync !== '1') {
       try {
-        await syncFromShopify();
+        await syncFromShopifyGuarded();
       } catch (err) {
         console.error('[abandoned] auto-sync failed (serving cached):', err.message);
       }
@@ -450,7 +599,9 @@ router.get('/', async (req, res) => {
     // and the KPI strip use — the card can never disagree with the rows.
     const windowEnd = new Date(now.getTime() - graceSeconds * 1000);
 
-    const page = Math.max(parseInt(req.query.page, 10) || 1, 1);
+    // Clamped, not just floored: an unbounded page turns into an unbounded
+    // OFFSET, and the CTE is fully materialized before the offset applies.
+    const page = clampInt(req.query.page, 1, 1, 10000);
     const limit = clampInt(req.query.limit, 25, 1, 100);
     const params = [windowStart, windowEnd];
     const where = listFilters(req.query, params);
@@ -467,9 +618,13 @@ router.get('/', async (req, res) => {
       params
     );
     const rows = await pgQuery(
+      // Tiebreaker is not cosmetic: two carts can share a created_at (a sweep
+      // of imported rows, or a shopper who opened two funnels in the same
+      // second), and without a total order the same row can appear on page 1
+      // and page 2 while another is never shown at all.
       `${UNIFIED_CTE}
        SELECT * FROM joined ${where}
-       ORDER BY created_at DESC
+       ORDER BY created_at DESC, source ASC, ref_id ASC
        LIMIT $${params.length + 1} OFFSET $${params.length + 2}`,
       [...params, limit, (page - 1) * limit]
     );
@@ -621,8 +776,7 @@ router.post('/:source/:refId/recovery', async (req, res) => {
     const saved = await upsertRecoveryMeta(record);
     res.json({ success: true, data: { recovery: saved } });
   } catch (err) {
-    console.error('[abandoned] mark recovery failed:', err);
-    res.status(500).json({ error: 'Failed to update recovery status' });
+    return handleRouteError(res, err, 'mark recovery', 'Failed to update recovery status');
   }
 });
 
@@ -633,11 +787,15 @@ router.post('/:source/:refId/recovery-link', async (req, res) => {
   try {
     const source = requireSource(req, res);
     if (!source) return;
+    if (!(await rateLimit(req, res, 'link', 120, 60))) return;
     await ensureTables();
     const row = await loadOne(source, req.params.refId);
     if (!row) return res.status(404).json({ error: 'Checkout not found' });
     if (source === 'shopify' && !row.recovery_url) {
       return res.status(409).json({ error: 'Shopify has not issued a recovery URL for this checkout yet' });
+    }
+    if (source === 'funnel' && !hasRecoverySecret()) {
+      return res.status(503).json({ error: SECRET_UNSET_MESSAGE });
     }
     const existing = await readRecoveryMeta(source, row.ref_id);
     const record = buildRecoveryRecord({
@@ -656,8 +814,7 @@ router.post('/:source/:refId/recovery-link', async (req, res) => {
       },
     });
   } catch (err) {
-    console.error('[abandoned] recovery link failed:', err);
-    res.status(500).json({ error: 'Failed to mint recovery link' });
+    return handleRouteError(res, err, 'recovery link', 'Failed to mint recovery link');
   }
 });
 
@@ -669,6 +826,7 @@ router.post('/:source/:refId/send', async (req, res) => {
   try {
     const source = requireSource(req, res);
     if (!source) return;
+    if (!(await rateLimit(req, res, 'send', 60, 60))) return;
     await ensureTables();
     const row = await loadOne(source, req.params.refId);
     if (!row) return res.status(404).json({ error: 'Checkout not found' });
@@ -687,12 +845,19 @@ router.post('/:source/:refId/send', async (req, res) => {
       return res.status(422).json({ error: 'No deliverable email on this checkout' });
     }
 
-    const result = await sendRecoveryEvent({ ...row, source }, { manual: true });
+    const result = await sendRecoveryEvent({ ...row, source }, {
+      manual: true,
+      recheck: () => loadOne(source, row.ref_id),
+    });
     if (!result.ok) {
+      const message = {
+        not_configured: 'Klaviyo is not connected — connect it in Settings → Integrations',
+        recovery_secret_unset: SECRET_UNSET_MESSAGE,
+        settled_before_send: 'This checkout settled while the request was in flight — refusing to send',
+        vanished: 'This checkout no longer exists',
+      }[result.error];
       return res.status(result.skipped ? 409 : 502).json({
-        error: result.error === 'not_configured'
-          ? 'Klaviyo is not connected — connect it in Settings → Integrations'
-          : `Recovery send failed: ${result.error}`,
+        error: message || `Recovery send failed: ${result.error}`,
       });
     }
     const record = buildRecoveryRecord({
@@ -700,21 +865,35 @@ router.post('/:source/:refId/send', async (req, res) => {
       refId: row.ref_id,
       status: 'Sent',
       externalUrl: source === 'shopify' ? row.recovery_url || null : null,
-      sentAt: new Date().toISOString(),
+      // A DEDUPED resend never re-stamps sent_at. That timestamp is the clock
+      // the attribution sweep measures payments against, so moving it forward
+      // on a resend would step it past a payment the original nudge earned and
+      // silently uncredit the recovery. (The upsert is first-stamp-wins too —
+      // belt and braces, because this is a money-reporting invariant.)
+      sentAt: result.deduped ? null : new Date().toISOString(),
     });
     const saved = await upsertRecoveryMeta(record);
     res.json({ success: true, data: { recovery: saved, deduped: Boolean(result.deduped) } });
   } catch (err) {
-    console.error('[abandoned] send recovery failed:', err);
-    res.status(500).json({ error: 'Failed to send recovery' });
+    return handleRouteError(res, err, 'send recovery', 'Failed to send recovery');
   }
 });
 
 // POST /api/v1/abandoned/detector/run — sweep every nudgeable cart in the
-// lookback window and fire ONE event each. Safe to run from cron, this
-// endpoint and the UI button at the same time: the claim arbitrates.
+// lookback window and fire ONE event each.
+//
+// MANUAL ONLY TODAY: render.yaml defines two crons (lasso-sheet-sync,
+// preview-repair-sweep) and NEITHER calls this. The only trigger is an
+// operator pressing "Run recovery sweep". The exactly-once design means a cron
+// COULD be added safely — the lb_integration_sends claim arbitrates between
+// concurrent runners — but until one exists, saying so would be a claim about
+// a scheduler that does not exist.
+//
+// One press can send up to `limit` (max 500) REAL emails, so it carries its
+// own per-operator rate limit on top of the claim.
 router.post('/detector/run', async (req, res) => {
   try {
+    if (!(await rateLimit(req, res, 'detector', 6, 600))) return;
     await ensureTables();
     const lookbackDays = clampInt(req.body?.days, 14, 1, 30);
     const limit = clampInt(req.body?.limit, 200, 1, 500);
@@ -727,13 +906,15 @@ router.post('/detector/run', async (req, res) => {
       `${UNIFIED_CTE}
        SELECT * FROM joined
        WHERE recovery_status = 'Not recovered' AND undeliverable = FALSE
-       ORDER BY created_at DESC
+       ORDER BY created_at DESC, source ASC, ref_id ASC
        LIMIT $3`,
       [windowStart, windowEnd, limit]
     );
 
     let sent = 0;
     let skipped = 0;
+    let healed = 0;
+    let settledMidSweep = 0;
     let undeliverable = 0;
     const errors = [];
     for (const r of rows) {
@@ -747,8 +928,26 @@ router.post('/detector/run', async (req, res) => {
         skipped += 1;
         continue;
       }
-      const result = await sendRecoveryEvent(r, { manual: false });
-      if (result.ok && !result.deduped) {
+      // `rows` is a SNAPSHOT. A 500-row sweep can spend minutes in this loop,
+      // and a cart that settles partway through must not be emailed a live
+      // recovery link — so the settle check is re-taken against the database
+      // immediately before the send, not trusted from the snapshot.
+      const result = await sendRecoveryEvent(r, {
+        manual: false,
+        recheck: () => loadOne(r.source, r.ref_id),
+      });
+      if (result.error === 'settled_before_send' || result.error === 'vanished') {
+        settledMidSweep += 1;
+        skipped += 1;
+        continue;
+      }
+      if (result.ok) {
+        // Stamped on `deduped` TOO. A claim is taken before the send, so if the
+        // send landed and the stamp below failed, the row is left holding a
+        // claim with no sidecar row: every later sweep would answer deduped and
+        // — if this only stamped on the non-deduped path — skip it forever, so
+        // the cart could never be credited as recovered. Stamping here is the
+        // self-heal. sent_at is first-stamp-wins, so healing cannot move it.
         await upsertRecoveryMeta(
           buildRecoveryRecord({
             source: r.source,
@@ -758,13 +957,14 @@ router.post('/detector/run', async (req, res) => {
             sentAt: new Date().toISOString(),
           })
         );
-        sent += 1;
+        if (result.deduped) healed += 1;
+        else sent += 1;
       } else {
         skipped += 1;
-        if (!result.ok && errors.length < 5) errors.push(result.error);
+        if (errors.length < 5) errors.push(result.error);
         // A hard vendor rejection is recorded so the row shows WHY it is stuck
         // instead of silently sitting at 'Not recovered' forever.
-        if (!result.ok && !result.skipped) {
+        if (!result.skipped) {
           await upsertRecoveryMeta(
             buildRecoveryRecord({
               source: r.source,
@@ -780,7 +980,7 @@ router.post('/detector/run', async (req, res) => {
     const reconciled = await reconcileRecovered({ windowDays: recoveryWindowDays() });
     res.json({
       success: true,
-      data: { scanned: rows.length, sent, skipped, undeliverable, errors, reconciled },
+      data: { scanned: rows.length, sent, healed, skipped, settled_mid_sweep: settledMidSweep, undeliverable, errors, reconciled },
     });
   } catch (err) {
     console.error('[abandoned] detector run failed:', err);
@@ -791,8 +991,9 @@ router.post('/detector/run', async (req, res) => {
 // POST /api/v1/abandoned/sync — manual Shopify refresh
 router.post('/sync', async (req, res) => {
   try {
+    if (!(await rateLimit(req, res, 'sync', 10, 60))) return;
     await ensureTables();
-    const imported = await syncFromShopify();
+    const { imported } = await syncFromShopifyGuarded({ force: true });
     res.json({ success: true, data: { imported } });
   } catch (err) {
     console.error('[abandoned] sync failed:', err);

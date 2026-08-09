@@ -2606,3 +2606,58 @@ the live Render database and the list route runs CREATE TABLE and can hit live
 Shopify (DECISION MADE).
 STATUS: COMPLETE
 ---
+
+---
+TIMESTAMP: 2026-08-09 23:05
+TASK: Abandoned Checkouts — adversarial review FIX-FIRST pass (feat/abandoned-complete)
+BUILT: Fixed all 5 gating + 4 major findings, and 7 of 7 minors. B1: the Klaviyo
+event value read row.total while every real caller emits total_price (CTE +
+loadOne alias) — added cartTotal() reading both, so production events stop
+shipping at $0. B2: the detector held a SNAPSHOT and did no re-read, so a cart
+settling mid-sweep got emailed a live recovery link — sendRecoveryEvent now takes
+a `recheck` hook and both the sweep and POST /send re-read status/paid_at
+immediately before the send. B3: the Shopify sync fetched status=open, a feed a
+paid checkout LEAVES, so completed_at stayed NULL forever — switched to
+status=any bounded by created_at_min, which is what lets a completion reach the
+mirror at all. M4: attribution multi-credited one payment across every cart that
+email abandoned — a matched payment is now consumed, and the consume set is
+SEEDED FROM recovered_by so it survives across sweeps. M5: the HMAC key fell back
+to sha256('puure-resume:'), a derivable constant — mint now throws
+RecoverySecretError and verify fails closed; Shopify rows no longer mint a token
+they never use. M6/M7: sent_at is first-stamp-wins in SQL and the sweep stamps on
+deduped too, so a deduped resend cannot move the attribution clock AND a lost
+stamp self-heals. M8: bounded 429 retries. M9: per-operator checkRateLimit on
+sweep/send/link/sync + the route header now states there is no cron in
+render.yaml. M10-M16: notes merged not replaced, ORDER BY tiebreakers, page
+clamp, sync mutex + recency floor, client request-sequence guard.
+TESTED: recovery.mjs 164/164 (was 133) — new production-shaped sections 5b
+(settled evidence on real co_sessions rows), 5c (cartTotal column naming), 6b
+(secret mandatory), 9b (recheck). route.mjs 130/130 (was 90) — new sections 9b
+settle-mid-sweep (mutates the DB between snapshot and send via the trackEvent
+seam), 9c self-heal from a claim-with-no-sidecar row, 10b multi-credit (3 carts,
+1 payment, asserts exactly one credit at $500 AND that a repeat sweep does not
+multiply it), 10c Shopify sync learns completion behind a stubbed fetch + the 429
+loop bound, 10d rate limits + page clamp. vite build exit 0, node --check clean on
+all four files, eslint 0 errors, full server boots and both endpoints answer 401.
+OUTPUT: 164/164 + 130/130, exit 0 both. The repeat-sweep case FAILED first
+(n:2, v:1000) and exposed a bug the review's stated fix would not have closed:
+an in-memory-only consume set lets the next sweep re-spend the same payment on
+the next cart, so recovered revenue climbs once per sweep on static data. Fixed
+by seeding the set from recovered_by.
+DECISIONS: (1) DECLINED the "use gateway_session_id" half of M12, with evidence:
+checkoutPublic.js writes that column at INTENT time on a row still guarded
+`WHERE status = 'processing'`, so treating it as payment evidence would classify
+every gateway-reached cart as paid and silently disable the whole feature. The
+dead gateway_payment_id clause was REMOVED (that column lives on
+co_upsell_charges, never on co_sessions) and replaced with SETTLED_STATUSES
+(paid/deposit_paid/refunded) + paid_at + completed_at, pinned by a
+production-shaped test (DECISION MADE). (2) Attribution credits the MOST RECENTLY
+abandoned cart, not the earliest-nudged: a single sweep stamps every row inside
+the same millisecond, so sent_at carries no usable order and the winner was
+falling out of sweep row ordering — the rule is now explicit with a
+(source, ref_id) tiebreaker so the KPI is reproducible (DECISION MADE).
+(3) Sync bounded to 90 days of created_at: the list's own maximum window is 90d
+and the sweep looks back at most 30, so an older completion changes nothing we
+display (DECISION MADE).
+STATUS: COMPLETE
+---

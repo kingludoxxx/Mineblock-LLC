@@ -143,6 +143,21 @@ export function cartSummary(lineItems, { max = 50 } = {}) {
 // Order matters: settled beats everything (NEVER nudge a payer — a live
 // recovery link in a paid buyer's inbox is a double-charge vector), then a
 // credited recovery, then the grace window, then deliverability.
+//
+// SETTLED EVIDENCE, and what is deliberately NOT evidence:
+//   • co_sessions.status in SETTLED_STATUSES, or paid_at — set by
+//     checkoutSettle.js when money actually moved. 'refunded' counts as
+//     settled: a refunded cart WAS paid, so it is not an abandoned cart.
+//   • crm_abandoned_checkouts.completed_at — Shopify's own settle marker.
+//   • ⛔ NOT co_sessions.gateway_session_id. That column is written at INTENT
+//     time (checkoutPublic.js sets it on a row still guarded
+//     `WHERE status = 'processing'`), so every cart that merely reached the
+//     gateway carries one. Treating it as payment evidence would classify the
+//     entire nudgeable population as 'paid' and silently disable recovery.
+//   • ⛔ NOT gateway_payment_id — that column lives on co_upsell_charges, not
+//     on co_sessions, so on a real row it is always undefined.
+export const SETTLED_STATUSES = ['paid', 'deposit_paid', 'refunded'];
+
 export function classifyCheckout(row, opts = {}) {
   const r = row && typeof row === 'object' ? row : {};
   const now = opts.now instanceof Date ? opts.now : new Date(opts.now ?? Date.now());
@@ -154,10 +169,9 @@ export function classifyCheckout(row, opts = {}) {
     : 'Not recovered';
 
   const settled =
-    String(r.status || '').toLowerCase() === 'paid' ||
+    SETTLED_STATUSES.includes(String(r.status || '').toLowerCase()) ||
     Boolean(r.paid_at) ||
-    Boolean(r.completed_at) ||
-    Boolean(r.gateway_payment_id);
+    Boolean(r.completed_at);
   if (settled) return { state: 'paid', nudgeable: false, reason: 'settled' };
 
   if (recoveryStatus === 'Recovered') {
@@ -191,8 +205,37 @@ export function classifyCheckout(row, opts = {}) {
 // The token is the ONLY thing that authorizes a cart revival; it carries no
 // secret and no PII beyond the opaque row id.
 
+// A recovery token is a bearer credential: once the resume endpoint ships,
+// anyone holding a valid one can open somebody else's cart (contact details,
+// shipping address, line items). So there is NO silent fallback — an unset or
+// placeholder secret makes the key derivable by anyone who has read this file,
+// which is a forgeable-token IDOR, not a configuration inconvenience.
+export class RecoverySecretError extends Error {
+  constructor() {
+    super('CHECKOUT_RESUME_SECRET is not configured — refusing to sign a forgeable recovery link');
+    this.name = 'RecoverySecretError';
+    this.code = 'recovery_secret_unset';
+  }
+}
+
+// The shipped dev defaults from server/src/config/env.js, plus the usual
+// placeholders. These are public knowledge, so they are NOT secrets.
+const PLACEHOLDER_SECRETS = new Set([
+  'dev-access-secret-change-me',
+  'dev-refresh-secret-change-me',
+  'change-me',
+  'changeme',
+  'secret',
+]);
+
+export function hasRecoverySecret(env = process.env) {
+  const raw = String(env.CHECKOUT_RESUME_SECRET || env.JWT_ACCESS_SECRET || '').trim();
+  return Boolean(raw) && !PLACEHOLDER_SECRETS.has(raw.toLowerCase());
+}
+
 function linkSecret(env = process.env) {
-  const raw = env.CHECKOUT_RESUME_SECRET || env.JWT_ACCESS_SECRET || '';
+  const raw = String(env.CHECKOUT_RESUME_SECRET || env.JWT_ACCESS_SECRET || '').trim();
+  if (!raw || PLACEHOLDER_SECRETS.has(raw.toLowerCase())) throw new RecoverySecretError();
   return crypto.createHash('sha256').update(`puure-resume:${raw}`).digest();
 }
 
@@ -225,8 +268,16 @@ export function verifyRecoveryToken(token, opts = {}) {
   if (parts.length !== 3 || parts[0] !== 'v1') return null;
   const [, payload, sig] = parts;
   if (!payload || !sig) return null;
+  // No secret configured ⇒ nothing can be trusted, so nothing verifies. This
+  // must FAIL CLOSED: returning null is the same answer a forged token gets.
+  let key;
+  try {
+    key = linkSecret(opts.env);
+  } catch {
+    return null;
+  }
   const good = crypto
-    .createHmac('sha256', linkSecret(opts.env))
+    .createHmac('sha256', key)
     .update(payload)
     .digest('base64url')
     .slice(0, 43);
@@ -263,9 +314,15 @@ export function buildRecoveryRecord(input = {}) {
   const ref = String(input.refId ?? '').slice(0, 128);
   if (!ref) throw new Error('recovery record needs a ref id');
   const status = RECOVERY_STATUSES.includes(input.status) ? input.status : 'Not recovered';
-  const signed = input.token
-    ? { token: String(input.token), expires_at: input.expiresAt || null }
-    : signRecoveryToken(source, ref, { now: input.now, ttlSeconds: input.ttlSeconds, env: input.env });
+  // An EXTERNAL link (Shopify's own recovery URL) needs no token of ours — and
+  // minting one anyway would make every Shopify row fail when
+  // CHECKOUT_RESUME_SECRET is unset, for a token nothing would ever read.
+  let signed = { token: null, expires_at: null };
+  if (input.token) {
+    signed = { token: String(input.token), expires_at: input.expiresAt || null };
+  } else if (!input.externalUrl) {
+    signed = signRecoveryToken(source, ref, { now: input.now, ttlSeconds: input.ttlSeconds, env: input.env });
+  }
   const url = input.externalUrl
     ? String(input.externalUrl).slice(0, 2000)
     : recoveryLinkUrl(signed.token, { env: input.env });
@@ -369,13 +426,21 @@ export async function upsertRecoveryMeta(record, extra = {}) {
        link_token   = COALESCE(EXCLUDED.link_token, crm_recovery_meta.link_token),
        link_url     = COALESCE(EXCLUDED.link_url, crm_recovery_meta.link_url),
        link_expires_at = COALESCE(EXCLUDED.link_expires_at, crm_recovery_meta.link_expires_at),
-       sent_at      = COALESCE(EXCLUDED.sent_at, crm_recovery_meta.sent_at),
+       -- FIRST STAMP WINS. sent_at is the clock the recovered-attribution
+       -- sweep compares payments against (paid_at > sent_at), so a later write
+       -- must never move it forward: a deduped resend would otherwise push the
+       -- clock past a payment that the nudge had genuinely earned, and the
+       -- recovery would silently stop being credited. Argument order is
+       -- (existing, incoming) — the reverse of every other column here.
+       sent_at      = COALESCE(crm_recovery_meta.sent_at, EXCLUDED.sent_at),
        recovered_at = COALESCE(EXCLUDED.recovered_at, crm_recovery_meta.recovered_at),
        recovered_by = COALESCE(EXCLUDED.recovered_by, crm_recovery_meta.recovered_by),
        recovered_value = COALESCE(EXCLUDED.recovered_value, crm_recovery_meta.recovered_value),
        last_error   = EXCLUDED.last_error,
        undeliverable = EXCLUDED.undeliverable OR crm_recovery_meta.undeliverable,
-       notes        = EXCLUDED.notes,
+       -- MERGE, never replace: callers that write no notes pass {}, and a
+       -- plain assignment would erase whatever an earlier write recorded.
+       notes        = crm_recovery_meta.notes || EXCLUDED.notes,
        updated_at   = NOW()
      RETURNING *`,
     [
@@ -411,11 +476,26 @@ export async function markUndeliverable(source, refId) {
   );
 }
 
+// The cart TOTAL, read the way every real caller spells it. The unified CTE
+// and loadOne both alias the column to `total_price` (co_sessions calls it
+// `total`, crm_abandoned_checkouts calls it `total_price`), so reading only
+// `row.total` sent every production event at value 0 while a hand-built
+// fixture with `total` looked fine.
+export function cartTotal(row) {
+  const v = Number(row?.total_price ?? row?.total);
+  return Number.isFinite(v) ? v : 0;
+}
+
 // ── the outbound nudge ──────────────────────────────────────────────────────
 // Mirrors klaviyoEvents.fireCore: read + shape everything BEFORE the claim, so
 // the claim-to-send window holds only the network calls; release on any path
 // where the event did NOT land. Never throws.
-export async function sendRecoveryEvent(row, { manual = false, env = process.env } = {}) {
+//
+// `recheck` is the settle guard for callers that hold a SNAPSHOT: a sweep can
+// spend minutes between selecting a row and reaching it, and a cart that
+// settles in that gap must not be emailed a live recovery link. Pass an async
+// () => freshRow|null; a missing row or any settled evidence refuses the send.
+export async function sendRecoveryEvent(row, { manual = false, env = process.env, recheck = null } = {}) {
   const source = SOURCES.includes(row?.source) ? row.source : null;
   if (!source) return { ok: false, error: 'bad_source' };
   const refId = String(row?.ref_id ?? '').slice(0, 128);
@@ -431,15 +511,32 @@ export async function sendRecoveryEvent(row, { manual = false, env = process.env
     const email = sanitizeEmail(row.email);
     if (!email) return { ok: false, error: 'no_deliverable_email' };
 
+    // Freshest possible settle check, taken as late as we can before the claim.
+    if (typeof recheck === 'function') {
+      const fresh = await recheck();
+      if (!fresh) return { ok: false, skipped: true, error: 'vanished' };
+      if (classifyCheckout(fresh, { graceSeconds: 0 }).state === 'paid') {
+        return { ok: false, skipped: true, error: 'settled_before_send' };
+      }
+    }
+
     // Shopify mints its own recovery URL and owns that cart; for funnel
     // sessions the link is ours to sign.
-    const record = buildRecoveryRecord({
-      source,
-      refId,
-      status: 'Sent',
-      externalUrl: source === 'shopify' ? row.recovery_url || null : null,
-      env,
-    });
+    let record;
+    try {
+      record = buildRecoveryRecord({
+        source,
+        refId,
+        status: 'Sent',
+        externalUrl: source === 'shopify' ? row.recovery_url || null : null,
+        env,
+      });
+    } catch (err) {
+      if (err instanceof RecoverySecretError) {
+        return { ok: false, skipped: true, error: 'recovery_secret_unset' };
+      }
+      throw err;
+    }
     const props = buildEventProperties({ ...row, source }, {
       recoveryUrl: record.link_url,
       manual,
@@ -457,7 +554,7 @@ export async function sendRecoveryEvent(row, { manual = false, env = process.env
       {
         metric_name: ABANDONED_METRIC,
         email,
-        value: Number(row.total) || 0,
+        value: cartTotal(row),
         unique_id: ref,
         properties: props,
       },
@@ -492,6 +589,8 @@ export default {
   recoveryLinkTtlSeconds,
   classifyCheckout,
   cartSummary,
+  cartTotal,
+  hasRecoverySecret,
   sanitizeEmail,
   parseJsonColumn,
   signRecoveryToken,

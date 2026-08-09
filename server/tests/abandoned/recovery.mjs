@@ -11,14 +11,16 @@
 //
 // Run:  node server/tests/abandoned/recovery.mjs
 process.env.DATABASE_URL = process.env.DATABASE_URL || 'postgresql://localhost:5432/unused_by_this_harness';
+// A real signing secret, because an unset one is now a REFUSAL (see §6b).
+process.env.CHECKOUT_RESUME_SECRET = 'pure-harness-secret-zzzz';
 
 const M = await import('../../src/services/abandonedRecovery.js');
 const {
   abandonGraceSeconds, recoveryWindowDays, recoveryLinkTtlSeconds, publicBaseUrl,
-  parseJsonColumn, sanitizeEmail, cartSummary, classifyCheckout,
-  signRecoveryToken, verifyRecoveryToken, recoveryLinkUrl,
+  parseJsonColumn, sanitizeEmail, cartSummary, cartTotal, classifyCheckout,
+  signRecoveryToken, verifyRecoveryToken, recoveryLinkUrl, hasRecoverySecret,
   buildRecoveryRecord, buildEventProperties, sendRecoveryEvent,
-  RECOVERY_STATUSES, SOURCES, ABANDONED_METRIC, _deps,
+  RECOVERY_STATUSES, RecoverySecretError, SETTLED_STATUSES, SOURCES, ABANDONED_METRIC, _deps,
 } = M;
 
 let pass = 0;
@@ -120,8 +122,11 @@ check('inside grace → active, never nudgeable',
 check('status paid beats everything', cl({ created_at: OLD, email: 'a@b.com', status: 'paid' }).state === 'paid');
 check('paid_at beats everything', cl({ created_at: OLD, email: 'a@b.com', paid_at: OLD }).state === 'paid');
 check('shopify completed_at beats everything', cl({ created_at: OLD, email: 'a@b.com', completed_at: OLD }).state === 'paid');
-check('a gateway payment id beats everything (lost-webhook guard)',
-  cl({ created_at: OLD, email: 'a@b.com', gateway_payment_id: 'pay_1' }).state === 'paid');
+// (The old "gateway payment id beats everything" case was DELETED, not fixed:
+//  co_sessions has no such column — gateway_payment_id lives on
+//  co_upsell_charges — so the assertion only ever passed against a fixture
+//  that invented the field. What settled evidence actually is, and what it
+//  deliberately is not, is pinned in §5b against production row shapes.)
 check('settled is NEVER nudgeable', cl({ created_at: OLD, email: 'a@b.com', status: 'paid' }).nudgeable === false);
 check('settled wins even over a Recovered sidecar',
   cl({ created_at: OLD, email: 'a@b.com', status: 'paid' }, { recoveryStatus: 'Recovered' }).state === 'paid');
@@ -145,6 +150,39 @@ check('one second inside the grace is still active',
   cl({ created_at: new Date(NOW.getTime() - (GRACE - 1) * 1000).toISOString(), email: 'a@b.com' }).state === 'active');
 check('missing graceSeconds falls back to the env default (no throw)',
   classifyCheckout({ created_at: OLD, email: 'a@b.com' }, { now: NOW }).state === 'abandoned');
+
+// ── 5b. settled evidence — the PRODUCTION row shape ─────────────────────────
+// The two bugs this section exists to pin: a fixture invented a
+// `gateway_payment_id` that no co_sessions row has, and `gateway_session_id` —
+// which every gateway-reached cart DOES have — is intent, not payment.
+console.log('\n5b. settled evidence (production-shaped co_sessions rows)');
+check('SETTLED_STATUSES is the whole vocabulary', SETTLED_STATUSES.join('|') === 'paid|deposit_paid|refunded');
+check('a REFUNDED cart is settled (it was paid), never abandoned',
+  cl({ created_at: OLD, email: 'a@b.com', status: 'refunded' }).state === 'paid');
+check('deposit_paid is settled', cl({ created_at: OLD, email: 'a@b.com', status: 'deposit_paid' }).state === 'paid');
+{
+  // Exactly the row checkoutPublic.js leaves behind after minting a Whop
+  // session: status still 'processing', paid_at NULL, gateway + session id set.
+  const reachedGateway = {
+    created_at: OLD, email: 'a@b.com', status: 'processing', paid_at: null,
+    gateway: 'whop', gateway_session_id: 'ch_live_abc123', gateway_plan_id: 'plan_1',
+  };
+  const v = cl(reachedGateway);
+  check('a cart that reached the gateway is STILL abandoned (session id is INTENT, not payment)',
+    v.state === 'abandoned' && v.nudgeable === true, JSON.stringify(v));
+}
+check('a co_sessions row carries no gateway_payment_id — an undefined field cannot settle anything',
+  cl({ created_at: OLD, email: 'a@b.com', gateway_payment_id: undefined }).nudgeable === true);
+check('shopify completed_at still settles', cl({ created_at: OLD, email: 'a@b.com', completed_at: OLD }).state === 'paid');
+
+// ── 5c. cartTotal — the column every real caller actually emits ─────────────
+console.log('\n5c. cartTotal (route/CTE column naming)');
+check('reads total_price, the name the CTE and loadOne emit', cartTotal({ total_price: 88.5 }) === 88.5);
+check('still reads a bare total (co_sessions native column)', cartTotal({ total: 12 }) === 12);
+check('total_price wins when both are present', cartTotal({ total_price: 5, total: 99 }) === 5);
+check('a numeric STRING from pg NUMERIC parses', cartTotal({ total_price: '61.00' }) === 61);
+check('missing → 0, not NaN', cartTotal({}) === 0 && cartTotal(null) === 0);
+check('garbage → 0, not NaN', cartTotal({ total_price: 'abc' }) === 0);
 
 // ── 6. signed recovery links ────────────────────────────────────────────────
 console.log('\n6. signRecoveryToken / verifyRecoveryToken');
@@ -195,6 +233,36 @@ check('recoveryLinkUrl embeds the token under the resume path',
   recoveryLinkUrl('v1.aa.bb', { env: { APP_BASE_URL: 'https://p.test' } }) === 'https://p.test/api/v1/checkout/public/resume/v1.aa.bb');
 check('recoveryLinkUrl degrades to a relative path with no base configured',
   recoveryLinkUrl('tok', { env: {} }) === '/api/v1/checkout/public/resume/tok');
+
+// ── 6b. the secret must exist — no derivable fallback ───────────────────────
+// With an unset secret the key was sha256('puure-resume:'), a constant anyone
+// who has read this file can compute — i.e. forgeable tokens, and once the
+// resume endpoint ships, an IDOR into other buyers' carts.
+console.log('\n6b. secret is mandatory');
+const NO_SECRET = {};
+const DEV_SECRET = { JWT_ACCESS_SECRET: 'dev-access-secret-change-me' };
+check('hasRecoverySecret: real secret → true', hasRecoverySecret(SECRET_ENV) === true);
+check('hasRecoverySecret: unset → false', hasRecoverySecret(NO_SECRET) === false);
+check('hasRecoverySecret: the SHIPPED dev default is not a secret', hasRecoverySecret(DEV_SECRET) === false);
+check('hasRecoverySecret: whitespace-only is not a secret', hasRecoverySecret({ CHECKOUT_RESUME_SECRET: '   ' }) === false);
+check('hasRecoverySecret: a real JWT_ACCESS_SECRET is accepted as the fallback',
+  hasRecoverySecret({ JWT_ACCESS_SECRET: 'a-real-production-jwt-secret' }) === true);
+throws('mint REFUSES with no secret', () => signRecoveryToken('funnel', 'x', { env: NO_SECRET }), 'CHECKOUT_RESUME_SECRET');
+throws('mint REFUSES on the shipped dev default', () => signRecoveryToken('funnel', 'x', { env: DEV_SECRET }), 'CHECKOUT_RESUME_SECRET');
+check('the refusal is a typed, catchable error',
+  (() => { try { signRecoveryToken('funnel', 'x', { env: NO_SECRET }); return false; }
+    catch (e) { return e instanceof RecoverySecretError && e.code === 'recovery_secret_unset'; } })());
+throws('buildRecoveryRecord REFUSES for a funnel cart with no secret',
+  () => buildRecoveryRecord({ source: 'funnel', refId: 'x', env: NO_SECRET }), 'CHECKOUT_RESUME_SECRET');
+check('verify FAILS CLOSED with no secret — same null a forgery gets',
+  verifyRecoveryToken(signRecoveryToken('funnel', 'x', { env: SECRET_ENV }).token, { env: NO_SECRET }) === null);
+{
+  // A Shopify row needs no token of ours, so it must NOT be blocked by an
+  // unset secret — the link is Shopify's own URL.
+  const r = buildRecoveryRecord({ source: 'shopify', refId: '9', externalUrl: 'https://shop.test/r/9', env: NO_SECRET });
+  check('a SHOPIFY row still works with no secret (external link, no token minted)',
+    r.link_url === 'https://shop.test/r/9' && r.link_token === null && r.link_is_external === true, JSON.stringify(r));
+}
 
 // ── 7. the sidecar record shape ─────────────────────────────────────────────
 console.log('\n7. buildRecoveryRecord');
@@ -257,7 +325,15 @@ function install({ configured = true, claim = true, sendOk = true, sendThrows = 
     return sendOk ? { ok: true } : { ok: false, error: 'http_500' };
   };
 }
-const ROW = { source: 'funnel', ref_id: 'sess_x', email: 'Buyer@Example.com', total: 88.5, created_at: OLD, line_items: [{ title: 'A', quantity: 1, price: 88.5 }] };
+// PRODUCTION-SHAPED: this is exactly what the unified CTE and loadOne emit —
+// `total_price` (aliased), NOT `total`. The previous fixture used `total`,
+// which is why a $0-value event shipped green.
+const ROW = {
+  source: 'funnel', ref_id: 'sess_x', email: 'Buyer@Example.com',
+  total_price: '88.50', currency: 'USD', status: 'processing', paid_at: null,
+  gateway: 'whop', gateway_session_id: 'ch_live_abc', created_at: OLD,
+  line_items: [{ title: 'A', quantity: 1, price: 88.5 }],
+};
 
 install();
 {
@@ -266,7 +342,8 @@ install();
   check('claim is taken BEFORE the event', log.findIndex((l) => l[0] === 'claim') < log.findIndex((l) => l[0] === 'event'));
   check('unique_id is ab_<source>_<ref>', log.find((l) => l[0] === 'event')[2] === 'ab_funnel_sess_x');
   check(`metric is "${ABANDONED_METRIC}"`, log.find((l) => l[0] === 'event')[1] === ABANDONED_METRIC);
-  check('event value = cart total', log.find((l) => l[0] === 'event')[4] === 88.5);
+  check('event value = cart total READ OFF THE PRODUCTION COLUMN (total_price)',
+    log.find((l) => l[0] === 'event')[4] === 88.5, String(log.find((l) => l[0] === 'event')[4]));
   check('the recovery link travels in the event', String(log.find((l) => l[0] === 'event')[3]).includes('/checkout/public/resume/'));
   check('profile is EMAIL-ONLY on the unpaid lead path',
     JSON.parse(log.find((l) => l[0] === 'profile')[1]).email === 'buyer@example.com'
@@ -315,12 +392,56 @@ check('bad source → refused', (await sendRecoveryEvent({ ...ROW, source: 'nmi'
 check('missing ref → refused', (await sendRecoveryEvent({ ...ROW, ref_id: '' }, {})).error === 'bad_ref');
 check('null row → refused, no throw', (await sendRecoveryEvent(null, {})).error === 'bad_source');
 
+// ── 9b. the settle re-check (snapshot staleness) ────────────────────────────
+// A sweep holds a SNAPSHOT and can take minutes to reach a row. The row it is
+// about to email may have settled in the meantime — and sendRecoveryEvent does
+// no DB reads of its own, so without this hook it cannot possibly know.
+console.log('\n9b. recheck — the cart that settles mid-sweep');
+install();
+{
+  const r = await sendRecoveryEvent(ROW, { recheck: async () => ({ ...ROW, status: 'paid', paid_at: OLD }) });
+  check('a cart that settled since the snapshot is REFUSED', r.ok === false && r.error === 'settled_before_send');
+  check('the refusal fires NO event and takes NO claim', !log.some((l) => l[0] === 'event' || l[0] === 'claim'));
+}
+install();
+check('a paid_at with no status flip is caught too',
+  (await sendRecoveryEvent(ROW, { recheck: async () => ({ ...ROW, paid_at: OLD }) })).error === 'settled_before_send');
+install();
+check('a REFUNDED cart is refused (it was paid)',
+  (await sendRecoveryEvent(ROW, { recheck: async () => ({ ...ROW, status: 'refunded' }) })).error === 'settled_before_send');
+install();
+check('a vanished row is refused, not sent blind',
+  (await sendRecoveryEvent(ROW, { recheck: async () => null })).error === 'vanished');
+install();
+{
+  // POSITIVE control: a recheck that returns a still-unpaid row must NOT block
+  // the send, or the guard would be indistinguishable from a kill switch.
+  const r = await sendRecoveryEvent(ROW, { recheck: async () => ({ ...ROW }) });
+  check('positive control: an unsettled recheck still sends', r.ok === true && log.some((l) => l[0] === 'event'));
+}
+install();
+{
+  // The recheck runs regardless of the row's own age — grace is not re-applied
+  // here, so a FRESH-but-settled row is still caught.
+  const r = await sendRecoveryEvent(ROW, {
+    recheck: async () => ({ ...ROW, created_at: new Date().toISOString(), status: 'paid' }),
+  });
+  check('grace is not re-applied by the recheck — settled is settled', r.error === 'settled_before_send');
+}
+install();
+{
+  const r = await sendRecoveryEvent(ROW, { env: {} });
+  check('no signing secret → clean refusal, not an internal error',
+    r.ok === false && r.error === 'recovery_secret_unset' && r.skipped === true, JSON.stringify(r));
+  check('the secret refusal releases nothing because it claimed nothing', !log.some((l) => l[0] === 'claim'));
+}
+
 for (const k of Object.keys(real)) _deps[k] = real[k];
 check('deps restored to the real implementations', _deps.trackEvent === real.trackEvent);
 
 // The harness asserts its own coverage — a silently skipped section cannot
 // masquerade as green.
-const EXPECTED = 132;
+const EXPECTED = 163;
 check(`coverage: exactly ${EXPECTED} checks ran before this one`, pass + fail === EXPECTED, `ran=${pass + fail}`);
 
 console.log(`\nRESULT: ${pass} passed, ${fail} failed`);
