@@ -277,10 +277,15 @@ function renderBlockInner(block) {
     }
     case 'section': {
       const inner = p.html || '';
-      const pad = esc(p.padding || '48px 24px');
+      // Style-attribute values get HTML-DECODED by the browser before the CSS
+      // parser sees them, so esc() alone lets a quote/brace survive into CSS
+      // context. cssVal() removes CSS metacharacters outright — these are
+      // lengths/colors/gradients, which never legitimately contain them.
+      const cssVal = (v, max) => String(v).slice(0, max).replace(/["'`;{}<>\\]/g, '');
+      const pad = cssVal(p.padding || '48px 24px', 80);
       const bg = p.background || '';
-      const maxw = esc(p.max_width || '1100px');
-      const bgCss = bg ? `background:${esc(bg)};` : '';
+      const maxw = cssVal(p.max_width || '1100px', 40);
+      const bgCss = bg ? `background:${cssVal(bg, 300)};` : '';
       return (
         `<section class='lb-sectionblk' style='padding:${pad};${bgCss}'>` +
         `<div style='max-width:${maxw};margin:0 auto'>${inner}</div>` +

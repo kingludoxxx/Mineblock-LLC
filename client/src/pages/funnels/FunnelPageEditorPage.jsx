@@ -178,7 +178,6 @@ export default function FunnelPageEditorPage() {
             <label className={labelCls}>Status</label>
             <select value={status} onChange={(e) => setStatus(e.target.value)} className={inputCls}>
               <option value="draft">draft</option>
-              <option value="live">live</option>
               <option value="published">published</option>
             </select>
           </div>
