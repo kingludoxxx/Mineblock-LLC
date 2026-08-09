@@ -32,14 +32,22 @@
 //     (kind, created_at) index is applicable; co_events has no TTL and grows
 //     unboundedly, so an unindexed scan there is forbidden.
 //
-// GEO — HONESTY RULE. funnel-os geolocates via Cloudflare edge headers
-// (cf-ipcountry/cf-iplatitude/…) captured at ingest. Puure's tracking runtime
-// stores a SALTED IP HASH ONLY (trackingSchema.js: "Raw IP is NEVER stored")
-// and captures no geo header anywhere (lb_clicks.country exists as a column
-// but no code path populates it — recordClick is always called without it).
-// There is therefore NO geo source, and this module says so explicitly in the
-// payload (`geo: {available:false}`) instead of fabricating locations. The
-// reference's globe/city cards are intentionally NOT ported.
+// GEO — HONESTY RULE (updated by ANALYTICS LANE 5). There IS a geo source
+// now: recordTouch resolves the request IP to an ISO country code at write
+// time and stores ONLY that code in lb_touches.country — the raw IP is never
+// persisted, so the "Raw IP is NEVER stored" posture is unchanged.
+//
+// The card is therefore CONDITIONALLY available, never assumed:
+//   • no codes in-window ⇒ available:false with a reason that says WHY
+//     (rows predating capture are NULL and are never guessed; the IPv4
+//     lookup table cannot resolve an IPv6 visitor)
+//   • a failed read ⇒ a THIRD, distinct state, never collapsed into "zero"
+//   • codes present ⇒ available:true, and ALWAYS shipped with `coverage`
+//     (resolved vs total visitors) so a thin IPv4 sample cannot read as a
+//     census, plus `countries_total` when the list is truncated.
+// The reference's globe/city cards are still NOT ported: a country code is not
+// a latitude, and plotting a centroid as a visitor pin would be the
+// fabrication this card exists to avoid.
 //
 // MONEY (review M3) — revenue_today mirrors the analytics page definition
 // (ANALYTICS_METRIC_DEFINITIONS.revenue): SUM(co_sessions.total) over
@@ -73,6 +81,11 @@ export const MAX_EVENT_LIMIT = 200;
 // of slack at a 3s poll is far past any real settle transaction.
 export const WATERMARK_OVERLAP_IDS = 50;
 
+// Countries returned in the live geo card. A long tail of 1-visitor countries
+// is noise on a live board; the card discloses `countries_total` + `truncated`
+// so the cut is visible rather than silent.
+export const GEO_LIST_LIMIT = 50;
+
 // Today-tiles cache TTL (review H1b). Env-overridable for the harness.
 const TILES_TTL_MS = (() => {
   const n = Math.floor(Number(process.env.LIVE_VIEW_TILES_TTL_MS));
@@ -91,6 +104,54 @@ const money = (v) => {
   const n = Number(v);
   return Number.isFinite(n) ? Math.round(n * 100) / 100 : 0;
 };
+
+// Shape the geo card from the raw geo read. THREE distinct states, never
+// collapsed: the read FAILED (null), the read succeeded but nothing is
+// captured yet (available:false + a reason that says WHY), or there are codes
+// (available:true + rows + coverage). Zero countries is not an error, and an
+// error is not zero countries.
+function geoCard(geo) {
+  if (!geo) {
+    return {
+      available: false,
+      reason: 'country breakdown could not be read this tick (see warnings)',
+      by_country: [],
+      countries_total: null,
+      truncated: false,
+      coverage: null,
+    };
+  }
+  const coverage = {
+    resolved_visitors: geo.resolved,
+    total_visitors: geo.total,
+    // Tri-state, per the honesty rule: no visitors at all ⇒ null, never 0%.
+    resolved_pct: geo.total > 0 ? Math.round((geo.resolved / geo.total) * 1000) / 10 : null,
+  };
+  if (!geo.byCountry.length) {
+    return {
+      available: false,
+      reason: geo.total > 0
+        ? 'no country resolved for today\'s visitors yet — country is captured at write time only'
+          + ' (touches written before capture landed stay NULL and are never guessed), and the IPv4'
+          + ' lookup table cannot resolve an IPv6 visitor'
+        : 'no visitors today yet',
+      by_country: [],
+      countries_total: 0,
+      truncated: false,
+      coverage,
+    };
+  }
+  return {
+    available: true,
+    reason: null,
+    by_country: geo.byCountry,
+    countries_total: geo.countriesTotal,
+    // The client must say "top 50 of N" when this is true — a truncated list
+    // presented as a whole is the same lie as a sample presented as a census.
+    truncated: geo.countriesTotal > geo.byCountry.length,
+    coverage,
+  };
+}
 
 async function safeRead(label, warnings, fn, fallback) {
   try {
@@ -187,6 +248,22 @@ const TOUCH_ROLLUP_SQL = `
   WHERE t.ts >= LEAST(${UTC_MIDNIGHT}, NOW() - INTERVAL '${LIVE_WINDOW_MINUTES} minutes')
   GROUP BY GROUPING SETS ((t.funnel_id), ())`;
 
+// GEO (ANALYTICS LANE 5) — today's visitors per ISO country code, plus the
+// COVERAGE those codes were measured over. One GROUPING SETS pass on the same
+// idx_lb_touches_ts scan the rollup uses; the () row is the grand total.
+// `resolved` counts distinct vids that carry a country at all — publishing the
+// country rows without it would let a 3%-coverage sample read as a census.
+// NOTE a vid that touched from two countries counts in BOTH country rows, so
+// the rows can sum ABOVE `resolved`; the basis string says so.
+const TOUCH_GEO_SQL = `
+  SELECT t.country,
+         GROUPING(t.country) AS is_total,
+         COUNT(DISTINCT t.vid)::bigint AS visitors,
+         COUNT(DISTINCT t.vid) FILTER (WHERE t.country IS NOT NULL AND t.country <> '')::bigint AS resolved
+  FROM lb_touches t
+  WHERE t.ts >= ${UTC_MIDNIGHT}
+  GROUP BY GROUPING SETS ((t.country), ())`;
+
 const CO_EVENTS_TILES_SQL = `
   SELECT
     COUNT(*) FILTER (WHERE kind = 'session_created')::bigint AS checkout_starts_today,
@@ -201,14 +278,24 @@ export const _HOT_SQL = Object.freeze({
   touch_rollup: TOUCH_ROLLUP_SQL,
   co_events_delta: `${CO_EVENTS_SQL} AND e.id > $2 ORDER BY e.id ASC LIMIT $3`,
   co_events_tiles: CO_EVENTS_TILES_SQL,
+  // LANE 5. Listed here so the EXPLAIN guard covers it too: it is a full-day
+  // scan of lb_touches on every tick, which is exactly the shape that must
+  // ride idx_lb_touches_ts rather than degrade into a seq scan at volume.
+  touch_geo: TOUCH_GEO_SQL,
 });
 
 // ── today-tiles cache (review H1b) ──────────────────────────────────────────
 let _tilesCache = { at: 0, tiles: null };
+// The geo breakdown is a "today" aggregate like the tiles — it does not need
+// 3s freshness, and at prod volumes it is the most expensive read on the tick.
+// Same TTL, but a SEPARATE cache entry so it stays its own failure domain: a
+// degraded geo read must not invalidate good tiles, or vice versa.
+let _geoCache = { at: 0, geo: null };
 
-/** Harness hook: force the next tiles read to hit the DB. */
+/** Harness hook: force the next tiles AND geo reads to hit the DB. */
 export function _clearTilesCache() {
   _tilesCache = { at: 0, tiles: null };
+  _geoCache = { at: 0, geo: null };
 }
 
 async function readTodayTiles(query, warnings) {
@@ -284,6 +371,27 @@ export async function buildLiveSnapshot({ query = analyticsQuery, limit = DEFAUL
     return { totalRow, byFunnel };
   }, null);
 
+  const geo = _geoCache.geo && Date.now() - _geoCache.at < TILES_TTL_MS
+    ? _geoCache.geo
+    : await safeRead('lb_touches_geo', warnings, async () => {
+      const rows = await query(TOUCH_GEO_SQL);
+      const totalRow = rows.find((r) => Number(r.is_total) === 1) || null;
+      const all = rows
+        .filter((r) => Number(r.is_total) !== 1 && r.country)
+        .map((r) => ({ country: String(r.country), visitors: int(r.visitors) }))
+        .sort((a, b) => b.visitors - a.visitors || a.country.localeCompare(b.country));
+      const out = {
+        byCountry: all.slice(0, GEO_LIST_LIMIT),
+        // The FULL count, so a truncated list can say "top 50 of N" instead of
+        // presenting 50 as though it were all of them.
+        countriesTotal: all.length,
+        resolved: totalRow ? int(totalRow.resolved) : 0,
+        total: totalRow ? int(totalRow.visitors) : 0,
+      };
+      _geoCache = { at: Date.now(), geo: out }; // never cache a failed read
+      return out;
+    }, null);
+
   const tiles = await readTodayTiles(query, warnings);
 
   // Recent events — the two sources drawn independently at the full limit,
@@ -314,11 +422,13 @@ export async function buildLiveSnapshot({ query = analyticsQuery, limit = DEFAUL
     revenue_today: tiles.revenue_today,
     by_funnel: rollup?.byFunnel || [],
     events,
-    // The honest replacement for the reference's globe. Never fabricate.
-    geo: {
-      available: false,
-      reason: 'no geo source: tracking stores salted IP hashes only and no edge geo headers are captured',
-    },
+    // Country capture landed in LANE 5 (lb_touches.country). Still never
+    // fabricated: available ONLY when a code was actually stored in-window,
+    // and always shipped WITH its coverage so a thin sample cannot read as a
+    // census. The globe itself stays unported — a country code is not a
+    // latitude, and inventing one would be the fabrication this card exists
+    // to avoid.
+    geo: geoCard(geo),
     basis: {
       live: `distinct lb_touches.vid, last ${LIVE_WINDOW_MINUTES} minutes`,
       unique_today: 'distinct lb_touches.vid since UTC midnight',
@@ -326,6 +436,10 @@ export async function buildLiveSnapshot({ query = analyticsQuery, limit = DEFAUL
         "SUM(co_sessions.total) where paid_at >= UTC midnight and status in ('paid','refunded')"
         + " + SUM(co_upsell_charges.amount) where created_at >= UTC midnight and status in ('settled','refunded')",
       events: 'lb_touches (views) + co_events (session_created/paid/upsell_settled)',
+      geo: 'distinct lb_touches.vid per lb_touches.country since UTC midnight'
+        + ' — a vid seen from two countries counts in both rows, so the rows can'
+        + ' sum above coverage.resolved_visitors; rows written before country'
+        + ' capture landed are NULL and are counted only in coverage.total_visitors',
     },
     warnings,
     degraded: warnings.length > 0,

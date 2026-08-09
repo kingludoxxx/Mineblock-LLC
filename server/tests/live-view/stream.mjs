@@ -183,8 +183,16 @@ const waitFor = async (pred, ms) => {
   ok(view && view.funnel_name && view.page_title === 'Alpha Lander',
     'view event resolves funnel + page title', JSON.stringify(view));
 
-  ok(s.geo && s.geo.available === false && /hash/i.test(s.geo.reason || ''),
-    'geo.available === false with an honest reason', JSON.stringify(s.geo));
+  // ANALYTICS LANE 5 flipped the source of this card: country IS captured now
+  // (lb_touches.country), so the old reason ("salted IP hashes only") is no
+  // longer true and the assertion can no longer look for "hash". These touches
+  // are seeded by direct INSERT with no country, so the honest state here is
+  // still available:false — but now it must ALSO carry coverage, which is the
+  // guard against a thin sample rendering as a census.
+  ok(s.geo && s.geo.available === false && Array.isArray(s.geo.by_country) && s.geo.by_country.length === 0
+     && /country/i.test(s.geo.reason || '')
+     && s.geo.coverage && s.geo.coverage.resolved_visitors === 0 && s.geo.coverage.total_visitors > 0,
+    'geo.available === false with an honest reason + coverage', JSON.stringify(s.geo));
   ok(s.basis && /5 minutes/.test(s.basis.live), 'basis.live names the 5-minute window', JSON.stringify(s.basis));
   ok(/co_upsell_charges/.test(s.basis?.revenue_today || ''),
     'basis.revenue_today names the upsell component (M3)', s.basis?.revenue_today);

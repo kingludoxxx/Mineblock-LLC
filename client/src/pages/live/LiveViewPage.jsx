@@ -2,11 +2,13 @@
 //
 // Port of funnel-os's LiveViewPage composition (top bar + live counter +
 // rail) onto Puure's data, minus what we honestly cannot show:
-//   • THE GLOBE IS NOT PORTED. The reference geolocates visitors from
-//     Cloudflare edge headers captured at ingest; Puure stores salted IP
-//     hashes only and captures no geo header, so there is nothing truthful to
-//     plot. The board says so in an explicit "geo unavailable" card instead
-//     of fabricating locations (server: liveViewQueries.js geo.available).
+//   • THE GLOBE IS STILL NOT PORTED. Country capture landed (ANALYTICS LANE
+//     5: lb_touches.country), so the card now lists COUNTRIES when codes were
+//     actually stored — but a country code is not a latitude, and plotting a
+//     country centroid as a visitor pin would be exactly the fabrication this
+//     card exists to avoid. The list always ships with its coverage, and
+//     falls back to the explicit "unavailable" state with the server's own
+//     reason when nothing is captured (server: liveViewQueries.js geoCard).
 //   • Sparklines/checkout-health/new-vs-returning are follow-ups, not here.
 //
 // What IS here, matching the reference's shape:
@@ -64,6 +66,98 @@ function Tile({ icon: Icon, label, value, accent = false }) {
       <div className={`mt-1.5 text-2xl font-semibold tabular-nums ${accent ? 'text-accent-text' : 'text-text-primary'}`}>
         {value}
       </div>
+    </Card>
+  );
+}
+
+// ISO alpha-2 → display name via the platform's own CLDR data (no dependency,
+// no bundled country table that could drift). Falls back to the bare code when
+// the runtime has no Intl.DisplayNames — the code is still true, just terse.
+let countryNames = null;
+try {
+  countryNames = new Intl.DisplayNames(['en'], { type: 'region' });
+} catch { countryNames = null; }
+const countryLabel = (cc) => {
+  try { return countryNames?.of(cc) || cc; } catch { return cc; }
+};
+
+// Country list + COVERAGE. The coverage line is not decoration: without it a
+// 12-visitor list off 900 visitors reads as the whole board (server ships
+// geo.coverage for exactly this reason). Never renders a fabricated location.
+function GeoCard({ geo }) {
+  const rows = geo?.by_country || [];
+  const cov = geo?.coverage || null;
+  const covLine = cov && cov.resolved_pct != null
+    ? `${showInt(cov.resolved_visitors)} of ${showInt(cov.total_visitors)} visitors today have a country (${cov.resolved_pct}%)`
+    : null;
+  // A truncated list presented as a whole is the same lie as a sample
+  // presented as a census — say so when the server flags the cut.
+  const topLine = geo?.truncated
+    ? `Top ${rows.length} of ${showInt(geo.countries_total)} countries`
+    : null;
+
+  if (!geo?.available || rows.length === 0) {
+    return (
+      <Card className="border-dashed">
+        <div className="flex items-start gap-3">
+          <Globe2 className="mt-0.5 h-5 w-5 shrink-0 text-text-faint" />
+          <div>
+            <h3 className="text-[13px] font-medium text-text-primary">Visitor map unavailable</h3>
+            <p className="mt-1 text-[12px] leading-relaxed text-text-muted">
+              {geo?.reason || 'No country data for today.'}
+            </p>
+            {covLine && <p className="mt-1 text-[11px] text-text-faint">{covLine}</p>}
+          </div>
+        </div>
+      </Card>
+    );
+  }
+
+  const maxVisitors = Math.max(1, ...rows.map((r) => r.visitors || 0));
+  return (
+    <Card>
+      <div className="mb-3 flex items-baseline justify-between gap-2">
+        <div className="flex items-center gap-2">
+          <Globe2 className="h-4 w-4 shrink-0 text-text-faint" />
+          <h2 className="text-sm font-semibold text-text-primary">Visitors by country</h2>
+        </div>
+        {topLine && (
+          <span className="shrink-0 text-[11px] text-text-faint" data-testid="lv-geo-truncated">{topLine}</span>
+        )}
+      </div>
+      <ul className="space-y-2.5" data-testid="lv-geo-list">
+        {rows.map((r) => (
+          <li key={r.country}>
+            <div className="flex items-baseline justify-between gap-2 text-[13px]">
+              <span className="truncate text-text-primary">
+                {countryLabel(r.country)}
+                <span className="ml-1.5 text-[11px] text-text-faint">{r.country}</span>
+              </span>
+              <span className="shrink-0 tabular-nums font-semibold text-text-primary">
+                {showInt(r.visitors)}
+              </span>
+            </div>
+            <div className="mt-1 h-1.5 overflow-hidden rounded-full bg-bg-elevated">
+              <div
+                className="h-full rounded-full bg-success transition-all duration-700"
+                style={{ width: `${Math.round(((r.visitors || 0) / maxVisitors) * 100)}%` }}
+              />
+            </div>
+          </li>
+        ))}
+      </ul>
+      {covLine && (
+        <p className="mt-3 text-[11px] leading-relaxed text-text-faint" data-testid="lv-geo-coverage">
+          {covLine}
+          {/* The server's own caveat (basis.geo), surfaced rather than left in
+              the payload: these rows can sum ABOVE the resolved count, because
+              a visitor seen from two countries is counted in both. Without this
+              the arithmetic looks broken — or worse, looks fine and misleads. */}
+          <span className="mt-0.5 block">
+            A visitor seen from two countries counts in both rows, so the rows can sum above that number.
+          </span>
+        </p>
+      )}
     </Card>
   );
 }
@@ -186,18 +280,7 @@ export default function LiveViewPage() {
             <FunnelBreakdown rows={s.by_funnel} />
           </Card>
           {/* The honest globe replacement — see file header. */}
-          <Card className="border-dashed">
-            <div className="flex items-start gap-3">
-              <Globe2 className="mt-0.5 h-5 w-5 shrink-0 text-text-faint" />
-              <div>
-                <h3 className="text-[13px] font-medium text-text-primary">Visitor map unavailable</h3>
-                <p className="mt-1 text-[12px] leading-relaxed text-text-muted">
-                  {s.geo?.reason ||
-                    'Tracking stores salted IP hashes only and no geo headers are captured, so visitor locations cannot be shown truthfully.'}
-                </p>
-              </div>
-            </div>
-          </Card>
+          <GeoCard geo={s.geo} />
         </div>
         <Card className="xl:col-span-3">
           <div className="mb-3 flex items-baseline justify-between">

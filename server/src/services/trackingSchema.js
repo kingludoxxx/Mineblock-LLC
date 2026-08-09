@@ -46,6 +46,33 @@ async function createTables() {
       expires_at TIMESTAMPTZ NOT NULL
     )
   `);
+  // ── device + country (ANALYTICS LANE 5) — ADDITIVE, NO BACKFILL ──
+  // Additive via the same ALTER-after-CREATE pattern the checkout spine uses
+  // (checkoutSchema.js:114-119), so an existing lb_touches gains the columns
+  // on the next boot without a migration step.
+  //
+  //   device  — the UA class, one of trackingAttribution.DEVICE_CLASSES
+  //             (desktop|mobile|tablet|bot|unknown), computed at write time.
+  //             TEXT (not an enum) to match lb_clicks.device above.
+  //   country — ISO-3166 alpha-2 ONLY, e.g. 'ES'. Two characters by contract,
+  //             TEXT (not CHAR(2)) so it matches lb_clicks.country above and
+  //             never silently space-pads a short value; the writer validates
+  //             the shape (trackingAttribution.normCountry).
+  //
+  // PRIVACY — the raw IP is resolved IN MEMORY and discarded. There is NO ip
+  // column and NO ip_hash column here: only the resolved country code is ever
+  // persisted. This is the same posture as lb_clicks ("Raw IP is NEVER
+  // stored") and is asserted by server/tests/tracking/device-geo.mjs.
+  //
+  // NO BACKFILL, ON PURPOSE. Rows written before these columns existed stay
+  // NULL — a UA and an IP that were never captured cannot be invented later.
+  // NULL therefore means "not captured", which is NOT the same as the
+  // 'unknown' device class ("captured, but the UA said nothing"). Every
+  // reading surface must disclose the capture start date and must never read
+  // a NULL as a zero.
+  await pgQuery(`ALTER TABLE lb_touches ADD COLUMN IF NOT EXISTS device TEXT`);
+  await pgQuery(`ALTER TABLE lb_touches ADD COLUMN IF NOT EXISTS country TEXT`);
+
   await pgQuery(`CREATE INDEX IF NOT EXISTS idx_lb_touches_vid_ts ON lb_touches (vid, ts)`);
   await pgQuery(`CREATE INDEX IF NOT EXISTS idx_lb_touches_funnel ON lb_touches (funnel_id, ts DESC)`);
   await pgQuery(`CREATE INDEX IF NOT EXISTS idx_lb_touches_expires ON lb_touches (expires_at)`);
