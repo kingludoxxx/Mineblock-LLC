@@ -52,6 +52,7 @@ const ERROR_SENTENCES = {
   illegal_metric_for_dimension: 'Those metrics are not measured by that group-by.',
   unknown_granularity: 'That granularity is not one this deployment serves.',
   hour_requires_single_day: 'Hourly buckets need a single-day window.',
+  metric_not_available_hourly: 'That metric is not measured hourly.',
   bad_limit: 'That row limit is out of range.',
   bad_body: 'The query was malformed.',
   bad_q: 'The export link was malformed.',

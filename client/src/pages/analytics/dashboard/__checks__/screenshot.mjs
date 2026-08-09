@@ -70,17 +70,21 @@ const page = await browser.newPage({ viewport: { width: 1600, height: 1200 }, de
 
 const consoleErrors = [];
 const notFound = [];
-// THE ONE EXPECTED NETWORK FAILURE is Lane 4's module: the explorer state
-// exists to make that request fail. Chromium logs it as a bare "Failed to load
-// resource: 404" with no URL, so the URL is captured from the response event
-// and asserted separately — filtering the console line alone would also hide a
-// 404 on something that matters.
+// PRE-MERGE this was Lane 4's missing module 404'ing. POST-MERGE the module
+// resolves and the expected network failure is instead the sealed API boundary
+// below aborting the merged explorer's mount calls (net::ERR_FAILED).
+//
+// Both are logged by Chromium as a bare "Failed to load resource" line carrying
+// NO URL, so filtering the console line alone would also hide a failure on
+// something that matters. The discipline is unchanged: drop the URL-less line
+// here, and assert the actual URLs structurally — 404s from the response event
+// (`notFound`), aborted requests from the route handler (`blocked`).
 const EXPECTED_404 = 'explorer/index.jsx';
 page.on('response', (r) => { if (r.status() === 404) notFound.push(r.url()); });
 page.on('console', (m) => {
   if (m.type() !== 'error') return;
   const t = m.text();
-  if (/Failed to load resource.*404/.test(t)) return;
+  if (/Failed to load resource.*(404|net::ERR_FAILED)/.test(t)) return;
   consoleErrors.push(t);
 });
 page.on('pageerror', (e) => consoleErrors.push(`pageerror: ${e.message}`));
@@ -92,6 +96,17 @@ page.on('pageerror', (e) => consoleErrors.push(`pageerror: ${e.message}`));
 const served = { dashboard: 0, band: 0, marketing: 0 };
 const json = (route, body) => route.fulfill({
   status: 200, contentType: 'application/json', body: JSON.stringify(body),
+});
+// SEALED BOUNDARY, registered FIRST so the specific stubs below win (Playwright
+// runs the most recently added matching handler first). Section 8 mounts the
+// REAL explorer post-merge, and its mount effects fire their own calls — which
+// the vite dev proxy would forward to the production host. Aborting here is
+// what keeps "this harness never touches a live API" a fact rather than a hope;
+// the explorer's own reader paths are proven by explorerRuntime.harness.mjs.
+const blocked = [];
+await page.route('**/api/**', (route) => {
+  blocked.push(route.request().url());
+  return route.abort();
 });
 await page.route('**/api/v1/funnel-metrics/dashboard*', (route) => {
   served.dashboard += 1; return json(route, DASH);
@@ -406,24 +421,34 @@ ok(liveProv.includes(prettyRangeOf(DASH.window.start, DASH.window.end)),
 const liveErr = await page.$('#state-live [data-testid="an-dash-error"]');
 ok(!liveErr, '18b no error banner on a healthy end-to-end load');
 
-/* ── 19. THE EXPLORER'S FAILURE PATH, ACTUALLY RUN ───────────────────────── */
+/* ── 19. THE EXPLORER ROUTE, POST-MERGE ──────────────────────────────────── */
 
-await page.waitForSelector('#state-explorer [data-testid="an-explorer-missing"]', { timeout: 15000 });
-const explorerText = await textOf('#state-explorer [data-testid="an-explorer-missing"]');
-ok(explorerText.includes('Explorer is not installed in this build'),
-  '19 the rejected lazy import lands on the placeholder, not a blank panel');
-ok(explorerText.includes('The dashboard is unaffected'), '19 …and says the dashboard is unaffected');
+// Lane 4 is merged, so the static lazy import RESOLVES and the real explorer
+// mounts. The pre-merge placeholder must be gone: leaving that assertion in
+// place would have kept passing only while the explorer stayed uninstalled.
+await page.waitForSelector('#state-explorer [data-testid="analytics-explorer"]', { timeout: 15000 });
+ok(!(await page.$('#state-explorer [data-testid="an-explorer-missing"]')),
+  '19 the resolved lazy import mounts the real explorer, not the not-installed placeholder');
+ok(!!(await page.$('#state-explorer [data-testid="ax-controls"]')),
+  '19 …and the explorer controls rendered through the shared Suspense boundary');
 
 /* ── 20. nothing threw, nothing else 404'd, no API was touched ───────────── */
 
 ok(consoleErrors.length === 0, '20 no console errors during render',
   JSON.stringify(consoleErrors.slice(0, 4)));
-const unexpected404 = notFound.filter((u) => !u.includes(EXPECTED_404));
-eq(unexpected404.length, 0, '20 no unexpected 404s', unexpected404.slice(0, 4).join(' | '));
-ok(notFound.some((u) => u.includes(EXPECTED_404)),
-  `20 the ONE expected 404 is Lane 4's module — the failure path really ran (${notFound.join(', ') || 'none seen'})`);
+eq(notFound.length, 0, '20 no 404s at all — Lane 4 is merged, so nothing fails to resolve',
+  notFound.slice(0, 4).join(' | '));
+ok(!notFound.some((u) => u.includes(EXPECTED_404)),
+  `20 …and the pre-merge explorer 404 is gone (${notFound.join(', ') || 'none seen'})`);
 const apiCalls = notFound.filter((u) => u.includes('/api/'));
 eq(apiCalls.length, 0, '20 the harness touched no API', apiCalls.join(' | '));
+// The seal ITSELF is asserted, not assumed: the explorer really did try to
+// fetch, and every one of those attempts died at the boundary.
+ok(blocked.length > 0,
+  `20 the sealed boundary actually fired — the merged explorer's mount calls were aborted (${blocked.length})`);
+const leaked = blocked.filter((u) => !u.includes('/api/v1/funnel-metrics/')
+  && !u.includes('/api/v1/funnel-attribution/'));
+eq(leaked.length, 0, '20 nothing outside the analytics API was even attempted', leaked.slice(0, 4).join(' | '));
 
 /* ── screenshots ─────────────────────────────────────────────────────────── */
 

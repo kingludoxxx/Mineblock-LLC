@@ -192,21 +192,21 @@ createRoot(document.getElementById('root')).render(
         </MemoryRouter>
       </section>
 
-      {/* 8 · THE EXPLORER'S FAILURE PATH, ACTUALLY RUN. Lane 4's module does not
-          exist on this branch, so the guarded dynamic import in analyticsRoutes
-          REJECTS here — which is the whole point. A catch that has never been
-          down its own failure path is a claim about a mechanism, not evidence.
-          Mounted at /explorer only: the index route would fire the page's real
-          fetches, and this harness must never touch a live API. */}
+      {/* 8 · THE EXPLORER ROUTE, POST-MERGE. Lane 4's module now exists, so the
+          static lazy import in analyticsRoutes RESOLVES and the real explorer
+          mounts here. Mounted at /explorer only: the index route would fire the
+          page's real fetches, and this harness must never touch a live API.
+          The explorer's own fetches are effects — they do not run before the
+          first paint, which is what this section screenshots. */}
       <section id="state-explorer" className="border-b border-border-strong">
         <div className="px-6 pt-6">
           <h2 className="text-sm font-bold uppercase tracking-widest text-accent-text">
-            8 · Explorer route, Lane 4 not merged
+            8 · Explorer route, Lane 4 merged
           </h2>
           <p className="text-xs text-text-muted mt-0.5 max-w-3xl">
-            The lazy import of Lane 4&apos;s module fails on this branch. The catch must render a
-            plain placeholder — not a blank panel, not a spinner that never resolves, and not a
-            thrown render.
+            The lazy import of Lane 4&apos;s module resolves on this branch. The real explorer must
+            mount through the shared Suspense boundary — not a placeholder, not a spinner that
+            never resolves, and not a thrown render.
           </p>
         </div>
         <MemoryRouter initialEntries={['/an/explorer']}>

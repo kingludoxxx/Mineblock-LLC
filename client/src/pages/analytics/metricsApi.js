@@ -497,14 +497,32 @@ export function sessionsUnknownOf(data) {
 
 /* ── errors ──────────────────────────────────────────────────────────────── */
 
+// Keyed on the codes the metrics engine ACTUALLY emits (funnelMetrics.js) —
+// the original table guessed near-miss names (`bad_granularity` for
+// `unknown_granularity`, …) so 13 of 16 codes fell through and the operator
+// saw the raw machine code. Legacy guesses stay as harmless aliases.
 const API_ERRORS = {
-  illegal_metric_dimension: 'That metric cannot be broken down by that dimension.',
+  metrics_required: 'Pick at least one metric.',
+  unknown_metric: 'That metric is not one this deployment serves.',
   too_many_metrics: 'A report can carry at most eight metrics.',
-  bad_granularity: 'Hourly granularity is only available on a single-day window.',
+  unknown_dimension: 'That is not a dimension this report can break down by.',
+  dimension_unavailable: 'That dimension is registered but not collected by this build.',
+  illegal_metric_for_dimension: 'That metric cannot be broken down by that dimension.',
+  unknown_granularity: 'That granularity is not one this report serves.',
+  hour_requires_single_day: 'Hourly granularity is only available on a single-day window.',
+  metric_not_available_hourly: 'That metric is not measured hourly.',
+  invalid_date: 'The day must be a real calendar date.',
+  invalid_date_format: 'Dates must be YYYY-MM-DD.',
+  to_before_from: 'The start day is after the end day.',
   invalid_window: 'That date window is not valid.',
+  window_too_large: 'The window is longer than this report supports.',
+  bad_limit: 'That row limit is out of range.',
+  bad_body: 'The query was malformed.',
+  // Legacy aliases (never emitted by the current engine; kept as a floor).
+  illegal_metric_dimension: 'That metric cannot be broken down by that dimension.',
+  bad_granularity: 'Hourly granularity is only available on a single-day window.',
   bad_window: 'That date window is not valid.',
-  window_too_large: 'The window is longer than the 400 days this report supports.',
-  window_too_long: 'The window is longer than the 400 days this report supports.',
+  window_too_long: 'The window is longer than this report supports.',
   bad_day: 'The day must be a real YYYY-MM-DD date.',
   bad_dimension: 'That is not a dimension this report can break down by.',
   unavailable_dimension: 'That dimension is not collected by this build.',
