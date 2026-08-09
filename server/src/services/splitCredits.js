@@ -560,6 +560,151 @@ async function readExposureRate(testId, query) {
 }
 
 /**
+ * PER-ARM OPT-IN SUBMITS — real numbers or an honest refusal, never a guess.
+ *
+ * `optin_leads` carries `page_id` and no session or arm, so the only available
+ * attribution is "this lead was submitted on the page this arm serves". That is
+ * a REAL join, and it is also a fragile one, so it is guarded three ways and
+ * REFUSES rather than degrading to a plausible number:
+ *
+ *   • THE TABLE MAY NOT EXIST. A fresh install has no optin_leads, and a hard
+ *     join would throw inside a read the results modal depends on. Presence is
+ *     checked with to_regclass first — the same pattern funnelAnalytics already
+ *     uses for lb_split_credits.
+ *   • ARMS MUST HAVE DISTINCT PAGES. If two arms share a page_id, or any arm has
+ *     none, a page-keyed count cannot be assigned to one arm — it would silently
+ *     credit both. That returns `{ available: false, reason }` and the panel
+ *     prints an em-dash with the reason, which is the truth.
+ *   • THE WINDOW STARTS AT THE TEST'S FIRST EXPOSURE. A lander that existed
+ *     before the test carries opt-ins that have nothing to do with it, and
+ *     counting them would hand the older arm a lead made entirely of pre-test
+ *     history — the exact bias the lifetime/experiment split exists to expose.
+ *
+ * Never throws: every failure path returns `available: false` with a reason.
+ */
+async function readArmSubmits(testId, query) {
+  try {
+    const [reg] = await query(`SELECT to_regclass('public.optin_leads') IS NOT NULL AS present`);
+    if (!reg?.present) return { available: false, reason: 'optin_leads_absent', by_arm: {} };
+
+    const arms = await query(
+      `SELECT arm_key, page_id FROM lb_split_arms WHERE test_id = $1`,
+      [String(testId)]
+    );
+    if (!arms.length) return { available: false, reason: 'no_arms', by_arm: {} };
+    if (arms.some((a) => !a.page_id)) {
+      return { available: false, reason: 'arm_without_page', by_arm: {} };
+    }
+    const pageIds = arms.map((a) => String(a.page_id));
+    if (new Set(pageIds).size !== pageIds.length) {
+      // Two arms on one page: a page-keyed count cannot be split between them.
+      return { available: false, reason: 'arms_share_a_page', by_arm: {} };
+    }
+
+    const [span] = await query(
+      `SELECT MIN(created_at) AS first_at FROM lb_split_credits
+       WHERE group_id = $1 AND kind = 'exposure'`,
+      [String(testId)]
+    );
+    if (!span?.first_at) return { available: false, reason: 'no_exposures_yet', by_arm: {} };
+
+    const rows = await query(
+      `SELECT page_id, COUNT(*)::int AS submits
+       FROM optin_leads
+       WHERE page_id = ANY($1) AND created_at >= $2
+       GROUP BY page_id`,
+      [pageIds, span.first_at]
+    );
+    const byPage = new Map(rows.map((r) => [String(r.page_id), Number(r.submits || 0)]));
+    const byArm = {};
+    for (const a of arms) byArm[a.arm_key] = byPage.get(String(a.page_id)) || 0;
+    return { available: true, reason: null, since: span.first_at, by_arm: byArm };
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.error('[splitCredits] readArmSubmits failed:', err.message);
+    return { available: false, reason: 'read_failed', by_arm: {} };
+  }
+}
+
+/**
+ * THE DAY-BY-DAY SERIES — net revenue per exposure, per arm, per day.
+ *
+ * WHY A SHAPE AND NOT JUST A TOTAL. A single revenue-per-exposure figure cannot
+ * distinguish an arm that led steadily for eight days from one that spiked on a
+ * single day and trailed for the other seven. Those are the same average and
+ * completely different evidence: the second is usually one large order, and an
+ * operator who ships it is shipping a coincidence. The totals above cannot show
+ * that; this can.
+ *
+ * THE DAY IS THE EXPOSURE ROW'S DAY, on both sides. `creditConversion` rolls a
+ * credit up on the day cell that carries its exposure (so a leg settling after
+ * midnight lands with the visit that earned it), which is what makes the
+ * numerator and denominator here describe the same cohort. A calendar join on
+ * the credit's own date would drift them apart by exactly the orders that
+ * settled overnight.
+ *
+ * FULL OUTER JOIN, deliberately: a day with exposures and no money is a real
+ * data point (it is what a dead arm looks like), and a day with money whose
+ * exposure landed earlier must not silently vanish either.
+ *
+ * Returns newest-first, which is the order the panel reads in.
+ */
+async function readDailySeries(testId, query) {
+  const rows = await query(
+    `WITH per_session AS (
+       SELECT arm_key, day, session_id, SUM(value) AS net
+       FROM lb_split_credits
+       WHERE group_id = $1 AND kind IN ('credit', 'void')
+       GROUP BY arm_key, day, session_id
+     ),
+     money AS (
+       SELECT arm_key, day,
+              COUNT(*)::int          AS orders,
+              COALESCE(SUM(net), 0)  AS net_revenue
+       FROM per_session
+       GROUP BY arm_key, day
+     ),
+     exposures AS (
+       SELECT arm_key, day, COUNT(*)::int AS exposures
+       FROM lb_split_credits
+       WHERE group_id = $1 AND kind = 'exposure'
+       GROUP BY arm_key, day
+     )
+     SELECT COALESCE(e.day, m.day)         AS day,
+            COALESCE(e.arm_key, m.arm_key) AS arm_key,
+            COALESCE(e.exposures, 0)       AS exposures,
+            COALESCE(m.orders, 0)          AS orders,
+            COALESCE(m.net_revenue, 0)     AS net_revenue
+     FROM exposures e
+     FULL OUTER JOIN money m ON m.arm_key = e.arm_key AND m.day = e.day
+     ORDER BY 1 DESC, 2 ASC`,
+    [String(testId)]
+  );
+
+  const byDay = new Map();
+  for (const r of rows) {
+    const day = r.day ? new Date(r.day).toISOString().slice(0, 10) : null;
+    if (!day) continue;
+    if (!byDay.has(day)) byDay.set(day, { day, arms: {} });
+    const exposures = Number(r.exposures || 0);
+    const net = Number(r.net_revenue || 0);
+    byDay.get(day).arms[r.arm_key] = {
+      exposures,
+      orders: Number(r.orders || 0),
+      net_revenue: Math.round(net * 100) / 100,
+      // NOT withheld below the statistics floor, and that is a considered
+      // exception rather than an oversight: a daily cell is a SHAPE reading, not
+      // a verdict input, and its denominator is printed directly beside it. The
+      // floor exists to stop a rate being read as precision when the sample is
+      // invisible — here the sample is the next thing on the line. Nothing in
+      // the verdict reads this series.
+      rev_per_exposure: exposures > 0 ? Math.round((net / exposures) * 10000) / 10000 : null,
+    };
+  }
+  return [...byDay.values()];
+}
+
+/**
  * DERIVED results per arm — exposures vs credited conversions, netted against
  * refunds. Counters are computed from the ledger, never stored. Both sides of
  * the take rate are SESSIONS (funnel-os invariant: accepts<=offers holds only
@@ -716,6 +861,8 @@ export async function readResults({ testId }, { query = pgQuery, withStats = tru
   // The exposure RATE is read here rather than inside the statistics, which
   // have no clock and no database by construction.
   const exposuresPerDay = await readExposureRate(testId, query);
+  const daily = await readDailySeries(testId, query);
+  const submits = await readArmSubmits(testId, query);
   const stats = computeSplitStatistics(
     result.map((a) => {
       const m = momentsByArm.get(a.arm_key) || { sum_x: 0, sum_x2: 0 };
@@ -764,5 +911,11 @@ export async function readResults({ testId }, { query = pgQuery, withStats = tru
     // Reported so the "roughly N more days" figure on the panel is checkable
     // rather than magic. Null when the ledger had nothing to measure.
     exposures_per_day: exposuresPerDay === null ? null : Math.round(exposuresPerDay * 100) / 100,
+    // Newest-first per-day shape. Never read by the verdict — it exists so an
+    // operator can see whether a lead was steady or a single day's spike.
+    daily,
+    // Real per-arm opt-in counts, or `available: false` with the reason why not.
+    // Never a fabricated number and never a silent zero.
+    submits,
   };
 }

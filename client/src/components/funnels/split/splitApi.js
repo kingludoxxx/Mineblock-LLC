@@ -291,6 +291,40 @@ export function shouldShowSignificance(stats, verdict) {
 }
 
 /**
+ * THE WINDOWED "Sample" CELL — ready, or how much is missing.
+ *
+ * The windowed endpoint reports which arms are thin as a LIST
+ * (`verdict.sample.thinArms`) and one global required-N. It does not say how
+ * far THIS arm is from the bar, which is the only form an operator can act on.
+ *
+ * Derived here rather than on the server because the inputs are already in the
+ * payload and the RULE is the server's own: `sample.minVisitorsPerArm` and
+ * `sample.minConversionsPerArm` come from the service, so this cannot drift
+ * from the floors the verdict was actually judged against. Nothing is invented —
+ * if the service did not send the floors, the cell reads as unknown.
+ *
+ * @returns {{known:boolean, ready:boolean, needVisitors:number,
+ *            needOrders:number}}
+ */
+export function windowSampleState(armMetrics, sample) {
+  const minV = num(sample?.minVisitorsPerArm);
+  const minO = num(sample?.minConversionsPerArm);
+  const visitors = num(armMetrics?.visitors);
+  const orders = num(armMetrics?.orders);
+  if (minV === undefined || minO === undefined || visitors === undefined || orders === undefined) {
+    return { known: false, ready: false, needVisitors: 0, needOrders: 0 };
+  }
+  const needVisitors = Math.max(0, minV - visitors);
+  const needOrders = Math.max(0, minO - Math.min(orders, visitors));
+  return {
+    known: true,
+    ready: needVisitors === 0 && needOrders === 0,
+    needVisitors,
+    needOrders,
+  };
+}
+
+/**
  * Fractions → percents, EXACTLY ONCE, for the lifetime payload.
  *
  * Only three fields cross the boundary: `cvr`, `conversion.confidence` and
@@ -435,7 +469,7 @@ export function assertPercentScale() {
   // the formatter, because that is the last thing between a number and the
   // operator's eye.
   for (const raw of [1, 0.999999, 0.99999999]) {
-    const rendered = fmtPct(fracToPct(raw, 'cap check'));
+    const rendered = fmtPct(fracToPct(raw, 'cap check'), { cap: true });
     if (rendered === '100.00%') failures.push(`confidence ${raw} rendered as flat 100.00%`);
   }
   return failures;
@@ -481,7 +515,13 @@ export function normalizeMetrics(raw) {
     // number), and is a FRACTION.
     const pa = perArm[key] || {};
     out.confidence = fracToPct(pick(pa, 'revenue_confidence'), 'revenue_confidence');
+    // The CONVERSION-rate confidence, reported beside the revenue one because
+    // they answer different questions and can disagree: an arm can convert
+    // significantly better and still not earn significantly more. The endpoint
+    // has always carried it; nothing rendered it.
+    out.conv_confidence = fracToPct(pick(pa, 'conversion_confidence'), 'conversion_confidence');
     out.significant = pick(pa, 'significant');
+    out.requiredSamplePerArm = num(pick(pa, 'requiredSamplePerArm'));
     return out;
   });
 
@@ -532,10 +572,15 @@ export function fmtInt(v) {
   return n === undefined ? DASH : Math.round(n).toLocaleString('en-US');
 }
 
-export function fmtMoney(v, { signed = false } = {}) {
+// `digits` defaults to 2 (money as an operator writes it). Per-VISITOR money
+// needs 4: it is usually a few cents, and at 2dp two arms $0.004 apart both
+// render "$5.41" — a visible tie where the verdict sees a real gap.
+export function fmtMoney(v, { signed = false, digits = 2 } = {}) {
   const n = num(v);
   if (n === undefined) return DASH;
-  const s = Math.abs(n).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const s = Math.abs(n).toLocaleString('en-US', {
+    minimumFractionDigits: digits, maximumFractionDigits: digits,
+  });
   if (n < 0) return `-$${s}`;
   return signed ? `+$${s}` : `$${s}`;
 }
@@ -549,21 +594,24 @@ export function fmtMoney(v, { signed = false } = {}) {
 // roads to the same string (rounding here, precision loss there) and closing
 // only one leaves the other open.
 //
-// Applied to MAGNITUDE, so a -100% change still renders as -100.00%. This is
-// about a bounded-at-100 quantity rounding to its own bound, not about
-// clamping data: `cap` is opt-out for callers formatting an unbounded percent
-// such as a lift, where 100% is an ordinary, reachable value.
+// THE CAP IS OPT-IN, AND THAT DIRECTION IS LOAD-BEARING. It applies ONLY to
+// quantities that are bounded at 100 by definition — a confidence. It must NOT
+// apply to a lift or a change: "-100%" means an arm earned nothing, which is
+// real data and a genuinely reachable value, and an earlier cut of this
+// function capped it to "-99.99%" and silently corrupted it. Caught by the
+// harness, not by reading.
+//
+// So: confidence cells pass `{ cap: true }`; every other percent on this
+// surface — vs-control, conversion rate, lift — is formatted unchanged.
 export const PCT_DISPLAY_CAP = 99.99;
-export function fmtPct(v, { digits = 2, signed = false, cap = true } = {}) {
+export function fmtPct(v, { digits = 2, signed = false, cap = false } = {}) {
   const n = num(v);
   if (n === undefined) return DASH;
   const mag = Math.abs(n);
-  // Only the >99.99 band is rewritten, and it is rendered as a BOUND ("> 99.99%")
-  // rather than a value, because that is what it is.
-  if (cap && mag > PCT_DISPLAY_CAP) {
-    const s = `>${PCT_DISPLAY_CAP.toFixed(digits)}%`;
-    return n < 0 ? `-${s}` : s;
-  }
+  // Only a POSITIVE value above the cap is rewritten, and it is rendered as a
+  // BOUND ("‹>99.99%›") rather than a value, because that is what it is. A
+  // confidence is never negative, so there is no negative branch to write.
+  if (cap && n > PCT_DISPLAY_CAP) return `>${PCT_DISPLAY_CAP.toFixed(digits)}%`;
   const s = `${mag.toFixed(digits)}%`;
   if (n < 0) return `-${s}`;
   return signed && n > 0 ? `+${s}` : s;

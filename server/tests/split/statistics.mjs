@@ -864,6 +864,40 @@ async function contract(query, sql) {
     'the raw arm rows are byte-identical to the full call with `stats` removed');
   assert(JSON.stringify(raw.totals) === JSON.stringify(after.totals), 'totals are byte-identical');
 
+  hr('C10 · the day-by-day series is per-day, per-arm, newest first');
+  // The fixture credits all land on today's cell (the credit rolls up on its
+  // EXPOSURE row's day), so there is exactly one day with both arms present.
+  assert(Array.isArray(after.daily), 'a daily array is returned');
+  assert(after.daily.length >= 1, `at least one day is present (got ${after.daily.length})`);
+  const today = after.daily[0];
+  assert(typeof today.day === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(today.day),
+    `each row carries an ISO day (got ${today.day})`);
+  assert(today.arms.a && today.arms.b, 'both arms appear on the day');
+  assert(today.arms.a.exposures === 60 && today.arms.b.exposures === 60,
+    `per-day exposures are per ARM, not summed (a=${today.arms.a.exposures}, b=${today.arms.b.exposures})`);
+  // Arm b after the refund: net 450 over 60 exposures = 7.5 exactly.
+  near(today.arms.b.rev_per_exposure, 7.5, 1e-9, 'per-day rev/exposure = 450/60 = 7.5');
+  near(today.arms.a.rev_per_exposure, 5, 1e-9, 'and arm a = 300/60 = 5');
+  // Newest first.
+  const daysSorted = after.daily.map((d) => d.day);
+  assert(JSON.stringify(daysSorted) === JSON.stringify([...daysSorted].sort().reverse()),
+    `days are newest-first (${daysSorted.join(', ')})`);
+  assert(!findNonFinite(after.daily), 'the daily series carries no NaN/Infinity');
+  // The series must NOT feed the verdict — it is a shape reading only.
+  assert(after.verdict.ranked.length === 2, 'the verdict is unchanged by the presence of the series');
+
+  hr('C11 · per-arm submits are real or an honest refusal, never a fabricated zero');
+  assert(after.submits && typeof after.submits.available === 'boolean',
+    'a submits block is always returned');
+  if (after.submits.available) {
+    assert(Object.keys(after.submits.by_arm).length === 2, 'both arms carry a submit count');
+  } else {
+    assert(typeof after.submits.reason === 'string' && after.submits.reason.length > 0,
+      `an unavailable block names WHY (got ${after.submits.reason})`);
+    assert(Object.keys(after.submits.by_arm).length === 0,
+      'and it carries NO per-arm numbers rather than zeros that would read as measured');
+  }
+
   hr('C7 · an empty test yields insufficient_data, not a crash and not a fake verdict');
   const emptyId = 'lbsg_stats_empty';
   await query(`DELETE FROM lb_split_credits WHERE group_id = $1`, [emptyId]);
@@ -1081,6 +1115,95 @@ async function clientBoundary() {
   assert(bArm.stats.readiness.ready === true, 'readiness survives the round trip');
   assert(shouldShowWinnerBadge(bArm.stats, live.data.verdict) === Boolean(serviceOut.verdict.winner === 'b'),
     'the badge predicate agrees with the service verdict end to end');
+  // ── B6 · THE RENDERED SHAPES OF THE THREE TABLES ───────────────────────
+  hr('B6 · rendered shape: formatters and the windowed Sample cell');
+  const { fmtMoney: fmtMoneyC, fmtPct: fmtPctC, windowSampleState, normalizeMetrics, assertPercentScale } = mod;
+
+  // A CONFIDENCE NEVER RENDERS AS FLAT 100% CERTAINTY. The cap is OPT-IN — see
+  // below for why that direction matters — so these assert the confidence
+  // contract, and the structural check that follows asserts the call sites
+  // actually opt in.
+  for (const v of [100, 99.999, 99.99999]) {
+    const out = fmtPctC(v, { cap: true });
+    assert(out !== '100.00%', `confidence ${v} does not render as flat 100.00% (got ${out})`);
+  }
+  assert(fmtPctC(100, { cap: true }) === '>99.99%',
+    `a capped confidence renders as a BOUND (got ${fmtPctC(100, { cap: true })})`);
+  assert(fmtPctC(99.99, { cap: true }) === '99.99%', 'exactly at the cap renders as a value, not a bound');
+  assert(fmtPctC(4.32, { cap: true }) === '4.32%', 'ordinary confidences are untouched');
+  // THE CAP MUST NOT TOUCH UNBOUNDED QUANTITIES. -100% means an arm earned
+  // nothing — real data, and an earlier cut of fmtPct silently corrupted it to
+  // -99.99% by capping on magnitude.
+  assert(fmtPctC(-100) === '-100.00%', 'a -100% CHANGE is real data and is left alone');
+  assert(fmtPctC(-100, { cap: true }) === '-100.00%', 'even opted-in, the cap never rewrites a negative');
+  assert(fmtPctC(150) === '150.00%', 'an unbounded lift is uncapped by DEFAULT (opt-in, not opt-out)');
+  assert(fmtPctC(100) === '100.00%', 'a +100% lift is a reachable value and renders as one');
+  assert(assertPercentScale().length === 0,
+    `the scale invariant still holds (${assertPercentScale().join('; ')})`);
+
+  // FOUR DECIMALS on per-visitor money: two arms $0.004 apart must not both
+  // render as the same string.
+  assert(fmtMoneyC(5.4108, { digits: 4 }) === '$5.4108', `4dp money (got ${fmtMoneyC(5.4108, { digits: 4 })})`);
+  assert(fmtMoneyC(5.4108) === '$5.41', 'the default stays 2dp for ordinary money');
+  assert(fmtMoneyC(5.411, { digits: 4 }) !== fmtMoneyC(5.4148, { digits: 4 }),
+    'two arms 0.4 cents apart render DIFFERENTLY at 4dp (they collided at 2dp)');
+
+  // THE WINDOWED SAMPLE CELL, derived from the service's own floors.
+  const sampleFloors = { minVisitorsPerArm: 300, minConversionsPerArm: 25 };
+  const readyCell = windowSampleState({ visitors: 900, orders: 90 }, sampleFloors);
+  assert(readyCell.known && readyCell.ready, 'an arm past both floors reads ready');
+  const thinCell = windowSampleState({ visitors: 60, orders: 4 }, sampleFloors);
+  assert(thinCell.known && !thinCell.ready, 'a thin arm reads not ready');
+  assert(thinCell.needVisitors === 240 && thinCell.needOrders === 21,
+    `and reports the exact shortfall (got ${thinCell.needVisitors}/${thinCell.needOrders})`);
+  // Missing floors must read as UNKNOWN, never as ready.
+  const unknownCell = windowSampleState({ visitors: 900, orders: 90 }, {});
+  assert(!unknownCell.known && !unknownCell.ready,
+    'absent floors read as unknown and NEVER as ready');
+  assert(!windowSampleState(undefined, undefined).ready, 'no data at all is never ready');
+  // Orders above the denominator must not manufacture a surplus.
+  const clamped = windowSampleState({ visitors: 10, orders: 9000 }, sampleFloors);
+  assert(clamped.needOrders === 15, `orders are clamped to the denominator (got ${clamped.needOrders})`);
+
+  // THE NEW WINDOWED COLUMN — conversion confidence, from verdict.perArm.
+  const win = normalizeMetrics({
+    arms: [{ arm_key: 'a', is_control: true, visitors: 900, orders: 90 },
+      { arm_key: 'b', is_control: false, visitors: 900, orders: 120 }],
+    verdict: {
+      status: 'no_winner',
+      perArm: { b: { revenue_confidence: 0.909, conversion_confidence: 0.998, significant: false } },
+      sample: sampleFloors,
+    },
+  });
+  const winB = win.arms.find((a) => a.arm_key === 'b');
+  near(winB.confidence, 90.9, 1e-9, 'revenue confidence 0.909 -> 90.9%');
+  near(winB.conv_confidence, 99.8, 1e-9, 'conversion confidence 0.998 -> 99.8% (it rendered nowhere before)');
+  assert(win.verdict.sample.minVisitorsPerArm === 300, 'the floors reach the Sample cell');
+
+  // ── B7 · THE CONFIDENCE CALL SITES ACTUALLY OPT IN ─────────────────────
+  // The cap is opt-in, so a correct fmtPct proves nothing on its own: what
+  // matters is that every CONFIDENCE cell asks for it. Checked structurally
+  // against the shipped JSX, because a call site that forgets is exactly the
+  // regression the opt-in design makes possible.
+  hr('B7 · every confidence cell in the modal opts into the display cap');
+  const modalSrc = readFileSync(
+    new URL('../../../client/src/components/funnels/split/SplitResultsModal.jsx', import.meta.url),
+    'utf8'
+  );
+  // Every fmtPct call whose argument mentions a confidence must carry cap: true.
+  const pctCalls = modalSrc.match(/fmtPct\([^)]*\)/g) || [];
+  const confidenceCalls = pctCalls.filter((c) => /confidence|conf\b/.test(c));
+  assert(confidenceCalls.length >= 3,
+    `the modal has confidence cells to check (found ${confidenceCalls.length})`);
+  const uncapped = confidenceCalls.filter((c) => !/cap:\s*true/.test(c));
+  assert(uncapped.length === 0,
+    `every confidence cell opts into the cap (uncapped: ${uncapped.join(' | ') || 'none'})`);
+  // And the inverse: the vs-control cell must NOT be capped, or a -100% change
+  // would be corrupted on screen.
+  const vsControl = pctCalls.filter((c) => /vs_control/.test(c));
+  assert(vsControl.length > 0 && vsControl.every((c) => !/cap:\s*true/.test(c)),
+    `the vs-control cell is deliberately uncapped (${vsControl.join(' | ')})`);
+
   delete globalThis.__SPLIT_API_STUB__;
 }
 

@@ -22,8 +22,8 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { X, TrendingUp, AlertTriangle, Loader2, Trophy, CheckCircle2, Hourglass } from 'lucide-react';
 import {
   fetchSplitMetrics, fetchLifetimeStats, shouldShowWinnerBadge, shouldShowSignificance,
-  promoteSplitWinner, armLetter, fmtInt, fmtMoney, fmtPct, fmtDate, fmtDateTime,
-  isoDay, utcDay, num, DASH,
+  windowSampleState, promoteSplitWinner, armLetter, fmtInt, fmtMoney, fmtPct,
+  fmtDate, fmtDateTime, isoDay, utcDay, num, DASH,
 } from './splitApi';
 
 export default function SplitResultsModal({ open, onClose, test, onPromoted }) {
@@ -282,7 +282,16 @@ export default function SplitResultsModal({ open, onClose, test, onPromoted }) {
           </div>
 
           {/* ── The table ─────────────────────────────────────── */}
-          <MetricsTable columns={columns} />
+          <MetricsTable columns={columns} ctx={{ sample: verdict.sample }} />
+
+          {/* ── Day by day ────────────────────────────────────── */}
+          <DayByDayTable lifetime={lifetime} />
+
+          {/* ── Page, all time ────────────────────────────────── */}
+          <AllTimeTable lifetime={lifetime} />
+
+          {/* ── Method footnote ───────────────────────────────── */}
+          <MethodFootnote />
         </div>
       </div>
     </div>
@@ -697,7 +706,7 @@ function ArmReadinessRow({ arm, verdict }) {
               {DASH}{reason ? ` (${String(reason).replace(/_/g, ' ')})` : ''}
             </span>
             : <>
-              {st.revenue?.p_value_floored ? '>' : ''}{fmtPct(conf)}
+              {fmtPct(conf, { cap: true })}
               {/* THE LABEL IS GATED ON READINESS, THE NUMBER IS NOT. Below the
                   floors the confidence still renders (watching it move is how
                   an operator decides whether to keep waiting) but the
@@ -756,6 +765,217 @@ function VerdictBanner({ available, verdict, from, to }) {
           </p>
         </div>
       </div>
+    </div>
+  );
+}
+
+// ── DAY BY DAY ─────────────────────────────────────────────────────────────
+//
+// WHY A SHAPE AND NOT JUST AN AVERAGE. One revenue-per-visitor figure cannot
+// tell an arm that led steadily for eight days from one that spiked on a single
+// day and trailed for the other seven. Same average, completely different
+// evidence — the second is usually one large order, and shipping it is shipping
+// a coincidence. This table is the only place that difference is visible.
+//
+// The daily denominator is printed BESIDE every rate on purpose. A per-day cell
+// is a small sample by construction, and the honest way to show a small-sample
+// rate is with its sample next to it rather than to withhold it: nothing in the
+// verdict reads this table, so there is no decision to protect — only a shape to
+// see. Four decimals for the same reason the Rev/visitor row uses them.
+function DayByDayTable({ lifetime }) {
+  // Both memos key off the RAW payload field, not off a `[]` fallback: a fresh
+  // literal every render would make the dependency change every render and the
+  // memo pointless.
+  const raw = lifetime?.data?.daily;
+  const days = useMemo(() => (Array.isArray(raw) ? raw : []), [raw]);
+  const armKeys = useMemo(() => {
+    const keys = new Set();
+    for (const d of days) for (const k of Object.keys(d.arms || {})) keys.add(k);
+    return [...keys].sort();
+  }, [days]);
+
+  if (!lifetime?.available) return null;
+
+  return (
+    <div className="rounded-xl border border-border-default overflow-hidden">
+      <div className="px-4 py-2 border-b border-border-subtle bg-bg-elevated/40">
+        <span className="text-[10px] font-semibold uppercase tracking-wider text-text-faint">
+          Day by day &middot; net revenue per exposure
+        </span>
+        <p className="mt-0.5 text-[11px] text-text-faint normal-case tracking-normal">
+          A variant that led for two days then collapsed looks nothing like one that led steadily.
+        </p>
+      </div>
+      <div className="overflow-x-auto">
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="border-b border-border-subtle">
+              <th className="text-left font-medium px-4 py-2.5 text-[11px] uppercase tracking-wider text-text-faint">
+                Day
+              </th>
+              {armKeys.map((k) => (
+                <th key={k} className="text-right font-medium px-4 py-2.5 text-[11px] uppercase tracking-wider text-text-faint">
+                  {k}
+                </th>
+              ))}
+              {armKeys.length === 0 && (
+                <th className="text-right px-4 py-2.5 text-[11px] text-text-faint">No arms</th>
+              )}
+            </tr>
+          </thead>
+          <tbody>
+            {days.map((d) => (
+              <tr key={d.day} className="border-b border-border-subtle last:border-0">
+                <td className="px-4 py-2 text-text-muted font-mono text-xs">{d.day}</td>
+                {armKeys.map((k) => {
+                  const cell = d.arms?.[k];
+                  return (
+                    <td key={k} className="px-4 py-2 text-right tabular-nums">
+                      <span className="text-text-primary">
+                        {cell ? fmtMoney(cell.rev_per_exposure, { digits: 4 }) : DASH}
+                      </span>
+                      {cell && (
+                        <span className="block text-[10px] text-text-faint">
+                          {fmtInt(cell.exposures)} exp
+                        </span>
+                      )}
+                    </td>
+                  );
+                })}
+                {armKeys.length === 0 && <td className="px-4 py-2 text-right text-text-faint">{DASH}</td>}
+              </tr>
+            ))}
+            {days.length === 0 && (
+              <tr>
+                <td colSpan={armKeys.length + 1} className="px-4 py-3 text-xs text-text-faint">
+                  No day has recorded an exposure yet.
+                </td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+// ── PAGE — ALL TIME ────────────────────────────────────────────────────────
+//
+// CONTEXT, EXPLICITLY NOT A VERDICT, and the header says so before the numbers
+// do. An arm that has been live longer carries all of its pre-test history, so
+// it wins on lifetime numbers BY CONSTRUCTION — which is exactly why this table
+// sits below the windowed one and never feeds it.
+function AllTimeTable({ lifetime }) {
+  const arms = Array.isArray(lifetime?.data?.arms) ? lifetime.data.arms : [];
+  const submits = lifetime?.data?.submits;
+  if (!lifetime?.available) return null;
+
+  const ROWS_ALL = [
+    { label: 'Exposures', fmt: (a) => fmtInt(a.exposures) },
+    {
+      label: 'Opt-in submits',
+      // REAL per-arm counts or an em-dash with the reason. Never a zero standing
+      // in for "we could not attribute this".
+      fmt: (a) => (submits?.available ? fmtInt(submits.by_arm?.[a.arm_key]) : DASH),
+      sub: () => (submits?.available
+        ? 'attributed by arm page'
+        : `not attributable — ${String(submits?.reason || 'unknown').replace(/_/g, ' ')}`),
+    },
+    { label: 'Orders', fmt: (a) => fmtInt(a.conversions) },
+    {
+      label: 'Conv. rate',
+      fmt: (a) => (a.stats?.cvr_pct === undefined ? DASH : fmtPct(a.stats.cvr_pct)),
+      sub: (a) => (a.stats?.cvr_withheld ? 'withheld — under sample floor' : null),
+    },
+    { label: 'Revenue', fmt: (a) => fmtMoney(a.gross_revenue) },
+    {
+      label: 'Refunded',
+      fmt: (a) => fmtMoney(-Math.abs(num(a.refunded) ?? 0)),
+      tone: (a) => (num(a.refunded) ? 'neg' : null),
+    },
+    { label: 'Net revenue', fmt: (a) => fmtMoney(a.net_revenue) },
+    {
+      label: 'Rev / exposure',
+      fmt: (a) => (a.stats?.rev_per_exposure === null || a.stats?.rev_per_exposure === undefined
+        ? DASH
+        : fmtMoney(a.stats.rev_per_exposure, { digits: 4 })),
+      sub: (a) => (a.stats?.rev_per_exposure_withheld ? 'withheld — under sample floor' : null),
+      highlight: true,
+    },
+  ];
+
+  return (
+    <div className="rounded-xl border border-border-default overflow-hidden">
+      <div className="px-4 py-2 border-b border-border-subtle bg-bg-elevated/40">
+        <span className="text-[10px] font-semibold uppercase tracking-wider text-text-faint">
+          Page &mdash; all time
+        </span>
+        <p className="mt-0.5 text-[11px] text-text-faint normal-case tracking-normal">
+          Every exposure these pages ever recorded &middot; not a verdict.
+        </p>
+      </div>
+      <div className="overflow-x-auto">
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="border-b border-border-subtle">
+              <th className="text-left font-medium px-4 py-2.5 text-[11px] uppercase tracking-wider text-text-faint">
+                Metric
+              </th>
+              {arms.map((a) => (
+                <th key={a.arm_key} className="text-right font-medium px-4 py-2.5 text-[11px] uppercase tracking-wider text-text-faint">
+                  {a.arm_key}{a.is_control ? ' ctrl' : ''}{a.archived ? ' · archived' : ''}
+                </th>
+              ))}
+              {arms.length === 0 && (
+                <th className="text-right px-4 py-2.5 text-[11px] text-text-faint">No arms</th>
+              )}
+            </tr>
+          </thead>
+          <tbody>
+            {ROWS_ALL.map((row) => (
+              <tr
+                key={row.label}
+                className={`border-b border-border-subtle last:border-0 ${row.highlight ? 'bg-accent-muted/30' : ''}`}
+              >
+                <td className={`px-4 py-2 ${row.highlight ? 'text-text-primary font-semibold' : 'text-text-muted'}`}>
+                  {row.label}
+                </td>
+                {arms.map((a) => {
+                  const tone = row.tone?.(a);
+                  const sub = row.sub?.(a);
+                  return (
+                    <td key={a.arm_key} className="px-4 py-2 text-right tabular-nums">
+                      <span className={tone === 'neg'
+                        ? 'text-red-400'
+                        : row.highlight ? 'text-text-primary font-semibold' : 'text-text-primary'}>
+                        {row.fmt(a)}
+                      </span>
+                      {sub && <span className="block text-[10px] text-text-faint">{sub}</span>}
+                    </td>
+                  );
+                })}
+                {arms.length === 0 && <td className="px-4 py-2 text-right text-text-faint">{DASH}</td>}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+// The method, stated where the numbers are. A statistic without its method is
+// something the operator has to trust; with it, they can check.
+function MethodFootnote() {
+  return (
+    <div className="rounded-xl border border-border-subtle bg-bg-elevated/30 px-4 py-3">
+      <p className="text-[11px] text-text-faint leading-relaxed">
+        Revenue per visitor is tested with a Welch t-test over per-visitor values (non-buyers counted as
+        zero), not a conversion-rate test &mdash; a variant can convert less and still earn more. With more
+        than two arms the significance threshold is Bonferroni-corrected, so the bar shown is the bar the
+        verdict actually used. Lifetime totals are shown for context only: an arm that has been live longer
+        carries all of its pre-test history, so it wins on lifetime numbers by construction.
+      </p>
     </div>
   );
 }
@@ -838,7 +1058,15 @@ const ROWS = [
     tone: (m) => (num(m.refunded) ? 'neg' : null),
   },
   { key: 'net_revenue', label: 'Net revenue', fmt: (m) => fmtMoney(m.net_revenue) },
-  { key: 'rev_per_visitor', label: 'Rev / visitor', fmt: (m) => fmtMoney(m.rev_per_visitor), highlight: true },
+  {
+    key: 'rev_per_visitor',
+    label: 'Rev / visitor',
+    // FOUR DECIMALS, not two. This is the number the ranking is built on and it
+    // is usually a few cents: at 2dp two arms $0.004 apart both render "$5.41"
+    // and the operator sees a tie where the verdict sees a gap.
+    fmt: (m) => fmtMoney(m.rev_per_visitor, { digits: 4 }),
+    highlight: true,
+  },
   {
     key: 'vs_control_rpv_pct',
     label: 'vs control',
@@ -853,8 +1081,42 @@ const ROWS = [
     label: 'Confidence',
     // From verdict.perArm[arm_key].revenue_confidence, already converted from a
     // fraction to a percent exactly once in splitApi.normalizeMetrics.
-    fmt: (m, col) => (col.is_control ? DASH : fmtPct(m.confidence)),
+    fmt: (m, col) => (col.is_control ? DASH : fmtPct(m.confidence, { cap: true })),
     sub: (m, col) => (col.is_control || m.significant === undefined ? null : (m.significant ? 'significant' : 'not significant')),
+  },
+  {
+    key: 'conv_confidence',
+    label: 'Conv. confidence',
+    // A SECOND, DIFFERENT TEST — not a restatement of the row above. Revenue per
+    // visitor and conversion rate can disagree, and when they do that IS the
+    // finding: an arm that converts more but earns less is selling a worse
+    // basket. The endpoint has always carried this; nothing rendered it.
+    fmt: (m, col) => (col.is_control ? DASH : fmtPct(m.conv_confidence, { cap: true })),
+    sub: (m, col) => (col.is_control ? null : 'conversion rate, not money'),
+  },
+  {
+    key: 'sample',
+    label: 'Sample',
+    // Readiness, per arm, in this window — derived from the service's OWN
+    // floors so it cannot disagree with the verdict it sits under.
+    fmt: (m, col, ctx) => {
+      const s = windowSampleState(m, ctx?.sample);
+      if (!s.known) return DASH;
+      return s.ready ? 'ready' : 'not ready';
+    },
+    tone: (m, col, ctx) => {
+      const s = windowSampleState(m, ctx?.sample);
+      return s.known && s.ready ? 'pos' : (s.known ? 'warn' : null);
+    },
+    sub: (m, col, ctx) => {
+      const s = windowSampleState(m, ctx?.sample);
+      if (!s.known) return 'floors not reported';
+      if (s.ready) return null;
+      const bits = [];
+      if (s.needVisitors > 0) bits.push(`${fmtInt(s.needVisitors)} more visitors`);
+      if (s.needOrders > 0) bits.push(`${fmtInt(s.needOrders)} more orders`);
+      return `needs ${bits.join(' · ')}`;
+    },
   },
 ];
 
@@ -865,7 +1127,7 @@ function isDegenerateSubmitRate(m) {
   return r === undefined || (Math.abs(r - 100) < 1e-9 && m.submits === m.visitors);
 }
 
-function MetricsTable({ columns }) {
+function MetricsTable({ columns, ctx }) {
   return (
     <div className="rounded-xl border border-border-default overflow-hidden">
       <div className="px-4 py-2 border-b border-border-subtle bg-bg-elevated/40">
@@ -900,16 +1162,19 @@ function MetricsTable({ columns }) {
                   {row.label}
                 </td>
                 {columns.map((c) => {
-                  const tone = row.tone?.(c.m, c);
-                  const sub = row.sub?.(c.m, c);
+                  const tone = row.tone?.(c.m, c, ctx);
+                  const sub = row.sub?.(c.m, c, ctx);
+                  const toneClass = tone === 'neg'
+                    ? 'text-red-400'
+                    : tone === 'pos'
+                      ? 'text-emerald-400'
+                      : tone === 'warn'
+                        ? 'text-amber-300'
+                        : row.highlight ? 'text-text-primary font-semibold' : 'text-text-primary';
                   return (
                     <td key={c.key} className="px-4 py-2 text-right tabular-nums">
-                      <span className={
-                        tone === 'neg'
-                          ? 'text-red-400'
-                          : row.highlight ? 'text-text-primary font-semibold' : 'text-text-primary'
-                      }>
-                        {row.fmt(c.m, c)}
+                      <span className={toneClass}>
+                        {row.fmt(c.m, c, ctx)}
                       </span>
                       {sub && <span className="block text-[10px] text-text-faint">{sub}</span>}
                     </td>
