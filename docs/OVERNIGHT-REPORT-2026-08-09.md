@@ -1,5 +1,5 @@
 # Overnight build report — Puure CRM
-**Session:** 2026-08-08 night → 2026-08-09 morning · **Branch:** `main` @ `ba0f5cf` (pushed, **not deployed**)
+**Session:** 2026-08-08 night → 2026-08-09 morning · **Branch:** `main` @ `a32cc39` (pushed, **not deployed**)
 
 ---
 
@@ -10,7 +10,7 @@
 | **Money-path correctness** | **8.5 / 10** | Every invariant from the friend's file upheld and verified by execution; 3 integration-seam bugs + 1 exploit found and fixed before shipping |
 | **Security** | **7.5 / 10** | A real forced-charge exploit closed; session-id leak stopped. Residual: rate limits spoofable via `X-Forwarded-For`; `/track/collect` still accepts client `custom_data` |
 | **Spec fidelity to the friend's design** | **7 / 10** | Hard invariants ported faithfully, 3 places improved on his implementation; combine-mode and the cost/P&L layer not built |
-| **Operator surface (UI)** | **6.5 / 10** | Builder, settings, domains, analytics all shipped; split-test UI awaiting review; no read surface for opt-in leads |
+| **Operator surface (UI)** | **7 / 10** | Builder, settings, domains, analytics AND split-test UI all shipped + reviewed; no read surface for opt-in leads |
 | **Production readiness** | **6 / 10** | Never deployed, never charged a real card. Fresh-DB bootstrap repaired but not fully clean |
 | **OVERALL** | **7 / 10** | Strong core, honestly measured, not yet proven with real money |
 
@@ -36,7 +36,7 @@
 | Funnel analytics + split results | `dca50fe` | 209/209 |
 | funnelPublic binary-file fix | `2a992d1` | live headers verified |
 
-**Total: 258+ assertions green across 6 standing harnesses.**
+**Total: 485 assertions green across 8 standing harnesses** (56+49+15+9+15+81+48+212).
 
 ---
 
@@ -93,7 +93,7 @@ Plus: a fresh database could never finish migrating (dead on arrival for any new
 - Pin `trust proxy` to Render's CIDR (rate limits are currently spoofable via `X-Forwarded-For`).
 
 ### Known-open (honest)
-- Split-test **UI** built (37/37) but its review had not returned at report time — do not merge until it does.
+- Split-test UI is now MERGED (43/43 + 37/37, reviewed, 4 blockers fixed). Moving the control arm and archiving arms are API-only — no UI affordance yet.
 - `/track/collect` still accepts client-chosen `custom_data` on non-Purchase events (ad-signal poisoning vector).
 - Fresh-DB migration chain still has pre-existing legacy failures in creative/statics/spy areas (unrelated to CRM).
 - 22 RBAC permissions referenced in code that no role grants (all pre-existing; one live break: the statics template picker 403s for non-superadmins).
