@@ -106,7 +106,7 @@ const W = { start_day: D(3), end_day: D(0) };
 
 // ═══ AUTH ═══════════════════════════════════════════════════════════════════
 {
-  for (const [m, p] of [['POST', '/query'], ['GET', '/dashboard'], ['GET', '/presets'], ['GET', '/vocabulary'], ['GET', '/query.csv?q=%7B%7D']]) {
+  for (const [m, p] of [['POST', '/query'], ['GET', '/dashboard'], ['GET', '/presets'], ['GET', '/definitions'], ['GET', '/query.csv?q=%7B%7D']]) {
     const r = await req(m, p, m === 'POST' ? { metrics: ['orders'], window: W } : undefined, { 'Content-Type': 'application/json' });
     ok(r.status === 401, `AUTH ${m} ${p.split('?')[0]} is 401 without a token`, r.status);
   }
@@ -214,27 +214,78 @@ const W = { start_day: D(3), end_day: D(0) };
   ok(csvOne.status === 200, 'PR5 a preset also downloads as CSV verbatim', csvOne.status);
 }
 
-// ═══ GET /vocabulary ════════════════════════════════════════════════════════
+// ═══ GET /definitions — the contract the client intersects against ══════════
 {
-  const r = await req('GET', '/vocabulary');
-  ok(r.status === 200, 'VOC1 answers 200', r.status);
-  ok(r.j.metrics.length === 26, 'VOC2 publishes all 26 v1 metrics', r.j.metrics?.length);
-  ok(r.j.dimensions.length === 10, 'VOC3 publishes all 10 registered dimensions', r.j.dimensions?.length);
+  const r = await req('GET', '/definitions');
+  ok(r.status === 200, 'DEF1 answers 200', r.status);
+  for (const k of ['metrics', 'dimensions', 'dim_metrics', 'hour_only_exclusions', 'max_window_days', 'timezone']) {
+    ok(Object.prototype.hasOwnProperty.call(r.j, k), `DEF2 ships '${k}'`);
+  }
+  ok(r.j.metrics.length === 26, 'DEF3 publishes all 26 v1 metrics', r.j.metrics?.length);
+  ok(r.j.dimensions.length === 10, 'DEF4 publishes all 10 registered dimensions', r.j.dimensions?.length);
   const dev = r.j.dimensions.find((d) => d.id === 'device');
   ok(dev.unavailable === true && dev.legal_metrics.length === 0,
-    'VOC4 device is REGISTERED and flagged unavailable — listed, never silently dropped');
+    'DEF5 device is REGISTERED and flagged unavailable — listed, never silently dropped');
   const country = r.j.dimensions.find((d) => d.id === 'country');
   ok(country.report_label === 'Sales by country' && !country.legal_metrics.includes('pageviews'),
-    'VOC5 country is "Sales by country" and refuses pageviews', country.report_label);
-  ok(r.j.dimensions.every((d) => d.basis && d.basis_label), 'VOC6 every dimension ships basis + label');
-  ok(r.j.timezone === 'Europe/Madrid', 'VOC7 the vocabulary names the reporting timezone');
-  // The served matrix must BE the engine's matrix, not a copy that can drift.
-  const { DIM_METRICS } = await import('../../src/services/funnelMetrics.js');
-  const same = r.j.dimensions.every((d) => {
-    const s = [...DIM_METRICS[d.id]].sort().join(',');
-    return s === [...d.legal_metrics].sort().join(',');
-  });
-  ok(same, 'VOC8 the served legality matrix IS the engine\'s (no second copy to drift)');
+    'DEF6 country is "Sales by country" and refuses pageviews', country.report_label);
+  ok(r.j.dimensions.every((d) => d.basis && d.basis_label), 'DEF7 every dimension ships basis + label');
+  ok(r.j.timezone === 'Europe/Madrid' && r.j.max_window_days === 400, 'DEF8 timezone + window cap published');
+  ok(Object.prototype.hasOwnProperty.call(r.j.dim_metrics, '__timeseries__'),
+    'DEF9 the matrix includes the no-dimension case a client also has to intersect');
+
+  // The served matrix must BE the engine's, not a copy that can drift — that
+  // drift is the exact bug this endpoint exists to make impossible.
+  const eng = await import('../../src/services/funnelMetrics.js');
+  const sorted = (x) => [...x].sort().join(',');
+  ok(r.j.dimensions.every((d) => sorted(eng.DIM_METRICS[d.id]) === sorted(d.legal_metrics)),
+    'DEF10 dimensions[].legal_metrics IS the engine\'s matrix');
+  ok(Object.entries(r.j.dim_metrics).every(([k, v]) => sorted(eng.DIM_METRICS[k]) === sorted(v)),
+    'DEF11 dim_metrics IS the engine\'s matrix, key for key');
+  ok(sorted(r.j.hour_only_exclusions) === sorted(eng.HOUR_ONLY_EXCLUSIONS),
+    'DEF12 hour_only_exclusions IS the engine\'s list');
+
+  // …and the SERVER really refuses what the document says it refuses. Serving
+  // an accurate matrix that the validator disagrees with would be the same bug
+  // wearing a badge.
+  const oneDay = { start_day: D(1), end_day: D(1) };
+  let refused = 0;
+  for (const m of r.j.hour_only_exclusions) {
+    const x = await req('POST', '/query', { metrics: [m], window: oneDay, granularity: 'hour' });
+    if (x.status === 422 && x.j?.error === 'metric_not_available_hourly') refused += 1;
+  }
+  ok(refused === r.j.hour_only_exclusions.length,
+    'DEF13 the server REFUSES every metric the document says is day-only', `${refused}/${r.j.hour_only_exclusions.length}`);
+  const withDim = await req('POST', '/query', { metrics: ['spend'], dimension: 'funnel', window: oneDay, granularity: 'hour' });
+  ok(withDim.status === 422 && withDim.j?.error === 'metric_not_available_hourly',
+    'DEF14 …regardless of dimension (the case a mirroring client gets wrong)', `${withDim.status} ${withDim.j?.error}`);
+  ok(Array.isArray(withDim.j.detail?.hour_only_exclusions),
+    'DEF15 …and the refusal hands back the list, so a stale client can self-correct');
+
+  // A metric the document says IS hourly-legal must actually be served.
+  const legalHourly = await req('POST', '/query', { metrics: ['orders', 'gross_sales'], window: oneDay, granularity: 'hour' });
+  ok(legalHourly.status === 200, 'DEF16 an hourly-legal list is still served hourly', legalHourly.status);
+}
+
+// ═══ CONTRACT — the payload keys the client is coded against ════════════════
+{
+  const r = await req('POST', '/query', { metrics: ['orders', 'net_sales'], window: W, compare: true });
+  ok(Array.isArray(r.j.previous?.series) && r.j.prev_series === undefined,
+    'CT1 /query compare ships previous.series (prev_series is the dashboard key only)');
+  ok(r.j.meta.window.start === W.start_day && r.j.meta.window.end === W.end_day
+    && r.j.meta.window.timezone === 'Europe/Madrid',
+  'CT2 every response echoes {start,end,timezone}', JSON.stringify(r.j.meta.window));
+  const b = await req('POST', '/query', { metrics: ['net_sales'], dimension: 'gateway', window: W, limit: 1 });
+  ok(b.j.rows.length === 1 && typeof b.j.meta.rows_total === 'number',
+    'CT3 limit honoured with rows_total for the Top-N-of-M footer', `${b.j.rows.length}/${b.j.meta.rows_total}`);
+  ok(typeof b.j.meta.basis_label === 'string' && b.j.meta.basis_label.length > 10,
+    'CT4 basis_label on every breakdown response');
+  const d = await req('GET', `/dashboard?start=${W.start_day}&end=${W.end_day}`);
+  ok(Array.isArray(d.j.prev_series) && d.j.previous === undefined,
+    'CT5 the dashboard ships prev_series (flat) — documented, and different on purpose');
+  ok(d.j.meta.window.timezone === 'Europe/Madrid', 'CT6 the dashboard carries the same meta.window echo');
+  ok(Object.values(d.j.breakdown_summary).every((s) => typeof s.rows_total === 'number'),
+    'CT7 every composite breakdown ships rows_total');
 }
 
 // ═══ APP BOOT — the one mount line must not break the whole server ══════════
@@ -250,8 +301,8 @@ const W = { start_day: D(3), end_day: D(0) };
   // between major versions): an unmounted path 404s, a mounted authed one 401s.
   const probeServer = probe.listen(0);
   const base = `http://127.0.0.1:${probeServer.address().port}`;
-  const mounted = await fetch(`${base}/api/v1/funnel-metrics/vocabulary`);
-  const absent = await fetch(`${base}/api/v1/funnel-metrics-nope/vocabulary`);
+  const mounted = await fetch(`${base}/api/v1/funnel-metrics/definitions`);
+  const absent = await fetch(`${base}/api/v1/funnel-metrics-nope/definitions`);
   ok(mounted.status === 401, 'BOOT …and /api/v1/funnel-metrics is reachable through the real mount (401, not 404)', mounted.status);
   ok(absent.status === 404, 'BOOT …while an unmounted sibling path 404s (the probe can tell the difference)', absent.status);
   probeServer.close();

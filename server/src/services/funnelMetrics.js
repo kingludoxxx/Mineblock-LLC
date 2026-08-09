@@ -124,6 +124,19 @@ export const MAX_BREAKDOWN_LIMIT = 200;
 export const DEFAULT_BREAKDOWN_LIMIT = 50;
 
 /**
+ * The widest window this engine will serve, in days.
+ *
+ * It is NOT enforced here — `parseWindow` (funnelAnalytics.js) owns the
+ * refusal, and this constant exists so /definitions can PUBLISH the number the
+ * client greys its date picker against. It therefore has to equal the enforcer's
+ * cap, which is a duplication, which is why the harness reads funnelAnalytics
+ * off disk and pins the two together. A published limit that is looser than the
+ * enforced one is worse than no published limit: it invites the client to
+ * offer a range that always 422s.
+ */
+export const MAX_WINDOW_DAYS = 400;
+
+/**
  * The reporting timezone. Env-overridable so a future account on another zone
  * is a config change, not a code change.
  *
@@ -309,6 +322,37 @@ export const DIM_METRICS = Object.freeze({
 });
 
 export const GRANULARITIES = Object.freeze(['day', 'hour', 'week', 'month']);
+
+/**
+ * Metrics that DO NOT EXIST below a day, and are refused at
+ * `granularity=hour` REGARDLESS OF DIMENSION.
+ *
+ * This is not a capacity limit, it is a measurement one — each of these is
+ * day-partitioned at its SOURCE and there is no hourly version to serve:
+ *
+ *   • spend / roas / cpa / net_profit — lb_ad_spend_daily's grain IS a day
+ *     key. Meta does not report spend by hour, so an hourly ROAS would divide
+ *     a real hourly revenue by a made-up hourly budget, which is the most
+ *     expensive fabricated number on the page.
+ *   • the six COST metrics — an effective-dated cost rate is keyed to a DAY;
+ *     splitting it across hours implies a precision the rate ledger does not
+ *     have, and margin_pct would move purely on rounding.
+ *   • new/returning — the class is decided against the buyer's first-ever paid
+ *     DAY (the reference's pinned, additive per-day semantics).
+ *   • abandoned / abandoned_rate — the 3600s grace is a whole hour wide, so an
+ *     hourly bucket would be mostly grace and the rate would read as a clock,
+ *     not a funnel.
+ *
+ * The client mirrors this list; THIS is the authority, and it is served on
+ * /definitions so there is no second copy to drift.
+ */
+export const HOUR_ONLY_EXCLUSIONS = Object.freeze([
+  'spend', 'roas', 'cpa', 'net_profit',
+  'cogs', 'ship_cost', 'fees', 'net_after_cogs', 'margin_pct', 'cost_coverage_pct',
+  'new_customers', 'returning_customers',
+  'abandoned', 'abandoned_rate',
+]);
+const HOUR_EXCLUDED = new Set(HOUR_ONLY_EXCLUSIONS);
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Errors
@@ -559,6 +603,21 @@ export function validateQuery(raw = {}) {
       422,
       { start_day: w.from, end_day: w.to }
     );
+  }
+  // Day-only metrics are refused hourly REGARDLESS OF DIMENSION — the source
+  // grain is a day and there is no hourly figure to serve (see
+  // HOUR_ONLY_EXCLUSIONS). Checked here, before any query, exactly like the
+  // dimension legality gate.
+  if (granularity === 'hour') {
+    const dayOnly = metrics.filter((m) => HOUR_EXCLUDED.has(m));
+    if (dayOnly.length) {
+      throw new MetricsError(
+        'metric_not_available_hourly',
+        `metric(s) ${dayOnly.join(', ')} are measured per day and cannot be served hourly`,
+        422,
+        { granularity, metrics: dayOnly, hour_only_exclusions: HOUR_ONLY_EXCLUSIONS }
+      );
+    }
   }
 
   const f = raw.filters && typeof raw.filters === 'object' && !Array.isArray(raw.filters) ? raw.filters : {};
@@ -1433,8 +1492,10 @@ async function gatherAtoms(query, q, folds, stats) {
         const known = Boolean(spend.known[fid]);
         for (const [day, amount] of Object.entries(spend.days[fid] || {})) {
           if (day < w.from || day > w.to) continue;
-          const bkt = q.granularity === 'hour' ? `${day}T00` : bucketOf(day, granularity);
-          const s = slotFor(map, bkt, dimension === 'funnel' ? fid : '');
+          // Always a day-or-coarser bucket: `spend` is refused at hourly
+          // granularity by validateQuery, because lb_ad_spend_daily's grain IS
+          // a day and there is no hourly figure to place.
+          const s = slotFor(map, bucketOf(day, granularity), dimension === 'funnel' ? fid : '');
           s.spend += num(amount);
           s.spend_known = s.spend_known || known;
         }
@@ -1522,13 +1583,31 @@ export async function runQuery(body, { query = analyticsQuery } = {}) {
       sessions_basis: `distinct lb_touches.vid per ${q.granularity === 'hour' ? 'hour' : 'day'}, summed (additive)`,
       metrics: q.metrics,
       dimension: q.dimension,
-      window: { start_day: q.window.from, end_day: q.window.to, days: q.window.days },
+      // BOTH spellings on purpose. `start_day`/`end_day` is the REQUEST
+      // vocabulary (it echoes the body back verbatim); `start`/`end`/`timezone`
+      // is the WINDOW-ECHO contract every client renders in its header. Two
+      // consumers, one object, no guessing which one a given surface speaks.
+      window: {
+        start: q.window.from,
+        end: q.window.to,
+        start_day: q.window.from,
+        end_day: q.window.to,
+        days: q.window.days,
+        timezone: REPORT_TIMEZONE,
+      },
       warnings,
     },
   };
 
   if (q.dimension) {
     out.rows = breakdownRows(map, q, stats);
+    // TOP-N-OF-M. The truncation is invisible in the payload itself, which is
+    // how a footer ends up claiming a page is the whole thing — so the
+    // PRE-TRUNCATION count ships beside it, and `totals` always folds ALL
+    // buckets, not just the ones that made the page.
+    out.meta.limit = q.limit;
+    out.meta.rows_total = stats.rows_total ?? out.rows.length;
+    out.meta.rows_truncated = out.meta.rows_total > out.rows.length;
     out.totals = totalsOf(map, q, { product: q.dimension === 'product' });
     if (q.dimension === 'product') {
       // The product fold counts a session once PER LINE, so its rows sum to
@@ -1990,12 +2069,21 @@ export async function runDashboard({ start, end, funnel_id: funnelId } = {}, { q
 
   const brFunnelRows = breakdownRows(brFunnels.map, brFunnels.q, null);
   const totalsFor = (r) => totalsOf(r.map, r.q, { product: r.q.dimension === 'product' });
-  const summary = (r) => ({
-    rows: breakdownRows(r.map, r.q, null),
-    totals: totalsFor(r),
-    basis: BREAKDOWN_BASES[r.q.dimension],
-    basis_label: BREAKDOWN_BASIS_LABELS[BREAKDOWN_BASES[r.q.dimension]],
-  });
+  const summary = (r) => {
+    const st = {};
+    const rows = breakdownRows(r.map, r.q, st);
+    return {
+      rows,
+      totals: totalsFor(r),
+      basis: BREAKDOWN_BASES[r.q.dimension],
+      basis_label: BREAKDOWN_BASIS_LABELS[BREAKDOWN_BASES[r.q.dimension]],
+      // "Top N of M · $total" — M and the total come from the PRE-truncation
+      // fold, so the footer describes the data rather than the page.
+      limit: r.q.limit,
+      rows_total: st.rows_total ?? rows.length,
+      rows_truncated: (st.rows_total ?? rows.length) > rows.length,
+    };
+  };
 
   const bandTotals = totalsOf(kpiCur.map, kpiCur.q, {});
 
@@ -2051,6 +2139,14 @@ export async function runDashboard({ start, end, funnel_id: funnelId } = {}, { q
       basis_label: BREAKDOWN_BASIS_LABELS.gross,
       timezone: REPORT_TIMEZONE,
       series_aligned_by: 'index',
+      // The same window echo every other response carries, so a client reading
+      // `meta.window` never has to special-case this endpoint. NOTE: the
+      // compare series here is `prev_series` (a flat sibling of `series`);
+      // `previous.series` is the /query shape. Two endpoints, two documented
+      // keys, and the harness pins both.
+      window: {
+        start: w0.from, end: w0.to, days: w0.days, timezone: REPORT_TIMEZONE,
+      },
       warnings: [],
     },
   };
@@ -2075,4 +2171,5 @@ export default {
   bucketOf, bucketsFor, weekKey, monthKey, ttlRisk,
   REPORT_TZ, REPORT_TIMEZONE, zonedDayStart, dayInTz, todayInTz,
   hoursInLocalDay, localWindow, UNSERVABLE_PRESETS,
+  HOUR_ONLY_EXCLUSIONS, MAX_WINDOW_DAYS, MAX_METRICS, MAX_BREAKDOWN_LIMIT,
 };

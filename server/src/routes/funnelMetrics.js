@@ -44,8 +44,10 @@ import {
   UNAVAILABLE_DIMENSIONS,
   UNSERVABLE_PRESETS,
   GRANULARITIES,
+  HOUR_ONLY_EXCLUSIONS,
   MAX_METRICS,
   MAX_BREAKDOWN_LIMIT,
+  MAX_WINDOW_DAYS,
   REPORT_TZ,
   todayInTz,
 } from '../services/funnelMetrics.js';
@@ -190,19 +192,25 @@ router.get('/presets', (req, res, next) => {
 });
 
 /**
- * GET /api/v1/funnel-metrics/vocabulary
+ * GET /api/v1/funnel-metrics/definitions
  *
- * The frozen vocabulary + the legality matrix, served from the SAME constants
- * the engine computes against.
+ * THE FROZEN VOCABULARY AND THE LEGALITY MATRIX, served from the SAME
+ * constants the engine validates against.
  *
- * WHY IT EXISTS: the explorer has to grey out an illegal metric chip before
- * the operator clicks it, and the only alternative to serving the matrix is
- * a second hand-maintained copy of it in the client — which drifts, and whose
- * drift shows up as a 422 on a control the UI said was enabled. The client
- * remains an optimisation: the SERVER is still the authority, and it refuses
- * the same combinations whether or not the client asked nicely.
+ * WHY IT EXISTS — this endpoint closes a whole class of bug rather than a
+ * bug. The explorer has to grey out an illegal metric chip before the operator
+ * clicks it, and the only alternative to serving the matrix is a second,
+ * hand-maintained copy of it in the client. That copy drifts, and its drift
+ * shows up as a 422 on a control the UI just told the operator was enabled —
+ * which reads as "the analytics are broken", not "the client is stale".
+ *
+ * The client is an OPTIMISATION, never the authority: the server refuses the
+ * same combinations whether or not the client asked nicely. `dim_metrics` is
+ * the matrix keyed by dimension (with `__timeseries__` for the no-dimension
+ * case) so a client can intersect directly; `hour_only_exclusions` is the
+ * day-only metric list, which is refused hourly regardless of dimension.
  */
-router.get('/vocabulary', (_req, res) => {
+router.get('/definitions', (_req, res) => {
   res.json({
     metrics: METRICS.map((m) => ({ id: m, ...METRIC_META[m] })),
     dimensions: DIMENSIONS.map((d) => ({
@@ -213,18 +221,25 @@ router.get('/vocabulary', (_req, res) => {
       legal_metrics: [...DIM_METRICS[d]],
       ...(UNAVAILABLE_DIMENSIONS[d] || {}),
     })),
-    timeseries_legal_metrics: [...DIM_METRICS.__timeseries__],
+    // The matrix itself, in the shape a client intersects against.
+    dim_metrics: Object.fromEntries(
+      Object.entries(DIM_METRICS).map(([k, v]) => [k, [...v]])
+    ),
+    hour_only_exclusions: HOUR_ONLY_EXCLUSIONS,
+    max_window_days: MAX_WINDOW_DAYS,
+    timezone: REPORT_TZ,
     granularities: GRANULARITIES,
+    unavailable_dimensions: UNAVAILABLE_DIMENSIONS,
+    basis_labels: BREAKDOWN_BASIS_LABELS,
     limits: {
       max_metrics: MAX_METRICS,
       max_breakdown_limit: MAX_BREAKDOWN_LIMIT,
+      max_window_days: MAX_WINDOW_DAYS,
       // Hourly buckets are a single-day-only view: an hour key across a
       // multi-day window is either 24 collapsed points or 720 exploded ones,
       // and both are wrong.
       hour_requires_single_day: true,
     },
-    timezone: REPORT_TZ,
-    basis_labels: BREAKDOWN_BASIS_LABELS,
   });
 });
 

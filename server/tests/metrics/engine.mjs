@@ -43,6 +43,7 @@ const {
   runQuery, runDashboard, reportPresets, validateQuery, toCsv, csvCell,
   MetricsError, METRICS, DIMENSIONS, DIM_METRICS, BREAKDOWN_BASES,
   BREAKDOWN_BASIS_LABELS, MONEY_MOVED_SQL, REPORT_TZ,
+  HOUR_ONLY_EXCLUSIONS, MAX_WINDOW_DAYS,
   zonedDayStart, dayInTz, todayInTz, hoursInLocalDay, weekKey, monthKey,
   bucketsFor, computeMetrics, UNSERVABLE_PRESETS,
 } = M;
@@ -82,6 +83,12 @@ await q(`CREATE TABLE IF NOT EXISTS funnel_pages (
   ok(a.includes(MONEY_MOVED_SQL), 'PIN funnelAnalytics.js carries the identical MONEY_MOVED predicate');
   ok(b.includes(MONEY_MOVED_SQL), 'PIN funnelCosts.js carries the identical MONEY_MOVED predicate');
   ok(!MONEY_MOVED_SQL.includes(`'processing'`), 'PIN the predicate can never see a processing row');
+  // /definitions PUBLISHES max_window_days; parseWindow ENFORCES it. A
+  // published limit looser than the enforced one invites the client to offer a
+  // range that always 422s, so the two are pinned together.
+  const enforced = /MAX_WINDOW_DAYS\s*=\s*(\d+)/.exec(a);
+  ok(enforced && Number(enforced[1]) === MAX_WINDOW_DAYS,
+    'PIN the published max_window_days equals the one parseWindow enforces', `${enforced?.[1]} vs ${MAX_WINDOW_DAYS}`);
 }
 
 // ═══ FIXTURE ════════════════════════════════════════════════════════════════
@@ -361,6 +368,56 @@ const expect422 = async (body, code, msg) => {
   const spy = async (...a) => { touchedDb = true; return q(...a); };
   try { await runQuery({ metrics: ['spend'], dimension: 'country', window: W }, { query: spy }); } catch { /* expected */ }
   ok(touchedDb === false, 'L19 an illegal combination NEVER reaches the database');
+
+  // ── HOURLY EXCLUSIONS — day-only metrics are refused hourly REGARDLESS OF
+  //    DIMENSION. Both branches are checked (no dimension, and with one),
+  //    because "with a dimension present" is exactly the case a client that
+  //    mirrors the rule gets wrong.
+  const oneDay = { start_day: D(3), end_day: D(3) };
+  for (const m of HOUR_ONLY_EXCLUSIONS) {
+    await expect422({ metrics: [m], window: oneDay, granularity: 'hour' },
+      'metric_not_available_hourly', `L20 '${m}' is refused at granularity=hour (no dimension)`);
+  }
+  await expect422({ metrics: ['spend'], dimension: 'funnel', window: oneDay, granularity: 'hour' },
+    'metric_not_available_hourly', 'L21 …and refused hourly WITH a dimension present');
+  await expect422({ metrics: ['new_customers'], dimension: 'country', window: oneDay, granularity: 'hour' },
+    'metric_not_available_hourly', 'L22 …on a dimension where the metric is otherwise perfectly legal');
+  await expect422({ metrics: ['orders', 'cogs'], dimension: 'funnel', window: oneDay, granularity: 'hour' },
+    'metric_not_available_hourly', 'L23 …and ONE day-only metric poisons an otherwise-hourly list');
+  // The complement really does still work hourly.
+  const hourly = await run({ metrics: ['orders', 'gross_sales', 'sessions', 'conv_pct'], filters: F1, window: oneDay, granularity: 'hour' });
+  ok(hourly.series.length >= 23, 'L24 an hourly-legal metric list is still served hourly', hourly.series.length);
+  ok(HOUR_ONLY_EXCLUSIONS.every((m) => METRICS.includes(m)),
+    'L25 every excluded metric is a real metric (the list cannot rot into nonsense)');
+  ok(MAX_WINDOW_DAYS === 400, 'L26 the published window cap is 400 days', MAX_WINDOW_DAYS);
+}
+
+// ═══ CONTRACT — the keys the client is coded against ════════════════════════
+{
+  const r = await run({ metrics: ['orders', 'net_sales'], filters: F1, window: { start_day: D(2), end_day: D(1) }, compare: true });
+  ok(Array.isArray(r.previous?.series) && r.prev_series === undefined,
+    'CT1 /query compare ships previous.series — `prev_series` is the DASHBOARD key only');
+  ok(r.meta.window.start === D(2) && r.meta.window.end === D(1) && r.meta.window.timezone === 'Europe/Madrid',
+    'CT2 every response echoes the window as {start,end,timezone}', JSON.stringify(r.meta.window));
+  ok(r.meta.window.start_day === r.meta.window.start && r.meta.window.end_day === r.meta.window.end,
+    'CT3 …and the request-vocabulary spelling agrees with it, byte for byte');
+  const b = await run({ metrics: ['net_sales'], dimension: 'funnel', window: W, limit: 1 });
+  ok(b.rows.length === 1, 'CT4 limit is honoured', b.rows.length);
+  ok(b.meta.rows_total > 1 && b.meta.rows_truncated === true,
+    'CT5 …and rows_total reports the PRE-truncation count for a Top-N-of-M footer', `${b.meta.rows_total}`);
+  const full = await run({ metrics: ['net_sales'], dimension: 'funnel', window: W });
+  ok(near(b.totals.net_sales, full.totals.net_sales),
+    'CT6 …while totals fold ALL buckets, not just the page (the footer $total is the real one)');
+  ok(b.meta.rows_total === full.rows.length, 'CT7 rows_total equals the untruncated row count', `${b.meta.rows_total}/${full.rows.length}`);
+  ok(full.meta.rows_truncated === false, 'CT8 an untruncated breakdown says so');
+  ok(typeof b.meta.basis_label === 'string' && b.meta.basis_label.length > 10, 'CT9 basis_label on every breakdown');
+  const d = await runDashboard({ start: D(3), end: D(0) }, { query: q });
+  ok(Array.isArray(d.prev_series) && d.previous === undefined,
+    'CT10 the dashboard ships prev_series (flat) — the two endpoints keep their documented keys');
+  ok(d.meta.window.start === D(3) && d.meta.window.timezone === 'Europe/Madrid',
+    'CT11 the dashboard carries the same meta.window echo', JSON.stringify(d.meta.window));
+  ok(Object.values(d.breakdown_summary).every((s) => typeof s.rows_total === 'number' && s.basis_label),
+    'CT12 every composite breakdown ships rows_total + basis_label for its footer');
 }
 
 // ═══ B: bases ═══════════════════════════════════════════════════════════════
