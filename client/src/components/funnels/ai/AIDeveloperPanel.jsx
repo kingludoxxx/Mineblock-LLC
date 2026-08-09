@@ -15,7 +15,12 @@ import {
 } from 'lucide-react';
 import api from '../../../services/api';
 
-const MODELS = [
+// FALLBACK ONLY. The picker is populated from GET /ai-developer/models — the
+// server owns the allowlist and enforces it on every chat call. This list is
+// what the dropdown shows if that fetch fails, so a transient error leaves a
+// usable picker rather than an empty one; a stale entry here still cannot get
+// past the server's check.
+const FALLBACK_MODELS = [
   { id: 'claude-fable-5', label: 'Fable 5 · frontier' },
   { id: 'claude-opus-5', label: 'Opus 5' },
   { id: 'claude-sonnet-5', label: 'Sonnet 5' },
@@ -28,8 +33,11 @@ const EXAMPLES = [
   'Generate a hero image of the product on a mountain ledge',
 ];
 
-const MAX_IMAGES = 5;
-const MAX_IMAGE_BYTES = 2 * 1024 * 1024;
+// Mirrors the server's caps (aiDeveloper.js MAX_IMAGES / MAX_IMAGE_BYTES). The
+// client copy exists so an oversized paste is refused instantly with a readable
+// message instead of after a 5MB round-trip — the SERVER is the enforcement.
+const MAX_IMAGES = 2;
+const MAX_IMAGE_BYTES = 4 * 1024 * 1024;
 const MAX_HISTORY = 39; // server caps at 40 incl. the new user turn
 const POLL_MS = 3000; // normal poll cadence
 const POLL_SLOW_MS = 10_000; // backoff after repeated failures
@@ -73,22 +81,95 @@ export default function AIDeveloperPanel({
   const [items, setItems] = useState([]); // {id, type:'user'|'assistant'|'job'|'error', ...}
   const [input, setInput] = useState('');
   const [pendingImages, setPendingImages] = useState([]); // dataURLs
-  const [model, setModel] = useState(MODELS[0].id);
+  const [models, setModels] = useState(FALLBACK_MODELS);
+  const [model, setModel] = useState(FALLBACK_MODELS[0].id);
   const [status, setStatus] = useState('idle'); // idle | thinking | streaming | coding
   const [showExamples, setShowExamples] = useState(false);
   const [detached, setDetached] = useState(false);
   const [streamText, setStreamText] = useState('');
+  const [threadLoading, setThreadLoading] = useState(true);
 
   const scrollRef = useRef(null);
   const inputRef = useRef(null);
+  // How many screenshots are QUEUED OR LOADED — not the same as
+  // pendingImages.length, which lags by one async FileReader read. The cap has
+  // to be judged against the former or a fast double-paste slips past it.
+  const pendingCountRef = useRef(0);
   const blocksRef = useRef(blocks);
   useEffect(() => { blocksRef.current = blocks; }, [blocks]);
 
+  // ---- server-owned model allowlist ---------------------------------------
+  useEffect(() => {
+    let alive = true;
+    api.get('/ai-developer/models')
+      .then((res) => {
+        const list = res.data?.data?.models;
+        if (!alive || !Array.isArray(list) || !list.length) return;
+        const clean = list.filter((m) => m && typeof m.id === 'string');
+        if (!clean.length) return;
+        setModels(clean);
+        // Snap the selection onto the server's default (or its first entry) so
+        // the picker can never sit on an id the server would refuse.
+        const preferred = res.data?.data?.default;
+        setModel((cur) => (clean.some((m) => m.id === cur)
+          ? cur
+          : (clean.some((m) => m.id === preferred) ? preferred : clean[0].id)));
+      })
+      .catch(() => { /* keep the fallback list — the server still enforces */ });
+    return () => { alive = false; };
+  }, []);
+
+  // ---- persisted thread ----------------------------------------------------
+  // Rehydrate this page's conversation on mount. Stored turns carry no image
+  // bytes (the server never persists them) — a rehydrated user turn shows a
+  // "N screenshots" chip instead of thumbnails, which is the honest rendering.
+  useEffect(() => {
+    let alive = true;
+    if (!pageId || !funnelId) { setThreadLoading(false); return undefined; }
+    setThreadLoading(true);
+    api.get('/ai-developer/chat', { params: { page_id: pageId, funnel_id: funnelId } })
+      .then((res) => {
+        if (!alive) return;
+        const msgs = res.data?.data?.messages;
+        if (!Array.isArray(msgs)) return;
+        setItems(msgs.map((m) => ({
+          id: newItemId(),
+          type: m.role === 'user' ? 'user' : 'assistant',
+          text: typeof m.content === 'string' ? m.content : '',
+          images: [],
+          imageCount: Number(m.image_count) || 0,
+          opsCount: Number(m.ops_count) || 0,
+          attachment: m.attachment || null,
+          restored: true,
+        })));
+      })
+      .catch(() => { /* an unreadable thread must not block a new conversation */ })
+      .finally(() => { if (alive) setThreadLoading(false); });
+    return () => { alive = false; };
+  }, [pageId, funnelId]);
+
   // Re-arm the attachment whenever the builder selection changes.
   useEffect(() => { setDetached(false); }, [selectedBlock?.id]);
-  const attachment = !detached && selectedBlock
-    ? { block_id: selectedBlock.id, kind: selectedBlock.type, block_path: `blocks[${selectedIndex}]` }
-    : null;
+  // MEMOIZED, not a bare conditional. A fresh object literal every render makes
+  // it a changing dependency of send()/applyAsset()/the excerpt memo, which
+  // rebuilds those on every keystroke — the value is identical, only its
+  // identity moves.
+  const attachment = useMemo(() => (
+    !detached && selectedBlock
+      ? { block_id: selectedBlock.id, kind: selectedBlock.type, block_path: `blocks[${selectedIndex}]` }
+      : null
+  ), [detached, selectedBlock, selectedIndex]);
+  // A short excerpt of the anchored block, read off the live draft so the chip
+  // describes what is on the canvas right now rather than what it said when the
+  // selection was made.
+  const attachmentExcerpt = useMemo(() => {
+    if (!attachment || !selectedBlock) return '';
+    const p = selectedBlock.props || {};
+    for (const k of ['headline', 'title', 'text', 'label', 'block_name', 'subheadline', 'body']) {
+      if (typeof p[k] === 'string' && p[k].trim()) return p[k].trim().replace(/\s+/g, ' ').slice(0, 60);
+    }
+    return '';
+  }, [attachment, selectedBlock]);
 
   useEffect(() => {
     const el = scrollRef.current;
@@ -161,9 +242,15 @@ export default function AIDeveloperPanel({
     const images = pendingImages.slice(0, MAX_IMAGES);
     setInput('');
     setPendingImages([]);
+    pendingCountRef.current = 0;
     setShowExamples(false);
 
-    const userItem = { id: newItemId(), type: 'user', text, images };
+    const userItem = {
+      id: newItemId(), type: 'user', text, images, imageCount: images.length,
+      attachment: attachment
+        ? { block_id: attachment.block_id, block_type: attachment.kind, excerpt: attachmentExcerpt }
+        : null,
+    };
     setItems((prev) => [...prev, userItem]);
     setStatus('thinking');
     setStreamText('');
@@ -251,7 +338,7 @@ export default function AIDeveloperPanel({
       setStreamText('');
       setStatus('idle');
     }
-  }, [input, busy, pendingImages, items, pageId, funnelId, model, attachment, onApplyOps, startPolling]);
+  }, [input, busy, pendingImages, items, pageId, funnelId, model, attachment, attachmentExcerpt, onApplyOps, startPolling]);
 
   // ---- "Use it" on a finished job ------------------------------------------
   // NOT named useAsset — a `use`-prefixed const reads as a hook to the linter
@@ -267,14 +354,33 @@ export default function AIDeveloperPanel({
   // ---- paste / drop screenshots --------------------------------------------
   const addImageFiles = useCallback((files) => {
     const list = Array.from(files || []).filter((f) => f.type?.startsWith('image/'));
+    // The cap is resolved BEFORE any read starts, against a ref that tracks
+    // what is already queued. Deciding inside the setState updater would be a
+    // side effect in an updater — React re-invokes those, and the operator
+    // would see the "not attached" notice twice.
+    const errors = [];
+    const accepted = [];
     for (const file of list) {
       if (file.size > MAX_IMAGE_BYTES) {
-        setItems((prev) => [...prev, { id: newItemId(), type: 'error', text: `"${file.name || 'image'}" is over 2MB — resize it and try again.` }]);
-        continue;
+        errors.push(`"${file.name || 'image'}" is over 4MB — resize it and try again.`);
+      } else if (pendingCountRef.current + accepted.length >= MAX_IMAGES) {
+        errors.push(`Only ${MAX_IMAGES} screenshots per message — "${file.name || 'image'}" was not attached.`);
+      } else {
+        accepted.push(file);
       }
+    }
+    pendingCountRef.current += accepted.length;
+    if (errors.length) {
+      setItems((prev) => [...prev, ...errors.map((text) => ({ id: newItemId(), type: 'error', text }))]);
+    }
+    for (const file of accepted) {
       const reader = new FileReader();
-      reader.onload = () => {
-        setPendingImages((prev) => (prev.length >= MAX_IMAGES ? prev : [...prev, reader.result]));
+      reader.onload = () => setPendingImages((prev) => [...prev, reader.result]);
+      reader.onerror = () => {
+        pendingCountRef.current = Math.max(0, pendingCountRef.current - 1);
+        setItems((prev) => [...prev, {
+          id: newItemId(), type: 'error', text: `Could not read "${file.name || 'image'}".`,
+        }]);
       };
       reader.readAsDataURL(file);
     }
@@ -305,16 +411,34 @@ export default function AIDeveloperPanel({
     inputRef.current?.focus();
   }, []);
 
-  const resetChat = useCallback(() => {
-    if (busy) return;
-    Object.values(pollState.current).forEach((s) => clearTimeout(s.timer));
-    pollState.current = {};
-    setItems([]);
-    setStreamText('');
-  }, [busy]);
+  // Clears the on-screen transcript AND the persisted thread. The server call
+  // is awaited so the panel cannot show an empty chat that a refresh refills;
+  // if it fails the transcript is left alone and the operator is told, rather
+  // than being handed a blank panel over a thread that still exists.
+  const [clearing, setClearing] = useState(false);
+  const resetChat = useCallback(async () => {
+    if (busy || clearing) return;
+    setClearing(true);
+    try {
+      if (pageId && funnelId) {
+        await api.delete('/ai-developer/chat', { params: { page_id: pageId, funnel_id: funnelId } });
+      }
+      Object.values(pollState.current).forEach((s) => clearTimeout(s.timer));
+      pollState.current = {};
+      setItems([]);
+      setStreamText('');
+    } catch {
+      setItems((prev) => [...prev, {
+        id: newItemId(), type: 'error',
+        text: 'Could not clear the saved conversation — it is still on the server. Try again.',
+      }]);
+    } finally {
+      setClearing(false);
+    }
+  }, [busy, clearing, pageId, funnelId]);
 
-  const empty = items.length === 0 && !busy;
-  const modelLabel = useMemo(() => MODELS.find((m) => m.id === model)?.label || model, [model]);
+  const empty = items.length === 0 && !busy && !threadLoading;
+  const modelLabel = useMemo(() => models.find((m) => m.id === model)?.label || model, [models, model]);
 
   // Docks on the LEFT of the canvas (the reference tool's layout), so the
   // divider is the RIGHT border. The builder renders it IN PLACE OF the
@@ -344,11 +468,11 @@ export default function AIDeveloperPanel({
           </button>
           <button
             onClick={resetChat}
-            title="Reset conversation"
+            title="Clear the saved conversation for this page"
             className="p-1.5 rounded-md text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800 cursor-pointer disabled:opacity-40"
-            disabled={busy}
+            disabled={busy || clearing}
           >
-            <RotateCcw className="w-3.5 h-3.5" />
+            {clearing ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <RotateCcw className="w-3.5 h-3.5" />}
           </button>
           <button
             onClick={onClose}
@@ -363,6 +487,11 @@ export default function AIDeveloperPanel({
 
       {/* ---------------- Transcript ---------------- */}
       <div ref={scrollRef} className="flex-1 min-h-0 overflow-y-auto px-3 py-3 space-y-3">
+        {threadLoading && items.length === 0 && (
+          <div className="flex items-center gap-2 text-[11.5px] text-zinc-500 px-1 pt-4">
+            <Loader2 className="w-3.5 h-3.5 animate-spin" /> Loading this page&apos;s conversation…
+          </div>
+        )}
         {empty && (
           <div className="pt-8 px-2 text-center">
             <Bot className="w-8 h-8 text-zinc-700 mx-auto mb-3" />
@@ -410,6 +539,24 @@ export default function AIDeveloperPanel({
                       {it.images.map((src, i) => (
                         <img key={i} src={src} alt="" className="w-14 h-14 object-cover rounded-md border border-zinc-700" />
                       ))}
+                    </div>
+                  )}
+                  {/* A REHYDRATED turn has no thumbnails to show — the server
+                      stores the count, never the bytes. Say so rather than
+                      rendering nothing, which reads as "no screenshot". */}
+                  {!it.images?.length && it.imageCount > 0 && (
+                    <div className="flex items-center gap-1 mb-1.5 text-[10px] text-emerald-300/80">
+                      <ImageIcon className="w-3 h-3" />
+                      {it.imageCount} screenshot{it.imageCount === 1 ? '' : 's'} (not stored)
+                    </div>
+                  )}
+                  {it.attachment?.block_id && (
+                    <div className="flex items-center gap-1 mb-1.5 text-[10px] text-emerald-300/80 truncate">
+                      <Paperclip className="w-3 h-3 shrink-0" />
+                      <span className="truncate">
+                        {it.attachment.block_type || 'block'}
+                        {it.attachment.excerpt ? ` · “${it.attachment.excerpt}”` : ` · ${it.attachment.block_id}`}
+                      </span>
                     </div>
                   )}
                   <div className="text-[12.5px] whitespace-pre-wrap text-zinc-100">{it.text}</div>
@@ -515,12 +662,27 @@ export default function AIDeveloperPanel({
 
       {/* ---------------- Composer ---------------- */}
       <div className="border-t border-zinc-800 px-3 pt-2 pb-2.5 shrink-0">
+        {/* ATTACHED-CONTEXT CHIP — what this conversation is anchored to.
+            Removable (detach → whole-page scope) and re-armable without having
+            to reselect on the canvas, so detaching is never a one-way door. */}
         {attachment && (
           <div className="flex items-center gap-1.5 mb-1.5 text-[10.5px] text-emerald-300 bg-emerald-900/30 border border-emerald-800/40 rounded-md px-2 py-1">
             <Paperclip className="w-3 h-3 shrink-0" />
-            <span className="truncate">Attached: {attachment.kind} · {attachment.block_path}</span>
-            <button onClick={() => setDetached(true)} title="Detach — use whole page context" className="ml-auto cursor-pointer text-emerald-400/70 hover:text-emerald-200">
+            <span className="truncate">
+              Attached: {attachment.kind} · {attachment.block_path}
+              {attachmentExcerpt ? ` · “${attachmentExcerpt}”` : ''}
+            </span>
+            <button onClick={() => setDetached(true)} title="Detach — use whole page context" className="ml-auto shrink-0 cursor-pointer text-emerald-400/70 hover:text-emerald-200">
               <X className="w-3 h-3" />
+            </button>
+          </div>
+        )}
+        {!attachment && selectedBlock && (
+          <div className="flex items-center gap-1.5 mb-1.5 text-[10.5px] text-zinc-500 bg-zinc-900/60 border border-zinc-800 rounded-md px-2 py-1">
+            <Paperclip className="w-3 h-3 shrink-0" />
+            <span className="truncate">Whole page in scope</span>
+            <button onClick={() => setDetached(false)} title={`Attach the selected ${selectedBlock.type} block`} className="ml-auto shrink-0 cursor-pointer text-zinc-400 hover:text-emerald-300">
+              Attach {selectedBlock.type}
             </button>
           </div>
         )}
@@ -531,7 +693,10 @@ export default function AIDeveloperPanel({
               <div key={i} className="relative">
                 <img src={src} alt="" className="w-12 h-12 object-cover rounded-md border border-zinc-700" />
                 <button
-                  onClick={() => setPendingImages((prev) => prev.filter((_, j) => j !== i))}
+                  onClick={() => {
+                    pendingCountRef.current = Math.max(0, pendingCountRef.current - 1);
+                    setPendingImages((prev) => prev.filter((_, j) => j !== i));
+                  }}
                   className="absolute -top-1.5 -right-1.5 bg-zinc-800 border border-zinc-600 rounded-full p-0.5 cursor-pointer"
                 >
                   <X className="w-2.5 h-2.5" />
@@ -575,8 +740,8 @@ export default function AIDeveloperPanel({
               title="Model"
               className="appearance-none text-[10.5px] bg-zinc-900 border border-zinc-700 rounded-md pl-2 pr-6 py-1 text-zinc-300 cursor-pointer focus:outline-none"
             >
-              {MODELS.map((m) => (
-                <option key={m.id} value={m.id}>{m.label}</option>
+              {models.map((m) => (
+                <option key={m.id} value={m.id}>{m.label || m.id}</option>
               ))}
             </select>
             <ChevronDown className="w-3 h-3 absolute right-1.5 top-1/2 -translate-y-1/2 text-zinc-500 pointer-events-none" />
