@@ -3104,3 +3104,65 @@ commit, which double-created a ResizeObserver on mount).
 server/tests/live-view/** + logs/progress.md.
 STATUS: COMPLETE
 ---
+
+---
+TIMESTAMP: 2026-08-10 03:10
+TASK: Live View presentation — final review round (N1, N2 blocking; N3-N6)
+BUILT:
+N1 (BLOCKER, a regression from my own F4 fix) — the Revenue Today hero tile
+called fmtMoney(s.revenue_today) with no currency. Removing the USD default so a
+JPY sale stops reading as dollars left the board's BIGGEST money figure
+rendering a bare "12,345.60" with nothing to say what the unit was: it reads as
+dollars while claiming nothing. Extracted a RevenueTile component routing
+through fmtMoneyParts, captioned "currency not recorded" when the unit is
+unknown, "could not measure" when the value is null. Confirmed by reading the
+server: buildLiveSnapshot ships revenue_today as a bare SUM over
+co_sessions.total with NO currency field and NO GROUP BY currency, so on a
+multi-currency store that figure is already a mixed-currency sum. Reads
+`revenue_currency` opportunistically so the caption disappears for free if the
+server ever sends one.
+N2 (BLOCKER) — pushBatch passed hidden:true unconditionally for length>=2, so
+three purchases arriving in one live SSE frame while the operator was WATCHING
+rendered "3 payments while you were away" — a false statement about the person
+reading it. The away decision is now separate from the buffering decision:
+buffering is a rendering choice, `away` is a claim about the operator, taken
+from document.hidden or an explicit fromResync flag. Visible-tab batches still
+coalesce (the cap must hold) but read "3 payments just now".
+N3 — new harness server/tests/live-view/toast-batch.jsx driving the REAL hooks
+through the hook runtime: the visibility decision, pushBatch composition
+(1 event ordinary path, 2 verbatim, 40 -> one summary, re-delivery deduped,
+degenerate inputs), fireMany (25 events -> exactly 1 chime, keys still consumed,
+muted burns no keys, unarmed silent), and teardown incl. reset().
+N4 — trackArrivals docstring corrected: MAX_ARRIVAL_GAIN bounds the reported
+MAGNITUDE of one country's jump, NOT the ripple count (that is MAX_RIPPLES in
+LiveGlobe). The old wording claimed the wrong thing.
+N5 — the gradient headline is relabelled: the 200-country figure is a deliberate
+STRESS load, and the harness now also prints the honest live-board equivalent
+(~20-25 markers/frame => was ~1,200-1,500 gradients/sec, now 1).
+N6 — marker geometry pinned exactly: core radius 8, halo 27.2 (core * 3.4),
+origin-drawn, alphas 0.42/0.95 at depth 1, plus both sides of the 1/4px
+quantisation (near-identical sizes share one gradient, different sizes do not).
+TESTED: Six harnesses, 477 assertions — presentation 201/201, globe-render
+46/46, cha-ching 55/55, render-smoke 103/103, globe-effect 32/32, toast-batch
+40/40.
+NEGATIVE CONTROL for N2: `away` forced back to true; toast-batch failed exactly
+the intended assertion ("and away === FALSE — the operator was watching") at
+39/40. Restored and re-verified 40/40.
+OUTPUT: eslint 0 across client/src/pages/live/. vite build succeeds
+(2,960.85 kB / 746.46 kB gzip). git diff vs base over server/src,
+server/migrations, app.js, render.yaml and both package.json files is EMPTY.
+DECISIONS:
+(1) DECISION MADE — the revenue tile is captioned rather than defaulted. The
+alternative (assume the store currency) would restate a server-side
+mixed-currency sum as a single-currency figure, which is a bigger lie than the
+bare number.
+(2) DECISION MADE — a visible-tab batch still COALESCES rather than replaying
+per-event. The cap exists so a burst cannot blanket the page; only the WORDING
+was wrong, so only the wording changed.
+(3) NOTED, NOT FIXED (out of lane, server is read-only for this lane):
+revenue_today sums co_sessions.total across currencies with no GROUP BY. On a
+single-currency store it is correct; on a multi-currency store it is a mixed sum
+presented as one number. The client now declines to label it, which is the most
+this lane can honestly do. Worth a server-side follow-up.
+STATUS: COMPLETE
+---

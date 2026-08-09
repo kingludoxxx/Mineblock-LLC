@@ -252,9 +252,12 @@ console.log('\n── 7. rotation ──');
 }
 
 // ═══ 8. F6 — the gradient cache ════════════════════════════════════════════
-// Before the cache, createRadialGradient ran once per marker per frame: ~200
-// countries at 60fps is ~12,000 gradient objects a second, each re-parsed by
-// the canvas implementation. Cached gradients are built at the origin and
+// Before the cache, createRadialGradient ran once per marker per frame. On a
+// REAL board that is ~20-25 countries at 60fps, so ~1,200-1,500 gradient
+// objects a second — each one re-parsed by the canvas implementation. (The
+// 200-country figure below is a deliberate stress load, not a live board; it
+// is used because it makes the cache's bound obvious, not because a store
+// serves 200 countries at once.) Cached gradients are built at the origin and
 // positioned with the transform, so the count is bounded by the number of
 // DISTINCT quantised radii, not by markers × frames.
 console.log('\n── 8. gradient cache (F6) ──');
@@ -272,9 +275,10 @@ console.log('\n── 8. gradient cache (F6) ──');
     markersTotal += out.markersDrawn;
   }
   const gradients = count(ctx, 'createRadialGradient');
-  ok(markersTotal > 1000, `${markersTotal} markers drawn across ${FRAMES} frames`);
+  ok(markersTotal > 1000, `${markersTotal} markers drawn across ${FRAMES} frames (STRESS load, not a live board)`);
   ok(gradients <= 4, `only ${gradients} gradient(s) built for all of them (was 1 per marker per frame)`);
-  console.log(`      measured: ${markersTotal} markers → ${gradients} createRadialGradient calls`);
+  console.log(`      measured (stress): ${markersTotal} markers → ${gradients} createRadialGradient calls`);
+  console.log('      live-board equivalent: ~20-25 markers/frame → was ~1,200-1,500 gradients/sec, now 1');
 
   // Same-size markers must collapse to ONE cached gradient.
   const ctx2 = fakeCtx();
@@ -302,6 +306,55 @@ console.log('\n── 8. gradient cache (F6) ──');
   const last = ctx3.calls.filter((c) => c[0] === 'setTransform').pop();
   eq(last[5], 0, 'the frame ends with the translation reset to 0 (x)');
   eq(last[6], 0, 'the frame ends with the translation reset to 0 (y)');
+}
+
+// ═══ 9. N6 — pin the marker geometry ═══════════════════════════════════════
+// The radius quantisation (1/4 px) and the halo multiplier are load-bearing
+// for BOTH looks and the cache's key space. Asserted exactly, so a change to
+// either has to be deliberate rather than silently absorbed by a >= check.
+console.log('\n── 9. marker geometry pinned (N6) ──');
+{
+  const ctx = fakeCtx();
+  // A single full-share marker at dead centre: p.z === 1, so depth === 1.
+  drawGlobe(ctx, { points: [{ lat: 0, lon: 0, visitors: 40 }], ripples: [], max: 40 },
+    { ...OPTS, rotation: 0, tilt: 0, landRings: [] });
+
+  const arcs = ctx.calls.filter((c) => c[0] === 'arc');
+  const core = arcs[arcs.length - 1];
+  const halo = arcs[arcs.length - 2];
+  eq(core[3], 8, 'core radius is EXACTLY 2 + 6*sqrt(1)');
+  eq(halo[3], 27.2, 'halo radius is EXACTLY core * 3.4');
+  eq(core[1], 0, 'the core is drawn at the origin (x) — the cache needs it there');
+  eq(core[2], 0, 'the core is drawn at the origin (y)');
+
+  // Alphas, at depth 1.
+  const alphas = [];
+  const probe = fakeCtx();
+  let ga = 1;
+  Object.defineProperty(probe, 'globalAlpha', {
+    get: () => ga,
+    set: (v) => { ga = v; alphas.push(Number(v.toFixed(4))); },
+  });
+  drawGlobe(probe, { points: [{ lat: 0, lon: 0, visitors: 40 }], ripples: [], max: 40 },
+    { ...OPTS, rotation: 0, tilt: 0, landRings: [] });
+  ok(alphas.includes(0.42), `halo alpha is EXACTLY 0.42 at depth 1 (saw ${JSON.stringify(alphas)})`);
+  ok(alphas.includes(0.95), 'core alpha is EXACTLY 0.95 at depth 1');
+
+  // Quantisation: two counts that round to the same 1/4 px SHARE a gradient,
+  // and two that do not, do not.
+  const q = fakeCtx();
+  drawGlobe(q, {
+    points: [{ lat: 0, lon: 0, visitors: 40 }, { lat: 5, lon: 5, visitors: 39.99 }],
+    ripples: [], max: 40,
+  }, { ...OPTS, rotation: 0, tilt: 0, landRings: [] });
+  eq(count(q, 'createRadialGradient'), 1, 'near-identical sizes quantise onto ONE cached gradient');
+
+  const q2 = fakeCtx();
+  drawGlobe(q2, {
+    points: [{ lat: 0, lon: 0, visitors: 40 }, { lat: 5, lon: 5, visitors: 4 }],
+    ripples: [], max: 40,
+  }, { ...OPTS, rotation: 0, tilt: 0, landRings: [] });
+  eq(count(q2, 'createRadialGradient'), 2, 'genuinely different sizes get their own gradients');
 }
 
 console.log(`\n${pass}/${pass + fail} passed`);

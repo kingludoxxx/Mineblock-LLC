@@ -15,6 +15,7 @@ import PaymentToastStack from '../../../client/src/pages/live/PaymentToastStack.
 import SaleAlertControls from '../../../client/src/pages/live/SaleAlertControls.jsx';
 import EventRail from '../../../client/src/pages/live/EventRail.jsx';
 import { RailCard } from '../../../client/src/pages/live/RailCards.jsx';
+import { RevenueTile } from '../../../client/src/pages/live/LiveViewPage.jsx';
 
 let pass = 0, fail = 0;
 const ok = (c, m, x = '') => { if (c) { pass++; console.log('PASS ', m); } else { fail++; console.log('FAIL ', m, x); } };
@@ -109,11 +110,19 @@ console.log('\n── 2. PaymentToastStack ──');
   ]} />);
   has(zeroAmt, '$0.00', 'a REAL zero still renders as $0.00');
 
+  // N2: the away wording is a claim about the OPERATOR and is driven by the
+  // `away` flag, never by the fact that a batch happened.
   const agg = R(<PaymentToastStack onDismiss={() => {}} toasts={[
-    { key: 'pt5', aggregate: true, count: 9, upsell: false, amount: 90, unpriced: 2, currency: 'USD', exiting: false },
+    { key: 'pt5', aggregate: true, away: true, count: 9, upsell: false, amount: 90, unpriced: 2, currency: 'USD', exiting: false },
   ]} />);
-  has(agg, '9 payments while you were away', 'the coalesced toast renders its count');
+  has(agg, '9 payments while you were away', 'an AWAY batch renders the away wording');
   has(agg, '+2 unpriced', 'and discloses the unpriced shortfall');
+
+  const aggLive = R(<PaymentToastStack onDismiss={() => {}} toasts={[
+    { key: 'pt5b', aggregate: true, away: false, count: 3, upsell: false, amount: 30, unpriced: 0, currency: 'USD', exiting: false },
+  ]} />);
+  has(aggLive, '3 payments just now', 'a batch that landed while WATCHING says "just now"');
+  lacks(aggLive, 'while you were away', 'and never claims the operator was away');
 
   const exiting = R(<PaymentToastStack onDismiss={() => {}} toasts={[
     { key: 'pt6', upsell: false, amount: 10, currency: 'USD', where: '', page: '', exiting: true },
@@ -181,6 +190,38 @@ console.log('\n── 2b. money honesty (F4) ──');
   const railCur = R(<RailCard ev={{ id: 'r2', type: 'purchase', ts: null, value: 59, currency: 'USD' }} />);
   has(railCur, '$59.00', 'a recorded currency renders normally in the rail');
   lacks(railCur, 'no currency', 'with no marker');
+}
+
+// ═══ 2c. N1 — the revenue hero tile ════════════════════════
+// NOTHING covered this tile, which is exactly how N1 shipped: dropping the USD
+// default for F4 left the board's BIGGEST money figure rendering a bare
+// "12,345.60" with no caption — reading as dollars while claiming nothing.
+console.log('\n── 2c. revenue tile (N1) ──');
+{
+  const noCur = R(<RevenueTile snapshot={{ revenue_today: 12345.6 }} />);
+  has(noCur, '12,345.60', 'the amount renders');
+  lacks(noCur, '$12,345.60', 'NOT as dollars — no currency is on the wire for it');
+  has(noCur, 'lv-tile-caption', 'and it is captioned');
+  has(noCur, 'currency not recorded', 'in words');
+
+  // Opportunistic: the caption disappears for free if the server ever sends one.
+  const withCur = R(<RevenueTile snapshot={{ revenue_today: 12345.6, revenue_currency: 'USD' }} />);
+  has(withCur, '$12,345.60', 'a supplied currency renders with its symbol');
+  lacks(withCur, 'currency not recorded', 'and drops the caption');
+
+  const eur = R(<RevenueTile snapshot={{ revenue_today: 99, revenue_currency: 'EUR' }} />);
+  has(eur, '\u20ac99.00', 'a non-USD currency is honoured, not coerced to dollars');
+
+  // null is not 0: an unmeasurable tile is a dash with its own caption.
+  const nul = R(<RevenueTile snapshot={{ revenue_today: null }} />);
+  has(nul, 'could not measure', 'a null revenue says "could not measure"');
+  lacks(nul, '0.00', 'and NEVER renders as zero revenue');
+  has(R(<RevenueTile snapshot={{}} />), 'could not measure', 'a missing field behaves the same');
+
+  // A real zero is a real number.
+  const zero = R(<RevenueTile snapshot={{ revenue_today: 0, revenue_currency: 'USD' }} />);
+  has(zero, '$0.00', 'a genuine zero renders as $0.00');
+  lacks(zero, 'could not measure', 'and is not confused with an unmeasurable tile');
 }
 
 // ═══ 3. SaleAlertControls ══════════════════════════════════════════════════

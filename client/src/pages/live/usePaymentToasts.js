@@ -104,21 +104,32 @@ export default function usePaymentToasts({ onPayment } = {}) {
    *
    * Returns the number of events that were genuinely new.
    */
-  const pushBatch = useCallback((events) => {
+  const pushBatch = useCallback((events, opts = {}) => {
     if (!aliveRef.current) return 0;
     const list = Array.isArray(events) ? events : [];
     if (list.length === 0) return 0;
     if (list.length === 1) return push(list[0]) === 'emitted' ? 1 : 0;
 
+    // WAS THE OPERATOR ACTUALLY AWAY? A batch is not evidence of absence —
+    // three purchases can land in a single SSE frame while someone is watching
+    // the board, and labelling that "while you were away" is a false statement
+    // about the person reading it. Only a hidden tab, or a caller that KNOWS
+    // it is draining a reconnect gap, earns the away wording.
+    const away = opts.fromResync === true
+      || (typeof document !== 'undefined' && document.hidden === true);
+
     let s = stateRef.current;
     let accepted = 0;
     for (const ev of list) {
+      // `hidden: true` here means "route through the coalescing buffer", which
+      // is a rendering decision. Whether the operator was AWAY is decided
+      // separately, above, and travels with the flush.
       const r = pushToast(s, ev, { armed: armedRef.current, hidden: true, max: TOAST_MAX });
       s = r.state;
       if (r.reason === 'buffered') accepted++;
     }
     stateRef.current = s;
-    commit(flushBuffer(stateRef.current, { max: TOAST_MAX }));
+    commit(flushBuffer(stateRef.current, { max: TOAST_MAX, away }));
     return accepted;
   }, [commit, push]);
 

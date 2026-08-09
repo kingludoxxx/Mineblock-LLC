@@ -235,8 +235,10 @@ export const MAX_ARRIVAL_GAIN = 500;
  *      the next genuine visitor ripples instead of the board staying dead
  *      until it climbs past yesterday's peak.
  *
- * Returns { state, arrivals }; `arrivals` carries `gained`, capped at
- * MAX_ARRIVAL_GAIN so a bad read cannot spray hundreds of ripples.
+ * Returns { state, arrivals }. Each arrival carries `gained`, clamped to
+ * MAX_ARRIVAL_GAIN — that bounds the reported MAGNITUDE of a single country's
+ * jump, NOT the number of ripples: one arrival still means one ripple, and the
+ * ripple COUNT is bounded separately by MAX_RIPPLES in LiveGlobe.
  */
 export function trackArrivals(state, points, opts = {}) {
   const { truncated = false } = opts;
@@ -493,7 +495,7 @@ export function pushToast(state, ev, opts = {}) {
  * on the operator's attention.
  */
 export function flushBuffer(state, opts = {}) {
-  const { max = TOAST_MAX } = opts;
+  const { max = TOAST_MAX, away = true } = opts;
   const buf = state.buffer;
   if (!buf || buf.count === 0) return { state: { ...state, buffer: null }, emitted: [], dropped: [] };
 
@@ -518,6 +520,11 @@ export function flushBuffer(state, opts = {}) {
     const showTotal = !mixed && !nonePriced;
     const r = emit(s, {
       aggregate: true,
+      // `away` is a CLAIM ABOUT THE OPERATOR, so it is never assumed. A batch
+      // that lands while the tab is visible (three sales in one SSE frame) is
+      // summarised as "just now"; only a genuinely hidden tab or a reconnect
+      // gap earns "while you were away".
+      away,
       count: buf.count,
       upsell: buf.allUpsell,
       amount: showTotal ? buf.total : null,

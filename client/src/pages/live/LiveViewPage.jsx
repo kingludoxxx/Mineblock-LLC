@@ -29,7 +29,7 @@ import SaleAlertControls from './SaleAlertControls';
 import usePaymentToasts from './usePaymentToasts';
 import useSaleAlerts from './useSaleAlerts';
 import useTick from './useTick';
-import { fmtInt, fmtMoney, timeAgo, isPaymentEvent } from './livePresentation.js';
+import { fmtInt, fmtMoneyParts, timeAgo, isPaymentEvent } from './livePresentation.js';
 import './liveview.css';
 
 function ConnectionDot({ status }) {
@@ -57,7 +57,7 @@ const STATUS_LABEL = {
   error: 'Disconnected — retrying',
 };
 
-function Tile({ icon, label, value, accent = false }) {
+function Tile({ icon, label, value, caption = null, accent = false }) {
   // Assigned to a capitalised CONST rather than renamed in the parameter list.
   // This project's eslint has no eslint-plugin-react, so JSX usage does not
   // count as a variable use; `varsIgnorePattern: '^[A-Z_]'` rescues a const but
@@ -73,7 +73,44 @@ function Tile({ icon, label, value, accent = false }) {
       <div className={`mt-1.5 text-2xl font-semibold tabular-nums ${accent ? 'text-accent-text' : 'text-text-primary'}`}>
         {value}
       </div>
+      {caption ? (
+        <div className="mt-0.5 text-[10px] leading-tight text-text-faint" data-testid="lv-tile-caption">
+          {caption}
+        </div>
+      ) : null}
     </Card>
+  );
+}
+
+/**
+ * The revenue hero tile.
+ *
+ * The board's biggest money figure, and the one place a missing currency does
+ * the most damage: dropping the USD default (so a JPY sale stops reading as
+ * dollars) left this rendering a bare "12,345.60" with nothing to say what the
+ * unit was — which reads as dollars while claiming nothing. It is captioned
+ * instead.
+ *
+ * There is no currency on the wire for this number: buildLiveSnapshot ships
+ * `revenue_today` as a bare SUM over co_sessions.total with no currency field
+ * and no GROUP BY currency, so on a multi-currency store the figure is already
+ * a mixed-currency sum. `revenue_currency` is read opportunistically so the
+ * caption disappears for free if the server ever starts sending one.
+ */
+export function RevenueTile({ snapshot }) {
+  const value = snapshot.revenue_today;
+  if (value == null) {
+    return <Tile icon={TrendingUp} label="Revenue today" value="—" caption="could not measure" accent />;
+  }
+  const parts = fmtMoneyParts(value, snapshot.revenue_currency);
+  return (
+    <Tile
+      icon={TrendingUp}
+      label="Revenue today"
+      value={parts.text || '—'}
+      caption={parts.hasCurrency ? null : 'currency not recorded'}
+      accent
+    />
   );
 }
 
@@ -236,12 +273,7 @@ export default function LiveViewPage() {
         <Tile icon={Users} label="Unique today" value={fmtInt(s.unique_today_total)} />
         <Tile icon={CreditCard} label="Checkout starts today" value={fmtInt(s.checkout_starts_today)} />
         <Tile icon={BadgeDollarSign} label="Purchases today" value={fmtInt(s.purchases_today)} />
-        <Tile
-          icon={TrendingUp}
-          label="Revenue today"
-          value={s.revenue_today == null ? '—' : fmtMoney(s.revenue_today) || '—'}
-          accent
-        />
+        <RevenueTile snapshot={s} />
       </div>
 
       {/* Two-zone body: globe + breakdown (left) · event rail (right) */}

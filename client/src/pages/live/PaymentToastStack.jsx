@@ -37,8 +37,12 @@ function ToastRow({ toast, onDismiss }) {
     ? `mixed currencies${toast.currencies?.length ? ` (${toast.currencies.join(', ')})` : ''}`
     : 'amounts unrecorded';
 
+  // "while you were away" is a claim about the OPERATOR, not about the data.
+  // A batch that arrived in one live frame while they were watching gets
+  // "just now" instead — see usePaymentToasts.pushBatch, which decides `away`
+  // from document.hidden / an explicit resync flag rather than from batch size.
   const title = toast.aggregate
-    ? `${fmtInt(toast.count)} ${upsell ? 'upsells' : 'payments'} while you were away`
+    ? `${fmtInt(toast.count)} ${upsell ? 'upsells' : 'payments'} ${toast.away ? 'while you were away' : 'just now'}`
     : (upsell ? 'Upsell accepted' : 'New payment');
 
   return (
