@@ -135,6 +135,26 @@ export function CredentialField({ field, currentSet, currentValue, value, onChan
   );
 }
 
+// A titled settings card — the shell the Commerce sections are built from.
+// Same surface tokens as HealthSection's rows (bg-bg-card / border-default) so
+// the modal reads as one page. `actions` renders right of the title.
+export function SettingsCard({ title, description, actions, children, testid }) {
+  return (
+    <div className="rounded-xl border border-border-default bg-bg-card p-4 space-y-3" data-testid={testid}>
+      {(title || actions) && (
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            {title && <h4 className="text-sm font-semibold text-text-primary">{title}</h4>}
+            {description && <p className="mt-0.5 text-xs text-text-faint max-w-xl">{description}</p>}
+          </div>
+          {actions && <div className="shrink-0">{actions}</div>}
+        </div>
+      )}
+      {children}
+    </div>
+  );
+}
+
 // A muted "coming soon / TODO" scaffold panel — deliberately shows NO fake data.
 export function ScaffoldPanel({ title, description, note, children }) {
   return (

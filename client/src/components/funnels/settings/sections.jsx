@@ -1233,12 +1233,9 @@ export function CustomTrackingSection() {
 }
 
 // ── Simple scaffolds (no backend yet) ───────────────────────────────────────
-export const ProductsSection = () => (
-  <ScaffoldPanel title="Products" description="Catalog products offered in this funnel." note="Coming with the products phase." />
-);
-export const ShippingSection = () => (
-  <ScaffoldPanel title="Shipping" description="Shipping rates & rules." note="Coming with the shipping phase." />
-);
+// Products and Shipping USED to live here as scaffolds. They are real now and
+// have their own files (./ProductsSection.jsx, ./ShippingSection.jsx), wired to
+// routes/funnelCommerce.js — same split as PaymentsSection / TrackingSection.
 export const SubscriptionsSection = () => (
   <ScaffoldPanel title="Subscriptions" description="Recurring plans for this funnel." note="Coming with the subscriptions phase." />
 );

@@ -2556,3 +2556,54 @@ key on a NEW block would put a value behind the headline field that the
 operator cannot see in the inspector (DECISION MADE).
 STATUS: COMPLETE
 ---
+
+---
+TIMESTAMP: 2026-08-09 22:20
+TASK: Funnel Settings → Commerce — replace the Products + Shipping scaffolds
+      with real implementations (branch feat/settings-commerce)
+BUILT: New server lane, additive only. routes/funnelCommerce.js mounted at
+/api/v1/funnel-commerce (authenticate + funnels:access, the same chain as
+trackingAdmin/shopifyVariants) with seven endpoints: catalog snapshot read,
+Shopify catalog sync (paged GraphQL, cursor-followed), Whop mapping list /
+manual upsert / delete, auto "Map to Whop", and a read-only Shopify
+deliveryProfiles zones view. Supporting services: funnelCommerceSchema.js
+(ensureTables for co_funnel_products + co_whop_product_map, mirrored by
+migration 092), whopProducts.js (Whop list/create + the pure mapping planner),
+checkoutCountries.js (ISO 3166-1 validation + the defensive settings reader
+that handles jsonb in BOTH object and string shapes). Client: three new files
+(ProductsSection.jsx, ShippingSection.jsx, WhopMappingModal.jsx) in our dark
+theme, replacing the two ScaffoldPanel stubs in sections.jsx; shipping mode,
+checkout countries and flat rates persist through the EXISTING funnels PATCH
+(settingsPatch.js) with every write serialized (serialQueue.js). funnels.js,
+funnelRender.js, checkoutPublic.js, checkoutPricing.js and app.js untouched.
+TESTED: new harness server/tests/funnel-settings/commerce.mjs — 204/204, exit
+0, run three times (fetch mocks for Shopify + Whop, a REAL local Postgres for
+the jsonb cases). Covers: sync happy path incl. cursor paging, eight Shopify
+outage shapes (all 503, none returns an empty products array), Whop
+create-when-missing + match-not-duplicate + idempotent re-run, Whop outage
+creating nothing, jsonb round-trip in BOTH shapes (jsonb_typeof asserted
+'array' for a normal write and 'string' for a forced double-encode, both
+reading back as arrays), malformed GraphQL/zone/Whop payloads, country
+validation, funnel scoping, rate limiting, and the 8s abort. Pre-existing
+variant-search 94/94 unchanged. Migration 092 applied to a scratch DB from
+DROP, 23 columns + 5 indexes, and re-applied idempotently. Real app booted
+against the scratch DB: all seven endpoints answer 401 unauthenticated.
+vite build exit 0. eslint: 0 errors on every new file; the 6 touched files
+still report exactly the 4 errors present on the base commit (delta ZERO).
+OUTPUT: 204 passed, 0 failed / 94 passed, 0 failed / VITE_EXIT=0.
+DECISIONS: (1) migration numbered 092 as briefed even though 091 is free —
+091 is left for a parallel lane; the runner sorts by filename so gaps are
+inert. (2) `parseJsonColumn` did not exist in this repo — the shape copied is
+briefPipeline.js's `parseJsonb`, re-homed in checkoutCountries.js. (3) Whop
+product CREATE sends no price: Whop pricing lives on PLANS, not products, so
+the Shopify display price is stored on our mapping row instead. The product
+path is env-overridable (WHOP_API_BASE / WHOP_PRODUCTS_PATH) and is verified
+against a MOCK only — the reference tool never called a real Whop product API.
+(4) "Exact name" match is trim + case-fold, not byte-exact; substring/fuzzy
+was rejected because it would link the wrong product. (5) restrict_countries
+true with an empty allow-list degrades to unrestricted — a funnel that sells
+to nobody is never what an operator meant. (6) The country limit is NOT
+enforced; the exact enforcement point (checkoutPublic.js, before pricing) is
+documented in the funnelCommerce.js header.
+STATUS: COMPLETE
+---
