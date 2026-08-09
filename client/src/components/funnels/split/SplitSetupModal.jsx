@@ -93,6 +93,20 @@ export default function SplitSetupModal({ open, onClose, funnel, testId, onTestC
     () => new Map((eligible.pages || []).map((p) => [p.id, p])),
     [eligible]
   );
+  // Weighted live arms whose page is a DRAFT: the serve path only delivers
+  // published arms and silently re-picks, so these hold weight while receiving
+  // zero traffic — the strip below is the only place that says so.
+  const draftWeightedLetters = useMemo(
+    () => liveArms
+      .map((a, i) => ({ a, letter: armLetter(i) }))
+      .filter(({ a }) => (num(a.weight) ?? 0) > 0)
+      .filter(({ a }) => {
+        const p = a.page_id ? pageById.get(a.page_id) : null;
+        return Boolean(p) && p.status !== 'published';
+      })
+      .map(({ letter }) => letter),
+    [liveArms, pageById]
+  );
   const handle = test?.handle || '';
 
   // ── Mutations ───────────────────────────────────────────────────────────
@@ -438,6 +452,18 @@ export default function SplitSetupModal({ open, onClose, funnel, testId, onTestC
                   </div>
                 )}
 
+                {/* Draft-arm warning — a "50/50" over a draft is really 100/0 */}
+                {draftWeightedLetters.length > 0 && (
+                  <div className="flex items-start gap-2 px-3 py-2 rounded-lg border border-amber-500/20 bg-amber-500/10 text-xs text-amber-400">
+                    <AlertTriangle className="w-4 h-4 mt-0.5 shrink-0" />
+                    <span>
+                      {draftWeightedLetters.length === 1
+                        ? `Arm ${draftWeightedLetters[0]}'s page is a draft — traffic all goes to the published arm(s) until it's published.`
+                        : `Arms ${draftWeightedLetters.join(', ')} have draft pages — traffic all goes to the published arm(s) until they're published.`}
+                    </span>
+                  </div>
+                )}
+
                 {/* ── Arm cards ─────────────────────────────────── */}
                 <div className="flex flex-wrap gap-3">
                   {liveArms.map((arm, i) => (
@@ -500,7 +526,10 @@ export default function SplitSetupModal({ open, onClose, funnel, testId, onTestC
                               className="w-full text-left px-2.5 py-1.5 text-xs text-text-muted hover:text-text-primary hover:bg-bg-hover cursor-pointer"
                             >
                               <span className="block truncate">{p.title || 'Untitled'}</span>
-                              <span className="block font-mono text-[10px] text-text-faint truncate">{p.slug}</span>
+                              <span className="block font-mono text-[10px] text-text-faint truncate">
+                                {p.slug}
+                                {p.status !== 'published' ? " · draft (won't serve until published)" : ''}
+                              </span>
                             </button>
                           ))}
                           {/* Ineligible pages are LISTED, greyed, with the reason. */}
@@ -715,6 +744,18 @@ function ArmCard({
           <span className="absolute top-1.5 left-1.5 px-1.5 py-0.5 rounded text-[9px] font-semibold uppercase tracking-wide
             bg-emerald-500/15 text-emerald-400 border border-emerald-500/30">
             Entry
+          </span>
+        )}
+        {/* The serve path only delivers PUBLISHED arms (it silently re-picks
+            around a draft), so a draft arm holds weight without receiving
+            traffic — say so where the weight is shown. */}
+        {page && page.status !== 'published' && (
+          <span
+            className="absolute bottom-1.5 left-1.5 px-1.5 py-0.5 rounded text-[9px] font-semibold uppercase tracking-wide
+              bg-amber-500/15 text-amber-400 border border-amber-500/30"
+            title="Draft pages are never served — this arm's traffic goes to the published arm(s) until it's published"
+          >
+            Draft — not serving
           </span>
         )}
       </div>

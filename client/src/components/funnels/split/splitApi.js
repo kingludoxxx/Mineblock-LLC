@@ -371,6 +371,19 @@ export function isoDay(d) {
   return `${dt.getFullYear()}-${p(dt.getMonth() + 1)}-${p(dt.getDate())}`;
 }
 
+/**
+ * ISO yyyy-mm-dd of an instant in UTC. The analytics server truncates window
+ * bounds in UTC, so a window derived from `created_at` must use THIS, not
+ * isoDay: in CEST a test created 23:50Z reads as local next-day, which would
+ * start the window a day late and silently drop the test's first hours.
+ */
+export function utcDay(v) {
+  if (!v) return '';
+  const d = v instanceof Date ? v : new Date(v);
+  if (Number.isNaN(d.getTime())) return '';
+  return d.toISOString().slice(0, 10);
+}
+
 // ── Handle safety ─────────────────────────────────────────────────────────
 // The server bounds a handle to this charset on write. This is the READ-side
 // twin: a row written before that validation existed (or by anything other
@@ -401,10 +414,18 @@ export function isSafeDomain(d) {
   return typeof d === 'string' && DOMAIN_RE.test(d.toLowerCase());
 }
 
+// Funnel slugs are bounded by FUNNEL_SLUG_RE on write; read-side twin here.
+function isSafeFunnelSlug(s) {
+  return typeof s === 'string' && /^[a-z0-9-]{1,128}$/.test(s);
+}
+
 /**
  * The LIVE public URL for one arm, or null when no safe link exists.
- *   entry arm  → https://{test.domain || funnel default domain}/{handle}
- *                (the bare split route — it re-splits and counts an impression)
+ *   entry arm  → https://{test.domain || funnel default domain}/{handle} on a
+ *                custom domain; on the app origin the handle is only served
+ *                UNDER the funnel path (/f/{funnel.slug}/{handle}) — a bare
+ *                /{handle} would hit the SPA fallback and render the dashboard.
+ *                (The bare split route — it re-splits and counts an impression.)
  *   variant    → the arm page's own public URL: {domain}{slug} on a custom
  *                domain, else the app-served /f/{funnel.slug}{slug} path.
  * Every part crosses its charset guard before touching the href; a part that
@@ -414,14 +435,32 @@ export function armLiveUrl({ isEntry, handle, domain, funnelSlug, pageSlug }) {
   const host = isSafeDomain(domain || '') ? String(domain).toLowerCase() : null;
   if (isEntry) {
     if (!isSafeHandle(handle)) return null;
-    return host ? `https://${host}/${handle}` : `/${handle}`;
+    if (host) return `https://${host}/${handle}`;
+    if (!isSafeFunnelSlug(funnelSlug)) return null;
+    return `/f/${funnelSlug}/${handle}`;
   }
   if (!isSafeSlug(pageSlug)) return null;
   const suffix = pageSlug === '/' ? '' : pageSlug;
   if (host) return `https://${host}${suffix || '/'}`;
-  // Funnel slugs are bounded by FUNNEL_SLUG_RE on write; read-side twin here.
-  if (typeof funnelSlug !== 'string' || !/^[a-z0-9-]{1,128}$/.test(funnelSlug)) return null;
+  if (!isSafeFunnelSlug(funnelSlug)) return null;
   return `/f/${funnelSlug}${suffix}`;
+}
+
+// ── Quick-create handle derivation ────────────────────────────────────────
+// Exactly 4 hex chars, always — Math.random() can serialize short, so pad.
+export const randSuffix4 = () => (Math.random().toString(16).slice(2) + '0000').slice(0, 4);
+
+/**
+ * The route a quick-created split defaults to, derived from page A's slug.
+ * The slug itself is a LIVE page path (the server would refuse the verbatim
+ * collision), so the default is '<segment>-ab'. The base is clamped to 56
+ * chars so even the collision-retry form (base + '-ab' + '-xxxx' = base + 8)
+ * stays inside the server's 64-char handle bound.
+ */
+export function quickHandleFromSlug(slug) {
+  const seg = String(slug || '').replace(/^\//, '').toLowerCase().slice(0, 56);
+  const base = /^[a-z0-9][a-z0-9-]{0,55}$/.test(seg) ? seg : 'page';
+  return `${base}-ab`;
 }
 
 /** Arm letter from its index: A, B, C … then AA (never runs out, never NaN). */

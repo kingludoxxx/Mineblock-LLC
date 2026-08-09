@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useState } from 'react';
 import api from '../../services/api';
 
 // ---------------------------------------------------------------------------
@@ -51,10 +51,13 @@ function acquireThumb(page) {
   if (!entry) {
     entry = { promise: null, url: null, refs: 0 };
     entry.promise = fetchThumbUrl(page).then((url) => {
-      // Nobody left waiting (all unmounted) — don't leak the object URL.
+      // Nobody left waiting (all unmounted) — don't leak the object URL. The
+      // identity check matters under StrictMode's mount/unmount/mount: by the
+      // time THIS entry's fetch resolves dead, the key may already map to the
+      // remount's fresh entry, and deleting blindly would clobber it.
       if (entry.refs <= 0 && url) {
         URL.revokeObjectURL(url);
-        thumbCache.delete(key);
+        if (thumbCache.get(key) === entry) thumbCache.delete(key);
         return null;
       }
       entry.url = url;
@@ -85,14 +88,16 @@ function releaseThumb(key) {
 export default function usePageThumbnail(page) {
   const [url, setUrl] = useState(null);
   const key = thumbKey(page);
-  const alive = useRef(true);
   useEffect(() => {
-    alive.current = true;
     if (!page?.id || !page?.funnel_id) return undefined;
+    // Cancellation is PER EFFECT RUN (a local, not a shared ref): when the key
+    // changes, the old run's flag stays cancelled forever, so a slow OLD-key
+    // resolution can never clobber the fresh key's URL after remount.
+    let cancelled = false;
     const { key: k, entry } = acquireThumb(page);
-    entry.promise.then((u) => { if (alive.current) setUrl(u); });
+    entry.promise.then((u) => { if (!cancelled) setUrl(u); });
     return () => {
-      alive.current = false;
+      cancelled = true;
       setUrl(null);
       releaseThumb(k);
     };

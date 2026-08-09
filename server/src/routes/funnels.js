@@ -69,6 +69,10 @@ async function createTables() {
     `ALTER TABLE funnels ADD COLUMN IF NOT EXISTS settings JSONB DEFAULT '{}'`
   );
 
+  // ⚠️ Adding a column here? The atomic duplicate endpoint below
+  // (POST /:id/pages/:pageId/duplicate) lists the copyable columns explicitly
+  // in its INSERT…SELECT — a new content column must be added THERE too, or
+  // duplicates will silently drop it.
   await pgQuery(`
     CREATE TABLE IF NOT EXISTS funnel_pages (
       id TEXT PRIMARY KEY,
@@ -1022,7 +1026,7 @@ router.post('/:id/pages/:pageId/duplicate', async (req, res) => {
              (id, funnel_id, slug, type, title, status, is_home, blocks, seo,
               custom_html, custom_css, custom_js, head_html, body_end_html)
            SELECT $1, funnel_id, COALESCE($4, '/' || type || '-' || $5), type,
-                  COALESCE($3, title || ' copy'), 'draft', FALSE, blocks, seo,
+                  COALESCE($3, TRIM(title || ' copy')), 'draft', FALSE, blocks, seo,
                   custom_html, custom_css, custom_js, head_html, body_end_html
            FROM funnel_pages
            WHERE id = $2 AND funnel_id = $6 AND NOT archived

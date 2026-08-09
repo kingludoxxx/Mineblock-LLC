@@ -8,7 +8,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { X, Shuffle, AlertTriangle, Loader2, Image as ImageIcon } from 'lucide-react';
 import usePageThumbnail from '../usePageThumbnail';
-import { createSplitTest, fetchEligiblePages } from './splitApi';
+import { createSplitTest, fetchEligiblePages, quickHandleFromSlug, randSuffix4 } from './splitApi';
 
 const ERROR_COPY = {
   invalid_handle: 'Could not derive a valid route handle from this page — rename its slug first.',
@@ -21,17 +21,8 @@ const ERROR_COPY = {
 const errCode = (err) => err?.response?.data?.error?.code;
 const errText = (err, fallback) => ERROR_COPY[errCode(err)] || errCode(err) || fallback;
 
-const randSuffix = () => Math.random().toString(16).slice(2, 6);
-
-// The route the new split will own, derived from page A's slug. The slug
-// itself is a LIVE page path (the server would refuse the verbatim collision),
-// so the default is '<segment>-ab' — and the POST falls back once to a random
-// suffix if that too is taken.
-function deriveHandle(slug) {
-  const seg = String(slug || '').replace(/^\//, '').toLowerCase();
-  const base = /^[a-z0-9][a-z0-9-]{0,57}$/.test(seg) ? seg : 'page';
-  return `${base}-ab`;
-}
+// Handle derivation + suffix live in splitApi (quickHandleFromSlug /
+// randSuffix4) so the length bounds are exercised by the guards harness.
 
 export default function SplitQuickCreateModal({ open, onClose, funnel, pageA, onCreated }) {
   const funnelId = funnel?.id;
@@ -82,7 +73,7 @@ export default function SplitQuickCreateModal({ open, onClose, funnel, pageA, on
         { arm_key: 'b', weight: 50, page_id: pageBId },
       ],
     });
-    const base = deriveHandle(pageA.slug);
+    const base = quickHandleFromSlug(pageA.slug);
     try {
       let created;
       try {
@@ -92,7 +83,7 @@ export default function SplitQuickCreateModal({ open, onClose, funnel, pageA, on
         // with a random suffix, then the refusal surfaces as prose.
         const code = errCode(err);
         if (code !== 'handle_exists' && code !== 'handle_conflicts_page_slug') throw err;
-        created = await createSplitTest(body(`${base}-${randSuffix()}`));
+        created = await createSplitTest(body(`${base}-${randSuffix4()}`));
       }
       onCreated?.(created?.id);
     } catch (err) {
@@ -171,7 +162,9 @@ export default function SplitQuickCreateModal({ open, onClose, funnel, pageA, on
                 <option value="">{loading ? 'Loading pages…' : 'Pick a page'}</option>
                 {options.map((p) => (
                   <option key={p.id} value={p.id} disabled={!p.eligible}>
-                    {p.title || 'Untitled'} ({p.slug}){p.eligible ? '' : ` — ${p.reason_label}`}
+                    {p.title || 'Untitled'} ({p.slug})
+                    {p.eligible ? '' : ` — ${p.reason_label}`}
+                    {p.eligible && p.status !== 'published' ? " · draft (won't serve until published)" : ''}
                   </option>
                 ))}
               </select>

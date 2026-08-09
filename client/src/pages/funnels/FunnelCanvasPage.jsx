@@ -53,7 +53,7 @@ import SplitResultsModal from '../../components/funnels/split/SplitResultsModal'
 import SplitQuickCreateModal from '../../components/funnels/split/SplitQuickCreateModal';
 import {
   fetchFunnelSplitTests, fetchSplitMetrics, fetchLifetimeResults,
-  armLetter, fmtInt, fmtPct, isoDay,
+  armLetter, fmtInt, fmtPct, utcDay,
 } from '../../components/funnels/split/splitApi';
 
 const nodeTypes = { page: PageNode, splitGroup: SplitGroupNode };
@@ -202,8 +202,10 @@ function CanvasInner() {
       tests.map(async (t) => {
         // Windowed from the day the test was created (the server would default
         // to the last 30 days, silently clipping older tests) — the canvas
-        // caption says "since created" and this is what makes that true.
-        const from = t.created_at ? isoDay(new Date(t.created_at)) : undefined;
+        // caption says "since created" and this is what makes that true. UTC
+        // day on purpose: the server truncates in UTC, and the local day of a
+        // 23:50Z creation would start the window a day late.
+        const from = t.created_at ? utcDay(t.created_at) : undefined;
         const overlay = await fetchSplitMetrics(t.id, from ? { from } : {});
         if (overlay.available) {
           // normalizeMetrics has already converted `cvr` from a fraction to a
@@ -571,6 +573,12 @@ function CanvasInner() {
         // empty copy when the blocks PATCH failed).
         const res = await api.post(`/funnels/${id}/pages/${page.id}/duplicate`);
         const np = res.data?.data;
+        if (!np?.id) {
+          // A 2xx without the page row is a shape we do not understand —
+          // pushing it into the canvas would render a ghost node.
+          setError('Duplicate did not return the new page — reload and check the pages list');
+          return;
+        }
         const src = rf.getNodes().find((n) => n.id === page.id);
         const pos = src ? { x: src.position.x + 40, y: src.position.y + 40 } : centerPosition();
         setPages((prev) => [...prev, np]);

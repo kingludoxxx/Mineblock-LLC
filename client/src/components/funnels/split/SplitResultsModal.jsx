@@ -18,7 +18,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { X, TrendingUp, AlertTriangle, Loader2 } from 'lucide-react';
 import {
   fetchSplitMetrics, armLetter, fmtInt, fmtMoney, fmtPct, fmtDate, fmtDateTime,
-  isoDay, num, DASH,
+  isoDay, utcDay, num, DASH,
 } from './splitApi';
 
 export default function SplitResultsModal({ open, onClose, test }) {
@@ -42,7 +42,10 @@ export default function SplitResultsModal({ open, onClose, test }) {
       d.setDate(d.getDate() - (p === '7d' ? 6 : 29)); // window INCLUDES today
       return { from: isoDay(d), to: today };
     }
-    const start = createdAt ? isoDay(new Date(createdAt)) : today;
+    // UTC day for created_at (the server truncates in UTC — the local day of a
+    // 23:50Z creation would start the window a day late and drop the first
+    // hours); `today` stays local, it is the picker's own frame.
+    const start = createdAt ? utcDay(createdAt) : today;
     return { from: start && start <= today ? start : today, to: today };
   }, [createdAt]);
 

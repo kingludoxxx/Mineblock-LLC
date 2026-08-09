@@ -186,6 +186,35 @@ const SEO = { title: 'Pinned title', description: 'desc' };
   ok(r.status === 404, 'route: missing funnel → 404', JSON.stringify(r));
 }
 
+// ---- empty-title source: derived title must be 'copy', never ' copy' -------
+{
+  const pe = await req('POST', `/${FA}/pages`, { title: 'temp', slug: '/empty-title', type: 'generic' });
+  const PE = pe.j?.data?.id;
+  const cleared = await req('PATCH', `/${FA}/pages/${PE}`, { title: '' });
+  ok(cleared.status === 200 && cleared.j?.data?.title === '', 'seed: source title emptied', JSON.stringify(cleared.j?.data?.title));
+  const r = await req('POST', `/${FA}/pages/${PE}/duplicate`);
+  ok(r.status === 201 && r.j?.data?.title === 'copy', "copy: empty source title derives 'copy' (no leading space)", JSON.stringify(r.j?.data?.title));
+}
+
+// ---- draft visibility: the eligible-pages projection the split UI reads ----
+// The serve path only delivers PUBLISHED arms, so the UI's draft badges hang
+// off this projection's `status` — prove the field (plus seo/updated_at, which
+// key the title checkbox and the thumbnail cache) actually crosses the wire,
+// and that a fresh duplicate reports as a draft in it.
+{
+  const { listArmEligiblePages } = await import('../../src/services/splitPages.js');
+  const query = (t, p = []) => sql.unsafe(t, p);
+  const dup = await req('POST', `/${FA}/pages/${P1}/duplicate`, { slug: '/draft-proj-check' });
+  ok(dup.status === 201, 'seed: one more duplicate for the projection check', JSON.stringify(dup.status));
+  const proj = await listArmEligiblePages({ funnelId: FA }, { query });
+  const row = (proj.pages || []).find((p) => p.slug === '/draft-proj-check');
+  ok(Boolean(row), 'projection: the duplicate appears in eligible-pages');
+  ok(row?.status === 'draft', "projection: its status is 'draft' (what the UI badges read)", row?.status);
+  ok(row && 'seo' in row && 'updated_at' in row, 'projection: seo + updated_at ride along (title checkbox + thumb cache)');
+  const src = (proj.pages || []).find((p) => p.id === P1);
+  ok(src?.status === 'published', "projection: the published source reads 'published'", src?.status);
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 server.close();
 await sql.end();
