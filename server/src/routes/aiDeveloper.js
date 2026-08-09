@@ -773,6 +773,11 @@ router.post('/chat', async (req, res) => {
     // rather than repopulating the thread they just emptied. Opening it also
     // guarantees the row exists, so the persist's FOR UPDATE has a real row to
     // lock. Best-effort — a turn must not be lost to a bookkeeping failure.
+    // KNOWN DEGRADATION (reviewed, accepted): this open rides pgQuery's circuit
+    // breaker while the persist uses sharedClient directly — during a breaker-
+    // open window turnEpoch is undefined and the clear-beats-in-flight-turn
+    // guard reverts to append-unconditionally (DELETE 500s in that window too,
+    // so the race needs a DB incident + a turn spanning the breaker reset).
     let turnEpoch;
     try {
       await ensureAiDevChatTables();
