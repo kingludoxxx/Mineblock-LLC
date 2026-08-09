@@ -267,15 +267,19 @@ router.post('/:domain/auto-dns', async (req, res) => {
   }
 });
 
-// POST /:domain/reassign { funnel_id, confirm } — move an already-attached
-// domain to another funnel ("Reuse here" in the Domains tab). Atomic: clears
-// the old funnel's custom_domain pointer when it referenced this domain and
-// moves the row in one transaction. confirm:true required — a connected host
-// starts serving the NEW funnel immediately.
+// POST /:domain/reassign { funnel_id, from_funnel_id?, confirm } — move an
+// already-attached domain to another funnel ("Reuse here" in the Domains
+// tab). Atomic: clears any funnel's custom_domain pointer to this domain and
+// moves the row in one transaction. from_funnel_id anchors the conflict
+// guard to the funnel the caller's confirm dialog named — a stale value
+// (row moved since the caller's list load) refuses with reassign_conflict
+// instead of silently chain-moving. confirm:true required — a connected
+// host starts serving the NEW funnel immediately.
 router.post('/:domain/reassign', async (req, res) => {
   try {
     const result = await reassignDomain(String(req.params.domain || ''), {
       funnelId: req.body?.funnel_id,
+      fromFunnelId: req.body?.from_funnel_id,
       confirm: req.body?.confirm,
       actor: actorOf(req),
     });

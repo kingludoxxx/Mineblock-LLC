@@ -450,7 +450,8 @@ const DOMAIN_ERR = {
   confirm_required: 'Confirmation required.',
   funnel_id_required: 'Funnel id missing.',
   domain_already_on_this_funnel: 'This domain is already attached to this funnel.',
-  reassign_conflict: 'The domain changed while moving it — refresh and try again.',
+  reassign_conflict: 'The domain moved to another funnel since this list loaded — refresh and try again.',
+  from_funnel_id_invalid: 'Invalid source funnel.',
 };
 const domainErr = (code) => DOMAIN_ERR[code] || (code ? `Failed (${code})` : 'Request failed');
 
@@ -585,13 +586,16 @@ export function DomainsSection({ funnel, onFunnelUpdated }) {
   const [dnsOpen, setDnsOpen] = useState(false);      // bottom aggregate records
 
   const load = useCallback(async () => {
-    setListErr('');
     try {
       const res = await api.get(`/domain-hub/list`, { params: { funnel_id: funnel.id } });
       setRows(Array.isArray(res.data?.data) ? res.data.data : []);
+      setListErr('');
     } catch (e) {
+      // Keep the last-known rows on a failed poll — clearing them would also
+      // kill the auto-refresh timer (hasInFlight) on one transient error.
+      // The inline listErr notice surfaces the failure; polling continues.
       setListErr(domainErr(e.response?.data?.error));
-      setRows([]);
+      setRows((prev) => (Array.isArray(prev) ? prev : []));
     }
   }, [funnel.id]);
 
@@ -705,12 +709,16 @@ export function DomainsSection({ funnel, onFunnelUpdated }) {
     if (opening && avail === null) loadAvailable();
   };
 
-  const reuse = async (domain) => {
+  const reuse = async (row) => {
+    const domain = row.domain;
     setBusyDomain(domain);
     setReuseErr('');
     try {
+      // from_funnel_id anchors the server's conflict guard to the funnel this
+      // confirm dialog NAMED — if the row moved since this list loaded, the
+      // server refuses (reassign_conflict) instead of chain-moving it.
       await api.post(`/domain-hub/${encodeURIComponent(domain)}/reassign`, {
-        funnel_id: funnel.id, confirm: true,
+        funnel_id: funnel.id, from_funnel_id: row.funnel_id, confirm: true,
       });
       setReuseArm(''); setReuseText('');
       await Promise.all([load(), loadAvailable()]);
@@ -1021,7 +1029,7 @@ export function DomainsSection({ funnel, onFunnelUpdated }) {
                       className="flex-1 px-2.5 py-1.5 text-xs bg-bg-elevated border border-border-default rounded-lg text-text-primary font-mono focus:outline-none focus:ring-2 focus:ring-accent/40"
                     />
                     <button
-                      onClick={() => reuse(r.domain)}
+                      onClick={() => reuse(r)}
                       disabled={busyDomain === r.domain || reuseText.trim().toLowerCase() !== r.domain}
                       className="text-xs px-2.5 py-1.5 rounded-lg bg-emerald-600 text-white hover:bg-emerald-500 disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer transition-colors"
                     >

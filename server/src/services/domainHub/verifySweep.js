@@ -11,7 +11,9 @@
 // their delay elapses — the tick itself stays at 60s.
 import { pgQuery } from '../../db/pg.js';
 import { ensureDomainTables } from './schema.js';
-import { verifyDomain } from './attachService.js';
+import {
+  verifyDomain, FAST_VERIFY_ATTEMPTS, FAST_VERIFY_DELAY_MS, SLOW_VERIFY_DELAY_MS,
+} from './attachService.js';
 
 // Clamped env tuning (a garbage/"0" value must never tight-loop the DNS
 // resolver or the Render API).
@@ -25,15 +27,24 @@ const BATCH = posInt(process.env.DOMAIN_SWEEP_BATCH, 25, 1);
 let timer = null;
 let running = false;
 
+// Due-ness is filtered IN SQL so not-yet-due slow-phase rows never consume
+// LIMIT slots — with ≥BATCH slow rows a plain LIMIT would starve fast-phase
+// rows past their 60s cadence. Mirrors verifyDomain's gate (same 5s grace);
+// the in-service gate stays as belt-and-braces for direct callers.
+const DUE_FAST_SECS = (FAST_VERIFY_DELAY_MS - 5_000) / 1000;
+const DUE_SLOW_SECS = (SLOW_VERIFY_DELAY_MS - 5_000) / 1000;
+
 export async function sweepOnce() {
   const stats = { checked: 0, deferred: 0, connected: 0, errors: 0 };
   await ensureDomainTables();
   const rows = await pgQuery(
     `SELECT domain FROM lb_domains
      WHERE status IN ('pending_dns', 'verifying')
+       AND (last_check IS NULL
+            OR last_check < NOW() - (CASE WHEN verify_attempts < $2::int THEN $3::float8 ELSE $4::float8 END) * interval '1 second')
      ORDER BY last_check ASC NULLS FIRST
      LIMIT $1`,
-    [BATCH]
+    [BATCH, FAST_VERIFY_ATTEMPTS, DUE_FAST_SECS, DUE_SLOW_SECS]
   );
   for (const { domain } of rows) {
     try {

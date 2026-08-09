@@ -51,7 +51,7 @@ import { invalidateHostCache } from './hostRouting.js';
 export const FAST_VERIFY_ATTEMPTS = 60;
 export const FAST_VERIFY_DELAY_MS = 60_000;
 export const SLOW_VERIFY_DELAY_MS = 300_000;
-export const MAX_VERIFY_ATTEMPTS = 336; // 60 fast + 276 slow ≈ 24h total
+export const MAX_VERIFY_ATTEMPTS = 336; // 60 fast + 276 slow = 24h total exactly
 
 /** Delay to wait AFTER `attempts` spent attempts before the next one runs. */
 export function verifyDelayMs(attempts) {
@@ -309,12 +309,29 @@ export async function verifyDomain(domain, { actor = null, resetAttempts = false
     status = 'verifying';
   }
 
+  // The 24h budget is UNIVERSAL: a pointing-but-never-verified pass (Render
+  // registered, verificationStatus still pending) consumes an attempt like a
+  // not-pointing pass does — otherwise such a row would call the Render API
+  // every 60s forever. Only `connected` (terminal success) resets the
+  // counter; verify-now's explicit resetAttempts:true is the only other reset.
+  let attempts = 0;
+  let exhausted = false;
+  if (status !== 'connected') {
+    attempts = row.verify_attempts + 1;
+    exhausted = attempts >= MAX_VERIFY_ATTEMPTS;
+    if (exhausted) {
+      status = 'error';
+      errorDetail = errorDetail
+        || 'render_never_verified: retries exhausted — DNS points at us but Render never confirmed verification; check the Render dashboard, then Verify now';
+    }
+  }
   await pgQuery(
     `UPDATE lb_domains SET status = $2, render_domain_id = $3,
-       verify_attempts = 0, last_check = NOW(), error_detail = $4, updated_at = NOW()
+       verify_attempts = $5, last_check = NOW(), error_detail = $4, updated_at = NOW()
      WHERE domain = $1`,
-    [domain, status, renderDomainId, errorDetail]
+    [domain, status, renderDomainId, errorDetail, attempts]
   );
+  if (exhausted) await logDomainEvent(domain, 'verify_exhausted', { attempts }, actor);
   if (status === 'connected' && row.status !== 'connected') {
     await logDomainEvent(domain, 'connected', { render_domain_id: renderDomainId }, actor);
   }
@@ -360,17 +377,23 @@ export async function detachDomain(domain, { confirm, actor = null } = {}) {
  * registration is service-level (one web service hosts every funnel), so no
  * Render call is involved — only which funnel the host routes to changes.
  *
- * Atomic (single transaction): move the lb_domains row AND clear the old
- * funnel's custom_domain pointer when it referenced this domain — a reassign
- * must never leave funnel A "primary on" a domain that now serves funnel B.
- * The row move is keyed on the old funnel_id, so a concurrent reassign /
- * detach makes this one fail with `reassign_conflict` instead of silently
- * double-moving.
+ * Atomic (single transaction): move the lb_domains row AND clear any
+ * funnel's custom_domain pointer to this domain — a reassign must never
+ * leave funnel A "primary on" a domain that now serves funnel B. (Blanket
+ * clear, matching detach's repair: WHERE custom_domain = domain, no funnel
+ * filter.)
+ *
+ * The conflict guard keys the transactional UPDATE's WHERE on the funnel
+ * the CALLER believes owns the domain (`fromFunnelId` — the funnel its
+ * confirm dialog named). A stale value → 0 rows → `reassign_conflict`,
+ * so a row that moved between the caller's list load and this call can
+ * never be silently chain-moved. Without a caller value it falls back to
+ * the row read above, which still refuses a concurrent move mid-flight.
  *
  * Refuses without confirm:true — a connected host starts serving the new
  * funnel immediately.
  */
-export async function reassignDomain(domain, { funnelId, confirm, actor = null } = {}) {
+export async function reassignDomain(domain, { funnelId, fromFunnelId, confirm, actor = null } = {}) {
   await ensureDomainTables();
   const norm = normalizeDomain(domain);
   if (!norm.ok) return { ok: false, status: 400, error: norm.error };
@@ -383,6 +406,9 @@ export async function reassignDomain(domain, { funnelId, confirm, actor = null }
   if (!funnelId || typeof funnelId !== 'string') {
     return { ok: false, status: 400, error: 'funnel_id_required' };
   }
+  if (fromFunnelId != null && typeof fromFunnelId !== 'string') {
+    return { ok: false, status: 400, error: 'from_funnel_id_invalid' };
+  }
   if (row.funnel_id === funnelId) {
     return { ok: false, status: 400, error: 'domain_already_on_this_funnel' };
   }
@@ -390,34 +416,35 @@ export async function reassignDomain(domain, { funnelId, confirm, actor = null }
     return { ok: false, status: 404, error: 'funnel_not_found' };
   }
 
-  const fromFunnelId = row.funnel_id;
+  const expectedFrom = fromFunnelId != null ? fromFunnelId : row.funnel_id;
   let moved = null;
   await pgClient.begin(async (tx) => {
     const rows = await tx`
       UPDATE lb_domains SET funnel_id = ${funnelId}, updated_at = NOW()
-      WHERE domain = ${row.domain} AND funnel_id = ${fromFunnelId}
+      WHERE domain = ${row.domain} AND funnel_id = ${expectedFrom}
       RETURNING *`;
     moved = rows[0] || null;
     if (!moved) {
-      // Concurrent reassign/detach won the race — abort the whole transaction
-      // (nothing, including the pointer clear below, may land).
+      // Stale caller view or a concurrent reassign/detach won the race —
+      // abort the whole transaction (nothing, including the pointer clear
+      // below, may land).
       const err = new Error('reassign_conflict');
       err.reassignConflict = true;
       throw err;
     }
     await tx`
       UPDATE funnels SET custom_domain = NULL, updated_at = NOW()
-      WHERE id = ${fromFunnelId} AND custom_domain = ${row.domain}`;
+      WHERE custom_domain = ${row.domain}`;
   }).catch((err) => {
     if (err.reassignConflict) { moved = null; return; }
     throw err; // real DB failure — LET IT THROW to the route's 500
   });
   if (!moved) return { ok: false, status: 409, error: 'reassign_conflict' };
 
+  invalidateHostCache(row.domain); // host routes to the NEW funnel — immediately
   await logDomainEvent(row.domain, 'reassigned', {
-    from_funnel_id: fromFunnelId, to_funnel_id: funnelId,
+    from_funnel_id: expectedFrom, to_funnel_id: funnelId,
   }, actor);
-  invalidateHostCache(row.domain); // host now routes to the NEW funnel
   return { ok: true, row: moved };
 }
 
