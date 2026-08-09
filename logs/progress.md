@@ -2439,3 +2439,56 @@ MADE). Upsell settle day = created_at::date, documented in loadMoneyWindow
 (DECISION MADE).
 STATUS: COMPLETE
 ---
+
+---
+TIMESTAMP: 2026-08-09 21:05
+TASK: PLATFORM COMPLETENESS lane (funnel duplicate · trash/restore · health alerts v1)
+BUILT: (1) POST /api/v1/funnels/:id/duplicate {confirm:true} — COMPOSED from
+funnelTransfer's exportFunnel + importFunnel in one in-process flow, so the
+allowlist, the single-transaction page write, the home-invariant repair, the
+canvas-layout rebuild, the redirect sanitiser and the slug de-collision ladder
+are all inherited rather than reimplemented (funnels.js:894-1010). Refuses an
+archived source; copy is always a DRAFT named '<name> copy'. (2) POST
+/api/v1/funnels/:id/restore {confirm:true} (funnels.js:875-960) — clears
+`archived` and, when a live funnel has taken the slug (the partial unique index
+frees it on archive), RE-SLUGS with a suffix and reports it in `notes`, where
+the pre-existing archive route answers 409 and strands the operator. Idempotent
+on an already-live funnel. NO permanent delete added, server or client.
+(3) NEW services/healthAlerts.js + routes/healthAlerts.js — lb_health_alerts
+(ensure-on-demand), recordAlert/listAlerts/ackAlert exported for other services,
+a per-kind COOLDOWN, caps on message/context, an idempotent ack, and a 5-minute
+in-process sweep (HEALTH_ALERTS_SWEEP_DISABLED=1) checking postback queue depth
+>100, spend-sync stale >12h per source, and needs_review RISING (baseline-first,
+never alerting off a single observation). One mount line in routes/index.js.
+Client: Duplicate action + typed-confirm Trash tab/Restore on FunnelsPage;
+HealthAlertsPanel.jsx built standalone and UNMOUNTED (the Health surface lives
+in the contested sections.jsx:1141).
+TESTED: NEW server/tests/platform/platform.mjs — real routers, real
+authenticate + requirePermission, embedded PG 5433, 141 assertions. Edge cases
+driven: missing-confirm, string 'true' as confirm, 404s, 401s, 403 on a token
+lacking the permission, archived-source refusal, slug collision on restore,
+double-restore, double-ack, unknown alert id, oversized context, negative and
+non-numeric paging params, absurd limit, a sweep against a database where all
+three source tables are ABSENT, a still-stale feed (cooldown), a FALLING
+needs_review count, and empty-but-present source tables. Regression: existing
+funnel-transfer.mjs and page-duplicate.mjs re-run.
+OUTPUT: platform.mjs 141 passed / 0 failed (run twice, identical);
+funnel-transfer.mjs 121 passed / 0 failed; page-duplicate.mjs 34 passed / 0
+failed; client vite build ✓ 2670 modules, built in 701ms; eslint delta on
+FunnelsPage.jsx = 0 new problems (4 pre-existing before and after);
+HealthAlertsPanel.jsx eslint clean and separately compiled through vite (3
+modules transformed) because the main build tree-shakes an unmounted file;
+node --check clean on all five changed/new server files; routes/index.js boots
+and /api/v1/health-alerts answers 401 (mounted + gated).
+DECISIONS: (a) DECISION MADE — the alert routes are gated with the EXISTING
+('audit','read') permission rather than a new 'health-alerts' key, which no
+seeded role holds; the consequence (a Viewer can ack) is documented in
+routes/healthAlerts.js. (b) DECISION MADE — HealthAlertsPanel.jsx is NOT
+mounted: every mount point (sections.jsx, App.jsx, Sidebar.jsx) is outside this
+lane's fence. The one-line mount is written in the file header. (c) DECISION
+MADE — no retention/purge on lb_health_alerts; the cooldown bounds growth and
+the gap is stated in the service header rather than pretended away. (d) The
+funnels.js ↔ funnelTransfer.js import cycle is deliberate and verified by
+execution in BOTH module-evaluation orders.
+STATUS: COMPLETE
+---

@@ -17,6 +17,18 @@ import {
   quizPageTemplate,
   advertorialPageTemplate,
 } from '../services/funnelRender.js';
+// POST /:id/duplicate composes these two rather than reimplementing a funnel
+// copy — see the long note on that route for what the composition inherits.
+//
+// ⚠️ THIS IS A DELIBERATE IMPORT CYCLE: services/funnelTransfer.js imports
+// validateBlocks / validateFunnelSettings / ensureTables back out of THIS file
+// (funnelTransfer.js:59). It is safe because every binding crossing the cycle
+// in BOTH directions is a hoisted `function` declaration, and neither module
+// calls the other at module scope — the bindings are resolved at request time,
+// long after both modules have finished evaluating. Adding a `const` export to
+// funnelTransfer.js and consuming it here at module scope WOULD break this
+// (temporal dead zone); consume such a value inside a handler instead.
+import { exportFunnel, importFunnel } from '../services/funnelTransfer.js';
 
 const router = Router();
 
@@ -893,6 +905,189 @@ router.post('/:id/archive', async (req, res) => {
     }
     console.error('[funnels] archive failed:', err);
     res.status(500).json({ error: 'Failed to archive funnel' });
+  }
+});
+
+// POST /api/v1/funnels/:id/restore — { confirm: true }
+//
+// The other half of archive. POST /:id/archive {archived:false} already flips
+// the flag, but it ANSWERS 409 when a live funnel took the slug in the meantime
+// (funnels.js:888) and leaves the operator with a trashed funnel and no next
+// move — the slug that collided is usually the one the REPLACEMENT funnel is
+// using, so "free it up and try again" means taking production offline.
+//
+// Restore instead RE-SLUGS: the original slug is tried first (the common case
+// — nothing took it), and only on the partial unique index's refusal does it
+// fall back to a suffixed slug, exactly the way importFunnel de-collides a
+// funnel slug (funnelTransfer.js:658). The rewrite is REPORTED in `notes`,
+// never silent: the funnel's public path changed, and an operator who is not
+// told will point an ad at the old one.
+//
+// PERMANENT DELETE IS DELIBERATELY ABSENT here and in the client. Archive is
+// the only "delete" in this codebase (funnels.js:875) and this route does not
+// introduce a second, irreversible one.
+router.post('/:id/restore', async (req, res) => {
+  try {
+    await ensureTables();
+    // `confirm` is required for the same reason the client types the name:
+    // restore puts a funnel back on a public slug. A bare POST must not do it.
+    if (req.body?.confirm !== true) {
+      return res.status(400).json({ error: 'confirm must be true to restore a funnel' });
+    }
+
+    const funnel = await getFunnel(req.params.id);
+    if (!funnel) return res.status(404).json({ error: 'Funnel not found' });
+    // IDEMPOTENT, not an error: a double-click, or two operators on the same
+    // trash list, must not produce a failure the second person has to read.
+    if (!funnel.archived) {
+      return res.json({
+        success: true,
+        data: { funnel, restored: false, slug_changed: false, notes: ['This funnel was already live — nothing changed.'] },
+      });
+    }
+
+    const notes = [];
+    const base = FUNNEL_SLUG_RE.test(String(funnel.slug || '')) ? String(funnel.slug) : slugify(funnel.name) || 'funnel';
+
+    // Attempt 0 keeps the original slug. A UNIQUE violation is not catchable
+    // inside a transaction, so each attempt is its own statement — which is
+    // also what makes the read-then-write race safe: the INDEX arbitrates, the
+    // read never does.
+    for (let attempt = 0; attempt < 4; attempt += 1) {
+      const slug = attempt === 0 ? base : `${base}-${randomBytes(2).toString('hex')}`.slice(0, 80);
+      try {
+        // Pinned to archived = TRUE so a concurrent restore cannot be
+        // double-applied and silently re-slug an already-live funnel.
+        // eslint-disable-next-line no-await-in-loop
+        const rows = await pgQuery(
+          `UPDATE funnels SET archived = FALSE, slug = $2, updated_at = NOW()
+           WHERE id = $1 AND archived = TRUE RETURNING *`,
+          [req.params.id, slug]
+        );
+        if (!rows.length) {
+          // Lost the race — somebody else restored it between the read above
+          // and this write. Report what is actually there now.
+          const current = await getFunnel(req.params.id);
+          if (!current) return res.status(404).json({ error: 'Funnel not found' });
+          return res.json({
+            success: true,
+            data: { funnel: current, restored: false, slug_changed: false, notes: ['This funnel was already live — nothing changed.'] },
+          });
+        }
+        if (slug !== funnel.slug) {
+          notes.push(`The slug "${funnel.slug}" is taken by a live funnel — this one was restored as "${slug}". Update any links that used the old path.`);
+        }
+        return res.json({
+          success: true,
+          data: { funnel: rows[0], restored: true, slug_changed: slug !== funnel.slug, notes },
+        });
+      } catch (err) {
+        if (err?.code === UNIQUE_VIOLATION) continue; // fresh suffix, try again
+        throw err; // LET IT THROW — the catch below logs and answers 500
+      }
+    }
+
+    return res.status(409).json({ error: 'Cannot restore: could not find a free slug for this funnel' });
+  } catch (err) {
+    console.error('[funnels] restore failed:', err);
+    res.status(500).json({ error: 'Failed to restore funnel' });
+  }
+});
+
+// POST /api/v1/funnels/:id/duplicate — { confirm: true, name? }
+//
+// ── COMPOSED, NOT REIMPLEMENTED ────────────────────────────────────────────
+// A funnel copy is an EXPORT immediately followed by an IMPORT, both in this
+// process and with the envelope never touching a disk. Written any other way
+// this route would be a second, drifting copy of ~800 reviewed lines: the
+// settings allowlist that keeps `checkout.maps_api_key` from travelling
+// (funnelTransfer.js:118), the one-transaction page write that cannot leave a
+// funnel with zero pages (funnelTransfer.js:661), the exactly-one-home repair,
+// the canvas-layout rebuild that refuses layouts the canvas cannot save
+// (funnelTransfer.js:765), the redirect sanitiser, the per-row created_at
+// offset that preserves page ORDER, and the slug de-collision ladder. Every
+// one of those is inherited here for free, and every future fix to them fixes
+// duplicate too.
+//
+// WHAT THAT INHERITANCE COSTS, STATED HONESTLY: the copy is an
+// ALLOWLISTED copy, not a byte copy. Settings keys outside SETTINGS_ALLOWLIST
+// do not survive a duplicate — including `checkout.maps_api_key`. That is the
+// right default (a credential should be re-entered deliberately, and a copy is
+// a new funnel), and it is REPORTED: importFunnel puts every dropped key in
+// `notes`, which this route passes straight through. `custom_domain`,
+// `default_page_id` and `misc` likewise do not travel, and the copy is always
+// a DRAFT — a duplicate must never start serving as a side effect of a click.
+router.post('/:id/duplicate', async (req, res) => {
+  try {
+    await ensureTables();
+    if (req.body?.confirm !== true) {
+      return res.status(400).json({ error: 'confirm must be true to duplicate a funnel' });
+    }
+
+    const funnel = await getFunnel(req.params.id);
+    if (!funnel) return res.status(404).json({ error: 'Funnel not found' });
+    // Same refusal, same wording as every other write on this router. Export
+    // refuses an archived funnel too (funnelTransfer.js:249) — duplicating a
+    // trashed funnel would route around the archive — but refusing HERE gives
+    // the operator this router's error shape instead of the transfer's.
+    if (funnel.archived) {
+      return res.status(400).json({ error: 'Funnel is archived — restore it before duplicating' });
+    }
+
+    const nameOverride = req.body?.name !== undefined && req.body?.name !== null
+      ? String(req.body.name).trim()
+      : `${String(funnel.name || 'Funnel').trim()} copy`;
+    if (!nameOverride) return res.status(400).json({ error: 'name cannot be empty' });
+    if (nameOverride.length > 200) return res.status(400).json({ error: 'name is too long (200 max)' });
+
+    const exported = await exportFunnel(req.params.id);
+    if (!exported.ok) {
+      return res.status(exported.status === 404 ? 404 : exported.status)
+        .json({ error: `Could not read the source funnel (${exported.error})` });
+    }
+
+    // ⚠️ nameOverride is what makes importFunnel derive a FRESH slug from the
+    // new name instead of reusing the source's (funnelTransfer.js:647) — the
+    // source is live, so its slug is taken, and the de-collision ladder would
+    // otherwise be doing work the name already did.
+    const imported = await importFunnel({ envelope: exported.envelope, nameOverride });
+    if (!imported.ok) {
+      console.error('[funnels] duplicate import refused:', imported.error, imported.detail || '');
+      return res.status(imported.status)
+        .json({ error: `Could not create the copy (${imported.error})`, detail: imported.detail });
+    }
+
+    // ⚠️ THE STRIPPED KEYS MUST BE SAID IN WORDS, NOT ONLY LISTED.
+    // importFunnel only writes a "keys were dropped" note when the ENVELOPE it
+    // was handed still carried un-allowlisted keys. Here the envelope came from
+    // OUR OWN export, which already applied the allowlist — so nothing is left
+    // to drop at import time and `notes` came back EMPTY while the credential
+    // had in fact been left behind. (Caught by harness D27, which failed on
+    // exactly this before the fix.) The operator reads `notes`; a fact that
+    // lives only in a machine-readable `stripped` array is a fact they will
+    // meet later as a broken address autocomplete.
+    const notes = Array.isArray(imported.data.notes) ? [...imported.data.notes] : [];
+    if (exported.stripped?.length) {
+      notes.unshift(
+        `These settings did not travel to the copy and must be re-entered: ${exported.stripped.join(', ')}.`
+      );
+    }
+
+    return res.status(201).json({
+      success: true,
+      data: {
+        ...imported.data,
+        notes,
+        source_funnel_id: req.params.id,
+        // The KEY NAMES this deployment refused to carry. Safe here in a way it
+        // is not in an export file (funnelTransfer.js:334): nothing leaves this
+        // deployment, and the operator needs to know the copy is missing them.
+        stripped: exported.stripped,
+      },
+    });
+  } catch (err) {
+    console.error('[funnels] duplicate failed:', err);
+    res.status(500).json({ error: 'Failed to duplicate funnel' });
   }
 });
 
