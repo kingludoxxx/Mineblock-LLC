@@ -434,6 +434,18 @@ const health = async (fid) => {
   check('E15 copy says retrying, not "opens at 5"',
     b?.note === 'Cooldown lapsed after 7 consecutive failures — delivery is retrying.', JSON.stringify(b?.note));
   check('E15 no self-contradicting copy', !/opens at/.test(String(b?.note)), JSON.stringify(b?.note));
+
+  // E15b TORN WRITE (review N3): breakerRecord writes fails and open_until in
+  // two separate non-transactional statements. Simulate the drop between them —
+  // fails above threshold, open_until never set.
+  await sql`UPDATE lb_postback_breakers SET fails = 9, open_until = NULL WHERE scope_id = ${scope}`;
+  const r2 = await health(F.breaker);
+  const b2 = r2.d?.pixels?.[0]?.breaker;
+  check('E15b torn write: state closed', b2?.state === 'closed', JSON.stringify(b2));
+  check('E15b torn write: still flagged cooldown_lapsed', b2?.cooldown_lapsed === true, JSON.stringify(b2));
+  check('E15b torn write: copy does NOT say "opens at 5"', !/opens at/.test(String(b2?.note)), JSON.stringify(b2?.note));
+  check('E15b torn write: retrying copy',
+    b2?.note === 'Cooldown lapsed after 9 consecutive failures — delivery is retrying.', JSON.stringify(b2?.note));
 }
 
 // ── E16 totals: ledger sum vs live gauge (review M3) ────────────────────────
@@ -492,20 +504,97 @@ const health = async (fid) => {
   check('E19 GET surfaces updated_by', g.j?.data?.updated_by === 'u_trx_test', JSON.stringify(g.j?.data?.updated_by));
 }
 
-// ── E20 the lb_tracking_events prune actually deletes (review m5) ───────────
+// ── E20 retention: old rows go, recent rows stay (review m5) ────────────────
 {
   const { pruneExpired } = await import('../../src/services/trackingSweeps.js');
+  // Clean slate so the counts below are exact.
+  await sql`DELETE FROM lb_tracking_events WHERE ts < NOW() - INTERVAL '180 days'`;
   await sql`INSERT INTO lb_tracking_events (funnel_id, platform, pixel_id, event_name, event_id, status, source, idk, ts)
             VALUES (${F.healthy}, 'meta', 'x', 'Purchase', 'e_ancient', 'sent', 'relay', ${sql.json([])}, NOW() - INTERVAL '200 days'),
                    (${F.healthy}, 'meta', 'x', 'Purchase', 'e_recent', 'sent', 'relay', ${sql.json([])}, NOW() - INTERVAL '10 days')`;
   const before = await sql`SELECT count(*)::int n FROM lb_tracking_events WHERE event_id IN ('e_ancient','e_recent')`;
   check('E20 both fixture rows present before prune', before[0].n === 2, JSON.stringify(before[0]));
-  await pruneExpired();
+  const res = await pruneExpired();
   const after = await sql`SELECT event_id FROM lb_tracking_events WHERE event_id IN ('e_ancient','e_recent')`;
   const ids = after.map((r) => r.event_id);
   check('E20 the 200-day-old row is pruned', !ids.includes('e_ancient'), JSON.stringify(ids));
   check('E20 the 10-day-old row SURVIVES (order forensics preserved)', ids.includes('e_recent'), JSON.stringify(ids));
+  check('E20 pruneExpired reports the events count', res.events === 1, JSON.stringify(res));
+  // N2: the FAILURE path must carry the same keys as the success path.
+  check('E20 success result shape has all three keys',
+    ['touches', 'clicks', 'events'].every((k) => k in res), JSON.stringify(Object.keys(res)));
   await sql`DELETE FROM lb_tracking_events WHERE event_id IN ('e_ancient','e_recent')`;
+}
+
+// ── E21 BATCHED prune: index, cross-tick ceiling, clean no-op (review N1) ───
+// The bug this replaces: one unbounded DELETE over a Seq Scan, whose 8s
+// pgQuery timeout does not cancel the server-side statement, so it ran on to
+// the 15s statement_timeout and rolled back — an hourly lock-burning no-op that
+// deleted nothing, forever.
+{
+  const { pruneTrackingEvents } = await import('../../src/services/trackingSweeps.js');
+  const OLD = 'fnl_trx_prune';
+  await sql`DELETE FROM lb_tracking_events WHERE ts < NOW() - INTERVAL '180 days'`;
+
+  // (b) the (ts) index must exist and be VALID after the non-fatal build.
+  await pruneTrackingEvents(); // triggers ensureEventsTsIndex on a clean table
+  const idx = await sql`SELECT c.relname, i.indisvalid FROM pg_class c
+    JOIN pg_index i ON i.indexrelid = c.oid WHERE c.relname = 'idx_lb_tracking_events_ts'`;
+  check('E21 idx_lb_tracking_events_ts exists', idx.length === 1, JSON.stringify(idx));
+  check('E21 the CONCURRENTLY build is VALID', idx[0]?.indisvalid === true, JSON.stringify(idx[0]));
+
+  // Seed 55,000 aged rows — more than one per-tick ceiling (50,000), and more
+  // than two batches (5,000 each), so both bounds are actually exercised.
+  await sql.unsafe(`INSERT INTO lb_tracking_events (funnel_id, platform, pixel_id, event_name, event_id, status, source, idk, ts)
+    SELECT '${OLD}', 'meta', 'x', 'Purchase', 'e_p_'||g, 'sent', 'relay', '[]'::jsonb, NOW() - INTERVAL '200 days'
+    FROM generate_series(1, 55000) g`);
+  await sql.unsafe('ANALYZE lb_tracking_events');
+  const seeded = await sql`SELECT count(*)::int n FROM lb_tracking_events WHERE funnel_id = ${OLD}`;
+  check('E21 55,000 aged rows seeded', seeded[0].n === 55000, JSON.stringify(seeded[0]));
+
+  // (a) the batch subselect must be index-driven in BOTH states it runs in.
+  const explain = async () => (await sql.unsafe(
+    `EXPLAIN (COSTS OFF) SELECT id FROM lb_tracking_events
+     WHERE ts < NOW() - INTERVAL '180 days' ORDER BY id LIMIT ${5000}`
+  )).map((r) => r['QUERY PLAN']).join('\n');
+
+  const planFull = await explain();
+  console.log('   [E21 plan · populated]', planFull.replace(/\n/g, ' | '));
+  check('E21 populated: index-driven, NOT a Seq Scan', /Index Scan/.test(planFull) && !/Seq Scan/.test(planFull), planFull);
+
+  // (a) per-tick CEILING: one tick stops at 50,000 and leaves the rest.
+  const tick1 = await pruneTrackingEvents();
+  check('E21 tick 1 deletes exactly the per-tick ceiling (50,000)', tick1 === 50000, String(tick1));
+  const mid = await sql`SELECT count(*)::int n FROM lb_tracking_events WHERE funnel_id = ${OLD}`;
+  check('E21 5,000 aged rows deliberately survive tick 1', mid[0].n === 5000, JSON.stringify(mid[0]));
+
+  // ...and the NEXT tick picks up the remainder — proving it advances across
+  // ticks instead of repeating a no-op.
+  const tick2 = await pruneTrackingEvents();
+  check('E21 tick 2 deletes the remaining 5,000', tick2 === 5000, String(tick2));
+  const end = await sql`SELECT count(*)::int n FROM lb_tracking_events WHERE funnel_id = ${OLD}`;
+  check('E21 all aged rows gone after tick 2', end[0].n === 0, JSON.stringify(end[0]));
+
+  // A run with nothing to do is a clean, cheap no-op returning 0.
+  const tick3 = await pruneTrackingEvents();
+  check('E21 tick 3 on a drained table is a clean 0 no-op', tick3 === 0, String(tick3));
+
+  // The DRAINED plan is the one the hourly sweep actually runs in steady
+  // state, and it is where idx_lb_tracking_events_ts earns its keep: the
+  // planner switches off the PK to an Index Cond on ts and answers immediately
+  // instead of walking the table. (Populated, the PK is cheaper — ts correlates
+  // with the BIGSERIAL id. Both states are index-driven; neither seq-scans.)
+  await sql.unsafe('ANALYZE lb_tracking_events');
+  const planDrained = await explain();
+  console.log('   [E21 plan · drained]', planDrained.replace(/\n/g, ' | '));
+  check('E21 drained: uses idx_lb_tracking_events_ts', /idx_lb_tracking_events_ts/.test(planDrained), planDrained);
+  check('E21 drained: by Index Cond, not a post-filter', /Index Cond/.test(planDrained), planDrained);
+  check('E21 drained: never a Seq Scan', !/Seq Scan/.test(planDrained), planDrained);
+
+  // Recent rows were never in scope at any point.
+  const recent = await sql`SELECT count(*)::int n FROM lb_tracking_events WHERE ts > NOW() - INTERVAL '180 days'`;
+  check('E21 in-retention rows untouched throughout', recent[0].n > 0, JSON.stringify(recent[0]));
+  await sql`DELETE FROM lb_tracking_events WHERE funnel_id = ${OLD}`;
 }
 
 // ── cleanup ─────────────────────────────────────────────────────────────────

@@ -278,9 +278,18 @@ export function classifyPixel({ pixel, spec, h24, breakerOpen, queuedNow }) {
 export function breakerView(br, isOpen) {
   const fails = int(br && br.fails);
   const openUntil = br && br.open_until ? br.open_until : null;
-  // Tripped at some point, but the open window has already elapsed: delivery is
-  // allowed to try again and the next result decides. Not open, not clean.
-  const cooldownLapsed = !isOpen && fails >= BREAKER_FAIL_THRESHOLD && Boolean(openUntil);
+  // Tripped at some point, but the circuit is not currently holding events
+  // back: delivery is allowed to try again and the next result decides. Not
+  // open, not clean.
+  //
+  // Deliberately does NOT require open_until (review N3). breakerRecord
+  // (trackingDelivery.js:192) writes its fail counter and its open_until in two
+  // SEPARATE non-transactional statements, so a connection drop between them
+  // leaves fails >= threshold with open_until NULL. Gating on open_until would
+  // send that row down the `fails > 0` branch and print "7 consecutive failures
+  // — the breaker opens at 5" next to a closed state — the exact contradiction
+  // m6 was fixed to remove. The fail count alone is the honest signal.
+  const cooldownLapsed = !isOpen && fails >= BREAKER_FAIL_THRESHOLD;
   let note = null;
   if (isOpen) {
     note = `Circuit breaker open after ${fails} consecutive endpoint failures — events are queued, not sent.`;

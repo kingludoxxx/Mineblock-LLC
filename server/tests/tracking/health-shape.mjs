@@ -379,6 +379,35 @@ eq(serverChannelReady(metaPixel({ pixel_id: '' }), SPECS.meta_pixel), false, 'T1
   eq(p.breaker.note, null, 'T17e a clean breaker emits NO note (nothing to explain)');
   eq(p.breaker.cooldown_lapsed, false, 'T17e clean breaker not lapsed');
 }
+{
+  // T17f TORN WRITE (review N3): breakerRecord writes fails and open_until in
+  // two separate non-transactional statements, so a connection drop between
+  // them leaves fails >= threshold with open_until NULL. cooldown_lapsed must
+  // NOT depend on open_until, or this row resurrects the m6 contradiction.
+  const p = only({
+    pixels: [metaPixel()],
+    counts: counts('meta', { sent: 3 }),
+    breakers: [{ scope_id: `${FID}:px_meta1`, fails: 7, open_until: null }],
+  });
+  eq(p.breaker.state, 'closed', 'T17f torn-write row reads closed');
+  eq(p.breaker.cooldown_lapsed, true, 'T17f fails>=threshold with NULL open_until is still lapsed');
+  eq(p.breaker.note, 'Cooldown lapsed after 7 consecutive failures — delivery is retrying.', 'T17f torn-write copy');
+  ok(!/opens at/.test(p.breaker.note), 'T17f the m6 contradiction cannot resurrect via a torn write');
+}
+{
+  // Boundary: exactly AT the threshold is lapsed; one below is not.
+  const at = only({
+    pixels: [metaPixel()], counts: counts('meta', { sent: 1 }),
+    breakers: [{ scope_id: `${FID}:px_meta1`, fails: 5, open_until: null }],
+  });
+  eq(at.breaker.cooldown_lapsed, true, 'T17g fails === threshold → lapsed');
+  const below = only({
+    pixels: [metaPixel()], counts: counts('meta', { sent: 1 }),
+    breakers: [{ scope_id: `${FID}:px_meta1`, fails: 4, open_until: null }],
+  });
+  eq(below.breaker.cooldown_lapsed, false, 'T17h fails === threshold-1 → not lapsed');
+  eq(below.breaker.note, '4 consecutive failures recorded — the breaker opens at 5.', 'T17h below-threshold copy still correct');
+}
 
 // ── T18 TOTALS: ledger sum vs instantaneous gauge (review M3) ───────────────
 {
