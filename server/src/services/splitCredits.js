@@ -27,6 +27,7 @@
 // throw a 500 up the webhook).
 import pgDb, { pgQuery } from '../db/pg.js';
 import { ensureSplitTables, EXPOSURE_CHARGE_SENTINEL } from './splitTestSchema.js';
+import { computeSplitStatistics } from './splitStats.js';
 
 // Money that can never poison an aggregate: finite, non-negative, 2dp.
 // (funnel-os lb_split_ledger_service._safe_amount.)
@@ -457,15 +458,352 @@ export async function voidSessionRefund(
 }
 
 /**
+ * SUFFICIENT STATISTICS for revenue per visitor, straight out of the ledger.
+ *
+ * Returns per arm `{ money_sessions, sum_x, sum_x2 }` where x is ONE SESSION's
+ * NET value — every credit leg it carries, minus every void row against those
+ * legs. Three decisions are load-bearing here:
+ *
+ *   • PER SESSION, NOT PER LEG. The unit of observation must be the unit of
+ *     randomisation, and the ledger randomises SESSIONS onto arms. Summing legs
+ *     would give a buyer with three upsells three observations, which
+ *     understates the variance and manufactures confidence — the exact defect
+ *     funnel-os documented on its incremental path (22% of its production
+ *     buyers carry 2-5 legs). `readResults` already counts `conversions` as
+ *     DISTINCT sessions for the same reason; these moments now match it.
+ *   • NET, NOT GROSS. `kind IN ('credit','void')` so a refunded order stops
+ *     counting as revenue AND stops inflating the variance. Σx therefore equals
+ *     the `net_revenue` column up to float rounding — the mean and the variance
+ *     come from ONE series, which is what makes the t statistic coherent.
+ *   • NON-CONVERTERS ARE NOT HERE, AND THAT IS CORRECT. A visitor who bought
+ *     nothing is a genuine 0 observation: it adds nothing to Σx or Σx² but it
+ *     DOES enlarge n. The caller passes n = exposures, so `varianceFromSums`
+ *     picks the zeros up from the denominator. Filtering them out of n instead
+ *     would compare only buyers, i.e. AOV, not revenue per visitor.
+ *
+ * NUMERIC columns arrive from postgres.js as STRINGS. Coerced at the boundary
+ * here rather than deep in the statistics, so a string can never reach an
+ * arithmetic operator and silently concatenate.
+ */
+async function readArmMoments(testId, query) {
+  const rows = await query(
+    `WITH per_session AS (
+       SELECT arm_key, session_id, SUM(value) AS net
+       FROM lb_split_credits
+       WHERE group_id = $1 AND kind IN ('credit', 'void')
+       GROUP BY arm_key, session_id
+     )
+     SELECT arm_key,
+            COUNT(*)::int                     AS money_sessions,
+            COALESCE(SUM(net), 0)             AS sum_x,
+            COALESCE(SUM(net * net), 0)       AS sum_x2
+     FROM per_session
+     GROUP BY arm_key`,
+    [String(testId)]
+  );
+  return new Map(rows.map((r) => [r.arm_key, {
+    money_sessions: Number(r.money_sessions || 0),
+    sum_x: Number(r.sum_x || 0),
+    sum_x2: Number(r.sum_x2 || 0),
+  }]));
+}
+
+/**
+ * EXPOSURES PER DAY — the rate that makes "time to decision" a real number.
+ *
+ * Without it `timeToDecisionDays` returns null on every call and the whole
+ * feature is dead prose. The rate is derived from timestamps the ledger already
+ * carries, so it costs one cheap aggregate and no new column.
+ *
+ * THE WINDOW IS first→last EXPOSURE, and the choice is deliberate:
+ *
+ *   • NOT first-exposure→NOW. A concluded or paused test would keep aging while
+ *     taking no traffic, so its rate would decay toward zero and the estimate
+ *     toward infinity — the panel would tell an operator a finished test needs
+ *     another 400 days.
+ *   • NOT a trailing 7 days. The exposure ledger is the only source here and a
+ *     test younger than the window would divide by a span it never lived
+ *     through, understating the rate and overstating the wait.
+ *
+ * The known bias, stated: a test that took traffic for two days and then went
+ * quiet for eight still reports the two-day rate, because `last_at` stops
+ * moving. That overstates the rate and UNDERSTATES the wait. It is the
+ * optimistic direction, which is why the estimate is labelled "roughly" and why
+ * `required_sample_per_arm` — a hard floor that does not depend on this rate —
+ * is always shown beside it.
+ *
+ * A span shorter than a day is FLOORED at one day rather than extrapolated: 40
+ * exposures in the first ten minutes of a test is not "5,760 per day", and
+ * dividing by the true fraction would print exactly that.
+ *
+ * Returns null (never 0) when there is nothing to measure — an unknown rate must
+ * read as unknown, and 0 would make every estimate infinite.
+ */
+async function readExposureRate(testId, query) {
+  const rows = await query(
+    `SELECT COUNT(*)::int AS n,
+            MIN(created_at) AS first_at,
+            MAX(created_at) AS last_at
+     FROM lb_split_credits
+     WHERE group_id = $1 AND kind = 'exposure'`,
+    [String(testId)]
+  );
+  const row = rows[0] || {};
+  const n = Number(row.n || 0);
+  if (!n || !row.first_at || !row.last_at) return null;
+  const first = new Date(row.first_at).getTime();
+  const last = new Date(row.last_at).getTime();
+  if (!Number.isFinite(first) || !Number.isFinite(last)) return null;
+  const spanDays = Math.max(1, (last - first) / 86400000);
+  const rate = n / spanDays;
+  return Number.isFinite(rate) && rate > 0 ? rate : null;
+}
+
+/**
+ * PER-ARM OPT-IN SUBMITS — real numbers or an honest refusal, never a guess.
+ *
+ * `optin_leads` carries `page_id` and no session or arm, so the only available
+ * attribution is "this lead was submitted on the page this arm serves". That is
+ * a REAL join, and it is also a fragile one, so it is guarded three ways and
+ * REFUSES rather than degrading to a plausible number:
+ *
+ *   • THE TABLE MAY NOT EXIST. A fresh install has no optin_leads, and a hard
+ *     join would throw inside a read the results modal depends on. Presence is
+ *     checked with to_regclass first — the same pattern funnelAnalytics already
+ *     uses for lb_split_credits.
+ *   • ARMS MUST HAVE DISTINCT PAGES. If two arms share a page_id, or any arm has
+ *     none, a page-keyed count cannot be assigned to one arm — it would silently
+ *     credit both. That returns `{ available: false, reason }` and the panel
+ *     prints an em-dash with the reason, which is the truth.
+ *   • THE WINDOW STARTS AT THE TEST'S FIRST EXPOSURE. A lander that existed
+ *     before the test carries opt-ins that have nothing to do with it, and
+ *     counting them would hand the older arm a lead made entirely of pre-test
+ *     history — the exact bias the lifetime/experiment split exists to expose.
+ *
+ * Never throws: every failure path returns `available: false` with a reason.
+ */
+async function readArmSubmits(testId, query) {
+  try {
+    const [reg] = await query(`SELECT to_regclass('public.optin_leads') IS NOT NULL AS present`);
+    if (!reg?.present) return { available: false, reason: 'optin_leads_absent', by_arm: {} };
+
+    const arms = await query(
+      `SELECT arm_key, page_id FROM lb_split_arms WHERE test_id = $1`,
+      [String(testId)]
+    );
+    if (!arms.length) return { available: false, reason: 'no_arms', by_arm: {} };
+    if (arms.some((a) => !a.page_id)) {
+      return { available: false, reason: 'arm_without_page', by_arm: {} };
+    }
+    const pageIds = arms.map((a) => String(a.page_id));
+    if (new Set(pageIds).size !== pageIds.length) {
+      // Two arms on one page: a page-keyed count cannot be split between them.
+      return { available: false, reason: 'arms_share_a_page', by_arm: {} };
+    }
+
+    const [span] = await query(
+      `SELECT MIN(created_at) AS first_at FROM lb_split_credits
+       WHERE group_id = $1 AND kind = 'exposure'`,
+      [String(testId)]
+    );
+    if (!span?.first_at) return { available: false, reason: 'no_exposures_yet', by_arm: {} };
+
+    const rows = await query(
+      `SELECT page_id, COUNT(*)::int AS submits
+       FROM optin_leads
+       WHERE page_id = ANY($1) AND created_at >= $2
+       GROUP BY page_id`,
+      [pageIds, span.first_at]
+    );
+    const byPage = new Map(rows.map((r) => [String(r.page_id), Number(r.submits || 0)]));
+    const byArm = {};
+    for (const a of arms) byArm[a.arm_key] = byPage.get(String(a.page_id)) || 0;
+    return { available: true, reason: null, since: span.first_at, by_arm: byArm };
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.error('[splitCredits] readArmSubmits failed:', err.message);
+    return { available: false, reason: 'read_failed', by_arm: {} };
+  }
+}
+
+/**
+ * THE DAY-BY-DAY SERIES — net revenue per exposure, per arm, per day.
+ *
+ * WHY A SHAPE AND NOT JUST A TOTAL. A single revenue-per-exposure figure cannot
+ * distinguish an arm that led steadily for eight days from one that spiked on a
+ * single day and trailed for the other seven. Those are the same average and
+ * completely different evidence: the second is usually one large order, and an
+ * operator who ships it is shipping a coincidence. The totals above cannot show
+ * that; this can.
+ *
+ * THE DAY IS THE SESSION'S EXPOSURE DAY, DERIVED — NOT THE CREDIT ROW'S OWN.
+ *
+ * This is the join that decides whether the two halves of a rate describe the
+ * same people. `creditConversion` normally stamps a credit with its exposure
+ * row's day, so reading `credit.day` LOOKS equivalent — and it is, right up
+ * until it isn't: the function accepts an explicit `day` override, the retry
+ * sweep can re-credit a parked leg later, a rebuilt rollup or a backfill can
+ * write whatever it likes, and a void row carries its own date. Any one of
+ * those silently splits a cohort in half.
+ *
+ * The failure is not subtle and it is not symmetric. An arm whose money lands
+ * on the following day renders "$0.0000 over 50 exposures" for the day it
+ * actually earned on — a FALSE MEASURED ZERO, which is precisely the null-vs-0
+ * distinction this module refuses to blur everywhere else — and then
+ * "— over 0 exposures" the next day, hiding real revenue behind a dash. Two
+ * arms with identical lifetime numbers render completely different shapes for
+ * no reason but settlement timing, which is the one thing this table exists to
+ * rule out.
+ *
+ * So the day is taken from the EXPOSURE row and joined back by session. There
+ * is exactly one exposure row per (session, group) — rule 1 at the top of this
+ * file — so the join is 1:1 and cannot fan out. The arm is taken from the
+ * exposure row too, for the same reason `creditConversion` resolves it there:
+ * the exposure is the server-side truth about which arm a visitor saw.
+ *
+ * FULL OUTER JOIN, deliberately: a day with exposures and no money is a real
+ * data point (it is what a dead arm looks like). With the cohort join above the
+ * money side can no longer produce a day the exposure side lacks, but the outer
+ * join stays — a credit whose exposure row was somehow lost must surface as a
+ * visible anomaly rather than being silently dropped by an inner join.
+ *
+ * Returns newest-first, which is the order the panel reads in.
+ */
+async function readDailySeries(testId, query) {
+  const rows = await query(
+    `WITH exposure_day AS (
+       SELECT session_id, arm_key, day
+       FROM lb_split_credits
+       WHERE group_id = $1 AND kind = 'exposure'
+     ),
+     per_session AS (
+       SELECT x.arm_key, x.day, c.session_id, SUM(c.value) AS net
+       FROM lb_split_credits c
+       JOIN exposure_day x ON x.session_id = c.session_id
+       WHERE c.group_id = $1 AND c.kind IN ('credit', 'void')
+       GROUP BY x.arm_key, x.day, c.session_id
+     ),
+     money AS (
+       SELECT arm_key, day,
+              COUNT(*)::int          AS orders,
+              COALESCE(SUM(net), 0)  AS net_revenue
+       FROM per_session
+       GROUP BY arm_key, day
+     ),
+     exposures AS (
+       SELECT arm_key, day, COUNT(*)::int AS exposures
+       FROM exposure_day
+       GROUP BY arm_key, day
+     )
+     SELECT COALESCE(e.day, m.day)         AS day,
+            COALESCE(e.arm_key, m.arm_key) AS arm_key,
+            COALESCE(e.exposures, 0)       AS exposures,
+            COALESCE(m.orders, 0)          AS orders,
+            COALESCE(m.net_revenue, 0)     AS net_revenue
+     FROM exposures e
+     FULL OUTER JOIN money m ON m.arm_key = e.arm_key AND m.day = e.day
+     ORDER BY 1 DESC, 2 ASC`,
+    [String(testId)]
+  );
+
+  const byDay = new Map();
+  for (const r of rows) {
+    const day = r.day ? new Date(r.day).toISOString().slice(0, 10) : null;
+    if (!day) continue;
+    if (!byDay.has(day)) byDay.set(day, { day, arms: {} });
+    const exposures = Number(r.exposures || 0);
+    const net = Number(r.net_revenue || 0);
+    byDay.get(day).arms[r.arm_key] = {
+      exposures,
+      orders: Number(r.orders || 0),
+      net_revenue: Math.round(net * 100) / 100,
+      // NOT withheld below the statistics floor, and that is a considered
+      // exception rather than an oversight: a daily cell is a SHAPE reading, not
+      // a verdict input, and its denominator is printed directly beside it. The
+      // floor exists to stop a rate being read as precision when the sample is
+      // invisible — here the sample is the next thing on the line. Nothing in
+      // the verdict reads this series.
+      rev_per_exposure: exposures > 0 ? Math.round((net / exposures) * 10000) / 10000 : null,
+    };
+  }
+  return [...byDay.values()];
+}
+
+/**
  * DERIVED results per arm — exposures vs credited conversions, netted against
  * refunds. Counters are computed from the ledger, never stored. Both sides of
  * the take rate are SESSIONS (funnel-os invariant: accepts<=offers holds only
  * because both count sessions), so `conversions` counts DISTINCT converting
  * sessions, not money legs — while revenue SUMS every leg.
  *
- * @returns {Promise<{testId, arms: Array, totals: object}>}
+ * ── THE STATISTICS BLOCK IS PURELY ADDITIVE ────────────────────────────────
+ *
+ * Every key this function returned before — `arm_key, weight, is_control,
+ * archived, visitors, exposures, conversions, credited_legs, gross_revenue,
+ * refunded, net_revenue, take_rate` and the whole `totals` object — is
+ * UNCHANGED, in value and in type. Two things are ADDED and nothing is moved:
+ *
+ *   • `arms[i].stats` — per-arm significance, readiness and incremental lift;
+ *   • `verdict` — the test-level verdict block, plus `floors` and `method`.
+ *
+ * The harness (server/tests/split/statistics.mjs) pins this by asserting the
+ * pre-change key set is a strict subset of the post-change one with identical
+ * values, because the canvas tile reader (FunnelCanvasPage's lifetime fallback)
+ * consumes the raw counts and must not notice this change at all.
+ *
+ * ── KNOWN RESIDUAL, DEFERRED DELIBERATELY: TWO DENOMINATORS ON ONE SCREEN ──
+ *
+ * The results modal shows the WINDOWED table (denominator: `visitors` =
+ * delivered page renders, from lb_split_views, via funnelAnalytics) directly
+ * above the LIFETIME readiness panel (denominator: `exposures` = attributable
+ * checkout sessions, from this ledger). Both are correct and they are different
+ * populations, so the same test legitimately reads e.g. 910 in one and 400 in
+ * the other.
+ *
+ * MITIGATED, NOT ELIMINATED. Each surface is labelled with its own denominator
+ * and the panel carries a one-sentence reconciliation
+ * (SplitResultsModal.ReadinessPanel). What is NOT built is a true reconciling
+ * figure — a per-arm "400 of 910 renders reached checkout" ratio — because the
+ * two numbers are produced by two different lanes (this one and analytics) and
+ * joining them per arm is an analytics-lane change. CLAUDE.md §5 says stop and
+ * coordinate rather than cross lanes, so this is documented and left.
+ *
+ * If it is picked up: the ratio belongs on the WINDOWED payload (it already has
+ * both `visitors` and the ledger via `ledger`), not here — computing it here
+ * would need lb_split_views windowed to the analytics window, which is exactly
+ * the duplication that produced two denominators in the first place.
+ *
+ * THE DENOMINATOR IS `exposures`, NOT `visitors`, AND THE CHOICE IS FORCED.
+ * `visitors` counts delivered page renders (lb_split_views); `exposures` counts
+ * the checkout-attributable sessions the money moments are summed over. Mixing
+ * them would put a mean over one population and a variance over another, and
+ * the t statistic would be describing neither. `visitors` is still reported
+ * untouched — it is a real number, just not this test's denominator.
+ *
+ * ARCHIVED ARMS STAY IN THE PAYLOAD, AND THE STATISTICS SCOPE THEMSELVES.
+ * Excluding an archived arm's rows would make the same ledger score differently
+ * before and after an operator retires a loser — a verdict that moves when
+ * nothing about the money moved. So every arm is still returned and still
+ * carries a stats block.
+ *
+ * What CHANGED after review: an archived (or brand-new) arm below the statistics
+ * floor no longer poisons the whole test. `computeSplitStatistics` scopes the
+ * comparison to arms at or above `MIN_STATS_SAMPLE` exposures and reports the
+ * rest in `verdict.pending_arms`. Before that fix, a zero-traffic archived arm —
+ * which this function returns on essentially every concluded test — nulled every
+ * figure on a test with tens of thousands of exposures.
+ *
+ * @param {{testId: string}} args
+ * @param {{query?: Function, withStats?: boolean}} [deps] — `withStats: false`
+ *   returns the raw counts ONLY and skips both extra reads and the verdict. Used
+ *   by funnelAnalytics, which calls this for ledger RECONCILIATION on its own
+ *   windowed request and never reads the lifetime verdict; computing one there
+ *   made every windowed page-load pay for a second moments query and a second
+ *   verdict nothing rendered.
+ * @returns {Promise<{testId, arms: Array, totals: object, verdict?: object,
+ *                    floors?: object, method?: object}>}
  */
-export async function readResults({ testId }, { query = pgQuery } = {}) {
+export async function readResults({ testId }, { query = pgQuery, withStats = true } = {}) {
   await ensureSplitTables(query);
   // ALL arms, archived included (DECISION, documented): archiving an arm must
   // never silently drop its historical ledger rows from the results — the
@@ -500,6 +838,14 @@ export async function readResults({ testId }, { query = pgQuery } = {}) {
      FROM lb_split_views WHERE test_id = $1 GROUP BY arm_key`,
     [String(testId)]
   );
+  // Sufficient statistics for the Welch t on revenue per visitor. A FOURTH
+  // read, in the same failure domain as the three above: if the ledger is
+  // unreachable they all throw together and the route answers 500, exactly as
+  // it did before this block existed. Deliberately NOT wrapped in a try that
+  // would degrade the stats to zeros — a zeroed moment is not "no statistics",
+  // it is a variance of 0, which reads as a perfectly consistent arm and is the
+  // one input that can manufacture false confidence.
+  const momentsByArm = withStats ? await readArmMoments(testId, query) : new Map();
   const viewsByArm = new Map(views.map((r) => [r.arm_key, Number(r.visitors || 0)]));
   const byArm = new Map(agg.map((r) => [r.arm_key, r]));
   // Dedupe arm definitions per key, preferring the live one (the partial
@@ -549,5 +895,74 @@ export async function readResults({ testId }, { query = pgQuery } = {}) {
     }),
     { visitors: 0, exposures: 0, conversions: 0, credited_legs: 0, gross_revenue: 0, refunded: 0, net_revenue: 0 }
   );
-  return { testId: String(testId), arms: result, totals };
+
+  // The RAW payload — byte-identical to what this function returned before the
+  // statistics landed, and what `withStats: false` callers get.
+  if (!withStats) return { testId: String(testId), arms: result, totals };
+
+  // ── ADDITIVE STATISTICS ──────────────────────────────────────────────────
+  // computeSplitStatistics is PURE and total — the harness pins that no input
+  // (empty, one arm, zero variance, corrupt sums) makes it throw or emit
+  // NaN/Infinity — so there is nothing here to catch and nothing to default.
+  //
+  // The exposure RATE is read here rather than inside the statistics, which
+  // have no clock and no database by construction.
+  const exposuresPerDay = await readExposureRate(testId, query);
+  const daily = await readDailySeries(testId, query);
+  const submits = await readArmSubmits(testId, query);
+  const stats = computeSplitStatistics(
+    result.map((a) => {
+      const m = momentsByArm.get(a.arm_key) || { sum_x: 0, sum_x2: 0 };
+      return {
+        arm_key: a.arm_key,
+        is_control: a.is_control,
+        // `exposures`, not `visitors` — the ledger's attributable checkout
+        // sessions, which is the population the moments below are summed over.
+        // `visitors` (lb_split_views, delivered renders) is a different number
+        // and is deliberately NOT this denominator.
+        exposures: a.exposures,
+        conversions: a.conversions,
+        // Σx from the MOMENTS, not from the net_revenue column. They agree to
+        // float rounding, but the t statistic must take its mean and its
+        // variance from one series or it is describing a distribution that
+        // does not exist.
+        net_revenue: m.sum_x,
+        net_revenue_sum_squares: m.sum_x2,
+      };
+    }),
+    { exposuresPerDay }
+  );
+
+  // Attached per arm rather than returned as a parallel map, so a renderer that
+  // walks `arms` cannot get the two out of step.
+  for (const a of result) {
+    const m = momentsByArm.get(a.arm_key) || { money_sessions: 0, sum_x: 0, sum_x2: 0 };
+    a.stats = {
+      ...(stats.arms[a.arm_key] || {}),
+      // The raw moments travel with the block so the verdict is reproducible
+      // from the response alone — an operator (or a reviewer) can recompute
+      // every p-value on this page without a database.
+      money_sessions: m.money_sessions,
+      net_revenue_sum: Math.round(m.sum_x * 100) / 100,
+      net_revenue_sum_squares: m.sum_x2,
+    };
+  }
+
+  return {
+    testId: String(testId),
+    arms: result,
+    totals,
+    verdict: stats.verdict,
+    floors: stats.floors,
+    method: stats.method,
+    // Reported so the "roughly N more days" figure on the panel is checkable
+    // rather than magic. Null when the ledger had nothing to measure.
+    exposures_per_day: exposuresPerDay === null ? null : Math.round(exposuresPerDay * 100) / 100,
+    // Newest-first per-day shape. Never read by the verdict — it exists so an
+    // operator can see whether a lead was steady or a single day's spike.
+    daily,
+    // Real per-arm opt-in counts, or `available: false` with the reason why not.
+    // Never a fabricated number and never a silent zero.
+    submits,
+  };
 }

@@ -152,6 +152,208 @@ export async function fetchLifetimeResults(testId) {
   return res.data?.data || null;
 }
 
+// ── THE LIFETIME STATISTICS CONTRACT ───────────────────────────────────────
+//
+// `GET /split-tests/:id/results` grew a statistics layer
+// (server/src/services/splitStats.js, attached in services/splitCredits.js).
+// It is PURELY ADDITIVE — every raw count this endpoint has always returned is
+// unchanged in name, type and value, pinned by
+// server/tests/split/statistics.mjs. So nothing that reads the raw counts (the
+// canvas tile fallback below) needs to know this exists.
+//
+//   200 { data: {
+//     testId,
+//     arms: [{ ...the raw counts, unchanged..., stats: {
+//       arm_key, is_control, is_winner, visitors, conversions,
+//       cvr, cvr_withheld, rev_per_visitor, net_revenue_variance,
+//       readiness: { ready, visitors, conversions, needs_visitors,
+//                    needs_conversions, min_visitors, min_conversions,
+//                    blockers: [] },
+//       conversion: { p_value, confidence, significant, statistic,
+//                     required_sample_per_arm, reason, normal_approx_weak },
+//       revenue:    { p_value, confidence, significant, statistic,
+//                     degrees_of_freedom, required_sample_per_arm, reason,
+//                     sample_small },
+//       lift: { control_rpv, challenger_rpv, rpv_delta, rpv_lift_pct,
+//               per_1000_visitors, earned_so_far, cvr_delta, cvr_lift_pct },
+//       money_sessions, net_revenue_sum, net_revenue_sum_squares
+//     }}],
+//     totals,
+//     verdict: { status: 'winner'|'no_winner'|'not_ready'|'insufficient_data',
+//                reason, headline, body, winner, leader, control, ready,
+//                thin_arms: [], comparisons, alpha_adjusted,
+//                required_sample_per_arm, time_to_decision_days, ranked: [] },
+//     floors: { min_visitors_per_arm, min_conversions_per_arm,
+//               min_stats_sample, alpha },
+//     method: { ... }
+//   } }
+//
+// ⚠️ SAME 100× TRAP AS THE ANALYTICS ENDPOINT, AND IT IS A DIFFERENT ENDPOINT
+// SO IT NEEDS ITS OWN CONVERSION. `confidence` is `1 - pValue`, a FRACTION:
+// 0.97 means 97%. `cvr` is a fraction. `rpv_lift_pct` and `cvr_lift_pct` are
+// ALREADY percents (the service multiplies by 100) and must NOT be converted
+// again. Converted exactly once, below, and nowhere else.
+//
+// ⚠️ A NULL IS NOT A ZERO. `p_value: null` / `confidence: null` means the
+// service WITHHELD the figure (below the sample floor, fewer than two arms with
+// data, or zero variance). It must render as '—' with the reason, never as 0%.
+// `num()` already maps null to undefined, which is the '—' signal everywhere.
+
+/**
+ * Lifetime results + statistics, NEVER throwing.
+ *
+ * Mirrors fetchSplitMetrics' posture rather than fetchLifetimeResults': the
+ * results modal renders this next to a windowed overlay that may be absent, and
+ * a surface whose whole point is degrading honestly cannot have one of its two
+ * reads throw.
+ *
+ * @returns {Promise<{available:boolean, reason?:string, data?:object}>}
+ */
+export async function fetchLifetimeStats(testId) {
+  try {
+    const res = await api.get(`/split-tests/${encodeURIComponent(testId)}/results`);
+    const raw = readEnvelope(res.data);
+    // `arms` is the load-bearing key, same rule as the analytics reader. A 200
+    // without it is a shape we do not understand; rendering from it would
+    // invent numbers.
+    if (!raw || !Array.isArray(raw.arms)) return { available: false, reason: 'unrecognised_shape' };
+    // An older deploy answers 200 with the raw counts and NO statistics. That is
+    // a legitimate state, not an error — report it as such so the panel can say
+    // "this deploy does not compute them" instead of rendering an empty box.
+    if (!raw.verdict) return { available: false, reason: 'no_statistics_on_this_deploy' };
+    return { available: true, data: normalizeLifetimeStats(raw) };
+  } catch (err) {
+    const status = err?.response?.status;
+    return { available: false, reason: status ? `http_${status}` : 'network_error' };
+  }
+}
+
+/**
+ * MAY THIS ARM WEAR A WINNER BADGE?
+ *
+ * Extracted from the JSX and exported so it can be PINNED BY EXECUTION
+ * (server/tests/split/statistics.mjs walks its truth table). A safety rule that
+ * lives inline in a render function is a safety rule nothing tests, and this is
+ * the one rule on this surface whose failure costs money: a trophy on a thin
+ * sample is exactly how an operator promotes a losing page.
+ *
+ * ALL THREE must hold, and the redundancy is deliberate:
+ *   • the service marked THIS arm the winner;
+ *   • the service's verdict status is actually 'winner';
+ *   • the service says every arm cleared its readiness floors.
+ *
+ * splitStats' winner gate already refuses to set `is_winner` below readiness,
+ * so conditions 2 and 3 are a belt on a structural guarantee. They are cheap,
+ * and they mean a future change to the service's gate cannot silently put a
+ * trophy on an unready test here. Defaults are FALSE at every missing field —
+ * an unknown readiness is not a readiness.
+ */
+export function shouldShowWinnerBadge(stats, verdict) {
+  return Boolean(stats?.is_winner) && verdict?.status === 'winner' && Boolean(verdict?.ready);
+}
+
+/**
+ * MAY THIS ARM'S COMPARISON BE LABELLED "significant"?
+ *
+ * Gated on readiness for the SAME reason the trophy is, and it was not before:
+ * an arm 240 exposures short of its floor rendered a green "significant" label
+ * beside its confidence, directly under a panel headed NOT READY. The label is
+ * the operator's shorthand for "you may act on this", so showing it on a thin
+ * sample says the opposite of what the panel above says — and green is the
+ * colour they believe.
+ *
+ * Below readiness the p-value is still SHOWN (it is real, and watching it move
+ * is how an operator judges whether to keep waiting); it is the verdict-flavoured
+ * LABEL and its colour that are withheld. `hedges` carries the caveats the
+ * service already computes — they were shipped and rendered nowhere, which is
+ * the entire reason they exist.
+ *
+ * @returns {{show:boolean, significant:boolean, hedges:string[]}}
+ */
+export function shouldShowSignificance(stats, verdict) {
+  const rev = stats?.revenue || {};
+  const conv = stats?.conversion || {};
+  const hedges = [];
+  // Order matters: the strongest caveat first, so a truncated line still
+  // carries the most important one.
+  if (rev.sample_small) hedges.push('small sample');
+  if (conv.normal_approx_weak) hedges.push('few conversions');
+  if (rev.p_value_floored || conv.p_value_floored) hedges.push('beyond measurement precision');
+  return {
+    // The arm must be IN the comparison, the test must be ready, and there must
+    // be a real (non-withheld) p-value behind the label.
+    show: Boolean(verdict?.ready)
+      && stats?.stats_status === 'compared'
+      && rev.p_value !== null && rev.p_value !== undefined,
+    significant: Boolean(rev.significant),
+    hedges,
+  };
+}
+
+/**
+ * THE WINDOWED "Sample" CELL — ready, or how much is missing.
+ *
+ * The windowed endpoint reports which arms are thin as a LIST
+ * (`verdict.sample.thinArms`) and one global required-N. It does not say how
+ * far THIS arm is from the bar, which is the only form an operator can act on.
+ *
+ * Derived here rather than on the server because the inputs are already in the
+ * payload and the RULE is the server's own: `sample.minVisitorsPerArm` and
+ * `sample.minConversionsPerArm` come from the service, so this cannot drift
+ * from the floors the verdict was actually judged against. Nothing is invented —
+ * if the service did not send the floors, the cell reads as unknown.
+ *
+ * @returns {{known:boolean, ready:boolean, needVisitors:number,
+ *            needOrders:number}}
+ */
+export function windowSampleState(armMetrics, sample) {
+  const minV = num(sample?.minVisitorsPerArm);
+  const minO = num(sample?.minConversionsPerArm);
+  const visitors = num(armMetrics?.visitors);
+  const orders = num(armMetrics?.orders);
+  if (minV === undefined || minO === undefined || visitors === undefined || orders === undefined) {
+    return { known: false, ready: false, needVisitors: 0, needOrders: 0 };
+  }
+  const needVisitors = Math.max(0, minV - visitors);
+  const needOrders = Math.max(0, minO - Math.min(orders, visitors));
+  return {
+    known: true,
+    ready: needVisitors === 0 && needOrders === 0,
+    needVisitors,
+    needOrders,
+  };
+}
+
+/**
+ * Fractions → percents, EXACTLY ONCE, for the lifetime payload.
+ *
+ * Only three fields cross the boundary: `cvr`, `conversion.confidence` and
+ * `revenue.confidence`. Everything else is a count, a money amount, or an
+ * already-percent lift. The raw arm counts are passed through untouched — this
+ * function must never be the reason a raw figure changes.
+ */
+export function normalizeLifetimeStats(raw) {
+  const arms = (raw.arms || []).map((a) => {
+    const st = a.stats;
+    if (!st) return { ...a, stats: null };
+    const conf = (block) => {
+      const c = num(block?.confidence);
+      return c === undefined ? undefined : fracToPct(c, 'lifetime confidence');
+    };
+    const cvr = num(st.cvr);
+    return {
+      ...a,
+      stats: {
+        ...st,
+        cvr_pct: cvr === undefined ? undefined : fracToPct(cvr, 'lifetime cvr'),
+        conversion: { ...st.conversion, confidence_pct: conf(st.conversion) },
+        revenue: { ...st.revenue, confidence_pct: conf(st.revenue) },
+      },
+    };
+  });
+  return { ...raw, arms };
+}
+
 // ── The analytics overlay (the analytics lane's API — merged; may still 404) ─
 
 /**
@@ -247,7 +449,12 @@ export function assertPercentScale() {
   const failures = [];
   const cases = [
     { name: 'confidence 0.97', raw: 0.97, expect: 97 },
-    { name: 'confidence 1', raw: 1, expect: 100 },
+    // 0.9999 is the SERVICE's confidence cap (splitStats CONFIDENCE_DISPLAY_CAP),
+    // so it is the largest confidence that can legitimately arrive. The old case
+    // here pinned raw 1 -> 100, which asserted the very output the cap exists to
+    // prevent: a scale check must not certify an over-confident number as
+    // correctly scaled.
+    { name: 'confidence 0.9999 (the service cap)', raw: 0.9999, expect: 99.99 },
     { name: 'cvr 0.0432', raw: 0.0432, expect: 4.32 },
     { name: 'cvr 0', raw: 0, expect: 0 },
     { name: 'already-percent 97 passes through', raw: 97, expect: 97 },
@@ -258,6 +465,13 @@ export function assertPercentScale() {
   }
   // The specific regression: a non-zero fraction confidence must not render sub-1%.
   if (fracToPct(0.97, 'regression') < 1) failures.push('0.97 confidence rendered below 1%');
+  // The OTHER direction: nothing may render as flat 100% certainty. Checked on
+  // the formatter, because that is the last thing between a number and the
+  // operator's eye.
+  for (const raw of [1, 0.999999, 0.99999999]) {
+    const rendered = fmtPct(fracToPct(raw, 'cap check'), { cap: true });
+    if (rendered === '100.00%') failures.push(`confidence ${raw} rendered as flat 100.00%`);
+  }
   return failures;
 }
 
@@ -301,7 +515,13 @@ export function normalizeMetrics(raw) {
     // number), and is a FRACTION.
     const pa = perArm[key] || {};
     out.confidence = fracToPct(pick(pa, 'revenue_confidence'), 'revenue_confidence');
+    // The CONVERSION-rate confidence, reported beside the revenue one because
+    // they answer different questions and can disagree: an arm can convert
+    // significantly better and still not earn significantly more. The endpoint
+    // has always carried it; nothing rendered it.
+    out.conv_confidence = fracToPct(pick(pa, 'conversion_confidence'), 'conversion_confidence');
     out.significant = pick(pa, 'significant');
+    out.requiredSamplePerArm = num(pick(pa, 'requiredSamplePerArm'));
     return out;
   });
 
@@ -352,18 +572,47 @@ export function fmtInt(v) {
   return n === undefined ? DASH : Math.round(n).toLocaleString('en-US');
 }
 
-export function fmtMoney(v, { signed = false } = {}) {
+// `digits` defaults to 2 (money as an operator writes it). Per-VISITOR money
+// needs 4: it is usually a few cents, and at 2dp two arms $0.004 apart both
+// render "$5.41" — a visible tie where the verdict sees a real gap.
+export function fmtMoney(v, { signed = false, digits = 2 } = {}) {
   const n = num(v);
   if (n === undefined) return DASH;
-  const s = Math.abs(n).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const s = Math.abs(n).toLocaleString('en-US', {
+    minimumFractionDigits: digits, maximumFractionDigits: digits,
+  });
   if (n < 0) return `-$${s}`;
   return signed ? `+$${s}` : `$${s}`;
 }
 
-export function fmtPct(v, { digits = 2, signed = false } = {}) {
+// A CONFIDENCE OF EXACTLY 100% IS A CLAIM NO EXPERIMENT CAN MAKE.
+//
+// `toFixed(2)` rounds 99.99999 up to "100.00", so a very small p-value printed
+// as `1 - p` reached the screen as a flat "100.00% confidence" — certainty,
+// from a finite sample, next to a promote button. The service now caps its own
+// confidence at 0.9999, but the display is capped too: these are two different
+// roads to the same string (rounding here, precision loss there) and closing
+// only one leaves the other open.
+//
+// THE CAP IS OPT-IN, AND THAT DIRECTION IS LOAD-BEARING. It applies ONLY to
+// quantities that are bounded at 100 by definition — a confidence. It must NOT
+// apply to a lift or a change: "-100%" means an arm earned nothing, which is
+// real data and a genuinely reachable value, and an earlier cut of this
+// function capped it to "-99.99%" and silently corrupted it. Caught by the
+// harness, not by reading.
+//
+// So: confidence cells pass `{ cap: true }`; every other percent on this
+// surface — vs-control, conversion rate, lift — is formatted unchanged.
+export const PCT_DISPLAY_CAP = 99.99;
+export function fmtPct(v, { digits = 2, signed = false, cap = false } = {}) {
   const n = num(v);
   if (n === undefined) return DASH;
-  const s = `${Math.abs(n).toFixed(digits)}%`;
+  const mag = Math.abs(n);
+  // Only a POSITIVE value above the cap is rewritten, and it is rendered as a
+  // BOUND ("‹>99.99%›") rather than a value, because that is what it is. A
+  // confidence is never negative, so there is no negative branch to write.
+  if (cap && n > PCT_DISPLAY_CAP) return `>${PCT_DISPLAY_CAP.toFixed(digits)}%`;
+  const s = `${mag.toFixed(digits)}%`;
   if (n < 0) return `-${s}`;
   return signed && n > 0 ? `+${s}` : s;
 }
