@@ -13,6 +13,7 @@ import { pgQuery } from '../db/pg.js';
 import { ensureTrackingTables } from './trackingSchema.js';
 import { deliverToPixel, buildUserData } from './trackingDelivery.js';
 import { stampConversion, fbclidFromFbc } from './trackingClicks.js';
+import { customNetworksFor } from './trackingCustomNetworks.js';
 
 // The relay's fixed allow-list. A forged beacon must not let a stranger drive
 // arbitrary conversion-API calls on the ad account (TRACKING.md §1).
@@ -46,6 +47,53 @@ async function serverPixels(funnelId) {
     [String(funnelId || '')]
   );
   return rows;
+}
+
+// Every server-side delivery target for ONE named event: the named-network
+// lb_pixels rows above PLUS the operator's enabled custom S2S networks that
+// are toggled on for this event (projected into the same pixel shape by
+// trackingCustomNetworks.asPixel).
+//
+// FAIL-OPEN, DELIBERATELY. A custom network is an operator convenience; the
+// named networks are the money rail. If the custom-network read throws (schema
+// not yet ensured on a cold replica, a pool blip), the named pixels must still
+// fire — so the failure is logged and the list degrades to the named ones
+// rather than taking the whole conversion down with it.
+async function serverTargets(funnelId, eventName) {
+  const pixels = await serverPixels(funnelId);
+  let customs = [];
+  try {
+    customs = await customNetworksFor(funnelId, eventName);
+  } catch (err) {
+    console.error('[tracking] custom network read failed (fail-open, named pixels still fire):', err.message);
+  }
+  return pixels.concat(customs);
+}
+
+// The funnel's GENERAL event options (funnels.settings.tracking — the panel in
+// the Tracking settings section). Read at FIRE time, never cached: flipping a
+// checkbox has to take effect on the next conversion, not the next deploy.
+//
+// jsonb DISCIPLINE: settings can be an object OR a double-encoded string
+// depending on which writer last touched it, so both shapes are read.
+//
+// FAILS OPEN TO CURRENT BEHAVIOUR. Every flag below is read as
+// `!== false` — an unreadable settings blob, a missing key, or a funnel row
+// that no longer exists all mean "keep doing what we do today". An operator
+// must have to ACT to change what is sent; a read failure must never silently
+// degrade match quality.
+export async function trackingFlags(funnelId) {
+  try {
+    const rows = await pgQuery(`SELECT settings FROM funnels WHERE id = $1`, [String(funnelId || '')]);
+    let s = rows.length ? rows[0].settings : null;
+    if (typeof s === 'string') { try { s = JSON.parse(s); } catch { return {}; } }
+    if (!s || typeof s !== 'object' || Array.isArray(s)) return {};
+    const tr = s.tracking;
+    return (tr && typeof tr === 'object' && !Array.isArray(tr)) ? tr : {};
+  } catch (err) {
+    console.error('[tracking] settings read failed (fail-open to defaults):', err.message);
+    return {};
+  }
 }
 
 // Fire the deterministic Purchase conversion for a settled (paid) session.
@@ -87,17 +135,20 @@ export async function firePurchaseConversion(sessionId, { source = 'webhook' } =
     await stampConversion(s.id, vids, clickIds, { funnelId: s.funnel_id || '' });
 
     // Build the hashed identity + PII-free idk once; reuse per pixel.
+    const flags = await trackingFlags(s.funnel_id);
     const clickId = Object.values(clickIds)[0] || '';
     const { user_data, idk } = buildUserData({
       email: cust.email, phone: cust.phone,
       first_name: cust.first_name, last_name: cust.last_name,
       city: ship.city, state: ship.state, zip: ship.zip, country: ship.country,
-      external_id: s.id, fbp: net.fbp, fbc: net.fbc, ip: net.ip, ua: net.ua,
+      // GENERAL → "Send hashed external id". Absent/true = send (today's
+      // behaviour); only an explicit false omits it.
+      external_id: flags.send_external_id === false ? '' : s.id, fbp: net.fbp, fbc: net.fbc, ip: net.ip, ua: net.ua,
       click_id: clickId,
     });
     const customData = { value: Number(s.total), currency: s.currency, order_id: s.id };
 
-    const pixels = await serverPixels(s.funnel_id);
+    const pixels = await serverTargets(s.funnel_id, 'Purchase');
     if (!pixels.length) {
       // No server pixel configured — nothing to relay. The stamp above still
       // ran; report so callers/tests can see the (expected) no-op.
@@ -164,19 +215,22 @@ export async function fireUpsellPurchaseConversion(sessionId, chargeRowId, value
       const fbclid = fbclidFromFbc(net.fbc);
       if (fbclid) clickIds.fbclid = fbclid;
     }
+    const flags = await trackingFlags(s.funnel_id);
     const clickId = Object.values(clickIds)[0] || '';
     const { user_data, idk } = buildUserData({
       email: cust.email, phone: cust.phone,
       first_name: cust.first_name, last_name: cust.last_name,
       city: ship.city, state: ship.state, zip: ship.zip, country: ship.country,
-      external_id: s.id, fbp: net.fbp, fbc: net.fbc, ip: net.ip, ua: net.ua,
+      // GENERAL → "Send hashed external id". Absent/true = send (today's
+      // behaviour); only an explicit false omits it.
+      external_id: flags.send_external_id === false ? '' : s.id, fbp: net.fbp, fbc: net.fbc, ip: net.ip, ua: net.ua,
       click_id: clickId,
     });
     // order_id carries the upsell suffix so platform-side reporting can tell
     // the second conversion from the main order without sharing an event_id.
     const customData = { value: amount, currency: s.currency, order_id: `${s.id}_u_${chargeId}` };
 
-    const pixels = await serverPixels(s.funnel_id);
+    const pixels = await serverTargets(s.funnel_id, 'Purchase');
     if (!pixels.length) {
       return { ok: true, fired: 0, event_id: eventId, reason: 'no_server_pixel' };
     }
@@ -216,7 +270,7 @@ export async function relayBrowserEvent({ funnelId, eventName, eventId, identity
       ? rawId
       : `${CLIENT_EVENT_ID_PREFIX}${rawId}`;
     const { user_data, idk } = buildUserData(identity);
-    const pixels = await serverPixels(funnelId);
+    const pixels = await serverTargets(funnelId, eventName);
     if (!pixels.length) return { ok: true, fired: 0, reason: 'no_server_pixel', idk };
     const results = [];
     for (const px of pixels) {

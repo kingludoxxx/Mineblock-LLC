@@ -33,6 +33,7 @@ import aiPageGenerateRoutes from './aiPageGenerate.js';
 import pageThumbnailsRoutes from './pageThumbnails.js';
 import splitTestsRoutes from './splitTests.js';
 import trackingAdminRoutes from './trackingAdmin.js';
+import trackingIntegrationsRoutes from './trackingIntegrations.js';
 import domainHubRoutes from './domainHub.js';
 import funnelAnalyticsRoutes from './funnelAnalytics.js';
 import aiDeveloperRoutes from './aiDeveloper.js';
@@ -86,6 +87,15 @@ const mountRoutes = (app) => {
   app.use('/api/v1/ai-generate', aiPageGenerateRoutes); // Generate-with-AI page build stream (authed, funnels permission; never writes funnel_pages)
   app.use('/api/v1/page-thumbnails', pageThumbnailsRoutes); // canvas node miniatures (authed, funnels permission; fail-open 204)
   app.use('/api/v1/checkout', checkoutAdminRoutes); // authed CRM surface (public /checkout/public mounted earlier in app.js)
+  // Integrations layer (custom S2S postback templates + inbound postback
+  // endpoints). Mounted BEFORE trackingAdminRoutes on the SAME base path: that
+  // router attaches its auth chain with router.use(), so anything reaching it
+  // pays for authenticate+rbac even on a path it does not serve. None of these
+  // paths collide with its (/networks, /tracking/summary, /touches, /clicks,
+  // /events, /attribution, /queue). The PUBLIC half of this lane is
+  // routes/trackingPostbackPublic.js and must be mounted from app.js — see the
+  // mount block at the top of that file.
+  app.use('/api/v1/tracking-admin', trackingIntegrationsRoutes);
   app.use('/api/v1/tracking-admin', trackingAdminRoutes); // authed attribution read surface (public /track mounted earlier in app.js)
   app.use('/api/v1/split-tests', splitTestsRoutes); // authed A/B test CRUD + results (credits ledger)
   app.use('/api/v1/domain-hub', domainHubRoutes); // authed custom-domain buy/attach/manage (verify sweep starts on load)
