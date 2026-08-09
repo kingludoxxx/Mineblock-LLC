@@ -48,6 +48,7 @@ import { PALETTE, DEVICE_WIDTHS } from '../../components/funnels/pageTypes';
 import FunnelSettingsModal from '../../components/funnels/settings/FunnelSettingsModal';
 import SplitGroupNode from '../../components/funnels/split/SplitGroupNode';
 import SplitSetupModal from '../../components/funnels/split/SplitSetupModal';
+import ClonePageModal from '../../components/funnels/ClonePageModal';
 import SplitResultsModal from '../../components/funnels/split/SplitResultsModal';
 import {
   fetchFunnelSplitTests, fetchSplitMetrics, fetchLifetimeResults,
@@ -108,6 +109,7 @@ function CanvasInner() {
   const [renaming, setRenaming] = useState(false);
   const [nameDraft, setNameDraft] = useState('');
   const [creating, setCreating] = useState(false);
+  const [cloneOpen, setCloneOpen] = useState(false);
   // ---- Split tests (A/B groups on this funnel) ----
   const [splits, setSplits] = useState([]);
   const [splitTiles, setSplitTiles] = useState({}); // testId -> { armKey: {visitors, orders, cvr} }
@@ -453,6 +455,23 @@ function CanvasInner() {
     [creating, pages, id, centerPosition, deviceSize, setNodes, pushHistory, persistFlow]
   );
 
+  // Clone-a-page: the modal already created the page server-side — drop it
+  // onto the canvas exactly the way addPage does after its POST.
+  const onClonedPage = useCallback(
+    (page) => {
+      if (!page) return;
+      const pos = centerPosition();
+      setPages((prev) => [...prev, page]);
+      setNodes((nds) => [
+        ...nds,
+        { id: page.id, type: 'page', position: pos, data: { page, deviceSize, ...actionsRef.current } },
+      ]);
+      pushHistory();
+      persistFlow(true);
+    },
+    [centerPosition, deviceSize, setNodes, pushHistory, persistFlow]
+  );
+
   const duplicatePage = useCallback(
     async (page) => {
       setError(null);
@@ -775,8 +794,18 @@ function CanvasInner() {
                   );
                 })}
                 <div className="my-2 border-t border-border-subtle" />
+                <button
+                  onClick={() => setCloneOpen(true)}
+                  disabled={creating}
+                  className="w-full flex items-start gap-2.5 px-2.5 py-2 rounded-lg text-left hover:bg-bg-hover border border-transparent hover:border-border-default transition-colors cursor-pointer disabled:opacity-50"
+                >
+                  <CopyIcon className="w-4 h-4 mt-0.5 text-text-muted shrink-0" />
+                  <span className="min-w-0">
+                    <span className="block text-sm text-text-primary leading-tight">Clone a page</span>
+                    <span className="block text-[11px] text-text-faint leading-tight">Paste code · HTML · file upload</span>
+                  </span>
+                </button>
                 {[
-                  { label: 'Clone a page', subtitle: 'Link · HTML · file upload' },
                   { label: 'Page library', subtitle: 'Drag to clone' },
                 ].map((item) => (
                   <div
@@ -903,6 +932,13 @@ function CanvasInner() {
         open={Boolean(splitResultsId)}
         onClose={() => setSplitResultsId(null)}
         test={splits.find((t) => t.id === splitResultsId) || null}
+      />
+
+      <ClonePageModal
+        open={cloneOpen}
+        onClose={() => setCloneOpen(false)}
+        funnelId={id}
+        onCreated={onClonedPage}
       />
     </div>
   );

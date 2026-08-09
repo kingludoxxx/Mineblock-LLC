@@ -187,7 +187,7 @@ function scanValue(value, depth) {
   return null;
 }
 
-function validateBlocks(blocks) {
+export function validateBlocks(blocks) {
   if (!Array.isArray(blocks)) return 'blocks must be an array';
   if (blocks.length > BLOCKS_MAX_COUNT)
     return `blocks cannot exceed ${BLOCKS_MAX_COUNT} entries`;
