@@ -468,6 +468,247 @@ export function clearRefusals(refusals, fields) {
 }
 
 // ---------------------------------------------------------------------------
+// Structured list fields — FAQ / Ranking / Comparison / Product grid
+//
+// These four blocks are LIST-SHAPED: their content prop is an array of row
+// objects the server renderer walks. Every helper below is TOTAL, for the
+// usual reason — the array is operator/AI-authored JSON and can legally hold
+// a null, a string, or a nested array.
+//
+// FILTERING IS DELIBERATE AND MIRRORS THE RENDERER. funnelRender.js does
+// `.filter(isPlainObject)` on ranking.items, faq.items, comparison_table.rows
+// and product_grid.items — a non-object row is ALREADY invisible on the public
+// page. Showing it in the editor would be the panel promising to edit
+// something the page will never print, so `listRows` drops it on read and the
+// first edit normalizes it away.
+// ---------------------------------------------------------------------------
+
+/** A plain object — not null, not an array. Same test the renderer applies. */
+function isRowObject(v) {
+  return !!v && typeof v === 'object' && !Array.isArray(v);
+}
+
+/**
+ * The rows a list-shaped prop actually renders as: plain objects only.
+ * Anything else (null, string, nested array) is dropped, exactly as
+ * funnelRender.js drops it.
+ *
+ * RETURNS THE INPUT ARRAY UNCHANGED when there is nothing to drop, and that
+ * identity is load-bearing rather than an optimization. Every mutation helper
+ * below returns `listRows(rows)` on a no-op path, and RowsField writes only
+ * when the result is a DIFFERENT array — so `↑` on the first row, a remove
+ * past the end, or a refused column rename must come back as the very same
+ * array or the panel would push an identical props value through commit() and
+ * bank an undo step that undoes nothing.
+ */
+export function listRows(value) {
+  if (!Array.isArray(value)) return [];
+  return value.every(isRowObject) ? value : value.filter(isRowObject);
+}
+
+/** Append a row. `defaultRow` is shallow-copied so the registry's literal is never shared. */
+export function addListRow(rows, defaultRow) {
+  return [...listRows(rows), isRowObject(defaultRow) ? { ...defaultRow } : {}];
+}
+
+/**
+ * Drop row `index`. An out-of-range index returns the SAME array identity, so
+ * the caller can skip the write and no empty history entry is recorded.
+ */
+export function removeListRow(rows, index) {
+  const list = listRows(rows);
+  if (!Number.isInteger(index) || index < 0 || index >= list.length) return list;
+  return list.filter((_, i) => i !== index);
+}
+
+/**
+ * Move row `index` by `delta` (-1 up, +1 down). A move that would leave the
+ * array returns the SAME array identity — that is what makes the ↑ on the
+ * first row a no-op rather than a silent reorder or a crash.
+ */
+export function moveListRow(rows, index, delta) {
+  const list = listRows(rows);
+  const to = index + delta;
+  if (!Number.isInteger(index) || !Number.isInteger(delta) || delta === 0) return list;
+  if (index < 0 || index >= list.length || to < 0 || to >= list.length) return list;
+  const next = list.slice();
+  const [moved] = next.splice(index, 1);
+  next.splice(to, 0, moved);
+  return next;
+}
+
+/**
+ * Write one cell.
+ *
+ * `undefined` DELETES the key; an empty STRING is kept. The difference is
+ * load-bearing for comparison tables: the renderer derives the column set from
+ * `Object.keys(rows[0])`, so letting a cleared text cell delete its key would
+ * make emptying the first row's cell delete the whole COLUMN from the page.
+ */
+export function setListCell(rows, index, key, value) {
+  const list = listRows(rows);
+  if (!Number.isInteger(index) || index < 0 || index >= list.length) return list;
+  if (typeof key !== 'string' || !key) return list;
+  return list.map((row, i) => {
+    if (i !== index) return row;
+    const next = { ...row };
+    if (value === undefined) delete next[key];
+    else next[key] = value;
+    return next;
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Comparison table columns
+//
+// MIRRORS THE RENDERER EXACTLY. funnelRender.js comparison_table reads
+//   const cols = Object.keys(rows[0]).filter((k) => k !== 'feature');
+// — the FIRST row alone decides the columns, and every later row is read as
+// `r[c] ?? ''`. So a key present only on row 3 is invisible on the page, and
+// the editor must not draw a cell for it. Every mutation below therefore
+// applies to EVERY row, which is what keeps row 0 (the header source) and the
+// body in agreement.
+// ---------------------------------------------------------------------------
+
+/** The column names the published page will print, in the order it prints them. */
+export function comparisonColumns(rows) {
+  const list = listRows(rows);
+  if (!list.length) return [];
+  return Object.keys(list[0]).filter((k) => k !== 'feature');
+}
+
+/** Refuse blank names, the reserved `feature` key, and duplicates. */
+function columnNameUsable(rows, name) {
+  const n = typeof name === 'string' ? name.trim() : '';
+  if (!n || n === 'feature') return null;
+  if (comparisonColumns(rows).includes(n)) return null;
+  return n;
+}
+
+/** Append a column to EVERY row (empty cell). Identity when the name is unusable. */
+export function addComparisonColumn(rows, name) {
+  const list = listRows(rows);
+  const n = columnNameUsable(list, name);
+  if (!n) return list;
+  return list.map((r) => ({ ...r, [n]: '' }));
+}
+
+/**
+ * Rename a column IN PLACE on every row — key order is rebuilt rather than
+ * patched, because `{...r, [to]: v}` after a delete would move the column to
+ * the END and silently reorder the published table's headers.
+ */
+export function renameComparisonColumn(rows, from, to) {
+  const list = listRows(rows);
+  if (typeof from !== 'string' || !comparisonColumns(list).includes(from)) return list;
+  const n = columnNameUsable(list, to);
+  if (!n || n === from) return list;
+  return list.map((r) => {
+    const next = {};
+    for (const k of Object.keys(r)) {
+      if (k === from) next[n] = r[k];
+      else next[k] = r[k];
+    }
+    return next;
+  });
+}
+
+/** Drop a column from every row. Identity when the column is not present. */
+export function removeComparisonColumn(rows, name) {
+  const list = listRows(rows);
+  if (typeof name !== 'string' || !comparisonColumns(list).includes(name)) return list;
+  return list.map((r) => {
+    const next = { ...r };
+    delete next[name];
+    return next;
+  });
+}
+
+/**
+ * The row a comparison table's "Add row" must insert: `feature` plus one EMPTY
+ * cell per CURRENT column. A row that skipped the columns would render as a
+ * line of blanks and — if it ever became row 0 — would delete every column
+ * from the page.
+ */
+export function comparisonDefaultRow(rows, feature) {
+  const out = { feature: typeof feature === 'string' ? feature : 'New feature' };
+  for (const c of comparisonColumns(rows)) out[c] = '';
+  return out;
+}
+
+// ---------------------------------------------------------------------------
+// Countdown deadline
+//
+// The renderer emits the deadline as an ATTRIBUTE (`data-deadline`, esc()'d)
+// and its runtime reads it with getAttribute + Date.parse. The value is never
+// spliced into the emitted JS, so no backtick/${}/backslash constraint applies
+// to it — but it MUST be something Date.parse understands, which is why the
+// panel stores a full ISO instant rather than the browser's zone-less
+// `datetime-local` string.
+// ---------------------------------------------------------------------------
+
+/**
+ * `datetime-local` value (`2026-12-31T23:59`, no zone → LOCAL time) → ISO
+ * instant. Blank or unparseable returns '' so the caller deletes the prop
+ * instead of writing a deadline the runtime would ignore.
+ */
+export function isoFromLocalInput(value) {
+  const raw = typeof value === 'string' ? value.trim() : '';
+  if (!raw) return '';
+  const ms = Date.parse(raw);
+  if (!Number.isFinite(ms)) return '';
+  return new Date(ms).toISOString();
+}
+
+/**
+ * ISO instant → the `datetime-local` string the input renders, in the
+ * operator's LOCAL zone (which is the zone they typed it in). Unparseable
+ * returns '' — an invalid deadline shows as an empty picker, and the raw value
+ * is surfaced next to it rather than silently rewritten.
+ */
+export function localInputFromIso(value) {
+  const raw = typeof value === 'string' ? value.trim() : '';
+  if (!raw) return '';
+  const ms = Date.parse(raw);
+  if (!Number.isFinite(ms)) return '';
+  const d = new Date(ms);
+  const p = (n) => (n < 10 ? '0' : '') + n;
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+
+/**
+ * What the countdown clock reads, for the canvas preview.
+ *
+ * MIRRORS countdownRuntimeScript() IN funnelRender.js CHARACTER FOR CHARACTER:
+ * `Date.parse` for the deadline, `(d>0?d+'d ':'')+pad(h)+':'+pad(m)+':'+pad(s)`
+ * for the clock, and the literal 'Offer expired' once the instant is past. A
+ * preview that formatted it differently would be a preview of a page that does
+ * not exist — which is exactly what the old hard-coded `23:59:59` was.
+ *
+ * `state` lets the canvas distinguish the three NON-TICKING cases the runtime
+ * treats as one silent no-op: no deadline, an unparseable deadline, and a real
+ * expiry. Only the last one is the block working as intended.
+ *
+ * @returns {{state:'unset'|'invalid'|'expired'|'live', text:string}}
+ */
+export function countdownPreview(deadline, nowMs) {
+  const raw = deadline == null ? '' : String(deadline).trim();
+  if (!raw) return { state: 'unset', text: '—' };
+  const end = Date.parse(raw);
+  if (!Number.isFinite(end)) return { state: 'invalid', text: '—' };
+  const now = Number.isFinite(nowMs) ? nowMs : Date.now();
+  const ms = end - now;
+  if (ms <= 0) return { state: 'expired', text: 'Offer expired' };
+  const total = Math.floor(ms / 1000);
+  const d = Math.floor(total / 86400);
+  const h = Math.floor((total % 86400) / 3600);
+  const m = Math.floor((total % 3600) / 60);
+  const s = total % 60;
+  const pad = (n) => (n < 10 ? '0' : '') + n;
+  return { state: 'live', text: `${d > 0 ? `${d}d ` : ''}${pad(h)}:${pad(m)}:${pad(s)}` };
+}
+
+// ---------------------------------------------------------------------------
 // AI op wiring floor
 // ---------------------------------------------------------------------------
 
