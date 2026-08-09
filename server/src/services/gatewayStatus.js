@@ -61,13 +61,17 @@ function classify(res) {
 async function pingWhop(creds, mode) {
   if (!creds.api_key || !creds.company_id) return NOT_CONFIGURED;
   try {
-    // GET /payments?per=1 — the cheapest authenticated read on a route family
-    // the WORKING adapter already uses (whop.js getPayment GETs
-    // /payments/{id}; charges POST /payments). A 2xx proves the key + host;
-    // 401/403 is a bad key. Read-only, never moves money.
-    const res = await timedFetch(`${whopBase(mode)}/payments?per=1`, {
-      headers: { Authorization: `Bearer ${creds.api_key}`, Accept: 'application/json' },
-    });
+    // GET /companies/{company_id} — verified against a REAL live key: it
+    // returns 200 with the company record. The two obvious alternatives do
+    // NOT work and would show "error" on a perfectly valid key:
+    //   /me            → 404 (no such route)
+    //   /payments?per=1→ 400 "not authorized ... access to this resource"
+    // This call also proves the company_id is right, not just the key —
+    // which is the pair the charge path actually needs. Read-only.
+    const res = await timedFetch(
+      `${whopBase(mode)}/companies/${encodeURIComponent(creds.company_id)}`,
+      { headers: { Authorization: `Bearer ${creds.api_key}`, Accept: 'application/json' } }
+    );
     return classify(res);
   } catch {
     return { status: 'error', detail: 'network' };
