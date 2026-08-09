@@ -147,6 +147,24 @@ function buildOrderPayload(session, order, { idempotencyKey }) {
     phone: String(customer.phone || '').slice(0, 40),
   };
   const hasAddress = Boolean(shippingAddress.address1 || shippingAddress.city || shippingAddress.zip);
+  // Shopify shows shipping and billing separately; sending only shipping left
+  // the order reading "No billing address provided". The checkout's billing
+  // block defaults to "same as shipping", so mirror it unless the buyer
+  // supplied a distinct one.
+  const bi = (customer.billing && typeof customer.billing === 'object') ? customer.billing : {};
+  const billingAddress = (bi.address1 || bi.city || bi.zip)
+    ? {
+      first_name: String(bi.first_name || customer.first_name || '').slice(0, 100),
+      last_name: String(bi.last_name || customer.last_name || '').slice(0, 100),
+      address1: String(bi.address1 || '').slice(0, 255),
+      address2: String(bi.address2 || '').slice(0, 255),
+      city: String(bi.city || '').slice(0, 100),
+      province: String(bi.state || '').slice(0, 100),
+      zip: String(bi.zip || '').slice(0, 20),
+      country: String(bi.country || '').slice(0, 60),
+      phone: String(customer.phone || '').slice(0, 40),
+    }
+    : shippingAddress;
 
   const orderPayload = {
     email,
