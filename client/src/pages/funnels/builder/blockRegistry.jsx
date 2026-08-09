@@ -359,8 +359,10 @@ export const BLOCK_DEFS = {
     label: 'Order Bump',
     category: 'blocks',
     icon: Gift,
+    // No `label` here: it is the LEGACY key the renderer still falls back to
+    // for older blocks. Seeding it on a NEW block would put a value behind
+    // the headline field that the operator cannot see in the inspector.
     defaults: () => ({
-      label: 'Yes! Add this one-time offer to my order',
       description: 'Special one-time deal, only available right now.',
       quantity: 1,
     }),
@@ -372,24 +374,24 @@ export const BLOCK_DEFS = {
         key: 'variant_id', label: 'Shopify product', kind: 'variant',
         help: 'Variants and prices come live from Shopify; the published page creates the payment session server-side, so the buyer is always charged the current Shopify price.',
       },
-      // KEY IS `label`, NOT `headline`. Verified by execution against main:
-      // funnelRender's order_bump case emits `p.label` and reads no `headline`
-      // prop at all. A field writing `headline` would look right in the
-      // inspector and change nothing on the published page — and would leave
-      // the string that DOES render uneditable.
+      // KEY IS `headline`. Verified by execution against the renderer on main
+      // (funnelRender.js order_bump): it resolves
+      //   p.headline -> "Yes, I want the {offer_name}!" -> p.label -> default.
+      // `label` is the LEGACY key and stays readable for blocks authored
+      // before that change; new edits write `headline`, which wins.
       {
-        key: 'label', label: 'Checkbox headline', kind: 'text',
-        placeholder: 'Yes, I want the … for ONLY $… (auto if blank)',
-        help: 'This is the line the published page renders. Leave blank to build it from the offer name and the picked variant’s price.',
+        key: 'headline', label: 'Checkbox headline', kind: 'text',
+        placeholder: 'Yes, I want the … (auto from the offer name if blank)',
+        help: 'Leave blank and the page builds it from the offer name. No price is inserted automatically — the amount charged is always the live Shopify price.',
       },
       {
-        key: 'offer_name', label: 'Offer name (bold, before the text)', kind: 'text',
+        key: 'offer_name', label: 'Offer name (bold, before the description)', kind: 'text',
         placeholder: 'EMERGENCY WATER TEST KIT',
-        help: 'Canvas preview — the live page renders the checkbox headline only; the bold offer name arrives with the next renderer release.',
+        help: 'Renders as a bold “NAME:” prefix on the description line, and fills the headline when that is left blank.',
       },
       {
         key: 'description', label: 'Description', kind: 'textarea',
-        help: 'What it is and why to add it. <b>bold</b> and <u>underline</u> render on the canvas; the live page currently shows this as plain text.',
+        help: 'What it is and why to add it. <b>bold</b> and <u>underline</u> are allowed — everything else is shown as plain text.',
       },
       {
         key: 'quantity', label: 'Quantity per order', kind: 'number', min: 1, max: 10, coerce: 'int',
@@ -401,7 +403,7 @@ export const BLOCK_DEFS = {
       },
       {
         key: 'offer_name_color', label: 'Offer name color', kind: 'color',
-        help: 'Canvas preview — the live page uses its own amber styling until the next renderer release.',
+        help: 'Tints the bold offer name. Must be a hex value (#111827) — anything else is ignored and the default ink is used.',
       },
       {
         key: 'price', label: 'Price (display text)', kind: 'text', placeholder: '$19.00',

@@ -2526,3 +2526,33 @@ changing move semantics (DECISION MADE). (3) The slug re-sync guard is
 not be read during render (DECISION MADE).
 STATUS: COMPLETE
 ---
+
+---
+TIMESTAMP: 2026-08-09 20:52
+TASK: BUILDER UX PARITY — F5/F20 renderer alignment after second rebase
+BUILT: Rebased onto main 1a4f334, which now carries the integrator's
+b7000e2 (order_bump renders headline/offer_name/color + b-u description).
+Read the landed renderer BY EXECUTION and aligned the canvas to what it
+actually emits, which differed from my preview in four ways: (1) its
+auto-headline carries NO PRICE — my canvas was building "…for ONLY $19",
+advertising money the page never prints; (2) offer_name renders as a bold
+"NAME:" prefix on the DESCRIPTION line, not before the headline; (3) the
+card border stays 2px dashed amber always — offer_name_color tints the NAME
+only; (4) offer_name_color is gated on a STRICT hex and falls back to
+#111827. The Content field key moved back to `headline` (the renderer now
+prefers it), `label` stays readable as the legacy key, and every
+"canvas preview" caveat was dropped because those fields are now live.
+TESTED: builder-model 114/114 (grown; bumpHeadline and the new bumpNameColor
+are now PINNED to the renderer's precedence and its strict-hex gate),
+code-doc 101/101, variant-search 94/94, page-versions 93/93, version-format
+26/26, breakpoint-render 49/49, page-duplicate 34/34, clone-page 92/92,
+money-path order-bump 18/18. Whole set run TWICE, identical. vite build clean
+twice. eslint delta vs the new base: ZERO.
+OUTPUT: the price-in-headline divergence was caught by reading the landed
+renderer rather than trusting the review note; a test now asserts props.price
+is never spliced into the auto-headline.
+DECISIONS: `label` is not seeded in defaults() any more — seeding the legacy
+key on a NEW block would put a value behind the headline field that the
+operator cannot see in the inspector (DECISION MADE).
+STATUS: COMPLETE
+---

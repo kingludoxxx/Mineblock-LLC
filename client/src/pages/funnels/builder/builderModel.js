@@ -266,30 +266,52 @@ export function parseInlineMarkup(text) {
  * by the picker. With no price we say less rather than inventing a number: a
  * headline reading "for ONLY $" would be a claim about money we do not have.
  */
+export const BUMP_DEFAULT_HEADLINE = 'Yes! Add this one-time offer to my order';
+export const BUMP_DEFAULT_NAME_COLOR = '#111827';
+
+/**
+ * MIRRORS THE SERVER EXACTLY. funnelRender.js order_bump:
+ *
+ *   p.headline  ->  offer_name ? `Yes, I want the ${offer_name}!`
+ *               ->  p.label    ->  the default string
+ *
+ * NOTE WHAT IS ABSENT: the server's auto-headline carries NO PRICE. An earlier
+ * draft of this function built "…for ONLY $19" from props.price, which would
+ * have made the canvas advertise a number the published page never prints —
+ * a preview that lies about money. The precedence and the wording here are
+ * copied from the renderer, not invented, and the harness pins them.
+ */
 export function bumpHeadline(props) {
   // NOT a destructuring default: `= {}` only fires for `undefined`, and the
   // caller passes `block.props`, which is legally null on a block the API
   // accepted. Destructuring null throws.
   const p = props && typeof props === 'object' ? props : {};
-  // `headline` first for forward-compatibility (the renderer is expected to
-  // prefer it), then `label` — which is the key the CURRENT renderer on main
-  // actually emits for order_bump. Reading both means the canvas shows the
-  // published string whichever key holds it.
-  const explicit = (typeof p.headline === 'string' ? p.headline.trim() : '')
-    || (typeof p.label === 'string' ? p.label.trim() : '');
-  if (explicit) return explicit;
+  const headline = typeof p.headline === 'string' ? p.headline.trim() : '';
+  if (headline) return headline;
   const name = typeof p.offer_name === 'string' ? p.offer_name.trim() : '';
-  const amount = displayPrice(p.price);
-  if (name && amount) return `Yes, I want the ${name} for ONLY ${amount}`;
-  if (name) return `Yes, I want the ${name}`;
-  return 'Yes, I want the offer';
+  if (name) return `Yes, I want the ${name}!`;
+  const label = typeof p.label === 'string' ? p.label.trim() : '';
+  if (label) return label;
+  return BUMP_DEFAULT_HEADLINE;
+}
+
+/**
+ * The offer-name colour the server will actually use: a STRICT hex, or its
+ * default ink. The renderer tests `^#[0-9a-fA-F]{3,8}$` and silently falls
+ * back — so the canvas must fall back on exactly the same inputs, or an
+ * operator typing `red` sees red here and near-black on the live page.
+ */
+export function bumpNameColor(props) {
+  const p = props && typeof props === 'object' ? props : {};
+  const raw = String(p.offer_name_color == null ? '' : p.offer_name_color);
+  return /^#[0-9a-fA-F]{3,8}$/.test(raw) ? raw : BUMP_DEFAULT_NAME_COLOR;
 }
 
 /**
  * F15. A price is only a price when it names an AMOUNT. `0`, `'0'`, `'$0.00'`,
- * `''` and null all mean "no price to advertise" here — a headline reading
- * "for ONLY $0.00" is a worse claim than one that simply omits the clause.
- * A genuinely free offer should say so in words, not in a zero.
+ * `''` and null all mean "no price to advertise". Used for the canvas's
+ * secondary "from …" line, which is builder chrome — the server prints
+ * props.price verbatim when it is non-blank.
  */
 export function displayPrice(price) {
   if (price == null) return '';

@@ -9,7 +9,7 @@
 // typed into a prop can never execute in the admin surface.
 import { useMemo } from 'react';
 import { CreditCard, ReceiptText, Film, Image as ImageIcon, Code2 } from 'lucide-react';
-import { bumpHeadline, bumpUnconfigured, parseInlineMarkup, displayPrice } from './builderModel';
+import { bumpHeadline, bumpUnconfigured, bumpNameColor, parseInlineMarkup } from './builderModel';
 
 const T = {
   text: '#374151',
@@ -382,79 +382,71 @@ export default function BlockPreview({ block, pageCss = '' }) {
     //   UNCONFIGURED (no variant_id) — dashed outline + the assign hint. The
     //     renderer omits data-bump-armed and the server refuses the bump with
     //     422 bump_not_chargeable, so the canvas must not draw it as working.
-    //   CONFIGURED — product chip, bold offer name, "from <price>" line. The
-    //     public runtime IS live on main: funnelRender arms
-    //     .lb-order-bump[data-bump-armed='1'] → POST /session/:id/bump.
-    // The bold offer name, the accent colour and <b>/<u> in the description
-    // are CANVAS-ONLY today — the renderer emits `label` and an esc()'d
-    // description. Every field carrying one of those says so in its help text.
+    //   CONFIGURED — the wired strip. The public runtime IS live on main:
+    //     funnelRender arms .lb-order-bump[data-bump-armed='1'] → POST
+    //     /session/:id/bump.
+    // Every display field (headline, offer_name, offer_name_color, and <b>/<u>
+    // in the description) is now emitted by the renderer, so this preview is
+    // a true preview and no field carries a "canvas-only" caveat any more.
     case 'order_bump': {
+      // LAYOUT MIRRORS funnelRender.js EXACTLY, because a preview that
+      // arranges the same props differently is a preview that lies:
+      //   · the card border is ALWAYS 2px dashed #f59e0b (the renderer never
+      //     recolours it — offer_name_color tints the NAME only)
+      //   · offer_name is a bold "NAME:" prefix on the DESCRIPTION line,
+      //     not a prefix on the headline
+      //   · the description line appears when EITHER description or
+      //     offer_name is set
+      //   · the price is a display string printed verbatim beside the label
+      // The "Product ·" strip below the card is builder-only chrome and is
+      // drawn OUTSIDE the card so it cannot be mistaken for page content.
       const unconfigured = bumpUnconfigured(p);
-      const accent = String(p.offer_name_color || '').trim() || '#f59e0b';
+      const nameColor = bumpNameColor(p);
       const headline = bumpHeadline(p);
-      const priceText = displayPrice(p.price);
+      const offerName = String(p.offer_name == null ? '' : p.offer_name).trim();
+      const descRaw = String(p.description == null ? '' : p.description).trim();
+      const priceText = p.price != null && String(p.price).trim() !== '' ? String(p.price).trim() : '';
       const qty = Number.isFinite(Number(p.quantity)) && Number(p.quantity) > 1 ? Number(p.quantity) : null;
       return (
-        <div
-          style={{
-            position: 'relative',
-            border: unconfigured ? '2px dashed #f59e0b' : `2px solid ${accent}`,
-            borderRadius: 12,
-            background: '#fffbeb',
-            padding: '16px 18px',
-          }}
-        >
-          {!unconfigured && (
-            <span
-              style={{
-                position: 'absolute', top: -9, right: 12, padding: '1px 7px', borderRadius: 999,
-                background: accent, color: '#fff', fontSize: 9, fontWeight: 700,
-                textTransform: 'uppercase', letterSpacing: '0.06em',
-              }}
-            >
-              Product
-            </span>
-          )}
-          <label style={{ display: 'flex', alignItems: 'flex-start', gap: 10 }}>
-            <input
-              type="checkbox"
-              checked={p.checked === true}
-              readOnly
-              style={{ marginTop: 3, width: 18, height: 18, accentColor: accent, pointerEvents: 'none' }}
-            />
-            <span style={{ flex: 1, color: T.dark, fontSize: 14 }}>
-              {p.offer_name != null && String(p.offer_name).trim() !== '' && (
-                <strong style={{ color: accent, marginRight: 6 }}>{String(p.offer_name).trim()}</strong>
+        <div>
+          <div style={{ border: '2px dashed #f59e0b', borderRadius: 12, background: '#fffbeb', padding: '16px 18px' }}>
+            <label style={{ display: 'flex', alignItems: 'flex-start', gap: 10 }}>
+              <input
+                type="checkbox"
+                checked={p.checked === true}
+                readOnly
+                style={{ marginTop: 3, width: 18, height: 18, accentColor: '#f59e0b', pointerEvents: 'none' }}
+              />
+              <span style={{ flex: 1, fontWeight: 600, color: T.dark, fontSize: 14 }}>{headline}</span>
+              {priceText && (
+                <span style={{ fontWeight: 700, color: T.dark, whiteSpace: 'nowrap', fontSize: 14 }}>{priceText}</span>
               )}
-              <span style={{ fontWeight: 600 }}>{headline}</span>
-            </span>
-            {priceText && (
-              <span style={{ fontWeight: 700, color: T.dark, whiteSpace: 'nowrap', fontSize: 14 }}>{priceText}</span>
+            </label>
+
+            {(descRaw || offerName) && (
+              // <b>/<u> only, rendered as REACT ELEMENTS around auto-escaped
+              // text — this file's no-dangerouslySetInnerHTML rule holds. The
+              // server allows exactly the same two tags.
+              <p style={{ margin: '8px 0 0 28px', color: T.faint, fontSize: 13 }}>
+                {offerName && <strong style={{ color: nameColor }}>{`${offerName}: `}</strong>}
+                {parseInlineMarkup(descRaw).map((seg, si) => {
+                  let node = seg.text;
+                  if (seg.underline) node = <u key="u">{node}</u>;
+                  if (seg.bold) node = <strong key="b">{node}</strong>;
+                  return <span key={si}>{node}</span>;
+                })}
+              </p>
             )}
-          </label>
+          </div>
 
-          {p.description != null && String(p.description).trim() !== '' && (
-            // <b>/<u> only, rendered as REACT ELEMENTS around auto-escaped
-            // text — this file's no-dangerouslySetInnerHTML rule holds.
-            // The PUBLISHED page still escapes the whole string until the
-            // renderer half lands — noted in the delivery report.
-            <p style={{ margin: '8px 0 0 28px', color: T.faint, fontSize: 13 }}>
-              {parseInlineMarkup(p.description).map((seg, si) => {
-                let node = seg.text;
-                if (seg.underline) node = <u key="u">{node}</u>;
-                if (seg.bold) node = <strong key="b">{node}</strong>;
-                return <span key={si}>{node}</span>;
-              })}
-            </p>
-          )}
-
+          {/* Builder-only status strip — never rendered on the public page. */}
           {unconfigured ? (
-            <div style={{ marginLeft: 28, marginTop: 6, fontSize: 11, color: '#b45309', fontWeight: 600 }}>
+            <div style={{ marginTop: 4, fontSize: 11, color: '#b45309', fontWeight: 600 }}>
               Assign a Shopify product in the block settings
             </div>
           ) : (
-            <div style={{ marginLeft: 28, marginTop: 6, fontSize: 11, color: T.faint }}>
-              {priceText ? `from ${priceText}` : 'priced live from Shopify'}
+            <div style={{ marginTop: 4, fontSize: 11, color: T.faint }}>
+              Product wired · charged live from Shopify
               {qty ? ` · ${qty} per order` : ''}
             </div>
           )}

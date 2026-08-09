@@ -11,7 +11,8 @@
 import {
   buildOutline, defaultLabel, blockCodeSections, editableCount, safeJson,
   parseInlineMarkup, bumpHeadline, bumpUnconfigured, blockNameAttr,
-  isSlugCollision, escapeHtml, displayPrice, SERVER_GENERATED_NOTE,
+  isSlugCollision, escapeHtml, displayPrice, bumpNameColor,
+  BUMP_DEFAULT_HEADLINE, BUMP_DEFAULT_NAME_COLOR, SERVER_GENERATED_NOTE,
 } from '../../../client/src/pages/funnels/builder/builderModel.js';
 
 let pass = 0, fail = 0;
@@ -216,19 +217,38 @@ eq(escapeHtml(null), '', 'escapeHtml: null → empty');
 // ===========================================================================
 // bumpHeadline / bumpUnconfigured / blockNameAttr
 // ===========================================================================
-eq(bumpHeadline({ headline: 'Custom line' }), 'Custom line', 'headline: explicit wins');
-// The CURRENT renderer on main emits `p.label` for order_bump and reads no
-// `headline` prop — verified by execution against funnelRender.js. The canvas
-// must therefore show whichever key holds the string.
-eq(bumpHeadline({ label: 'From the label key' }), 'From the label key', 'headline: reads `label`, the key the LIVE renderer emits');
-eq(bumpHeadline({ headline: 'H', label: 'L' }), 'H', 'headline: `headline` wins when both exist (forward-compatible)');
-eq(bumpHeadline({ label: '   ', offer_name: 'KIT', price: '$19' }), 'Yes, I want the KIT for ONLY $19', 'headline: blank label auto-builds');
-eq(bumpHeadline({ headline: '   ', offer_name: 'KIT', price: '$19' }), 'Yes, I want the KIT for ONLY $19', 'headline: blank headline auto-builds');
+// ===========================================================================
+// bumpHeadline / bumpNameColor — PINNED TO THE SERVER RENDERER.
+// funnelRender.js order_bump resolves:
+//   p.headline -> `Yes, I want the ${offer_name}!` -> p.label -> default
+// and its auto-headline carries NO PRICE. Every case below is that contract;
+// if the renderer changes, these fail and the canvas stops lying quietly.
+// ===========================================================================
+eq(bumpHeadline({ headline: 'Custom line' }), 'Custom line', 'headline: explicit `headline` wins');
+eq(bumpHeadline({ headline: 'H', offer_name: 'KIT', label: 'L' }), 'H', 'headline: `headline` beats offer_name AND label');
+eq(bumpHeadline({ offer_name: 'KIT', label: 'L' }), 'Yes, I want the KIT!', 'headline: offer_name beats the legacy label');
+eq(bumpHeadline({ offer_name: 'KIT' }), 'Yes, I want the KIT!', 'headline: auto form matches the server WORD FOR WORD (trailing !)');
+eq(bumpHeadline({ label: 'Legacy line' }), 'Legacy line', 'headline: the LEGACY `label` key is still honoured');
+eq(bumpHeadline({ headline: '   ', offer_name: 'KIT' }), 'Yes, I want the KIT!', 'headline: blank headline falls through');
+eq(bumpHeadline({}), BUMP_DEFAULT_HEADLINE, 'headline: the default string matches the server default');
 
-// ---- F15: a zero price is NOT a price ------------------------------------
-eq(bumpHeadline({ offer_name: 'KIT', price: 0 }), 'Yes, I want the KIT', 'F15: price 0 omits the money clause entirely');
-eq(bumpHeadline({ offer_name: 'KIT', price: '0' }), 'Yes, I want the KIT', 'F15: price "0" omits the clause');
-eq(bumpHeadline({ offer_name: 'KIT', price: '$0.00' }), 'Yes, I want the KIT', 'F15: price "$0.00" omits the clause — never "for ONLY $0.00"');
+// THE PRICE MUST NOT APPEAR. The server never inserts one, so a canvas that
+// advertised "for ONLY $19" would be previewing money the page never prints.
+ok(!/ONLY/.test(bumpHeadline({ offer_name: 'KIT', price: '$19' })), 'headline: props.price is NEVER spliced into the auto-headline (the server does not)');
+eq(bumpHeadline({ offer_name: 'KIT', price: '$19' }), 'Yes, I want the KIT!', 'headline: price present changes nothing');
+
+// ---- bumpNameColor: the server's strict hex gate, mirrored ---------------
+eq(bumpNameColor({ offer_name_color: '#abc' }), '#abc', 'nameColor: 3-digit hex accepted');
+eq(bumpNameColor({ offer_name_color: '#112233' }), '#112233', 'nameColor: 6-digit hex accepted');
+eq(bumpNameColor({ offer_name_color: '#11223344' }), '#11223344', 'nameColor: 8-digit hex accepted');
+eq(bumpNameColor({ offer_name_color: 'red' }), BUMP_DEFAULT_NAME_COLOR, 'nameColor: a NAMED colour is refused here exactly as the server refuses it');
+eq(bumpNameColor({ offer_name_color: 'rgb(1,2,3)' }), BUMP_DEFAULT_NAME_COLOR, 'nameColor: rgb() refused');
+eq(bumpNameColor({ offer_name_color: '#12' }), BUMP_DEFAULT_NAME_COLOR, 'nameColor: too-short hex refused');
+eq(bumpNameColor({ offer_name_color: 'red;background:url(x)' }), BUMP_DEFAULT_NAME_COLOR, 'nameColor: a CSS-injection attempt is refused');
+eq(bumpNameColor({}), BUMP_DEFAULT_NAME_COLOR, 'nameColor: absent → the default ink');
+eq(bumpNameColor(null), BUMP_DEFAULT_NAME_COLOR, 'nameColor: null props → the default ink');
+
+// ---- F15: displayPrice (canvas chrome only) ------------------------------
 eq(displayPrice('$19.00'), '$19.00', 'displayPrice: a real amount passes through');
 eq(displayPrice(0), '', 'displayPrice: 0 → ""');
 eq(displayPrice('0.00'), '', 'displayPrice: "0.00" → ""');
@@ -236,12 +256,10 @@ eq(displayPrice(null), '', 'displayPrice: null → ""');
 eq(displayPrice('   '), '', 'displayPrice: whitespace → ""');
 eq(displayPrice('$19'), '$19', 'displayPrice: currency symbol preserved');
 eq(displayPrice('Free'), 'Free', 'displayPrice: a non-numeric label is kept as written');
-eq(bumpHeadline({ offer_name: 'KIT' }), 'Yes, I want the KIT', 'headline: no price → no money claim, and NO dangling "for ONLY $"');
-eq(bumpHeadline({ price: '$19' }), 'Yes, I want the offer', 'headline: price without a name → generic');
-eq(bumpHeadline({}), 'Yes, I want the offer', 'headline: empty → generic fallback');
-eq(bumpHeadline(), 'Yes, I want the offer', 'headline: no argument at all → generic fallback');
-eq(bumpHeadline(null), 'Yes, I want the offer', 'headline: null → generic fallback');
-eq(bumpHeadline({ offer_name: 'KIT', price: 19 }), 'Yes, I want the KIT for ONLY 19', 'headline: a numeric price is coerced');
+eq(bumpHeadline({ price: '$19' }), BUMP_DEFAULT_HEADLINE, 'headline: price without a name → the default string');
+eq(bumpHeadline({}), BUMP_DEFAULT_HEADLINE, 'headline: empty → default');
+eq(bumpHeadline(), BUMP_DEFAULT_HEADLINE, 'headline: no argument at all → default');
+eq(bumpHeadline(null), BUMP_DEFAULT_HEADLINE, 'headline: null → default');
 ok(!/ONLY\s*$/.test(bumpHeadline({ offer_name: 'KIT', price: '   ' })), 'headline: whitespace-only price never yields a truncated money claim');
 
 eq(bumpUnconfigured({}), true, 'bump: no variant_id → unconfigured');
