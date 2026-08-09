@@ -21,18 +21,7 @@ import Button from '../../ui/Button';
 import Input from '../../ui/Input';
 import { GATEWAY_META } from './gatewayMeta';
 import { StatusPill, ScaffoldPanel, Toggle } from './ui';
-
-const isObj = (v) => v != null && typeof v === 'object' && !Array.isArray(v);
-
-// Fetch the freshest funnel row, merge, PATCH. `build(fresh)` returns the
-// PATCH body. Returns the updated funnel row.
-async function saveFunnelPatch(funnelId, build) {
-  const res = await api.get(`/funnels/${funnelId}`);
-  const fresh = res.data?.data?.funnel || {};
-  const body = build(fresh);
-  const patched = await api.patch(`/funnels/${funnelId}`, body);
-  return patched.data?.data || null;
-}
+import { isObj, saveFunnelPatch } from './settingsPatch';
 
 // Set key to a trimmed string, or delete it when empty — keeps the stored
 // blobs free of dangling '' keys.
@@ -1219,21 +1208,11 @@ export function HealthSection({ funnelId }) {
   );
 }
 
-// ── TRACKING scaffolds — documented API shape for the tracking lane ─────────
-// Expected (to reconcile at merge):
-//   GET  /api/v1/funnels/:id/tracking            -> { pixels:[{id,provider,pixel_id,enabled}], ... }
-//   PUT  /api/v1/funnels/:id/tracking            -> upsert pixel/provider config
+// ── TRACKING scaffolds — remaining stubs for the tracking lane ──────────────
+// The Tracking DIRECTORY itself is now real (see ./TrackingSection.jsx, wired
+// to /api/v1/tracking-admin). These two panels stay scaffolds:
 //   GET  /api/v1/funnels/:id/tracking/health     -> per-pixel fire status
 //   GET/PUT /api/v1/funnels/:id/tracking/custom  -> { head_html, body_html }
-export function TrackingSection() {
-  return (
-    <ScaffoldPanel
-      title="Tracking"
-      description="Ad-platform pixels & conversion APIs for this funnel (Meta, TikTok, Google, …)."
-      note="Coming with the tracking phase (tracking lane) — GET/PUT /api/v1/funnels/:id/tracking."
-    />
-  );
-}
 export function TrackingHealthSection() {
   return (
     <ScaffoldPanel
