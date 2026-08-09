@@ -1510,23 +1510,44 @@ const CKT_TEMPLATE_JS = `(function(){
           if(e){e.hidden=false;e.textContent=msg;e.scrollIntoView({behavior:'smooth',block:'center'});}}catch(e2){}};
         var done=function(msg){if(settled){return;}settled=true;btn.disabled=false;btn.textContent=prev;
           if(msg){say(msg);}};
-        /* wco.submit is FIRE-AND-FORGET: it postMessages 'submit' into the frame
-           and resolves undefined. The outcome arrives as 'complete' or
-           'payment-error' events on the mount. A card that fails the embed's OWN
-           validation raises NEITHER — it just renders a message inside the
-           iframe — so a button that waits for an event sticks on 'Processing…'
-           forever while the real error sits out of view. Re-enable quickly and
-           point the buyer at the form instead of freezing. */
+        /* wco.submit is FIRE-AND-FORGET, and the embed's events are not the
+           source of truth: a real live charge completed AFTER our old 8s
+           watchdog had already shown 'card details incomplete', and the
+           embed's own return-url redirect never fired. So OUR SERVER is the
+           oracle now: after submit we POLL the session every 2s — the moment
+           the webhook flips it paid we navigate to the thank-you page
+           ourselves. The embed's 'complete' event and return-url become
+           belt-and-braces. A card failing the embed's own validation raises
+           no event AND never settles — the 12s nudge tells the buyer to check
+           the form, and 120s is the give-up (with a were-you-charged-do-not-
+           retry warning, since money may be in flight). */
+        var sidNow='';try{sidNow=(window.__fos_checkout.session||{}).session_id||'';}catch(e){}
+        var tyUrl=mount.getAttribute('data-whop-checkout-return-url')||'';
+        var goThanks=function(){settled=true;btn.textContent='Confirmed \u2713';
+          try{var e=document.querySelector('[data-fos-error]');if(e){e.hidden=true;}}catch(e2){}
+          if(tyUrl){window.location.href=tyUrl;}
+          else{say('Payment confirmed! Your receipt is on its way to your inbox.');}};
+        var pollTimer=null;var stopPoll=function(){if(pollTimer){clearInterval(pollTimer);pollTimer=null;}};
         try{
-          mount.addEventListener('payment-error',function(ev){
+          mount.addEventListener('payment-error',function(ev){stopPoll();
             var d=ev&&ev.detail;done((d&&(d.message||d.error))||'That payment could not be completed. Please check your card details.');},{once:true});
-          mount.addEventListener('complete',function(){settled=true;btn.textContent='Confirmed';},{once:true});
+          mount.addEventListener('complete',function(){stopPoll();goThanks();},{once:true});
           if(mount.scrollIntoView){mount.scrollIntoView({behavior:'smooth',block:'center'});}
           /* Awaited: the order is built from the session, so the address must
              be stored BEFORE the charge settles. */
           syncCustomer().then(function(){window.wco.submit(mount.id||'puure-checkout');});
-          setTimeout(function(){done('If your card details are incomplete, correct them above and try again.');},8000);
-        }catch(e){done('Could not submit the payment form.');}
+          if(sidNow){
+            pollTimer=setInterval(function(){
+              fetch('/api/v1/checkout/public/session/'+encodeURIComponent(sidNow),{credentials:'same-origin'})
+              .then(function(r){return r.json();})
+              .then(function(j){var st=j&&j.data&&j.data.status;
+                if(st==='paid'||st==='deposit_paid'){stopPoll();goThanks();}})
+              .catch(function(){});
+            },2000);
+          }
+          setTimeout(function(){if(!settled){say('Still processing your payment \u2014 please keep this page open. If your card details are incomplete, correct them above and press the button again.');btn.disabled=false;btn.textContent=prev;}},12000);
+          setTimeout(function(){if(!settled){stopPoll();done('We could not confirm the payment. If your card was charged you will receive a confirmation email shortly \u2014 please do NOT submit again; otherwise, try once more.');}},120000);
+        }catch(e){stopPoll();done('Could not submit the payment form.');}
         return;
       }
       /* Embed not mounted (creds missing / network): fall back to the hosted
