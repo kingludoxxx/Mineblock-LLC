@@ -23,6 +23,8 @@ import FunnelsPage from './pages/funnels/FunnelsPage';
 import FunnelCanvasPage from './pages/funnels/FunnelCanvasPage';
 import FunnelPageEditorPage from './pages/funnels/FunnelPageEditorPage';
 import PageBuilderPage from './pages/funnels/builder/PageBuilderPage';
+// INTEGRATION HOOK (analytics lane) — additive import
+import FunnelAnalyticsPage from './pages/analytics/FunnelAnalyticsPage';
 import Settings from './pages/Settings';
 import NotFound from './pages/NotFound';
 import SupplierPublicSheet from './pages/public/SupplierPublicSheet';
@@ -131,6 +133,8 @@ export default function App() {
           <Route path="funnels/:id" element={<PageGate permission="funnels:access"><FunnelCanvasPage /></PageGate>} />
           <Route path="funnels/:id/pages/:pageId" element={<PageGate permission="funnels:access"><FunnelPageEditorPage /></PageGate>} />
           <Route path="funnels/:id/pages/:pageId/builder" element={<PageGate permission="funnels:access"><PageBuilderPage /></PageGate>} />
+          {/* INTEGRATION HOOK (analytics lane) — ONE additive route line */}
+          <Route path="funnel-analytics" element={<PageGate permission="funnels:access"><FunnelAnalyticsPage /></PageGate>} />
 
           {/* Intel */}
           <Route path="meta" element={<PageGate permission="meta-ads:access"><MetaPage /></PageGate>} />

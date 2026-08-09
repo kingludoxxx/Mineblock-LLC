@@ -53,6 +53,8 @@ const navGroups = [
     icon: Factory,
     items: [
       { to: '/app/funnels', icon: Waypoints, label: 'Funnels', permission: 'funnels:access' },
+      // INTEGRATION HOOK (analytics lane) — ONE additive sidebar line
+      { to: '/app/funnel-analytics', icon: BarChart3, label: 'Funnel Analytics', permission: 'funnels:access' },
       { to: '/app/brief-agent', icon: Sparkles, label: 'Brief Agent', permission: 'brief-agent:access' },
       { to: '/app/iteration-king', icon: Crown, label: 'Iteration King', permission: 'iteration-king:access' },
       { to: '/app/statics-generation', icon: Layers, label: 'Statics Generation', permission: 'statics-generation:access' },
