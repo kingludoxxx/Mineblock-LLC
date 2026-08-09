@@ -69,6 +69,10 @@ async function createTables() {
     `ALTER TABLE funnels ADD COLUMN IF NOT EXISTS settings JSONB DEFAULT '{}'`
   );
 
+  // ⚠️ Adding a column here? The atomic duplicate endpoint below
+  // (POST /:id/pages/:pageId/duplicate) lists the copyable columns explicitly
+  // in its INSERT…SELECT — a new content column must be added THERE too, or
+  // duplicates will silently drop it.
   await pgQuery(`
     CREATE TABLE IF NOT EXISTS funnel_pages (
       id TEXT PRIMARY KEY,
@@ -970,6 +974,80 @@ router.post('/:id/pages', async (req, res) => {
     }
     console.error('[funnels] page create failed:', err);
     res.status(500).json({ error: 'Failed to create page' });
+  }
+});
+
+// POST /api/v1/funnels/:id/pages/:pageId/duplicate — { title?, slug? }
+//
+// ATOMIC page copy: the row AND everything on it (blocks, seo, every
+// escape-hatch field) travel in ONE INSERT…SELECT — a single statement, so a
+// single implicit transaction. This replaces the client's old 2-call composite
+// (POST page, then PATCH blocks with the failure swallowed), which could
+// silently land an EMPTY copy: the page existed, the blocks never arrived, and
+// nothing on screen said so.
+//
+// The SELECT is pinned to (id, funnel_id, NOT archived) — a pageId belonging
+// to ANOTHER funnel copies nothing and 404s, so this route can never be used
+// to read a page across the funnel boundary.
+//
+// The copy always lands as a DRAFT and never as home: a duplicate must not
+// start serving publicly (or steal the home slot) as a side effect of a copy.
+router.post('/:id/pages/:pageId/duplicate', async (req, res) => {
+  try {
+    await ensureTables();
+    const funnel = await getFunnel(req.params.id);
+    if (!funnel) return res.status(404).json({ error: 'Funnel not found' });
+    if (funnel.archived) {
+      return res.status(400).json({ error: 'Funnel is archived — restore it before duplicating pages' });
+    }
+
+    // Optional overrides. Absent → derived from the source row in SQL
+    // (title || ' copy', '/<type>-<rand>').
+    const titleOverride = req.body?.title !== undefined ? String(req.body.title).trim() : null;
+    if (titleOverride !== null && !titleOverride) {
+      return res.status(400).json({ error: 'title is required' });
+    }
+    const slugOverride = req.body?.slug !== undefined ? String(req.body.slug).trim() : null;
+    if (slugOverride !== null && !PAGE_SLUG_RE.test(slugOverride)) {
+      return res
+        .status(400)
+        .json({ error: "slug must be '/' or '/' followed by lowercase letters, numbers and dashes" });
+    }
+
+    // A random derived slug can still collide (1 in 65k) — retry with a fresh
+    // suffix. A caller-pinned slug is NOT retried: that collision is theirs to
+    // read (409), not to be silently rewritten.
+    const attempts = slugOverride === null ? 3 : 1;
+    for (let attempt = 1; ; attempt += 1) {
+      const suffix = randomBytes(2).toString('hex');
+      try {
+        const rows = await pgQuery(
+          `INSERT INTO funnel_pages
+             (id, funnel_id, slug, type, title, status, is_home, blocks, seo,
+              custom_html, custom_css, custom_js, head_html, body_end_html)
+           SELECT $1, funnel_id, COALESCE($4, '/' || type || '-' || $5), type,
+                  COALESCE($3, TRIM(title || ' copy')), 'draft', FALSE, blocks, seo,
+                  custom_html, custom_css, custom_js, head_html, body_end_html
+           FROM funnel_pages
+           WHERE id = $2 AND funnel_id = $6 AND NOT archived
+           RETURNING *`,
+          [genId('fpg'), req.params.pageId, titleOverride, slugOverride, suffix, req.params.id]
+        );
+        if (!rows.length) return res.status(404).json({ error: 'Page not found' });
+        return res.status(201).json({ success: true, data: rows[0] });
+      } catch (err) {
+        if (err?.code === UNIQUE_VIOLATION && attempt < attempts) continue;
+        if (err?.code === UNIQUE_VIOLATION) {
+          return res
+            .status(409)
+            .json({ error: 'A page with this slug already exists in this funnel' });
+        }
+        throw err;
+      }
+    }
+  } catch (err) {
+    console.error('[funnels] page duplicate failed:', err);
+    res.status(500).json({ error: 'Failed to duplicate page' });
   }
 });
 

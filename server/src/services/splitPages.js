@@ -47,8 +47,10 @@ export async function listArmEligiblePages({ funnelId, testId = null }, { query 
   if (!fid) return { pages: [], counts: emptyCounts() };
   await ensureSplitTables(query);
 
+  // seo + updated_at ride along for the operator UI: seo.title backs the
+  // "use name as title" control, updated_at keys the thumbnail cache.
   const pages = await query(
-    `SELECT id, slug, type, title, status, archived, is_home
+    `SELECT id, slug, type, title, status, archived, is_home, seo, updated_at
      FROM funnel_pages
      WHERE funnel_id = $1 AND NOT archived
      ORDER BY is_home DESC, slug`,
@@ -87,6 +89,8 @@ export async function listArmEligiblePages({ funnelId, testId = null }, { query 
       title: p.title,
       status: p.status,
       is_home: p.is_home,
+      seo: p.seo || {},
+      updated_at: p.updated_at,
       eligible: reason === null,
       reason,
       reason_label: reason ? INELIGIBLE_REASONS[reason] : null,

@@ -50,9 +50,10 @@ import SplitGroupNode from '../../components/funnels/split/SplitGroupNode';
 import SplitSetupModal from '../../components/funnels/split/SplitSetupModal';
 import ClonePageModal from '../../components/funnels/ClonePageModal';
 import SplitResultsModal from '../../components/funnels/split/SplitResultsModal';
+import SplitQuickCreateModal from '../../components/funnels/split/SplitQuickCreateModal';
 import {
   fetchFunnelSplitTests, fetchSplitMetrics, fetchLifetimeResults,
-  armLetter, fmtInt, fmtPct,
+  armLetter, fmtInt, fmtPct, utcDay,
 } from '../../components/funnels/split/splitApi';
 
 const nodeTypes = { page: PageNode, splitGroup: SplitGroupNode };
@@ -122,6 +123,7 @@ function CanvasInner() {
   const [splitTiles, setSplitTiles] = useState({}); // testId -> { armKey: {visitors, orders, cvr} }
   const [splitSetupId, setSplitSetupId] = useState(null);
   const [splitResultsId, setSplitResultsId] = useState(null);
+  const [splitQuickPage, setSplitQuickPage] = useState(null); // page = variant A of a quick A/B create
 
   const [nodes, setNodes, onNodesChange] = useNodesState([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState([]);
@@ -198,7 +200,13 @@ function CanvasInner() {
     setSplits(tests);
     const entries = await Promise.all(
       tests.map(async (t) => {
-        const overlay = await fetchSplitMetrics(t.id);
+        // Windowed from the day the test was created (the server would default
+        // to the last 30 days, silently clipping older tests) — the canvas
+        // caption says "since created" and this is what makes that true. UTC
+        // day on purpose: the server truncates in UTC, and the local day of a
+        // 23:50Z creation would start the window a day late.
+        const from = t.created_at ? utcDay(t.created_at) : undefined;
+        const overlay = await fetchSplitMetrics(t.id, from ? { from } : {});
         if (overlay.available) {
           // normalizeMetrics has already converted `cvr` from a fraction to a
           // percent exactly once — it must NOT be scaled again here.
@@ -352,6 +360,11 @@ function CanvasInner() {
                 is_entry: Boolean(a.is_entry),
                 title: p?.title,
                 slug: p?.slug,
+                // Thumbnail identity: the shared loader keys on
+                // funnel_id/page_id/updated_at (an edit bumps the key → refetch).
+                page_id: a.page_id || null,
+                funnel_id: p ? id : null,
+                page_updated_at: p?.updated_at,
                 visitors: m.visitors,
                 orders: m.orders,
                 cvr: m.cvr,
@@ -369,7 +382,7 @@ function CanvasInner() {
         .map((n) => (armPageIds.has(n.id) === Boolean(n.hidden) ? n : { ...n, hidden: armPageIds.has(n.id) }));
       return [...pageNodes, ...splitNodes];
     });
-  }, [splits, splitTiles, pages, setNodes]);
+  }, [splits, splitTiles, pages, setNodes, id]);
 
   // ---- Persist flow (debounced) ----
   const buildPayload = useCallback(() => {
@@ -555,16 +568,17 @@ function CanvasInner() {
     async (page) => {
       setError(null);
       try {
-        const res = await api.post(`/funnels/${id}/pages`, {
-          title: `${page.title} copy`,
-          slug: `/${(page.type || 'page')}-${randSuffix()}`,
-          type: page.type,
-        });
+        // Atomic server-side copy: page row + blocks + escape-hatch fields in
+        // one transaction (the old 2-call composite could silently land an
+        // empty copy when the blocks PATCH failed).
+        const res = await api.post(`/funnels/${id}/pages/${page.id}/duplicate`);
         const np = res.data?.data;
-        // Carry blocks + escape-hatch content over.
-        try {
-          await api.patch(`/funnels/${id}/pages/${np.id}`, { blocks: page.blocks ?? [] });
-        } catch { /* non-fatal */ }
+        if (!np?.id) {
+          // A 2xx without the page row is a shape we do not understand —
+          // pushing it into the canvas would render a ghost node.
+          setError('Duplicate did not return the new page — reload and check the pages list');
+          return;
+        }
         const src = rf.getNodes().find((n) => n.id === page.id);
         const pos = src ? { x: src.position.x + 40, y: src.position.y + 40 } : centerPosition();
         setPages((prev) => [...prev, np]);
@@ -623,6 +637,7 @@ function CanvasInner() {
     onPreview: previewPage,
     onDuplicate: duplicatePage,
     onDelete: deletePage,
+    onSplitTest: (page) => setSplitQuickPage(page),
   };
   useEffect(() => {
     // Page actions belong to page nodes only — a split group node carries its
@@ -1019,6 +1034,18 @@ function CanvasInner() {
         open={Boolean(splitResultsId)}
         onClose={() => setSplitResultsId(null)}
         test={splits.find((t) => t.id === splitResultsId) || null}
+      />
+
+      <SplitQuickCreateModal
+        open={Boolean(splitQuickPage)}
+        onClose={() => setSplitQuickPage(null)}
+        funnel={funnel}
+        pageA={splitQuickPage}
+        onCreated={async (newTestId) => {
+          setSplitQuickPage(null);
+          await loadSplits();
+          setSplitSetupId(newTestId); // straight into the full setup modal
+        }}
       />
 
       <ClonePageModal
