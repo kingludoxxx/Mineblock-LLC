@@ -7,10 +7,24 @@ import { Router } from 'express';
 import { pgQuery } from '../db/pg.js';
 import { authenticate } from '../middleware/auth.js';
 import { requirePermission } from '../middleware/rbac.js';
+import { buildOrderJourney } from '../services/orderJourney.js';
 
 const router = Router();
 
 router.use(authenticate, requirePermission('orders', 'access'));
+
+// crm_orders.order_id is BIGINT, so a non-numeric ':id' reaching a query would
+// surface as a Postgres cast error — a 500 that reads like a server fault when
+// the truth is "no such order". Refuse it here instead. The leading '-' is
+// REQUIRED, not incidental: manually recorded orders carry negative ids by
+// construction (see POST /manual), and rejecting them would make every manual
+// order unopenable.
+router.param('id', (req, res, next, value) => {
+  if (!/^-?\d+$/.test(String(value))) {
+    return res.status(404).json({ error: 'Order not found' });
+  }
+  return next();
+});
 
 // Concurrent requests must not run the DDL simultaneously — Postgres throws
 // on parallel CREATE TABLE IF NOT EXISTS (pg_type unique violation). A single
@@ -90,6 +104,58 @@ async function createTables() {
     )
   `);
   await pgQuery(`CREATE INDEX IF NOT EXISTS idx_crm_order_comments_order ON crm_order_comments (order_id, created_at DESC)`);
+
+  // Provenance. 'shopify' = mirrored from the store (webhook / sync-shopify);
+  // 'manual' = recorded by an operator through POST /manual. This column is the
+  // ONLY thing that distinguishes them, and every money-path query in this repo
+  // reads co_sessions / co_orders — never crm_orders — so a manual row can
+  // never be mistaken for settled revenue by the gateway or settlement code.
+  await pgQuery(`ALTER TABLE crm_orders ADD COLUMN IF NOT EXISTS source TEXT NOT NULL DEFAULT 'shopify'`);
+  await pgQuery(`CREATE INDEX IF NOT EXISTS idx_crm_orders_source ON crm_orders (source)`);
+
+  // Reconciliation, schema-ready ahead of the feature that will use it.
+  // The documented trap on POST /manual is that when the payment-link half
+  // eventually lands, a manual row and the real Shopify order it becomes are
+  // the SAME sale and would otherwise both count. These two columns are how
+  // that gets resolved: the manual row points at the store order that
+  // superseded it and is stamped retired. Nothing writes them yet — but every
+  // aggregate in this repo already EXCLUDES retired rows, so the day the
+  // reconciler ships it cannot silently double-count revenue that shipped
+  // before it.
+  await pgQuery(`ALTER TABLE crm_orders ADD COLUMN IF NOT EXISTS reconciled_with_order_id BIGINT`);
+  await pgQuery(`ALTER TABLE crm_orders ADD COLUMN IF NOT EXISTS retired_at TIMESTAMPTZ`);
+  await pgQuery(`
+    CREATE INDEX IF NOT EXISTS idx_crm_orders_retired
+    ON crm_orders (retired_at) WHERE retired_at IS NOT NULL
+  `);
+
+  // Saved views — named filter presets over the orders list, PER USER.
+  // Ported from funnel-os's lb_order_view_prefs, with two deliberate changes:
+  // theirs stores one prefs DOC per (workspace, user) holding an array of
+  // views, so renaming one view rewrites the whole array and two tabs racing
+  // lose each other's edits. Ours is one ROW per view, so CRUD is addressable
+  // and concurrent edits to different views cannot clobber one another.
+  // user_id is NOT NULL and every query filters on it — isolation is a WHERE
+  // clause on every single statement, not a filter applied after the read.
+  await pgQuery(`
+    CREATE TABLE IF NOT EXISTS lb_order_views (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      name TEXT NOT NULL,
+      filters JSONB NOT NULL DEFAULT '{}',
+      sort TEXT NOT NULL DEFAULT 'created_at:desc',
+      columns JSONB,
+      position INT NOT NULL DEFAULT 0,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
+  await pgQuery(`CREATE INDEX IF NOT EXISTS idx_lb_order_views_user ON lb_order_views (user_id, position, created_at)`);
+  // One name per user. The DB arbitrates the duplicate, never a read-then-write.
+  await pgQuery(`
+    CREATE UNIQUE INDEX IF NOT EXISTS uq_lb_order_views_user_name
+    ON lb_order_views (user_id, lower(name))
+  `);
 
   await pgQuery(`
     CREATE TABLE IF NOT EXISTS crm_order_events (
@@ -396,7 +462,79 @@ function buildFilters(query) {
     params.push(query.date_to);
     i += 1;
   }
+  if (query.source) {
+    where.push(`source = $${i}`);
+    params.push(query.source);
+    i += 1;
+  }
   return { whereSql: `WHERE ${where.join(' AND ')}`, params, next: i };
+}
+
+// Every filter key a saved view is allowed to carry. Anything else is dropped
+// at write time, so a stored view can never smuggle an unexpected key into
+// buildFilters — the view is data, and data does not get to name new columns.
+const FILTER_KEYS = [
+  'q',
+  'payment',
+  'fulfillment',
+  'gateway',
+  'date_from',
+  'date_to',
+  'archived',
+  'source',
+];
+
+// ORDER BY is a WHITELIST, never interpolation. `sort` arrives as
+// "<column>:<dir>"; an unknown column or direction falls back to the default
+// rather than being passed through — a sort key is not a place to accept SQL.
+const SORT_COLUMNS = {
+  created_at: 'created_at',
+  total_price: 'total_price',
+  order_number: 'order_number',
+  financial_status: 'financial_status',
+  fulfillment_status: 'fulfillment_status',
+  item_count: 'item_count',
+};
+const DEFAULT_SORT = 'created_at:desc';
+
+function buildSort(sort) {
+  const [rawCol, rawDir] = String(sort || DEFAULT_SORT).split(':');
+  // An unrecognized column discards the WHOLE spec, direction included. A
+  // half-honored sort ("your column was ignored but your ASC was kept") is the
+  // kind of answer that reads as working and is not, so the fallback is total.
+  const known = Object.prototype.hasOwnProperty.call(SORT_COLUMNS, rawCol);
+  const col = known ? SORT_COLUMNS[rawCol] : SORT_COLUMNS.created_at;
+  const dir = known && String(rawDir).toLowerCase() === 'asc' ? 'ASC' : 'DESC';
+  // order_id is the tiebreaker so pagination is stable when the sort column
+  // ties (two orders in the same second is routine under load).
+  return { orderSql: `ORDER BY ${col} ${dir}, order_id DESC`, applied: `${col}:${dir.toLowerCase()}` };
+}
+
+// Pagination parsing that REFUSES nonsense instead of clamping it. `limit=-5`
+// silently becoming 1 is the worst of both worlds: the caller believes their
+// parameter was honored and gets one row. Returns {ok:false} so the route can
+// 400 with the reason.
+function parsePaging(query, { defaultLimit = 25, maxLimit = 100 } = {}) {
+  const rawLimit = query.limit;
+  const rawPage = query.page;
+  let limit = defaultLimit;
+  let page = 1;
+  if (rawLimit !== undefined && rawLimit !== '') {
+    if (!/^\d+$/.test(String(rawLimit))) {
+      return { ok: false, error: 'limit must be a positive whole number' };
+    }
+    limit = parseInt(rawLimit, 10);
+    if (limit < 1) return { ok: false, error: 'limit must be at least 1' };
+    if (limit > maxLimit) return { ok: false, error: `limit cannot exceed ${maxLimit}` };
+  }
+  if (rawPage !== undefined && rawPage !== '') {
+    if (!/^\d+$/.test(String(rawPage))) {
+      return { ok: false, error: 'page must be a positive whole number' };
+    }
+    page = parseInt(rawPage, 10);
+    if (page < 1) return { ok: false, error: 'page must be at least 1' };
+  }
+  return { ok: true, limit, page };
 }
 
 const LIST_COLUMNS = `
@@ -405,16 +543,18 @@ const LIST_COLUMNS = `
   customer_first_name, customer_last_name,
   destination_city, destination_state, destination_country,
   item_count, gateway, funnel_name, funnel_source, cogs, processing_fee,
-  net_after_costs, refund_amount, tags, archived, shopify_order_id
+  net_after_costs, refund_amount, tags, archived, shopify_order_id, source
 `;
 
 // GET /api/v1/orders — paginated list with search + filters
 router.get('/', async (req, res) => {
   try {
     await ensureTables();
-    const page = Math.max(parseInt(req.query.page, 10) || 1, 1);
-    const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 25, 1), 100);
+    const paging = parsePaging(req.query);
+    if (!paging.ok) return res.status(400).json({ error: paging.error });
+    const { page, limit } = paging;
     const { whereSql, params, next } = buildFilters(req.query);
+    const { orderSql, applied } = buildSort(req.query.sort);
 
     const totalResult = await pgQuery(
       `SELECT COUNT(*)::int AS total FROM crm_orders ${whereSql}`,
@@ -425,7 +565,7 @@ router.get('/', async (req, res) => {
     const rows = await pgQuery(
       `SELECT ${LIST_COLUMNS}
        FROM crm_orders ${whereSql}
-       ORDER BY created_at DESC
+       ${orderSql}
        LIMIT $${next} OFFSET $${next + 1}`,
       [...params, limit, (page - 1) * limit]
     );
@@ -437,6 +577,9 @@ router.get('/', async (req, res) => {
         total,
         page,
         pages: Math.max(Math.ceil(total / limit), 1),
+        // Echoed so the UI can show what actually ran — a silently-rejected
+        // sort key must not look like it was honored.
+        sort: applied,
       },
     });
   } catch (err) {
@@ -449,15 +592,32 @@ router.get('/', async (req, res) => {
 router.get('/stats/today', async (req, res) => {
   try {
     await ensureTables();
+    // revenue_today is GATEWAY revenue only. A manual order is a bookkeeping
+    // record of a sale taken elsewhere — no gateway confirmed it and no
+    // settlement backs it — so folding it into the headline number would
+    // report money the platform cannot substantiate. It is not hidden either:
+    // it gets its own bucket next to the real one, so an operator can see both
+    // and add them up deliberately rather than by accident.
+    // Retired rows (superseded by a reconciled store order) are excluded from
+    // every aggregate here — see the reconciliation columns in createTables().
     const stats = await pgQuery(`
       SELECT
         COUNT(*) FILTER (WHERE created_at >= date_trunc('day', NOW()))::int AS orders_today,
+        COUNT(*) FILTER (
+          WHERE created_at >= date_trunc('day', NOW()) AND source = 'manual'
+        )::int AS manual_orders_today,
         COALESCE(SUM(item_count) FILTER (WHERE created_at >= date_trunc('day', NOW())), 0)::int AS items_today,
         COALESCE(SUM(refund_amount) FILTER (WHERE refunded_at >= date_trunc('day', NOW())), 0) AS returns_today,
         COALESCE(SUM(total_price) FILTER (
           WHERE created_at >= date_trunc('day', NOW())
+            AND source <> 'manual'
             AND financial_status IN ('paid', 'partially_refunded', 'partially_paid')
         ), 0) AS revenue_today,
+        COALESCE(SUM(total_price) FILTER (
+          WHERE created_at >= date_trunc('day', NOW())
+            AND source = 'manual'
+            AND financial_status IN ('paid', 'partially_refunded', 'partially_paid')
+        ), 0) AS manual_revenue_today,
         COUNT(*) FILTER (
           WHERE created_at >= date_trunc('day', NOW()) AND shopify_order_id IS NOT NULL
         )::int AS shopify_orders_today,
@@ -465,7 +625,7 @@ router.get('/stats/today', async (req, res) => {
           WHERE fulfilled_at IS NOT NULL AND created_at >= NOW() - INTERVAL '30 days'
         ) AS avg_fulfillment_hours
       FROM crm_orders
-      WHERE archived = FALSE
+      WHERE archived = FALSE AND retired_at IS NULL
     `);
     res.json({ success: true, data: stats[0] });
   } catch (err) {
@@ -572,18 +732,19 @@ router.get('/export', async (req, res) => {
   try {
     await ensureTables();
     const { whereSql, params } = buildFilters(req.query);
+    const { orderSql } = buildSort(req.query.sort);
     const rows = await pgQuery(
       `SELECT order_number, created_at, customer_first_name, customer_last_name,
               customer_email, total_price, currency, financial_status,
               fulfillment_status, item_count, destination_city, destination_state,
-              destination_country, gateway, refund_amount
+              destination_country, gateway, refund_amount, source
        FROM crm_orders ${whereSql}
-       ORDER BY created_at DESC
+       ${orderSql}
        LIMIT 10000`,
       params
     );
     const header =
-      'order,date,customer,email,total,currency,payment,fulfillment,items,destination,gateway,refunded';
+      'order,date,customer,email,total,currency,payment,fulfillment,items,destination,gateway,refunded,source';
     const esc = (v) => {
       const s = v == null ? '' : String(v);
       return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
@@ -602,6 +763,7 @@ router.get('/export', async (req, res) => {
         [r.destination_city, r.destination_state, r.destination_country].filter(Boolean).join(' '),
         r.gateway,
         r.refund_amount,
+        r.source,
       ]
         .map(esc)
         .join(',')
@@ -612,6 +774,611 @@ router.get('/export', async (req, res) => {
   } catch (err) {
     console.error('[orders] export failed:', err);
     res.status(500).json({ error: 'Failed to export orders' });
+  }
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// SAVED VIEWS — named filter presets over the orders list, per user.
+//
+// ROUTE ORDER IS LOAD-BEARING: every route below is a single literal segment
+// and MUST be registered ahead of '/:id'. Express matches in declaration
+// order, so a '/views' declared after '/:id' would be swallowed by it and —
+// because order_id is BIGINT — would surface as a Postgres cast error 500,
+// not a 404. Same for '/needs-review' and '/manual'.
+// ═══════════════════════════════════════════════════════════════════════════
+
+// The caller's identity. Saved views are per USER, so this is the isolation
+// key; every statement below filters on it. authenticate() has already run, so
+// req.user is present — but we refuse rather than fall back to a shared bucket
+// if it somehow is not, because a missing key must never silently mean
+// "everyone's views".
+function viewOwner(req) {
+  return req.user?.id || req.user?.userId || null;
+}
+
+// Keep only the filter keys the list endpoint actually understands, as strings.
+// A view is stored data; it does not get to introduce new query keys.
+// Returns {filters, rejected[]}. A non-primitive value is SKIPPED, not
+// String()-ed: String({a:1}) is "[object Object]", which would be stored as a
+// real filter value and silently match nothing forever. An object or array
+// here means the caller sent the wrong shape, so it is named in `rejected` and
+// the route refuses when nothing survived.
+function cleanFilters(input) {
+  const out = {};
+  const rejected = [];
+  if (!input || typeof input !== 'object' || Array.isArray(input)) {
+    return { filters: out, rejected };
+  }
+  for (const k of FILTER_KEYS) {
+    const v = input[k];
+    if (v === undefined || v === null || v === '') continue;
+    if (typeof v === 'object' || typeof v === 'function') {
+      rejected.push(k);
+      continue;
+    }
+    out[k] = String(v).slice(0, 200);
+  }
+  return { filters: out, rejected };
+}
+
+// Columns are display-only hints for the client. Cap count and length so a
+// view row cannot grow without bound; null means "the page default".
+function cleanColumns(input) {
+  if (input == null) return null;
+  if (!Array.isArray(input)) return null;
+  return input.map((c) => String(c).slice(0, 40)).filter(Boolean).slice(0, 60);
+}
+
+function normalizeSort(sort) {
+  return buildSort(sort).applied;
+}
+
+const VIEW_COLUMNS = `id, name, filters, sort, columns, position, created_at, updated_at`;
+const MAX_VIEWS_PER_USER = 50;
+
+// GET /api/v1/orders/views — the caller's saved views
+router.get('/views', async (req, res) => {
+  try {
+    await ensureTables();
+    const userId = viewOwner(req);
+    if (!userId) return res.status(401).json({ error: 'Unauthenticated' });
+    const rows = await pgQuery(
+      `SELECT ${VIEW_COLUMNS} FROM lb_order_views
+       WHERE user_id = $1 ORDER BY position ASC, created_at ASC`,
+      [userId]
+    );
+    res.json({ success: true, data: { views: rows } });
+  } catch (err) {
+    console.error('[orders] list views failed:', err);
+    res.status(500).json({ error: 'Failed to load saved views' });
+  }
+});
+
+// POST /api/v1/orders/views — { name, filters, sort, columns, position }
+router.post('/views', async (req, res) => {
+  try {
+    await ensureTables();
+    const userId = viewOwner(req);
+    if (!userId) return res.status(401).json({ error: 'Unauthenticated' });
+    const name = String(req.body?.name || '').trim().slice(0, 60);
+    if (!name) return res.status(400).json({ error: 'View name is required' });
+
+    const { filters, rejected } = cleanFilters(req.body?.filters);
+    if (rejected.length && !Object.keys(filters).length) {
+      return res.status(400).json({
+        error: `These filters were not a text value and could not be saved: ${rejected.join(', ')}`,
+      });
+    }
+
+    // A views bar is a tab strip; past a few dozen it stops being navigable and
+    // starts being a per-user unbounded write surface. Counted before the
+    // insert — an approximate cap is fine here, unlike the name uniqueness
+    // which has to be the DB's call.
+    const [{ n }] = await pgQuery(
+      `SELECT COUNT(*)::int AS n FROM lb_order_views WHERE user_id = $1`,
+      [userId]
+    );
+    if (n >= MAX_VIEWS_PER_USER) {
+      return res.status(400).json({
+        error: `You already have ${MAX_VIEWS_PER_USER} saved views — delete one before adding another`,
+      });
+    }
+
+    const id = `ov_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+    const rows = await pgQuery(
+      `INSERT INTO lb_order_views (id, user_id, name, filters, sort, columns, position)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)
+       ON CONFLICT (user_id, lower(name)) DO NOTHING
+       RETURNING ${VIEW_COLUMNS}`,
+      [
+        id,
+        userId,
+        name,
+        // The OBJECT, never JSON.stringify(...). This driver (postgres.js)
+        // serializes a JS object into a jsonb OBJECT, but a pre-stringified
+        // param is sent as text and lands as a jsonb STRING SCALAR — which
+        // round-trips back as a string and silently breaks every reader.
+        // Verified by execution; matches how utm/line_items are passed above.
+        filters,
+        normalizeSort(req.body?.sort),
+        cleanColumns(req.body?.columns),
+        Number.isFinite(Number(req.body?.position)) ? Number(req.body.position) : 0,
+      ]
+    );
+    // Zero rows = the unique index refused a duplicate name for THIS user. The
+    // database arbitrated it; we never read-then-wrote, so two tabs racing the
+    // same name produce one view and one honest 409.
+    if (!rows.length) {
+      return res.status(409).json({ error: 'A view with that name already exists' });
+    }
+    res.status(201).json({ success: true, data: { view: rows[0] } });
+  } catch (err) {
+    console.error('[orders] create view failed:', err);
+    res.status(500).json({ error: 'Failed to save view' });
+  }
+});
+
+// PUT /api/v1/orders/views/:viewId — partial update; omitted fields unchanged
+router.put('/views/:viewId', async (req, res) => {
+  try {
+    await ensureTables();
+    const userId = viewOwner(req);
+    if (!userId) return res.status(401).json({ error: 'Unauthenticated' });
+
+    const sets = [];
+    const params = [req.params.viewId, userId];
+    let i = 3;
+    if (req.body?.name !== undefined) {
+      const name = String(req.body.name || '').trim().slice(0, 60);
+      if (!name) return res.status(400).json({ error: 'View name cannot be empty' });
+      sets.push(`name = $${i}`);
+      params.push(name);
+      i += 1;
+    }
+    if (req.body?.filters !== undefined) {
+      const { filters, rejected } = cleanFilters(req.body.filters);
+      if (rejected.length && !Object.keys(filters).length) {
+        return res.status(400).json({
+          error: `These filters were not a text value and could not be saved: ${rejected.join(', ')}`,
+        });
+      }
+      // Object, not a string — see the note on the INSERT above.
+      sets.push(`filters = $${i}`);
+      params.push(filters);
+      i += 1;
+    }
+    if (req.body?.sort !== undefined) {
+      sets.push(`sort = $${i}`);
+      params.push(normalizeSort(req.body.sort));
+      i += 1;
+    }
+    if (req.body?.columns !== undefined) {
+      sets.push(`columns = $${i}`);
+      params.push(cleanColumns(req.body.columns));
+      i += 1;
+    }
+    if (req.body?.position !== undefined && Number.isFinite(Number(req.body.position))) {
+      sets.push(`position = $${i}`);
+      params.push(Number(req.body.position));
+      i += 1;
+    }
+    if (!sets.length) return res.status(400).json({ error: 'Nothing to update' });
+
+    // The user_id predicate is the isolation gate: another user's view id
+    // matches zero rows and returns 404 — it is never read, never updated, and
+    // its existence is never disclosed.
+    let rows;
+    try {
+      rows = await pgQuery(
+        `UPDATE lb_order_views SET ${sets.join(', ')}, updated_at = NOW()
+         WHERE id = $1 AND user_id = $2 RETURNING ${VIEW_COLUMNS}`,
+        params
+      );
+    } catch (err) {
+      if (err.code === '23505') {
+        return res.status(409).json({ error: 'A view with that name already exists' });
+      }
+      throw err;
+    }
+    if (!rows.length) return res.status(404).json({ error: 'View not found' });
+    res.json({ success: true, data: { view: rows[0] } });
+  } catch (err) {
+    console.error('[orders] update view failed:', err);
+    res.status(500).json({ error: 'Failed to update view' });
+  }
+});
+
+// DELETE /api/v1/orders/views/:viewId
+router.delete('/views/:viewId', async (req, res) => {
+  try {
+    await ensureTables();
+    const userId = viewOwner(req);
+    if (!userId) return res.status(401).json({ error: 'Unauthenticated' });
+    const rows = await pgQuery(
+      `DELETE FROM lb_order_views WHERE id = $1 AND user_id = $2 RETURNING id`,
+      [req.params.viewId, userId]
+    );
+    if (!rows.length) return res.status(404).json({ error: 'View not found' });
+    res.json({ success: true });
+  } catch (err) {
+    console.error('[orders] delete view failed:', err);
+    res.status(500).json({ error: 'Failed to delete view' });
+  }
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// NEEDS REVIEW — read-only surfacing of the money path's own distress signals.
+//
+// Three independent sources, each written by code this module does not touch:
+//   co_sessions.needs_review_reason   settlement / webhook / sweep gave up
+//   co_upsell_charges.status          a 1-click upsell charge went sideways
+//   co_orders.shopify_status          the Shopify mirror-create failed
+// Every one of those is set by checkout/gateway/settle code. We READ it. There
+// is no action here beyond linking into the existing detail views — a row that
+// says "a human owns this" must not get an auto-retry button bolted onto it.
+// ═══════════════════════════════════════════════════════════════════════════
+
+const NEEDS_REVIEW_TABLES = ['co_sessions', 'co_upsell_charges', 'co_orders'];
+
+router.get('/needs-review', async (req, res) => {
+  try {
+    await ensureTables();
+    const paging = parsePaging(req.query, { defaultLimit: 50, maxLimit: 200 });
+    if (!paging.ok) return res.status(400).json({ error: paging.error });
+    const { limit } = paging;
+
+    const presence = await pgQuery(
+      `SELECT t AS name, to_regclass(t) IS NOT NULL AS present
+       FROM unnest($1::text[]) AS t`,
+      [NEEDS_REVIEW_TABLES]
+    );
+    const present = new Set(presence.filter((r) => r.present).map((r) => r.name));
+    const unavailable = NEEDS_REVIEW_TABLES.filter((t) => !present.has(t));
+
+    const sessions = present.has('co_sessions')
+      ? await pgQuery(
+          `SELECT s.id AS session_id, s.status, s.needs_review_reason AS reason,
+                  s.total, s.currency, s.gateway, s.paid_at, s.created_at,
+                  s.customer ->> 'email' AS customer_email,
+                  ${present.has('co_orders') ? 'o.shopify_order_id' : 'NULL::text AS shopify_order_id'}
+           FROM co_sessions s
+           ${present.has('co_orders') ? 'LEFT JOIN co_orders o ON o.session_id = s.id' : ''}
+           WHERE s.needs_review_reason IS NOT NULL
+           ORDER BY s.created_at DESC
+           LIMIT $1`,
+          [limit]
+        )
+      : [];
+
+    const upsells = present.has('co_upsell_charges')
+      ? await pgQuery(
+          `SELECT c.id, c.session_id, c.offer_id, c.charge_id, c.amount, c.currency,
+                  c.status, c.declined_by_user, c.created_at, c.updated_at
+           FROM co_upsell_charges c
+           WHERE c.status IN ('needs_review', 'canceled')
+           ORDER BY c.updated_at DESC
+           LIMIT $1`,
+          [limit]
+        )
+      : [];
+
+    const shopifyCreates = present.has('co_orders')
+      ? await pgQuery(
+          `SELECT id, session_id, shopify_status, shopify_error, shopify_claimed_at,
+                  total, currency, created_at
+           FROM co_orders
+           WHERE shopify_status = 'needs_review'
+           ORDER BY created_at DESC
+           LIMIT $1`,
+          [limit]
+        )
+      : [];
+
+    res.json({
+      success: true,
+      data: {
+        sessions,
+        upsell_charges: upsells,
+        shopify_creates: shopifyCreates,
+        counts: {
+          sessions: sessions.length,
+          upsell_charges: upsells.length,
+          shopify_creates: shopifyCreates.length,
+        },
+        // A source whose table is absent is named, never silently counted as
+        // zero — "no problems" and "not provisioned" are different facts.
+        sources_unavailable: unavailable,
+        capped: limit,
+      },
+    });
+  } catch (err) {
+    console.error('[orders] needs-review failed:', err);
+    res.status(500).json({ error: 'Failed to load needs-review queue' });
+  }
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// MANUAL ORDER — bookkeeping only.
+//
+// WHAT THE REFERENCE DOES, AND WHY WE DID NOT PORT IT WHOLE:
+// funnel-os's create_manual_order (lb_order_edit_service.py:1375) inserts a
+// draft co_sessions doc and then calls
+//     client.create_checkout_session(amount=…, currency=…, metadata=…)
+// against the live Whop gateway to mint a hosted payment link. No card is
+// charged in that call, but it IS a gateway call-site on the money path, and
+// the session it mints is later settled by the payment.succeeded webhook. That
+// half belongs to the checkout/gateway lane, not here.
+//
+// WHAT THIS ENDPOINT IS: an operator-recorded order. It writes exactly ONE row
+// to crm_orders with source='manual', and one audit row to crm_order_events.
+// It writes NOTHING to co_sessions, co_orders or co_upsell_charges, calls no
+// gateway, and cannot be settled — because settlement reads co_sessions, and a
+// manual order has no session. It flows into the list, the stats strip and the
+// CSV export like any other row, tagged so it can always be told apart.
+//
+// The order_id is NEGATIVE by construction. Shopify order ids are always
+// positive, so the sign alone guarantees a manual row can never collide with,
+// or be mistaken for, a mirrored store order — including by the ON CONFLICT
+// (order_id) upsert that the Shopify webhook uses.
+//
+// FOR THE INTEGRATOR — the payment-link half, if it is ever wanted, is one
+// call added in the checkout lane (NOT here):
+//   1. in the gateway service, mint the link:
+//        const link = await createCheckoutSession({ amount, currency,
+//          metadata: { crm_manual_order_id: order_id, manual: '1' } });
+//   2. persist link.purchase_url on the crm_orders row and return it;
+//   3. the existing gatewayWebhooks settlement path already reconciles a paid
+//      session — it needs no change, but the manual row must then be RETIRED
+//      (or reconciled) when the real Shopify order arrives, or the store will
+//      show the order twice.
+// Until that lands, this endpoint is complete and honest on its own terms.
+// ═══════════════════════════════════════════════════════════════════════════
+
+const MANUAL_FINANCIAL = ['paid', 'pending', 'partially_paid', 'refunded', 'voided'];
+
+// Hard ceilings. Every one of these exists because the value flows into an
+// aggregate: a $2B typo does not just look wrong on the row, it moves
+// revenue_today and every customer LTV that reads it. NUMERIC(12,2) also caps
+// out at 10 digits, so an unbounded price reaches the driver and throws a 500
+// instead of telling the operator what they typed wrong.
+const MANUAL_MAX_PRICE = 9_999_999.99;
+const MANUAL_MAX_QTY = 1000;
+const MANUAL_MAX_TOTAL = 9_999_999_999.99;
+const MANUAL_MAX_LINES = 100;
+// A manual order records something that already happened. Bounding the date
+// stops a fat-fingered year (0202, 20265) from parking revenue outside every
+// reporting window, where it is invisible rather than merely wrong.
+const MANUAL_MIN_DATE = Date.parse('2015-01-01T00:00:00Z');
+
+// Deliberately a SHAPE check, not an RFC-5322 validator: the goal is to catch
+// "no @", "no dot", stray spaces — the typos that silently fork a customer
+// into two profiles because customer_email is the CRM's join key.
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
+
+// ISO-4217 alphabetic codes. crm_orders.currency feeds Intl.NumberFormat in
+// the client, which THROWS on an unknown code — an unvalidated currency is a
+// crashed page, not a cosmetic defect.
+const ISO_4217 = new Set([
+  'AED', 'ARS', 'AUD', 'BGN', 'BRL', 'CAD', 'CHF', 'CLP', 'CNY', 'COP', 'CZK',
+  'DKK', 'EGP', 'EUR', 'GBP', 'HKD', 'HRK', 'HUF', 'IDR', 'ILS', 'INR', 'ISK',
+  'JPY', 'KRW', 'MAD', 'MXN', 'MYR', 'NGN', 'NOK', 'NZD', 'PEN', 'PHP', 'PKR',
+  'PLN', 'RON', 'RSD', 'RUB', 'SAR', 'SEK', 'SGD', 'THB', 'TRY', 'TWD', 'UAH',
+  'USD', 'VND', 'ZAR',
+]);
+
+// Parse an optional non-negative money field. Returns {ok:false, error} rather
+// than coercing, because coercing a bad shipping value to 0 quietly changes
+// the order total the operator is about to confirm.
+function money(value, label) {
+  if (value === undefined || value === null || value === '') return { ok: true, value: 0 };
+  const n = Number(value);
+  if (!Number.isFinite(n)) return { ok: false, error: `${label} must be a number` };
+  if (n < 0) return { ok: false, error: `${label} cannot be negative` };
+  if (n > MANUAL_MAX_TOTAL) return { ok: false, error: `${label} is too large` };
+  return { ok: true, value: Math.round(n * 100) / 100 };
+}
+
+router.post('/manual', async (req, res) => {
+  try {
+    await ensureTables();
+    const b = req.body || {};
+
+    // ── line items ──────────────────────────────────────────────────────
+    if (b.line_items !== undefined && !Array.isArray(b.line_items)) {
+      return res.status(400).json({ error: 'line_items must be an array' });
+    }
+    const rawItems = Array.isArray(b.line_items) ? b.line_items : [];
+    if (rawItems.length > MANUAL_MAX_LINES) {
+      return res.status(400).json({ error: `An order cannot have more than ${MANUAL_MAX_LINES} line items` });
+    }
+    const items = [];
+    for (const li of rawItems) {
+      const title = String(li?.title ?? '').trim().slice(0, 200);
+      if (!title) continue; // a blank row in the modal is not an error
+      // Quantity must be a whole number. parseInt would silently turn 2.7 into
+      // 2 and bill the operator's total against a quantity they never chose.
+      const qty = Number(li?.quantity);
+      if (!Number.isInteger(qty) || qty < 1) {
+        return res.status(400).json({ error: `Quantity for “${title}” must be a whole number of at least 1` });
+      }
+      if (qty > MANUAL_MAX_QTY) {
+        return res.status(400).json({ error: `Quantity for “${title}” cannot exceed ${MANUAL_MAX_QTY}` });
+      }
+      const price = Number(li?.price);
+      if (!Number.isFinite(price) || price < 0) {
+        return res.status(400).json({ error: `Price for “${title}” must be a number of 0 or more` });
+      }
+      if (price > MANUAL_MAX_PRICE) {
+        return res.status(400).json({ error: `Price for “${title}” cannot exceed ${MANUAL_MAX_PRICE}` });
+      }
+      items.push({
+        title,
+        quantity: qty,
+        price: Math.round(price * 100) / 100,
+        sku: li?.sku ? String(li.sku).slice(0, 100) : null,
+      });
+    }
+    if (!items.length) {
+      return res
+        .status(400)
+        .json({ error: 'At least one line item with a title, quantity and price is required' });
+    }
+
+    // ── customer ────────────────────────────────────────────────────────
+    const email = String(b.customer_email || '').trim().slice(0, 200);
+    if (!email) return res.status(400).json({ error: 'Customer email is required' });
+    if (!EMAIL_RE.test(email)) {
+      return res.status(400).json({ error: 'Customer email does not look like an email address' });
+    }
+
+    // ── payment status: refuse the unknown, default only the ABSENT ─────
+    // Coercing an unrecognized status to 'paid' fails TOWARD money: a typo
+    // ('Paid', 'complete') would book the order as collected revenue.
+    let financialStatus = 'paid';
+    if (b.financial_status !== undefined && b.financial_status !== null && b.financial_status !== '') {
+      if (!MANUAL_FINANCIAL.includes(b.financial_status)) {
+        return res.status(400).json({
+          error: `Unrecognized payment status. Use one of: ${MANUAL_FINANCIAL.join(', ')}`,
+        });
+      }
+      financialStatus = b.financial_status;
+    }
+
+    // ── currency ────────────────────────────────────────────────────────
+    const currency = String(b.currency || 'USD').toUpperCase().trim();
+    if (!ISO_4217.has(currency)) {
+      return res.status(400).json({ error: `Unrecognized currency code “${currency}”` });
+    }
+
+    // ── money ───────────────────────────────────────────────────────────
+    const ship = money(b.shipping_price, 'Shipping');
+    if (!ship.ok) return res.status(400).json({ error: ship.error });
+    const disc = money(b.total_discounts, 'Discounts');
+    if (!disc.ok) return res.status(400).json({ error: disc.error });
+
+    const subtotal = Math.round(items.reduce((s, li) => s + li.price * li.quantity, 0) * 100) / 100;
+    const total = Math.round((subtotal + ship.value - disc.value) * 100) / 100;
+    if (total < 0) return res.status(400).json({ error: 'Discounts cannot exceed the order value' });
+    if (total > MANUAL_MAX_TOTAL) return res.status(400).json({ error: 'Order total is too large' });
+
+    // ── date ────────────────────────────────────────────────────────────
+    // An unparseable string previously reached the driver and surfaced as a
+    // RangeError 500. Parse and bound it here so the operator is told.
+    let createdAt = null;
+    if (b.created_at !== undefined && b.created_at !== null && b.created_at !== '') {
+      const t = Date.parse(b.created_at);
+      if (Number.isNaN(t)) {
+        return res.status(400).json({ error: 'Order date could not be parsed — use an ISO date' });
+      }
+      if (t < MANUAL_MIN_DATE) {
+        return res.status(400).json({ error: 'Order date is before 2015 — check the year' });
+      }
+      if (t > Date.now() + 86_400_000) {
+        return res.status(400).json({ error: 'Order date is more than a day in the future' });
+      }
+      createdAt = new Date(t).toISOString();
+    }
+
+    const orderNumber =
+      String(b.reference || '').trim().slice(0, 40) || null; // filled in below once the id is known
+    const itemCount = items.reduce((n, li) => n + li.quantity, 0);
+    const author =
+      [req.user?.firstName, req.user?.lastName].filter(Boolean).join(' ') ||
+      req.user?.email ||
+      'Staff';
+
+    // The audit row records what the OPERATOR supplied versus what was
+    // recorded, so a back-dated order is legible later without diffing.
+    const auditMeta = {
+      by: author,
+      items: items.length,
+      total,
+      currency,
+      supplied_created_at: b.created_at ?? null,
+      recorded_created_at: createdAt, // null = "now", stamped by the DB
+    };
+
+    // ── insert, with one retry on an id collision ───────────────────────
+    // The id is minted from a millisecond clock plus 1000 random units, so a
+    // collision needs two creates in the same millisecond that also draw the
+    // same random. Vanishingly rare, but the DB is what decides — mirroring
+    // the saved-views discipline, we let the unique violation happen and
+    // retry with a fresh id rather than reading first to check.
+    const mintId = () => -(Date.now() * 1000 + Math.floor(Math.random() * 1000));
+    const insertOnce = async (orderId) =>
+      pgQuery(
+        `INSERT INTO crm_orders (
+           order_id, order_number, created_at, financial_status, fulfillment_status,
+           total_price, subtotal_price, shipping_price, total_discounts, currency,
+           customer_email, customer_first_name, customer_last_name, customer_phone,
+           shipping_address, destination_city, destination_state, destination_country,
+           line_items, item_count, gateway, order_type, source, raw, synced_at
+         ) VALUES (
+           $1,$2,COALESCE($3::timestamptz, NOW()),$4,NULL,
+           $5,$6,$7,$8,$9,
+           $10,$11,$12,$13,
+           $14,$15,$16,$17,
+           $18,$19,'manual','MANUAL','manual',$20,NOW()
+         )
+         RETURNING ${LIST_COLUMNS}`,
+        [
+          orderId,
+          orderNumber || `MAN-${String(Math.abs(orderId)).slice(-8)}`,
+          createdAt,
+          financialStatus,
+          total,
+          subtotal,
+          ship.value,
+          disc.value,
+          currency,
+          email,
+          String(b.customer_first_name || '').trim().slice(0, 120) || null,
+          String(b.customer_last_name || '').trim().slice(0, 120) || null,
+          String(b.customer_phone || '').trim().slice(0, 40) || null,
+          b.shipping_address && typeof b.shipping_address === 'object' && !Array.isArray(b.shipping_address)
+            ? b.shipping_address
+            : null,
+          String(b.destination_city || '').trim().slice(0, 120) || null,
+          String(b.destination_state || '').trim().slice(0, 120) || null,
+          String(b.destination_country || '').trim().slice(0, 8) || null,
+          // The ARRAY, never JSON.stringify(...). A stringified param lands as
+          // a jsonb STRING SCALAR and the detail endpoint then serves
+          // line_items as [] — the order looks empty. Same trap documented on
+          // the saved-views insert; it bit this call site too.
+          items,
+          itemCount,
+          { manual: true, created_by: author, note: String(b.note || '').slice(0, 2000) || null },
+        ]
+      );
+
+    let inserted;
+    let orderId = mintId();
+    try {
+      inserted = await insertOnce(orderId);
+    } catch (err) {
+      if (err.code !== '23505') throw err;
+      orderId = mintId();
+      inserted = await insertOnce(orderId);
+    }
+
+    await pgQuery(
+      `INSERT INTO crm_order_events (order_id, kind, message, meta)
+       VALUES ($1, 'manual_create', $2, $3)`,
+      [orderId, `Manual order recorded by ${author}.`, auditMeta]
+    );
+
+    res.status(201).json({
+      success: true,
+      data: {
+        order: inserted[0],
+        // Stated on every response so no caller can mistake this for a charge.
+        money_moved: false,
+        note: 'Bookkeeping record only — no gateway was called and no payment was taken.',
+      },
+    });
+  } catch (err) {
+    console.error('[orders] manual create failed:', err);
+    res.status(500).json({ error: 'Failed to record manual order' });
   }
 });
 
@@ -671,6 +1438,26 @@ router.get('/:id', async (req, res) => {
   } catch (err) {
     console.error('[orders] detail failed:', err);
     res.status(500).json({ error: 'Failed to load order' });
+  }
+});
+
+// GET /api/v1/orders/:id/journey — the full cross-system event trail.
+// STRICTLY READ-ONLY: the service it calls issues SELECTs only and touches no
+// gateway. See services/orderJourney.js for the link chain and the sources.
+router.get('/:id/journey', async (req, res) => {
+  try {
+    await ensureTables();
+    const rows = await pgQuery(
+      `SELECT order_id, order_number, created_at, shopify_order_id, source
+       FROM crm_orders WHERE order_id = $1`,
+      [req.params.id]
+    );
+    if (!rows.length) return res.status(404).json({ error: 'Order not found' });
+    const journey = await buildOrderJourney(req.params.id, rows[0]);
+    res.json({ success: true, data: journey });
+  } catch (err) {
+    console.error('[orders] journey failed:', err);
+    res.status(500).json({ error: 'Failed to load order journey' });
   }
 });
 

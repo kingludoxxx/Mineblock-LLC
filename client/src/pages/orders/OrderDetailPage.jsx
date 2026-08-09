@@ -14,6 +14,7 @@ import {
 import api from '../../services/api';
 import Button from '../../components/ui/Button';
 import { CustomerAvatar, StatusPill, customerName } from './OrdersPage';
+import OrderJourney from './OrderJourney';
 
 const money = (v) =>
   v == null
@@ -76,6 +77,11 @@ export default function OrderDetailPage() {
   const [posting, setPosting] = useState(false);
   const [tagInput, setTagInput] = useState('');
   const [actionMsg, setActionMsg] = useState(null);
+  // 'staff' = the existing comments + local events rail. 'journey' = the
+  // cross-system trail (checkout, upsells, tracking, Klaviyo, Shopify). They
+  // answer different questions, so they are tabs rather than one merged list:
+  // interleaving a staff note with 40 pixel sends buries the note.
+  const [timelineTab, setTimelineTab] = useState('staff');
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -436,7 +442,33 @@ export default function OrderDetailPage() {
           </SectionCard>
 
           {/* Timeline */}
-          <SectionCard title="Timeline">
+          <SectionCard
+            title="Timeline"
+            action={
+              <div className="flex gap-1">
+                {[
+                  { value: 'staff', label: 'Staff' },
+                  { value: 'journey', label: 'Journey' },
+                ].map((t) => (
+                  <button
+                    key={t.value}
+                    onClick={() => setTimelineTab(t.value)}
+                    className={`px-2 py-0.5 text-xs font-medium rounded-md cursor-pointer transition-colors ${
+                      timelineTab === t.value
+                        ? 'bg-bg-elevated text-text-primary'
+                        : 'text-text-muted hover:text-text-primary hover:bg-bg-hover'
+                    }`}
+                  >
+                    {t.label}
+                  </button>
+                ))}
+              </div>
+            }
+          >
+            {timelineTab === 'journey' ? (
+              <OrderJourney orderId={id} />
+            ) : (
+              <>
             <div className="flex items-start gap-2.5 mb-4">
               <span className="mt-1 inline-flex items-center justify-center w-7 h-7 rounded-full bg-accent-muted text-accent-text text-xs font-semibold shrink-0">
                 A
@@ -497,6 +529,8 @@ export default function OrderDetailPage() {
                 </div>
               ))}
             </div>
+              </>
+            )}
           </SectionCard>
         </div>
 

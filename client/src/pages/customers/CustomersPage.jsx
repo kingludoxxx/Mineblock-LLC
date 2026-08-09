@@ -27,8 +27,19 @@ function KpiStrip({ stats }) {
     { label: 'New today', value: stats ? String(stats.new_today) : '—' },
     { label: 'New (30d)', value: stats ? String(stats.new_30d) : '—' },
     { label: 'Repeat rate', value: stats ? `${stats.repeat_rate}%` : '—' },
+    // LTV and lifetime revenue are GATEWAY revenue. Manual orders are an
+    // operator's record of a sale taken elsewhere, so they are reported in
+    // their own cell rather than inflating a number the platform can prove.
     { label: 'Avg LTV', value: stats ? money(stats.avg_ltv) : '—' },
     { label: 'Lifetime revenue', value: stats ? money(stats.lifetime_revenue) : '—' },
+    ...(Number(stats?.manual_lifetime_revenue) > 0
+      ? [
+          {
+            label: `Manual (${stats.customers_with_manual_orders})`,
+            value: money(stats.manual_lifetime_revenue),
+          },
+        ]
+      : []),
   ];
   return (
     <div className="flex bg-bg-card border border-border-default rounded-xl overflow-hidden">
@@ -227,6 +238,14 @@ export default function CustomersPage() {
                     <td className="px-4 py-3 text-right text-text-primary">{c.orders_count}</td>
                     <td className="px-4 py-3 text-right font-medium text-text-primary whitespace-nowrap">
                       {money(c.total_spent)}
+                      {Number(c.manual_spent) > 0 && (
+                        <span
+                          title={`Plus ${money(c.manual_spent)} across ${c.manual_orders_count} manually recorded order(s), not included in this total`}
+                          className="ml-1.5 px-1 py-0.5 text-[10px] font-medium rounded bg-bg-elevated border border-border-default text-text-muted align-middle"
+                        >
+                          +{money(c.manual_spent)} manual
+                        </span>
+                      )}
                     </td>
                     <td className="px-4 py-3 text-right whitespace-nowrap">
                       {Number(c.total_refunded) > 0 ? (

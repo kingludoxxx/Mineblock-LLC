@@ -42,6 +42,19 @@ const escapeLike = (s) => String(s).replace(/[\\%_]/g, '\\$&');
 
 // Aggregation source: one row per customer_email. Identity fields come from
 // the most recent order (latest name/phone/address wins).
+//
+// SOURCE AWARENESS (added with the manual-orders feature): `total_spent` is
+// GATEWAY revenue only. A manual order is an operator's record of a sale taken
+// somewhere else — no gateway confirmed it and no settlement backs it — so
+// folding it into LTV would report spend the platform cannot substantiate, and
+// a customer who exists ONLY as manual rows would show an LTV built entirely
+// out of typed-in numbers. It is not hidden: `manual_spent` and
+// `manual_orders_count` sit beside the real figures so an operator can see
+// both, and `orders_count` still counts every order the customer placed.
+//
+// Retired rows (a manual record superseded by the real store order it was
+// reconciled with) are excluded entirely — counting both is the double-count
+// this whole column pair exists to prevent.
 const CUSTOMER_AGG = `
   SELECT
     o.customer_email,
@@ -52,12 +65,14 @@ const CUSTOMER_AGG = `
     (ARRAY_AGG(o.destination_state   ORDER BY o.created_at DESC))[1] AS state,
     (ARRAY_AGG(o.destination_country ORDER BY o.created_at DESC))[1] AS country,
     COUNT(*)::int AS orders_count,
-    SUM(o.total_price) AS total_spent,
+    COUNT(*) FILTER (WHERE o.source = 'manual')::int AS manual_orders_count,
+    COALESCE(SUM(o.total_price) FILTER (WHERE o.source <> 'manual'), 0) AS total_spent,
+    COALESCE(SUM(o.total_price) FILTER (WHERE o.source = 'manual'), 0) AS manual_spent,
     SUM(o.refund_amount) AS total_refunded,
     MIN(o.created_at) AS first_order_at,
     MAX(o.created_at) AS last_order_at
   FROM crm_orders o
-  WHERE o.customer_email IS NOT NULL AND o.archived = FALSE
+  WHERE o.customer_email IS NOT NULL AND o.archived = FALSE AND o.retired_at IS NULL
 `;
 
 // GET /api/v1/customers — paginated list with search + sort
@@ -107,12 +122,18 @@ router.get('/', async (req, res) => {
 router.get('/stats', async (req, res) => {
   try {
     await ensureTables();
+    // avg_ltv and lifetime_revenue are GATEWAY revenue, for the reason spelled
+    // out on CUSTOMER_AGG. The manual figures are reported alongside rather
+    // than folded in or dropped, so the breakout is visible instead of implied.
     const rows = await pgQuery(`
       WITH per_customer AS (
-        SELECT customer_email, COUNT(*)::int AS n, SUM(total_price) AS spent,
+        SELECT customer_email,
+               COUNT(*)::int AS n,
+               COALESCE(SUM(total_price) FILTER (WHERE source <> 'manual'), 0) AS spent,
+               COALESCE(SUM(total_price) FILTER (WHERE source = 'manual'), 0) AS manual_spent,
                MIN(created_at) AS first_at
         FROM crm_orders
-        WHERE customer_email IS NOT NULL AND archived = FALSE
+        WHERE customer_email IS NOT NULL AND archived = FALSE AND retired_at IS NULL
         GROUP BY customer_email
       )
       SELECT
@@ -121,7 +142,9 @@ router.get('/stats', async (req, res) => {
         COUNT(*) FILTER (WHERE first_at >= NOW() - INTERVAL '30 days')::int AS new_30d,
         COUNT(*) FILTER (WHERE n > 1)::int AS repeat_customers,
         COALESCE(AVG(spent), 0) AS avg_ltv,
-        COALESCE(SUM(spent), 0) AS lifetime_revenue
+        COALESCE(SUM(spent), 0) AS lifetime_revenue,
+        COALESCE(SUM(manual_spent), 0) AS manual_lifetime_revenue,
+        COUNT(*) FILTER (WHERE manual_spent > 0)::int AS customers_with_manual_orders
       FROM per_customer
     `);
     const s = rows[0];
@@ -147,10 +170,13 @@ router.get('/:email', async (req, res) => {
 
     const [orders, notes, latest] = await Promise.all([
       pgQuery(
+        // `source` rides along so the history table can badge a manual row —
+        // without it the UI shows a typed-in number identically to a settled
+        // charge, which is exactly the confusion the breakout exists to stop.
         `SELECT order_id, order_number, created_at, financial_status, fulfillment_status,
-                total_price, currency, item_count, gateway, refund_amount
+                total_price, currency, item_count, gateway, refund_amount, source
          FROM crm_orders
-         WHERE customer_email = $1 AND archived = FALSE
+         WHERE customer_email = $1 AND archived = FALSE AND retired_at IS NULL
          ORDER BY created_at DESC LIMIT 100`,
         [email]
       ),
