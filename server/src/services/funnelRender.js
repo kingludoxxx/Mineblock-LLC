@@ -199,7 +199,7 @@ function renderBlockInner(block) {
         `<div class='lb-checkout fos-checkout' data-fos-checkout data-fos-gateway='whop'>` +
         `<div class='lb-checkout-summary fos-order-summary' data-fos-order-summary>` +
         `<div class='fos-os-empty'>Preparing your order…</div></div>` +
-        `<div class='lb-whop-mount' data-fos-whop-mount></div>` +
+        `<div class='lb-whop-wait' data-fos-whop-wait>Enter your email above to load the secure payment form.</div>` +`<div class='lb-whop-mount' data-fos-whop-mount></div>` +
         `<div class='lb-checkout-error' data-fos-error${configured ? ' hidden' : ''}>` +
         `${esc(errInit)}</div>` +
         `<a class='lb-btn lb-checkout-fallback' data-fos-fallback rel='noopener noreferrer' ` +
@@ -890,17 +890,52 @@ function loadWhopLoader(){if(whopLoaderStarted)return;whopLoaderStarted=true;var
 function post(path,payload){return fetch(API+path,{method:'POST',headers:{'Content-Type':'application/json'},credentials:'same-origin',body:JSON.stringify(payload)}).then(function(r){return r.json().catch(function(){return {};}).then(function(j){return {status:r.status,json:j};});});}
 function sessErr(code){if(code==='pricing_unavailable')return 'Payment is temporarily unavailable. Please try again in a moment.';if(code==='invalid_variant'||code==='empty_cart')return 'This item is currently unavailable.';if(code==='total_below_minimum')return 'This order is below the minimum amount.';if(code==='rate_limited')return 'Too many attempts. Please wait a moment and retry.';return 'We could not start checkout ('+code+').';}
 function embedErr(code){if(code==='gateway_not_configured')return 'Checkout is not fully set up yet. Please contact support.';if(code==='session_not_payable')return 'This checkout session has expired. Please refresh the page.';if(code==='gateway_error')return 'The payment provider is temporarily unavailable. Please try again shortly.';return 'We could not start the payment ('+code+').';}
-function mountEmbed(root,embed){try{var mount=root.querySelector('[data-fos-whop-mount]');if(mount&&embed.whop_session_id){mount.setAttribute('data-whop-checkout-session',embed.whop_session_id);/* The embed ships a COMPLETE checkout of its own (dark, browser-locale, its
-   own email + billing + price + TOS + CTA). Dropped into our page that is a
-   second checkout inside the first: two email fields, two card forms, two
-   buttons, one of them dark and in the visitor's language saying "Get
-   access". Reduce it to the ONE thing only it can do — the PCI card fields —
-   and let our page own every other pixel. */mount.setAttribute('data-whop-checkout-theme','light');mount.setAttribute('data-whop-checkout-locale','en');mount.setAttribute('data-whop-checkout-hide-email','true');mount.setAttribute('data-whop-checkout-hide-address','true');mount.setAttribute('data-whop-checkout-hide-price','true');mount.setAttribute('data-whop-checkout-hide-tos','true');mount.setAttribute('data-whop-checkout-hide-submit-button','true');/* The loader keys identifiedFrames off the mount's HTML id (index.js does
-   identifiedFrames.set(el.id, iframe)), NOT a data-* attribute — so
-   wco.submit('puure-checkout') only resolves when the id is set here.
-   Without it submit() throws 'No embed with identifier' and our button
-   silently does nothing. */if(!mount.id){mount.id='puure-checkout';}/* Whop still needs an email for the receipt; ours is the only one on the
-   page now, so hand it over instead of asking the buyer twice. */try{var em=document.querySelector('input[name="email"]');if(em&&em.value){mount.setAttribute('data-whop-checkout-prefill-email',em.value);}}catch(e){}}var fb=root.querySelector('[data-fos-fallback]');if(fb&&embed.purchase_url){fb.setAttribute('href',embed.purchase_url);fb.hidden=false;}loadWhopLoader();}catch(e){showError(root,'Could not initialize the payment form.');}}
+function mountEmbed(root,embed){try{var mount=root.querySelector('[data-fos-whop-mount]');if(!mount||!embed.whop_session_id){return;}
+/* The embed ships a COMPLETE checkout of its own (dark, browser-locale, its own
+   email + billing + price + TOS + CTA). Dropped into our page that is a second
+   checkout inside the first. Reduce it to the ONE thing only it can do - the
+   PCI card fields - and let our page own every other pixel. */
+mount.setAttribute('data-whop-checkout-theme','light');
+mount.setAttribute('data-whop-checkout-locale','en');
+mount.setAttribute('data-whop-checkout-hide-email','true');
+mount.setAttribute('data-whop-checkout-hide-address','true');
+mount.setAttribute('data-whop-checkout-hide-price','true');
+mount.setAttribute('data-whop-checkout-hide-tos','true');
+mount.setAttribute('data-whop-checkout-hide-submit-button','true');
+/* identifiedFrames is keyed by the mount's HTML id, not a data-* attribute, so
+   wco.submit('puure-checkout') only resolves once this is set. */
+if(!mount.id){mount.id='puure-checkout';}
+/* THE EMAIL IS LOAD-BEARING. Whop cannot complete a charge without one, and we
+   hid its field so the buyer can never supply or correct it there. wco.setEmail
+   is NOT a fallback: with the field hidden the embed does not answer the
+   messaging API at all (setEmail/getEmail both time out), so an email injected
+   after mount never lands. It has to be in the iframe URL at creation, which
+   means we must not mount until we actually have one. */
+var placeholder=root.querySelector('[data-fos-whop-wait]');
+var mounted=false;
+function emailValue(){var el=document.querySelector('input[name="email"]');return el?String(el.value||'').trim():'';}
+function valid(v){return /^[^@\s]+@[^@\s.]+\.[^@\s]+$/.test(v);}
+function doMount(){var v=emailValue();if(mounted||!valid(v)){return;}mounted=true;
+  mount.setAttribute('data-whop-checkout-prefill-email',v);
+  mount.setAttribute('data-whop-checkout-session',embed.whop_session_id);
+  if(placeholder){placeholder.hidden=true;}
+  loadWhopLoader();}
+/* If the buyer corrects the address after the form mounted, the baked-in value
+   is stale - tear the frame down and rebuild it with the new one rather than
+   charging a receipt to the wrong address. */
+function remount(){var v=emailValue();if(!mounted||!valid(v)){return;}
+  if(mount.getAttribute('data-whop-checkout-prefill-email')===v){return;}
+  mount.removeAttribute('data-whop-checkout-session');
+  mount.setAttribute('data-whop-checkout-prefill-email',v);
+  setTimeout(function(){mount.setAttribute('data-whop-checkout-session',embed.whop_session_id);},50);}
+var emEl=document.querySelector('input[name="email"]');
+if(emEl){emEl.addEventListener('blur',function(){mounted?remount():doMount();});
+  emEl.addEventListener('change',function(){mounted?remount():doMount();});
+  emEl.addEventListener('input',function(){if(!mounted){doMount();}});}
+doMount();
+var fb=root.querySelector('[data-fos-fallback]');if(fb&&embed.purchase_url){fb.setAttribute('href',embed.purchase_url);fb.hidden=false;}
+}catch(e){showError(root,'Could not initialize the payment form.');}}
+
 function initBlock(root){var cfg={};try{cfg=JSON.parse((root.querySelector('.fos-checkout-cfg')||{}).textContent||'{}');}catch(e){cfg={};}var items=(cfg&&cfg.line_items)||[];if(!items.length){showError(root,'This checkout has no product configured yet.');return;}
 post('/create-session',{funnel_id:CTX.funnel_id,page_id:CTX.page_id,gateway:'whop',line_items:items}).then(function(res){if(res.status!==200||!res.json||!res.json.success){showError(root,sessErr((res.json&&res.json.error&&res.json.error.code)||('http_'+res.status)));return;}var session=res.json.data;window.__fos_checkout.session=session;persistSession(session);fillSummaries(session);return post('/whop/create-session',{session_id:session.session_id}).then(function(er){if(er.status!==200||!er.json||!er.json.success){showError(root,embedErr((er.json&&er.json.error&&er.json.error.code)||('http_'+er.status)));return;}var embed=er.json.data;if(!embed||!embed.whop_session_id){showError(root,'Checkout is not fully set up yet (no session).');return;}mountEmbed(root,embed);});}).catch(function(){showError(root,'Network error starting checkout. Please try again.');});}
 ready(function(){try{var blocks=document.querySelectorAll('[data-fos-checkout]');if(!blocks.length){return;}Array.prototype.forEach.call(blocks,function(b){try{initBlock(b);}catch(e){}});}catch(e){}});
@@ -1277,6 +1312,7 @@ main>[data-blk-id='ckt_whop'] .lb-checkout{max-width:none;margin:0;border:1px so
 main>[data-blk-id='ckt_whop'] .lb-checkout-summary{display:none;}
 main>[data-blk-id='ckt_whop'] .lb-checkout-fallback{display:none;} /* replaced by the Complete checkout button below */
 /* Complete checkout */
+.lb-whop-wait{border:1.5px dashed #d8d8d8;border-radius:10px;padding:18px 16px;color:#6b7280;font-size:.95rem;text-align:center;background:#fafafa;margin:8px 0 16px;}
 .ckt-complete{display:block;width:100%;background:#111;color:#fff;border:0;border-radius:10px;padding:16px;font:700 1.05rem/1.2 Inter,system-ui,sans-serif;cursor:pointer;}
 .ckt-complete:hover{background:#000;}
 /* Footer links */
@@ -1319,11 +1355,17 @@ const CKT_TEMPLATE_JS = `(function(){
       /* Whop's own CTA is hidden (it read "Get access" in the visitor's
          language). THIS button is the checkout's only submit, so it drives the
          embed through the loader's documented API. */
+      var em=q('input[name="email"]');
+      var emv=em?String(em.value||'').trim():'';
+      /* The embed is only created once a valid email exists (it bakes the
+         address into the iframe URL). Without one there is nothing to submit,
+         so say so instead of spinning a button that can never succeed — the
+         exact failure that silently swallowed the first live order. */
+      if(!/^[^@\s]+@[^@\s.]+\.[^@\s]+$/.test(emv)){
+        if(em){em.focus();em.scrollIntoView({behavior:'smooth',block:'center'});}
+        return;
+      }
       if(window.wco&&typeof window.wco.submit==='function'&&mount&&mount.getAttribute('data-whop-checkout-session')){
-        var em=q('input[name="email"]');
-        /* Hand our email over first — the embed's own field is hidden, so this
-           is the only address it will ever see. */
-        try{if(em&&em.value&&typeof window.wco.setEmail==='function'){window.wco.setEmail('puure-checkout',em.value);}}catch(e){}
         btn.disabled=true;var prev=btn.textContent;btn.textContent='Processing\u2026';
         var done=function(){btn.disabled=false;btn.textContent=prev;};
         try{
