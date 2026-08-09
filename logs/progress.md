@@ -3142,3 +3142,20 @@ recoverable cart. limit was probed too (5 to 2 shrank the body), so the page cap
 means what it says (DECISION MADE).
 STATUS: COMPLETE
 ---
+
+---
+TIMESTAMP: 2026-08-10 00:15 (Europe/Madrid)
+TASK: Release deploy — Wave C + builder overhaul + settings suite + abandoned recovery + page library
+BUILT: Merged 13 review-cleared branches to main (analytics quartet, builder fix cycle x2 rounds,
+settings-tracking-extras x3 rounds, settings-commerce x2 rounds, page-library x2 rounds,
+abandoned-complete x3 rounds, analytics-report-tz) plus integrator wirings: custom-tracking renderer
+injection, checkout-countries gate (fail-closed policy / fail-open infra), public recovery-link
+resume endpoint. Deployed dep-d9sflbn10e5c739qf3p0 @ c54d314 (build 90s, live 22:11:20Z).
+TESTED: Merged-tree sweep 4,652 assertions green across 60 harnesses; 6 apparent failures proven to
+be harness UTC-vs-Madrid clock-window artifacts (engine correct; follow-up task spawned).
+Live pass: all new surfaces answering with honest empty states on prod; abandoned list carries real
+funnel-population rows; forged/expired resume tokens 302 home; published funnel serves, draft dark.
+OUTPUT: puure-dashboard.onrender.com live at c54d314.
+DECISIONS: Shipped without feat/clone-from-shopify (2 new gating cleaner findings; next release).
+STATUS: COMPLETE
+---
