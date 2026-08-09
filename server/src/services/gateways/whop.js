@@ -233,6 +233,32 @@ export async function chargeSavedPaymentMethod(creds, {
   };
 }
 
+// POST /payments/{id}/refund — the ONLY thing that actually returns money to
+// the buyer. Refunding in Shopify does NOT: our order is created with a MANUAL
+// 'sale' transaction, so Shopify has no link to Whop and its refund is
+// bookkeeping only — the card stays charged while the books say refunded.
+// Idempotency-Key is deterministic per (payment, amount) so a double-click or a
+// retry cannot refund twice.
+export async function refundPayment(creds, { paymentId, amount = null, reason = '' } = {}) {
+  if (!creds?.api_key || !creds?.company_id) return { ok: false, error: 'not_configured' };
+  const pid = String(paymentId || '').trim();
+  if (!pid) return { ok: false, error: 'missing_payment_id' };
+  const body = {};
+  if (amount != null && Number.isFinite(Number(amount))) body.amount = Number(amount);
+  if (reason) body.reason = String(reason).slice(0, 200);
+  const res = await whopFetch(creds.api_key, 'POST', `/payments/${encodeURIComponent(pid)}/refund`, {
+    body,
+    sandbox: creds.sandbox,
+    idempotencyKey: `refund:${pid}:${amount == null ? 'full' : Number(amount).toFixed(2)}`,
+    timeout: 20_000,
+  });
+  if (!res.ok) {
+    const { reason: decline } = extractDecline(res.json);
+    return { ok: false, error: decline || res.error || (res.status ? `http_${res.status}` : 'network'), json: res.json };
+  }
+  return { ok: true, json: res.json, status: String(res.json?.status || '').toLowerCase() };
+}
+
 // GET /payments/{id} — read-only reconciliation for a charge whose webhook
 // was lost. Never moves money.
 export async function getPayment(creds, paymentId) {

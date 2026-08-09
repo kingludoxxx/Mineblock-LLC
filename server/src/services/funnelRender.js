@@ -1386,6 +1386,29 @@ main>[data-blk-id='ckt_whop'] .lb-checkout-fallback{display:none;} /* replaced b
 //     thumbnails once the runtime has filled it. Text via textContent only.
 const CKT_TEMPLATE_JS = `(function(){
   function q(s,r){return (r||document).querySelector(s);}
+  /* Ship the buyer's contact + delivery details to the SESSION.
+     The session is minted on page load, before anything is typed, so without
+     this it stays empty and the Shopify order is created with no shipping and
+     no billing address — exactly what the first real order showed. Sent as the
+     buyer types (debounced) and again, awaited, immediately before submit so a
+     fast click can never race it. */
+  function fv(n){var el=document.querySelector('[name="'+n+'"]');return el?String(el.value||'').trim():'';}
+  function customerPayload(){
+    return {customer:{
+      email:fv('email'), phone:fv('phone'),
+      first_name:fv('first_name'), last_name:fv('last_name'),
+      shipping:{address1:fv('address1'), address2:fv('address2'), city:fv('city'),
+                state:fv('state'), zip:fv('postal'), country:fv('country')}}};}
+  function sessionId(){try{return (window.__fos_checkout&&window.__fos_checkout.session||{}).session_id||'';}catch(e){return '';}}
+  function syncCustomer(){var sid=sessionId();if(!sid){return Promise.resolve();}
+    return fetch('/api/v1/checkout/public/session/'+encodeURIComponent(sid)+'/customer',
+      {method:'POST',headers:{'Content-Type':'application/json'},credentials:'same-origin',
+       body:JSON.stringify(customerPayload())}).catch(function(){});}
+  var syncTimer=null;
+  function scheduleSync(){if(syncTimer){clearTimeout(syncTimer);}syncTimer=setTimeout(syncCustomer,600);}
+  ['email','phone','first_name','last_name','address1','address2','city','state','postal','country']
+    .forEach(function(n){var el=document.querySelector('[name="'+n+'"]');if(!el){return;}
+      el.addEventListener('change',scheduleSync);el.addEventListener('blur',scheduleSync);});
   document.addEventListener('click',function(ev){
     var btn=ev.target&&ev.target.closest&&ev.target.closest('[data-ckt-complete]');
     if(!btn)return;
@@ -1429,7 +1452,9 @@ const CKT_TEMPLATE_JS = `(function(){
             var d=ev&&ev.detail;done((d&&(d.message||d.error))||'That payment could not be completed. Please check your card details.');},{once:true});
           mount.addEventListener('complete',function(){settled=true;btn.textContent='Confirmed';},{once:true});
           if(mount.scrollIntoView){mount.scrollIntoView({behavior:'smooth',block:'center'});}
-          window.wco.submit('puure-checkout');
+          /* Awaited: the order is built from the session, so the address must
+             be stored BEFORE the charge settles. */
+          syncCustomer().then(function(){window.wco.submit('puure-checkout');});
           setTimeout(function(){done('If your card details are incomplete, correct them above and try again.');},8000);
         }catch(e){done('Could not submit the payment form.');}
         return;

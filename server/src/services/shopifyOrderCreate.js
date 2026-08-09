@@ -187,7 +187,10 @@ function buildOrderPayload(session, order, { idempotencyKey }) {
       last_name: shippingAddress.last_name,
     };
   }
-  if (hasAddress) orderPayload.shipping_address = shippingAddress;
+  if (hasAddress) {
+    orderPayload.shipping_address = shippingAddress;
+    orderPayload.billing_address = billingAddress;
+  }
 
   return { order: orderPayload };
 }

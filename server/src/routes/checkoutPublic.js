@@ -936,6 +936,46 @@ router.get('/upsell/offer', async (req, res) => {
 // GET /session/:id — safe public snapshot (thank-you / upsell pages poll
 // this). Hand-picked fields, an allow-list: no tracking net, no customer PII
 // beyond nothing, no gateway internals.
+// POST /session/:id/customer — attach the buyer's contact + delivery details to
+// a session that has not settled yet.
+//
+// The checkout mints its session on PAGE LOAD, before the buyer has typed
+// anything, so without this the session's customer stays EMPTY and the Shopify
+// order is created with no shipping or billing address — which is exactly what
+// the first real order showed. Authorised by the same HttpOnly confirmation
+// token as the charge path, so a leaked session id cannot rewrite someone
+// else's delivery address, and refused once the session is settled: an address
+// change after payment must go through support, not a public endpoint.
+router.post('/session/:id/customer', async (req, res) => {
+  try {
+    if (!(await rateLimit(req, res, 'session-customer', 60))) return;
+    await ensureCheckoutTables();
+    const id = String(req.params.id || '').slice(0, 80);
+    const rows = await pgQuery(
+      `SELECT id, status, confirm_token_hash FROM co_sessions WHERE id = $1`, [id]
+    );
+    if (!rows.length) return res.status(404).json({ success: false, error: { code: 'session_not_found' } });
+    const s = rows[0];
+    if (s.confirm_token_hash
+      && !digestsMatch(hashToken(confirmTokenFrom(req)), s.confirm_token_hash)) {
+      return res.status(403).json({ success: false, error: { code: 'confirmation_required' } });
+    }
+    if (s.status !== 'processing') {
+      return res.status(409).json({ success: false, error: { code: 'session_not_editable' } });
+    }
+    const customer = cleanCustomer(req.body || {});
+    await pgQuery(
+      `UPDATE co_sessions SET customer = $2, updated_at = NOW()
+       WHERE id = $1 AND status = 'processing'`,
+      [id, customer]
+    );
+    return res.json({ success: true, data: { saved: true } });
+  } catch (err) {
+    console.error('[checkout] session customer update failed:', err.message);
+    return res.status(500).json({ success: false, error: { code: 'internal_error' } });
+  }
+});
+
 router.get('/session/:id', async (req, res) => {
   try {
     if (!(await rateLimit(req, res, 'get-session', 60))) return;

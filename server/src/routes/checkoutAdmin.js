@@ -92,6 +92,68 @@ router.get('/stats', async (req, res) => {
   }
 });
 
+// POST /:id/refund — issue a REAL refund at the gateway.
+//
+// This exists because refunding in Shopify does NOT move money: our orders are
+// created with a manual 'sale' transaction, so Shopify's refund is a local
+// record while the buyer stays charged — books and reality diverge silently
+// (observed on the first live order). The gateway is the only authority, so the
+// refund starts here and the resulting webhook nets the ledger through the SAME
+// path a gateway-initiated refund takes, never a second bespoke one.
+router.post('/:id/refund', async (req, res) => {
+  try {
+    const sessionId = String(req.params.id || '').slice(0, 80);
+    const rows = await pgQuery(
+      `SELECT id, funnel_id, status, gateway, gateway_session_id, total, currency
+       FROM co_sessions WHERE id = $1`, [sessionId]
+    );
+    if (!rows.length) return res.status(404).json({ success: false, error: { code: 'session_not_found' } });
+    const s = rows[0];
+    if (s.status !== 'paid') {
+      return res.status(409).json({ success: false, error: { code: `not_refundable:${s.status}` } });
+    }
+    if (String(s.gateway || '').toLowerCase() !== 'whop') {
+      return res.status(422).json({ success: false, error: { code: 'unsupported_gateway' } });
+    }
+    const raw = req.body?.amount;
+    const amount = raw == null || raw === '' ? null : Number(raw);
+    if (amount != null && (!Number.isFinite(amount) || amount <= 0 || amount > Number(s.total) + 0.01)) {
+      return res.status(422).json({ success: false, error: { code: 'bad_amount' } });
+    }
+    const { resolveCredential } = await import('../services/gatewayConfigs.js');
+    const whop = await import('../services/gateways/whop.js');
+    const creds = {
+      api_key: await resolveCredential(s.funnel_id || '', 'whop', 'api_key'),
+      company_id: await resolveCredential(s.funnel_id || '', 'whop', 'company_id'),
+    };
+    if (!creds.api_key || !creds.company_id) {
+      return res.status(422).json({ success: false, error: { code: 'gateway_not_configured' } });
+    }
+    const r = await whop.refundPayment(creds, {
+      paymentId: s.gateway_session_id,
+      amount,
+      reason: String(req.body?.reason || '').slice(0, 200),
+    });
+    if (!r.ok) {
+      console.error('[checkoutAdmin] whop refund failed:', r.error);
+      return res.status(502).json({ success: false, error: { code: 'refund_failed', detail: r.error } });
+    }
+    // The refund webhook does the ledger work (applyRefund + split void).
+    // Success here means the GATEWAY accepted it, not that books are updated.
+    return res.json({
+      success: true,
+      data: {
+        requested: amount == null ? Number(s.total) : amount,
+        currency: s.currency,
+        gateway_status: r.status || 'accepted',
+      },
+    });
+  } catch (err) {
+    console.error('[checkoutAdmin] refund failed:', err.message);
+    return res.status(500).json({ success: false, error: { code: 'internal_error' } });
+  }
+});
+
 // ── Gateway credentials (per-funnel operator data) ─────────────────────────
 // WRITE-ONLY semantics: null keeps the stored value, "" clears it, a value
 // replaces it (encrypted at rest). Reads return only `*_set` booleans.
