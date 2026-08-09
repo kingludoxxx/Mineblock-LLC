@@ -463,6 +463,13 @@ async function readMoney(query, funnelId, w) {
   // The two regex guards are not decoration: `(r->>'at')::timestamptz` throws
   // on a malformed entry and Postgres has no try_cast, so one bad JSONB row
   // would take down the whole report. A row that fails is skipped and counted.
+  //
+  // ⚠️ THE jsonb_typeof GUARD IS LOAD-BEARING TOO: jsonb_array_elements THROWS
+  // ('cannot extract elements from a scalar') when `refunds` is a non-array
+  // jsonb value, and the regex guards never run because the LATERAL itself
+  // dies. The typeof predicate references only `s`, so Postgres applies it at
+  // the co_sessions scan BEFORE the lateral is evaluated — a corrupt row is
+  // filtered out instead of killing every funnel's money in the same read.
   const dedupeClause = hasLedger
     ? `AND NOT EXISTS (
          SELECT 1 FROM lb_split_credits v
@@ -478,6 +485,7 @@ async function readMoney(query, funnelId, w) {
      CROSS JOIN LATERAL jsonb_array_elements(s.refunds) r
      WHERE s.funnel_id = $1
        AND ${MONEY_MOVED_SQL}
+       AND jsonb_typeof(s.refunds) = 'array'
        AND r->>'at' ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}'
        AND r->>'amount' ~ '^-?[0-9]+(\\.[0-9]+)?$'
        AND (r->>'at')::timestamptz >= $2
@@ -486,14 +494,25 @@ async function readMoney(query, funnelId, w) {
      GROUP BY s.page_id`,
     [funnelId, w.fromTs, w.toTs]
   );
+  // Malformed = individual entries failing the shape guards PLUS whole
+  // `refunds` values that are not arrays at all (each such session counts as
+  // one malformed entry — its contents, if any, are unreadable by definition).
   const [skipped] = await query(
-    `SELECT COUNT(*)::bigint AS n
-     FROM co_sessions s
-     CROSS JOIN LATERAL jsonb_array_elements(s.refunds) r
-     WHERE s.funnel_id = $1
-       AND ${MONEY_MOVED_SQL}
-       AND NOT (r->>'at' ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}'
-                AND r->>'amount' ~ '^-?[0-9]+(\\.[0-9]+)?$')`,
+    `SELECT
+       (SELECT COUNT(*)::bigint
+        FROM co_sessions s
+        CROSS JOIN LATERAL jsonb_array_elements(s.refunds) r
+        WHERE s.funnel_id = $1
+          AND ${MONEY_MOVED_SQL}
+          AND jsonb_typeof(s.refunds) = 'array'
+          AND NOT (r->>'at' ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}'
+                   AND r->>'amount' ~ '^-?[0-9]+(\\.[0-9]+)?$'))
+     + (SELECT COUNT(*)::bigint
+        FROM co_sessions s
+        WHERE s.funnel_id = $1
+          AND ${MONEY_MOVED_SQL}
+          AND s.refunds IS NOT NULL
+          AND jsonb_typeof(s.refunds) <> 'array') AS n`,
     [funnelId]
   );
   // Legs we KNOW were reversed but whose amount is nowhere in the database:
@@ -731,8 +750,27 @@ export async function getFunnelOverview({ funnelId, from, to }, { query = analyt
         traffic: traffic ? trafficPages.get(id) || { visitors: 0, pageviews: 0, advanced_visitors: 0 } : null,
         moneyRow: moneyData ? moneyPages.get(id) || {} : null,
       })
-    )
-    .sort((a, b) => num(b.net_revenue) - num(a.net_revenue) || num(b.visitors) - num(a.visitors));
+    );
+
+  // ⚠️ NULL-page money MUST NOT VANISH. A money-moved session can carry
+  // page_id NULL (minted with no page reference). The batch rollup groups by
+  // funnel_id and therefore COUNTS it; if this per-funnel report dropped the
+  // NULL group (totals here are summed over page rows), the two surfaces would
+  // publish DIFFERENT money for the same funnel. It is surfaced as a synthetic
+  // '(no page)' row instead: page_id stays null, so the canvas overlay — which
+  // keys nodes by page_id — simply never overlays it, and nothing crashes.
+  // (readTraffic excludes NULL page_id in SQL, so only money can land here.)
+  const nullMoney = moneyData ? moneyPages.get(null) ?? moneyPages.get(undefined) : undefined;
+  if (nullMoney) {
+    rows.push(
+      derivePageMetrics({
+        page: { page_id: null, slug: null, title: '(no page)', type: null },
+        traffic: traffic ? { visitors: 0, pageviews: 0, advanced_visitors: 0 } : null,
+        moneyRow: nullMoney,
+      })
+    );
+  }
+  rows.sort((a, b) => num(b.net_revenue) - num(a.net_revenue) || num(b.visitors) - num(a.visitors));
 
   // Totals are computed from the SAME rows, except visitors — which is its own
   // funnel-wide distinct count, NOT a sum (the harness asserts this).
@@ -1352,6 +1390,12 @@ export async function getSplitResults(
  *     Whop upsell duplicates excluded via refund_key
  * The only difference is GROUP BY s.funnel_id instead of s.page_id.
  *
+ * VISITORS SEMANTICS (mirrors the overview totals): `visitors` is the RAW
+ * funnel-wide distinct count — identical in meaning to the per-funnel
+ * overview's totals.visitors. The order-floor clamp is published separately as
+ * `visitors_clamped` + `visitors_is_clamped`; rates (cvr/ctr) use the clamped
+ * denominator, the headline count never silently does.
+ *
  * ctr here is the FUNNEL-level step-through/submit proxy (same labelling
  * contract as per-page ctr: `ctr_is_proxy` is always true):
  *   step_through = distinct vids that touched ≥2 DISTINCT pages ÷ visitors
@@ -1460,6 +1504,12 @@ export async function getFunnelsOverviewBatch({ from, to } = {}, { query = analy
            WHERE v.kind = 'void' AND v.session_id = s.id AND v.refund_key = r->>'id'
          )`
       : '';
+    // ⚠️ jsonb_typeof GUARD — same reasoning as the per-funnel read, but the
+    // blast radius here is WORSE: this is one query over EVERY funnel, so a
+    // single corrupt `refunds` value on one funnel would throw, safeRead would
+    // null the whole money group, and every funnel's money would read "—".
+    // The typeof predicate references only `s`, so it is applied at the scan,
+    // before the LATERAL can die on a scalar.
     const refunds = await query(
       `SELECT s.funnel_id,
               COALESCE(SUM((r->>'amount')::numeric), 0) AS base_refunded
@@ -1467,6 +1517,7 @@ export async function getFunnelsOverviewBatch({ from, to } = {}, { query = analy
        CROSS JOIN LATERAL jsonb_array_elements(s.refunds) r
        WHERE s.funnel_id = ANY($1)
          AND ${MONEY_MOVED_SQL}
+         AND jsonb_typeof(s.refunds) = 'array'
          AND r->>'at' ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}'
          AND r->>'amount' ~ '^-?[0-9]+(\\.[0-9]+)?$'
          AND (r->>'at')::timestamptz >= $2
@@ -1475,7 +1526,26 @@ export async function getFunnelsOverviewBatch({ from, to } = {}, { query = analy
        GROUP BY s.funnel_id`,
       [ids, w.fromTs, w.toTs]
     );
-    return { orders, submits, upsells, upsellRefunds, refunds, hasLedger };
+    // Same computation the per-funnel overview does: reversed upsell legs
+    // whose amount exists NOWHERE (status='refunded', no void ledger row — a
+    // non-split funnel on the Stripe path). While non-zero, that funnel's net
+    // revenue is an UPPER BOUND, and the batch must say so like the overview
+    // does — dropping the qualifier here made the same number look measured
+    // in one surface and bounded in the other.
+    const unmeasured = await query(
+      `SELECT s.funnel_id, COUNT(*)::bigint AS n
+       FROM co_upsell_charges c
+       JOIN co_sessions s ON s.id = c.session_id
+       WHERE s.funnel_id = ANY($1) AND s.paid_at >= $2 AND s.paid_at < $3
+         AND ${MONEY_MOVED_SQL} AND c.status = 'refunded'
+         ${hasLedger
+           ? `AND NOT EXISTS (SELECT 1 FROM lb_split_credits v
+                              WHERE v.kind = 'void' AND v.charge_id = c.id AND v.session_id = c.session_id)`
+           : ''}
+       GROUP BY s.funnel_id`,
+      [ids, w.fromTs, w.toTs]
+    );
+    return { orders, submits, upsells, upsellRefunds, refunds, unmeasured, hasLedger };
   }, null);
 
   const byId = (rows) => new Map((rows || []).map((r) => [r.funnel_id, r]));
@@ -1485,6 +1555,7 @@ export async function getFunnelsOverviewBatch({ from, to } = {}, { query = analy
   const uMap = moneyData ? byId(moneyData.upsells) : null;
   const urMap = moneyData ? byId(moneyData.upsellRefunds) : null;
   const rMap = moneyData ? byId(moneyData.refunds) : null;
+  const unMap = moneyData ? byId(moneyData.unmeasured) : null;
 
   const rows = funnels.map((f) => {
     const t = tMap ? tMap.get(f.id) || { visitors: 0, advanced_visitors: 0 } : null;
@@ -1493,6 +1564,7 @@ export async function getFunnelsOverviewBatch({ from, to } = {}, { query = analy
     const u = uMap ? uMap.get(f.id) || {} : null;
     const ur = urMap ? urMap.get(f.id) || {} : null;
     const rr = rMap ? rMap.get(f.id) || {} : null;
+    const un = unMap ? unMap.get(f.id) || {} : null;
 
     const trackingOk = t !== null;
     const moneyOk = o !== null;
@@ -1508,17 +1580,23 @@ export async function getFunnelsOverviewBatch({ from, to } = {}, { query = analy
     const refunded = moneyOk ? money(num(rr.base_refunded) + num(ur.upsell_refunded)) : null;
     const netRevenue = moneyOk ? money(num(grossRevenue) - num(refunded)) : null;
 
-    // Same clamp as the per-funnel totals: you cannot buy without visiting.
-    const visitors = trackingOk ? Math.max(visitorsRaw, int(orders)) : null;
+    // THE CLAMP, published HONESTLY: `visitors` is the RAW distinct count —
+    // the same figure the per-funnel overview totals publish, so the two
+    // surfaces can never drift on the headline number. The clamp (you cannot
+    // buy without visiting) still exists for RATES, and is published beside
+    // the raw truth as `visitors_clamped` with an explicit
+    // `visitors_is_clamped` flag instead of silently replacing it.
+    const visitorsClamped = trackingOk ? Math.max(visitorsRaw, int(orders)) : null;
+    const visitorsIsClamped = trackingOk ? visitorsClamped > visitorsRaw : null;
 
-    const cvr = trackingOk && moneyOk ? rate(orders, Math.max(visitors, orders)) : null;
+    const cvr = trackingOk && moneyOk ? rate(orders, Math.max(visitorsClamped, orders)) : null;
 
     // Funnel-level CTR proxy (labelled, lower bound) — withheld below the floor.
     let ctr = null;
     let ctrBasis = 'no_data';
-    if (trackingOk && visitors >= MIN_RATE_SAMPLE) {
-      const st = rate(advanced, visitors) ?? 0;
-      const su = moneyOk ? (rate(submitVisitors, visitors) ?? 0) : 0;
+    if (trackingOk && visitorsClamped >= MIN_RATE_SAMPLE) {
+      const st = rate(advanced, visitorsClamped) ?? 0;
+      const su = moneyOk ? (rate(submitVisitors, visitorsClamped) ?? 0) : 0;
       if (st >= su) {
         ctr = st;
         ctrBasis = 'step_through_proxy';
@@ -1545,7 +1623,9 @@ export async function getFunnelsOverviewBatch({ from, to } = {}, { query = analy
       status: f.status,
       created_at: f.created_at,
       updated_at: f.updated_at,
-      visitors,
+      visitors: visitorsRaw,
+      visitors_clamped: visitorsClamped,
+      visitors_is_clamped: visitorsIsClamped,
       orders,
       cvr,
       ctr,
@@ -1556,6 +1636,10 @@ export async function getFunnelsOverviewBatch({ from, to } = {}, { query = analy
       refunded,
       aov_pre_upsell: aovPre,
       aov_post_upsell: aovPost,
+      // Same qualifier the overview meta carries: reversed upsell legs with no
+      // measured amount anywhere ⇒ net is an upper bound, not a measurement.
+      upsell_refunds_unmeasured: moneyOk ? int(un.n) : null,
+      net_revenue_is_upper_bound: moneyOk ? int(un.n) > 0 : null,
       currency: moneyOk ? (o.currency ?? null) : null,
       mixed_currency: moneyOk ? int(o.currency_count) > 1 : null,
     };

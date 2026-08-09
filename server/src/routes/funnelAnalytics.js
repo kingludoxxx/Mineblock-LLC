@@ -86,11 +86,21 @@ router.get('/funnel/:funnelId/overview', async (req, res, next) => {
 
 /**
  * GET /funnels/overview?from&to — THE FUNNELS-LIST METRICS FEED.
- * One row per non-archived funnel: {funnel_id, visitors, orders, cvr, ctr,
- * gross_revenue, net_revenue, refunded, aov_pre_upsell, aov_post_upsell}.
+ * One row per non-archived funnel: {funnel_id, visitors, visitors_clamped,
+ * visitors_is_clamped, orders, cvr, ctr, gross_revenue, net_revenue, refunded,
+ * aov_pre_upsell, aov_post_upsell, upsell_refunds_unmeasured,
+ * net_revenue_is_upper_bound, currency, mixed_currency}.
  * Money predicates mirror the per-funnel overview byte-for-byte (see the
  * service); `ctr` carries the same proxy labelling contract as everywhere
  * else. Null still means "could not measure", never zero.
+ *
+ * VISITORS: `visitors` is the RAW distinct count — the same figure the
+ * per-funnel overview's totals publish. `visitors_clamped` =
+ * max(visitors, orders) (you cannot buy without visiting) and
+ * `visitors_is_clamped` says whether the clamp actually bit; `cvr` uses the
+ * CLAMPED denominator so a lost beacon can never print a rate above 100%.
+ * NET: when `net_revenue_is_upper_bound` is true, some reversed upsell legs
+ * have no measured amount anywhere in the DB — render net with a qualifier.
  *
  * NOTE ON ROUTING: this MUST be registered before nothing in particular —
  * '/funnels' and '/funnels/overview' are distinct exact paths in Express —

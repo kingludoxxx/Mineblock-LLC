@@ -320,6 +320,131 @@ const win = { from: today, to: today };
   );
 }
 
+// ═══ PART 3 — ADVERSARIAL-REVIEW FIXES ═══════════════════════════════════════
+// Exercises the exact paths the review flagged:
+//   C1  NULL-page money: batch counted it, per-funnel overview dropped it.
+//   C2  orders > visitors: the clamp must be published, not silently applied.
+//   C3  malformed (non-array) refunds jsonb: one bad row must not null money
+//       for every funnel in the batch.
+//   C4  reversed upsell leg with no void row: net is an UPPER BOUND and both
+//       surfaces must say so.
+
+// ── C1: money-moved session with page_id NULL on F1 ─────────────────────────
+await q(
+  `INSERT INTO co_sessions (id, funnel_id, page_id, status, total, vid, refunds, paid_at, created_at)
+   VALUES ('cs_bm_np', $1, NULL, 'paid', 40, NULL, $2,
+           NOW() - INTERVAL '5 minutes', NOW() - INTERVAL '6 minutes')`,
+  [F1, []]
+);
+{
+  const batch = await getFunnelsOverviewBatch(win, { query: q });
+  const a = (batch.funnels || []).find((r) => r.funnel_id === F1);
+  // F1 now: orders 4 (3 paged + 1 NULL-page), gross 430+40=470, net 350+40=390.
+  check('C1a batch counts NULL-page money (orders=4, gross=470, net=390)',
+    a?.orders === 4 && near(a?.gross_revenue, 470) && near(a?.net_revenue, 390),
+    JSON.stringify({ orders: a?.orders, gross: a?.gross_revenue, net: a?.net_revenue }));
+
+  const ov = await getFunnelOverview({ funnelId: F1, ...win }, { query: q });
+  check('C1b overview totals now EQUAL the batch row (the divergence is closed)',
+    ov.totals.orders === a.orders &&
+      near(ov.totals.gross_revenue, a.gross_revenue) &&
+      near(ov.totals.net_revenue, a.net_revenue) &&
+      near(ov.totals.refunded, a.refunded) &&
+      ov.totals.visitors === a.visitors,
+    JSON.stringify({ batch: { o: a.orders, g: a.gross_revenue, n: a.net_revenue, v: a.visitors },
+      totals: ov.totals }));
+
+  const np = (ov.pages || []).find((p) => p.page_id === null);
+  check('C1c synthetic (no page) row present: page_id null, label, net=40, orders=1',
+    Boolean(np) && np.title === '(no page)' && near(np.net_revenue, 40) && np.orders === 1,
+    JSON.stringify(np));
+
+  // The canvas overlay consumer keys by page_id — prove the null key cannot
+  // collide with a real node id and cannot crash Object.fromEntries.
+  const overlayMap = Object.fromEntries(
+    (ov.pages || []).map((p) => [p.page_id, { visitors: p.visitors, ctr: p.ctr, cvr: p.cvr }])
+  );
+  check('C1d overlay map tolerates the null key (no real node id is shadowed)',
+    overlayMap['pg_bm_co'] !== undefined && overlayMap['null'] !== undefined
+      && overlayMap['pg_bm_lp'] !== undefined,
+    JSON.stringify(Object.keys(overlayMap)));
+}
+
+// ── C2 + C3: orders > visitors on F2, one session carrying a NON-ARRAY
+//    refunds jsonb (postgres.js serializes a bound JS string as a jsonb string
+//    scalar — the exact corruption shape that kills jsonb_array_elements) ────
+await q(
+  `INSERT INTO co_sessions (id, funnel_id, page_id, status, total, vid, refunds, paid_at, created_at)
+   VALUES
+   ('cs_bm_b1', $1, 'pg_x', 'paid', 10, 'v_b1', $2, NOW() - INTERVAL '5 minutes', NOW() - INTERVAL '6 minutes'),
+   ('cs_bm_b2', $1, 'pg_x', 'paid', 20, 'v_b2', $2, NOW() - INTERVAL '5 minutes', NOW() - INTERVAL '6 minutes'),
+   ('cs_bm_b3', $1, 'pg_x', 'paid', 30, 'v_b3', $3, NOW() - INTERVAL '5 minutes', NOW() - INTERVAL '6 minutes')`,
+  [F2, [], 'corrupt-not-an-array']
+);
+{
+  const batch = await getFunnelsOverviewBatch(win, { query: q });
+  check('C3a batch survives the malformed refunds row (no degradation of money)',
+    !batch.error && batch.warnings.every((w) => w.source !== 'co_sessions'),
+    JSON.stringify(batch.warnings));
+
+  const b = (batch.funnels || []).find((r) => r.funnel_id === F2);
+  // F2: 2 measured visitors, 3 orders → raw published, clamp published beside.
+  check('C2a visitors stays RAW (2) with clamp published (3) and flag true',
+    b?.visitors === 2 && b?.visitors_clamped === 3 && b?.visitors_is_clamped === true,
+    JSON.stringify({ v: b?.visitors, vc: b?.visitors_clamped, f: b?.visitors_is_clamped }));
+  check('C2b cvr uses the CLAMPED denominator (3/3 = 1, never >100%)',
+    near(b?.cvr, 1, 1e-6), JSON.stringify(b?.cvr));
+  check('C3b funnel B money still served, bad refund row skipped (gross=60, refunded=0, net=60)',
+    b?.orders === 3 && near(b?.gross_revenue, 60) && near(b?.refunded, 0) && near(b?.net_revenue, 60),
+    JSON.stringify({ o: b?.orders, g: b?.gross_revenue, r: b?.refunded, n: b?.net_revenue }));
+
+  const a = (batch.funnels || []).find((r) => r.funnel_id === F1);
+  check('C3c funnel A money UNAFFECTED by funnel B\'s corrupt row (gross=470, net=390, refunded=80)',
+    near(a?.gross_revenue, 470) && near(a?.net_revenue, 390) && near(a?.refunded, 80),
+    JSON.stringify({ g: a?.gross_revenue, n: a?.net_revenue, r: a?.refunded }));
+
+  // The per-funnel overview degrades LOUDLY: the corrupt value is counted.
+  const ovB = await getFunnelOverview({ funnelId: F2, ...win }, { query: q });
+  check('C3d overview(F2) reports the corruption (malformed_refund_entries >= 1) with money still served',
+    ovB.meta.malformed_refund_entries >= 1 && near(ovB.totals.net_revenue, 60),
+    JSON.stringify({ malformed: ovB.meta.malformed_refund_entries, net: ovB.totals.net_revenue }));
+}
+
+// ── C4: reversed upsell leg with NO void row → net is an upper bound ────────
+await q(
+  `INSERT INTO co_sessions (id, funnel_id, page_id, status, total, vid, refunds, paid_at, created_at)
+   VALUES ('cs_bm_ub', $1, 'pg_bm_co', 'paid', 60, NULL, $2,
+           NOW() - INTERVAL '4 minutes', NOW() - INTERVAL '5 minutes')`,
+  [F1, []]
+);
+await q(
+  `INSERT INTO co_upsell_charges (id, session_id, offer_id, charge_id, amount, status)
+   VALUES ('uc_bm_2', 'cs_bm_ub', 'off_2', 'v:2', 30, 'refunded')`
+);
+{
+  const batch = await getFunnelsOverviewBatch(win, { query: q });
+  const a = (batch.funnels || []).find((r) => r.funnel_id === F1);
+  check('C4a batch row carries the qualifier (unmeasured=1, upper_bound=true)',
+    a?.upsell_refunds_unmeasured === 1 && a?.net_revenue_is_upper_bound === true,
+    JSON.stringify({ un: a?.upsell_refunds_unmeasured, ub: a?.net_revenue_is_upper_bound }));
+  check('C4b unaffected funnel carries NO qualifier (F2 upper_bound=false)',
+    (batch.funnels || []).find((r) => r.funnel_id === F2)?.net_revenue_is_upper_bound === false,
+    JSON.stringify((batch.funnels || []).find((r) => r.funnel_id === F2)));
+
+  const ov = await getFunnelOverview({ funnelId: F1, ...win }, { query: q });
+  check('C4c overview agrees (meta.upsell_refunds_unmeasured=1, net_revenue_is_upper_bound=true)',
+    ov.meta.upsell_refunds_unmeasured === 1 && ov.meta.net_revenue_is_upper_bound === true,
+    JSON.stringify({ un: ov.meta.upsell_refunds_unmeasured, ub: ov.meta.net_revenue_is_upper_bound }));
+  // The refunded-at-gross leg adds 60 base + 30 upsell: gross 560, net 480 —
+  // and the two surfaces must STILL agree after every fixture landed.
+  check('C4d batch ≡ overview totals after all adversarial fixtures (gross=560, net=480)',
+    near(a?.gross_revenue, 560) && near(ov.totals.gross_revenue, a.gross_revenue) &&
+      near(a?.net_revenue, 480) && near(ov.totals.net_revenue, a.net_revenue) &&
+      ov.totals.orders === a.orders,
+    JSON.stringify({ batch: { g: a?.gross_revenue, n: a?.net_revenue, o: a?.orders },
+      totals: ov.totals }));
+}
+
 // ── Cleanup ──────────────────────────────────────────────────────────────────
 await q(`DELETE FROM lb_touches WHERE funnel_id = ANY($1)`, [ALL]);
 await q(`DELETE FROM co_upsell_charges WHERE session_id LIKE 'cs_bm_%'`);

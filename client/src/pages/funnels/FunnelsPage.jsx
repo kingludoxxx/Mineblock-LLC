@@ -68,7 +68,13 @@ function orderedPages(funnel) {
   if (!pages.length) return [];
   const byId = new Map(pages.map((p) => [p.id, p]));
   const next = new Map();
-  for (const e of funnel.flow_layout?.edges || []) {
+  // flow_layout is operator-shaped JSONB — `edges` can be missing, or (after a
+  // bad import/manual edit) not an array at all. A non-array must degrade to
+  // "no flow chain" (pages render in stored order), never a TypeError that
+  // takes the whole Funnels list down.
+  const edges = Array.isArray(funnel.flow_layout?.edges) ? funnel.flow_layout.edges : [];
+  for (const e of edges) {
+    if (!e || typeof e !== 'object') continue;
     if ((e.kind || 'main') === 'main' && !next.has(e.source)) next.set(e.source, e.target);
   }
   const start = pages.find((p) => p.is_home) || pages[0];
@@ -242,6 +248,18 @@ function GridView({ funnels, onOpen, onCreate }) {
 // Data: GET /funnel-analytics/funnels/overview?from&to — one row per
 // non-archived funnel. null renders as "—" (unmeasured), never 0.
 
+// Money cell for a batch row. When the window mixes currencies, formatting the
+// sum as USD would assert a currency the number does not have — render the
+// magnitude with an explicit '≈ … mixed' marker instead.
+const fmtRowMoney = (v, m) => {
+  if (m?.mixed_currency) {
+    const n = Number(v);
+    if (v === null || v === undefined || !Number.isFinite(n)) return '—';
+    return `≈ ${n < 0 ? '−' : ''}${Math.abs(n).toFixed(2)} mixed`;
+  }
+  return fmtMoney(v, m?.currency);
+};
+
 function ExpandedPagesRow({ funnelId, from, to, colSpan }) {
   const [rows, setRows] = useState(null);
   const [err, setErr] = useState(null);
@@ -287,8 +305,11 @@ function ExpandedPagesRow({ funnelId, from, to, colSpan }) {
             <tbody>
               {rows.map((p) => {
                 const meta = typeMeta(p.type);
+                // page_id can be null: the overview surfaces money-moved
+                // sessions with no page reference as a synthetic '(no page)'
+                // row so per-funnel totals match the batch.
                 return (
-                  <tr key={p.page_id} className="border-t border-border-subtle/60">
+                  <tr key={p.page_id ?? '(no page)'} className="border-t border-border-subtle/60">
                     <td className="py-1.5 pr-3">
                       <span className="flex items-center gap-1.5">
                         <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: meta.color }} />
@@ -470,19 +491,37 @@ function FunnelMetricsRow({ funnel, metrics: m, open, onToggle, onOpen, from, to
             </span>
           </button>
         </td>
-        <td className="px-3 py-3 text-right text-text-primary tabular-nums">{fmtInt(m?.visitors)}</td>
+        <td className="px-3 py-3 text-right text-text-primary tabular-nums">
+          {fmtInt(m?.visitors)}
+          {m?.visitors_is_clamped && (
+            <span
+              className="ml-0.5 text-amber-400 cursor-help"
+              title={`Raw count — orders (${m.orders}) exceed measured visitors (a lost beacon). Rates use the clamped denominator ${m.visitors_clamped}.`}
+            >
+              *
+            </span>
+          )}
+        </td>
         <td className="px-3 py-3 text-right text-text-primary tabular-nums">{fmtInt(m?.orders)}</td>
-        <td className="px-3 py-3 text-right text-text-primary tabular-nums">{fmtMoney(m?.gross_revenue, m?.currency)}</td>
+        <td className="px-3 py-3 text-right text-text-primary tabular-nums">{fmtRowMoney(m?.gross_revenue, m)}</td>
         <td className="px-3 py-3 text-right text-text-muted tabular-nums">{fmtRate(m?.ctr)}</td>
-        <td className="px-3 py-3 text-right text-text-muted tabular-nums">{fmtMoney(m?.aov_pre_upsell, m?.currency)}</td>
-        <td className="px-3 py-3 text-right text-text-muted tabular-nums">{fmtMoney(m?.aov_post_upsell, m?.currency)}</td>
+        <td className="px-3 py-3 text-right text-text-muted tabular-nums">{fmtRowMoney(m?.aov_pre_upsell, m)}</td>
+        <td className="px-3 py-3 text-right text-text-muted tabular-nums">{fmtRowMoney(m?.aov_post_upsell, m)}</td>
         <td className="px-3 py-3 text-right tabular-nums">
-          <span className={m?.refunded > 0 ? 'text-danger' : 'text-text-muted'}>{fmtMoney(m?.refunded, m?.currency)}</span>
+          <span className={m?.refunded > 0 ? 'text-danger' : 'text-text-muted'}>{fmtRowMoney(m?.refunded, m)}</span>
         </td>
         <td className="px-3 py-3 text-right tabular-nums">
           <span className={m?.net_revenue < 0 ? 'text-danger' : 'text-text-primary'}>
-            {fmtMoney(m?.net_revenue, m?.currency)}
+            {fmtRowMoney(m?.net_revenue, m)}
           </span>
+          {m?.net_revenue_is_upper_bound && (
+            <span
+              className="ml-1 text-amber-400 cursor-help"
+              title={`Upper bound: ${m.upsell_refunds_unmeasured} reversed upsell leg(s) have no measured refund amount anywhere, so actual net may be lower.`}
+            >
+              ⚠
+            </span>
+          )}
         </td>
       </tr>
       {open && <ExpandedPagesRow funnelId={funnel.id} from={from} to={to} colSpan={colSpan} />}

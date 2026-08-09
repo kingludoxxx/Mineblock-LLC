@@ -229,9 +229,20 @@ function CanvasInner() {
   const [pageMetrics, setPageMetrics] = useState({}); // page_id -> {visitors, ctr, cvr}
   const [liveStats, setLiveStats] = useState(null); // {live, unique_today} | null
 
+  // STALE-RESPONSE GUARD: navigating funnel A → funnel B can leave A's fetch
+  // in flight; without a check its late response would overwrite B's numbers
+  // with A's. Capture the funnel id at request time and drop any response
+  // whose id no longer matches the mounted one.
+  const metricsIdRef = useRef(id);
+  useEffect(() => {
+    metricsIdRef.current = id;
+  }, [id]);
+
   const loadMetrics = useCallback(async () => {
+    const fid = id;
     try {
-      const res = await api.get(`/funnel-analytics/funnel/${id}/overview`);
+      const res = await api.get(`/funnel-analytics/funnel/${fid}/overview`);
+      if (metricsIdRef.current !== fid) return; // stale — a different funnel is mounted now
       const rows = res.data?.pages || [];
       setPageMetrics(
         Object.fromEntries(
@@ -244,8 +255,10 @@ function CanvasInner() {
   }, [id]);
 
   const loadLive = useCallback(async () => {
+    const fid = id;
     try {
-      const res = await api.get(`/funnel-analytics/funnel/${id}/live`);
+      const res = await api.get(`/funnel-analytics/funnel/${fid}/live`);
+      if (metricsIdRef.current !== fid) return; // stale — a different funnel is mounted now
       const d = res.data || {};
       setLiveStats(
         typeof d.live === 'number' || typeof d.unique_today === 'number'
@@ -253,11 +266,15 @@ function CanvasInner() {
           : null
       );
     } catch {
-      setLiveStats(null);
+      if (metricsIdRef.current === fid) setLiveStats(null);
     }
   }, [id]);
 
   useEffect(() => {
+    // Reset before the first load for this funnel so the previous funnel's
+    // numbers never render against the new funnel's pages.
+    setPageMetrics({});
+    setLiveStats(null);
     loadMetrics();
     loadLive();
     const mTimer = setInterval(loadMetrics, 60_000);
