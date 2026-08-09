@@ -1,5 +1,5 @@
 # Overnight build report — Puure CRM
-**Session:** 2026-08-08 night → 2026-08-09 morning · **Branch:** `main` @ `2a992d1` (pushed, **not deployed**)
+**Session:** 2026-08-08 night → 2026-08-09 morning · **Branch:** `main` @ `ba0f5cf` (pushed, **not deployed**)
 
 ---
 
@@ -8,11 +8,11 @@
 | Dimension | Score | Basis |
 |---|---|---|
 | **Money-path correctness** | **8.5 / 10** | Every invariant from the friend's file upheld and verified by execution; 3 integration-seam bugs + 1 exploit found and fixed before shipping |
-| **Security** | **8 / 10** | A real forced-charge exploit closed; session-id leak stopped. Residual: rate limits spoofable via `X-Forwarded-For`; `/track/collect` still accepts client `custom_data` |
+| **Security** | **7.5 / 10** | A real forced-charge exploit closed; session-id leak stopped. Residual: rate limits spoofable via `X-Forwarded-For`; `/track/collect` still accepts client `custom_data` |
 | **Spec fidelity to the friend's design** | **7 / 10** | Hard invariants ported faithfully, 3 places improved on his implementation; combine-mode and the cost/P&L layer not built |
 | **Operator surface (UI)** | **6.5 / 10** | Builder, settings, domains, analytics all shipped; split-test UI awaiting review; no read surface for opt-in leads |
 | **Production readiness** | **6 / 10** | Never deployed, never charged a real card. Fresh-DB bootstrap repaired but not fully clean |
-| **OVERALL** | **7.5 / 10** | Strong core, honestly measured, not yet proven with real money |
+| **OVERALL** | **7 / 10** | Strong core, honestly measured, not yet proven with real money |
 
 **One-line verdict:** the expensive part (money correctness) is genuinely good; the remaining risk is concentrated in things only a live transaction can prove.
 
@@ -99,6 +99,19 @@ Plus: a fresh database could never finish migrating (dead on arrival for any new
 - 22 RBAC permissions referenced in code that no role grants (all pre-existing; one live break: the statics template picker 403s for non-superadmins).
 
 ---
+
+## LATE AUDIT FINDINGS (arrived after the first draft — all acted on)
+
+Three deep sub-audits landed late and changed the picture. Fixed and pushed:
+
+- **The split test doesn't split (CRITICAL).** Arms are assigned and measured, but the serve path renders by slug and the upsell loads the offer the *client* names — so `lb_split_arms.page_id/offer_id` are written and read by nothing. Every arm serves the identical page. A correct significance engine pointed at two samples from the same distribution **will** eventually print "winner, 97% confidence" — demonstrated live (`status=winner, leader=b`). Now gated: the API refuses to name a winner (`blocked_reason: arm_delivery_not_wired`) until serve-time delivery is built. **You cannot A/B a landing page yet** — only what happens after a session exists.
+- **SSRF in the tracking relay.** The operator-supplied CAPI endpoint was validated by *scheme only*, so `https://169.254.169.254/…` (cloud instance credentials) passed — and the CAPI token was appended to the URL, handing it to whatever answered. Now resolve-and-reject on private/loopback/link-local/CGNAT, token in a header, `redirect: 'manual'`. My own test caught a bypass in my first fix (IPv4-mapped IPv6 in hex form). 15/15.
+- **Every redirect rule was dead** on the `/f/` surface — `Location: /new` resolved to the *admin SPA*, not the funnel. Fixed and verified live.
+- **The 429 was cacheable** — an outage during exactly the ad burst you're paying for. Now `no-store`, verified at request 241.
+- **Redirect footguns**: `from_path === to_path` (infinite loop) and a `/` prefix rule (swallows the whole funnel) were both accepted. Now refused.
+
+### The one architectural item I did NOT change unilaterally
+**Funnels are served on your admin origin** (`puure-dashboard.onrender.com/f/<slug>`) with no host gating. Consequences: unlaunched funnels are publicly reachable by slug; SEO duplicate content against your real domain; every connected custom host also mirrors every other funnel via `/f/`; and — most seriously — **operator-authored raw HTML/JS blocks execute same-origin with the CRM dashboard and its session** (CSP is disabled globally). Your friend's design makes an attached host the *only* door for exactly this reason. Fixing it means host-gating `/f`, which is a deploy-affecting change I won't make at 3am unreviewed. **Recommend doing this before the funnel surface is enabled for real traffic.**
 
 ## PROCESS NOTE
 
