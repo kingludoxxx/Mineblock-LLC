@@ -19,10 +19,10 @@
 // verdict.leader naming the arm) — this modal never decides a winner itself,
 // for exactly the reason the banner never composes its own prose.
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { X, TrendingUp, AlertTriangle, Loader2, Trophy, CheckCircle2 } from 'lucide-react';
+import { X, TrendingUp, AlertTriangle, Loader2, Trophy, CheckCircle2, Hourglass } from 'lucide-react';
 import {
-  fetchSplitMetrics, promoteSplitWinner, armLetter, fmtInt, fmtMoney, fmtPct,
-  fmtDate, fmtDateTime, isoDay, utcDay, num, DASH,
+  fetchSplitMetrics, fetchLifetimeStats, shouldShowWinnerBadge, promoteSplitWinner,
+  armLetter, fmtInt, fmtMoney, fmtPct, fmtDate, fmtDateTime, isoDay, utcDay, num, DASH,
 } from './splitApi';
 
 export default function SplitResultsModal({ open, onClose, test, onPromoted }) {
@@ -38,6 +38,17 @@ export default function SplitResultsModal({ open, onClose, test, onPromoted }) {
   const [preset, setPreset] = useState('created'); // 'created' | '7d' | '30d' | 'custom'
   const [range, setRange] = useState(() => ({ from: '', to: '' }));
   const [state, setState] = useState({ loading: true, available: false, reason: null, data: null });
+
+  // LIFETIME statistics — a SECOND, INDEPENDENT read, and independent on
+  // purpose. It comes from /split-tests/:id/results, which is this lane's own
+  // endpoint and is always present, so the readiness panel below renders even
+  // when the windowed analytics overlay 404s — which is the state this modal
+  // was already written to survive, and the state in which an operator
+  // previously had no statistics at all.
+  //
+  // NOT windowed: it does not depend on `range`, so it is fetched once per
+  // test rather than on every date change.
+  const [lifetime, setLifetime] = useState({ available: false, reason: null, data: null });
 
   const presetRange = useCallback((p) => {
     const today = isoDay(new Date());
@@ -73,6 +84,35 @@ export default function SplitResultsModal({ open, onClose, test, onPromoted }) {
   }, [testId, range.from, range.to]);
 
   useEffect(() => { if (open && range.from && range.to) load(); }, [open, range.from, range.to, load]);
+
+  // fetchLifetimeStats never throws — same posture as fetchSplitMetrics. A
+  // surface whose whole point is degrading honestly cannot have one of its two
+  // reads take the modal down.
+  //
+  // Used by the promote handler to refresh after a write. The MOUNT read is the
+  // effect below rather than this callback, for two reasons: calling a
+  // setState-ing function synchronously in an effect body is what
+  // react-hooks/set-state-in-effect flags, and the effect needs a
+  // stale-response guard this callback cannot carry.
+  const loadLifetime = useCallback(async () => {
+    if (!testId) return;
+    setLifetime(await fetchLifetimeStats(testId));
+  }, [testId]);
+
+  // STALE-RESPONSE GUARD, same shape as FunnelCanvasPage's metricsIdRef: opening
+  // test A and then test B can leave A's request in flight, and without the flag
+  // its late response would paint A's readiness under B's heading. The cleanup
+  // runs on every dependency change, so the losing request resolves into a
+  // cancelled closure and writes nothing.
+  useEffect(() => {
+    if (!open || !testId) return undefined;
+    let cancelled = false;
+    (async () => {
+      const res = await fetchLifetimeStats(testId);
+      if (!cancelled) setLifetime(res);
+    })();
+    return () => { cancelled = true; };
+  }, [open, testId]);
 
   useEffect(() => {
     if (!open) return undefined;
@@ -136,13 +176,16 @@ export default function SplitResultsModal({ open, onClose, test, onPromoted }) {
             to={state.data?.window?.to || range.to}
           />
 
+          {/* ── Readiness + significance (lifetime ledger) ────── */}
+          <ReadinessPanel lifetime={lifetime} />
+
           {/* ── Promote the winner ────────────────────────────── */}
           <PromoteWinner
             test={test}
             handle={handle}
             available={state.available}
             verdict={verdict}
-            onPromoted={(updated) => { onPromoted?.(updated); load(); }}
+            onPromoted={(updated) => { onPromoted?.(updated); load(); loadLifetime(); }}
           />
 
           {/* ── Degraded-source strip ─────────────────────────── */}
@@ -446,6 +489,196 @@ function PromoteWinner({ test, handle, available, verdict, onPromoted }) {
           {error && <p className="mt-2 text-xs text-red-400">{error}</p>}
         </div>
       </div>
+    </div>
+  );
+}
+
+// ── READINESS + SIGNIFICANCE ───────────────────────────────────────────────
+//
+// THE FAILURE THIS ANSWERS. Before this panel, an operator looking at this
+// modal with the windowed analytics endpoint unavailable saw a table of dashes
+// and a banner saying "metrics unavailable" — and promoted on the raw counts
+// they could see elsewhere. The lifetime endpoint has always been present and
+// now carries statistics, so there is no longer any state in which this surface
+// shows counts without telling the operator whether they mean anything.
+//
+// IT IS A DIFFERENT BASIS FROM THE TABLE, AND IT SAYS SO IN ITS OWN HEADER.
+// The table above is WINDOWED (the date range the operator picked). This is the
+// LIFETIME ledger — every exposure since the test started. Two numbers computed
+// over two populations will differ, and an operator who cannot see which is
+// which will read the difference as a bug. Labelled once, at the top, rather
+// than annotated on every cell.
+//
+// IT NEVER NAMES A WINNER THE SERVICE HAS NOT NAMED, and it never names one
+// below readiness — `is_winner` is only ever set by splitStats' winner gate,
+// which requires every arm past both floors AND significance at the
+// Bonferroni-corrected alpha. This component adds no gate of its own and,
+// crucially, invents no fallback: there is no "highest RPV wins" branch here.
+//
+// A WITHHELD NUMBER RENDERS AS A DASH WITH ITS REASON, NEVER AS 0%. `p_value:
+// null` means the service refused to compute one (below the sample floor, fewer
+// than two arms with data, zero variance). "0.0% confidence" would be a
+// measurement claim about something that was never measured.
+function ReadinessPanel({ lifetime }) {
+  const data = lifetime?.data;
+  const verdict = data?.verdict;
+  const arms = Array.isArray(data?.arms) ? data.arms : [];
+
+  // The endpoint answered, but this deploy does not compute statistics (or the
+  // shape was not understood). Say which — silence here reads as "no problem".
+  if (!lifetime?.available || !verdict) {
+    return (
+      <div className="rounded-xl border border-border-default bg-bg-elevated/50 px-4 py-3">
+        <div className="flex items-start gap-2.5">
+          <Hourglass className="w-4 h-4 mt-0.5 shrink-0 text-text-faint" />
+          <div className="min-w-0">
+            <p className="text-sm font-semibold text-text-muted">Readiness unavailable</p>
+            <p className="mt-1 text-xs text-text-muted leading-relaxed">
+              The lifetime ledger did not return a statistics block
+              {lifetime?.reason ? <span className="font-mono text-text-faint"> ({lifetime.reason})</span> : null}, so
+              this test&rsquo;s readiness cannot be shown. No figure below is zero &mdash; they are unknown.
+            </p>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  const ready = Boolean(verdict.ready);
+  const insufficient = verdict.status === 'insufficient_data';
+  // Green ONLY when the service both cleared readiness and named a winner.
+  // A ready test with no winner is neutral, not green: "we looked and there is
+  // no difference" is a real answer but it is not a success.
+  const tone = verdict.status === 'winner'
+    ? STATUS_TONE.winner
+    : (ready && !insufficient ? STATUS_TONE.no_winner : STATUS_TONE.not_ready);
+
+  return (
+    <div className={`rounded-xl border ${tone.border} ${tone.bg} overflow-hidden`}>
+      <div className="px-4 py-2.5 border-b border-border-subtle/60 flex items-center gap-2">
+        <Hourglass className={`w-3.5 h-3.5 shrink-0 ${tone.icon}`} />
+        <span className="text-[10px] font-semibold uppercase tracking-wider text-text-faint">
+          Readiness &amp; significance &middot; lifetime ledger, all traffic since the test started
+        </span>
+        {!ready && (
+          <span className="ml-auto px-1.5 py-0.5 rounded text-[10px] font-semibold uppercase tracking-wide
+            border border-amber-500/30 bg-amber-500/10 text-amber-300">
+            Not ready
+          </span>
+        )}
+      </div>
+
+      <div className="px-4 py-3">
+        <p className="text-sm font-semibold text-text-primary">{verdict.headline}</p>
+        {verdict.body && <p className="mt-1 text-xs text-text-muted leading-relaxed">{verdict.body}</p>}
+
+        {/* The projection caveat, rendered only when there IS a projection and
+            only when the service says it was sized on the observed effect. */}
+        {verdict.sized_on_observed_effect && verdict.required_sample_per_arm ? (
+          <p className="mt-1 text-xs text-text-muted leading-relaxed">
+            That projection is sized on the gap observed so far &mdash; at low traffic the gap is mostly noise, so
+            treat it as a floor, not a forecast.
+          </p>
+        ) : null}
+
+        <div className="mt-3 space-y-1.5">
+          {arms.map((a) => (
+            <ArmReadinessRow key={a.arm_key} arm={a} verdict={verdict} />
+          ))}
+          {arms.length === 0 && (
+            <p className="text-xs text-text-faint">This test has no arms.</p>
+          )}
+        </div>
+
+        <p className="mt-2.5 text-[11px] text-text-faint font-mono">
+          {verdict.status}
+          {verdict.reason ? ` · ${verdict.reason}` : ''}
+          {verdict.comparisons ? ` · ${verdict.comparisons} comparison${verdict.comparisons === 1 ? '' : 's'}` : ''}
+          {num(verdict.alpha_adjusted) === undefined ? '' : ` · α ${verdict.alpha_adjusted}`}
+          {num(verdict.time_to_decision_days) === undefined
+            ? ''
+            : ` · ~${verdict.time_to_decision_days}d to decide`}
+        </p>
+      </div>
+    </div>
+  );
+}
+
+// One arm's line: how far it is from scoreable, and — only if it is — how
+// confident the comparison against the control is.
+function ArmReadinessRow({ arm, verdict }) {
+  const st = arm?.stats;
+  if (!st) {
+    return (
+      <div className="flex items-center gap-2 text-xs">
+        <span className="font-mono text-text-primary">{arm?.arm_key}</span>
+        <span className="text-text-faint">{DASH} no statistics for this arm</span>
+      </div>
+    );
+  }
+  const r = st.readiness || {};
+  const isControl = Boolean(st.is_control);
+  // The badge rule lives in splitApi as a pure predicate so the harness can pin
+  // its truth table. It is NOT inlined here on purpose: a safety rule inside a
+  // render function is a safety rule nothing tests.
+  const isWinner = shouldShowWinnerBadge(st, verdict);
+
+  // Confidence is the REVENUE comparison's — the metric the winner is ranked
+  // on. Undefined (withheld) renders as a dash with the reason, never as 0%.
+  const conf = num(st.revenue?.confidence_pct);
+  const reason = st.revenue?.reason;
+
+  const shortfall = [];
+  if (r.needs_visitors > 0) shortfall.push(`${fmtInt(r.needs_visitors)} more visitors`);
+  if (r.needs_conversions > 0) shortfall.push(`${fmtInt(r.needs_conversions)} more orders`);
+
+  return (
+    <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs">
+      <span className="font-mono text-text-primary shrink-0">{arm.arm_key}</span>
+      {isControl && (
+        <span className="px-1.5 py-0.5 rounded text-[10px] uppercase tracking-wide
+          border border-border-default text-text-faint">
+          control
+        </span>
+      )}
+      {isWinner && (
+        <span className="px-1.5 py-0.5 rounded text-[10px] font-semibold uppercase tracking-wide
+          border border-emerald-500/30 bg-emerald-500/10 text-emerald-300 inline-flex items-center gap-1">
+          <Trophy className="w-3 h-3" /> winner
+        </span>
+      )}
+
+      <span className="text-text-muted tabular-nums">
+        {fmtInt(r.visitors)}/{fmtInt(r.min_visitors)} visitors
+        {' · '}
+        {fmtInt(r.conversions)}/{fmtInt(r.min_conversions)} orders
+      </span>
+
+      {r.ready ? (
+        <span className="inline-flex items-center gap-1 text-emerald-400">
+          <CheckCircle2 className="w-3 h-3" /> ready
+        </span>
+      ) : (
+        <span className="text-amber-300">
+          needs ~{shortfall.join(' and ')}
+        </span>
+      )}
+
+      {/* The control has nothing to compare itself to — a dash, never 0%. */}
+      <span className="ml-auto text-text-muted tabular-nums shrink-0">
+        {isControl
+          ? DASH
+          : (conf === undefined
+            ? <span title={reason ? String(reason).replace(/_/g, ' ') : 'withheld'}>
+              {DASH}{reason ? ` (${String(reason).replace(/_/g, ' ')})` : ''}
+            </span>
+            : <>
+              {fmtPct(conf)}
+              <span className={st.revenue?.significant ? ' text-emerald-400' : ' text-text-faint'}>
+                {st.revenue?.significant ? ' significant' : ' not significant'}
+              </span>
+            </>)}
+      </span>
     </div>
   );
 }

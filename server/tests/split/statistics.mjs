@@ -23,6 +23,10 @@
 // If it is unreachable the section is reported BLOCKED with the verbatim error
 // and the run exits NON-ZERO — a contract that could not be checked must never
 // read as a contract that passed.
+import { readFileSync, writeFileSync, mkdtempSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
+import { pathToFileURL } from 'url';
 import postgres from 'postgres';
 import {
   computeSplitStatistics, armReadiness, incrementalLift, timeToDecisionDays,
@@ -643,10 +647,203 @@ async function contract(query, sql) {
 }
 
 // ══════════════════════════════════════════════════════════════════════════
+// 4. CLIENT BOUNDARY — the REAL splitApi.js, executed
+// ══════════════════════════════════════════════════════════════════════════
+//
+// The server can be perfectly right and the operator still be shown a lie: the
+// client converts fractions to percents, and getting that wrong renders a
+// decisive 97% as "0.97%". So the real file is loaded and run.
+//
+// Same technique as scripts/verifySplitUiGuards.mjs: node cannot resolve Vite's
+// extensionless `../../../services/api` import, so that ONE line is rewritten
+// to a controllable stub. If the line ever moves, the rewrite fails loudly
+// rather than testing a file that is no longer the shipped one.
+async function loadSplitApi() {
+  const src = new URL('../../../client/src/components/funnels/split/splitApi.js', import.meta.url);
+  const code = readFileSync(src, 'utf8');
+  // The lookup is DEFERRED to call time, not bound at module load. Binding it
+  // (`const api = globalThis.__SPLIT_API_STUB__`) captures `undefined`, because
+  // the module is imported before any scenario installs its stub — and then
+  // every call throws a TypeError that fetchLifetimeStats dutifully catches and
+  // reports as 'network_error'. Every scenario passed its "never throws"
+  // assertion and every reason was wrong: the harness would have been testing
+  // its own broken stub. Caught by running it.
+  const stubbed = code.replace(
+    "import api from '../../../services/api';",
+    'const api = { get: (...a) => globalThis.__SPLIT_API_STUB__.get(...a) };'
+  );
+  if (stubbed === code) {
+    throw new Error('the api import line no longer matches splitApi.js — the stub is stale');
+  }
+  const file = join(mkdtempSync(join(tmpdir(), 'splitapi-stats-')), 'splitApi.mjs');
+  writeFileSync(file, stubbed);
+  return import(pathToFileURL(file).href);
+}
+
+async function clientBoundary() {
+  const mod = await loadSplitApi();
+  const { normalizeLifetimeStats, fetchLifetimeStats, shouldShowWinnerBadge } = mod;
+
+  // ── B1 · THE 100x TRAP, IN BOTH DIRECTIONS ─────────────────────────────
+  // `confidence` and `cvr` are FRACTIONS and must be multiplied once.
+  // `rpv_lift_pct` and `cvr_lift_pct` are ALREADY percents and must NOT be.
+  hr('B1 · fractions convert exactly once, already-percents are left alone');
+  const norm = normalizeLifetimeStats({
+    arms: [{
+      arm_key: 'b', exposures: 900, conversions: 120, net_revenue: 6000,
+      stats: {
+        arm_key: 'b', is_control: false, is_winner: true, cvr: 0.0432,
+        conversion: { confidence: 0.97, p_value: 0.03, significant: true },
+        revenue: { confidence: 0.9812, p_value: 0.0188, significant: true },
+        lift: { rpv_lift_pct: 30, cvr_lift_pct: 12.5 },
+      },
+    }],
+    verdict: { status: 'winner', ready: true },
+  });
+  const nb = norm.arms[0];
+  near(nb.stats.conversion.confidence_pct, 97, 1e-9, 'confidence 0.97 renders as 97%, NOT 0.97%');
+  near(nb.stats.revenue.confidence_pct, 98.12, 1e-9, 'confidence 0.9812 renders as 98.12%');
+  near(nb.stats.cvr_pct, 4.32, 1e-9, 'cvr 0.0432 renders as 4.32%');
+  near(nb.stats.lift.rpv_lift_pct, 30, 1e-9, 'rpv_lift_pct 30 stays 30 (already a percent, NOT 3000)');
+  near(nb.stats.lift.cvr_lift_pct, 12.5, 1e-9, 'cvr_lift_pct 12.5 stays 12.5');
+  // The raw counts must survive the normaliser untouched — it is a display
+  // adapter, never a place a figure changes.
+  assert(nb.exposures === 900 && nb.conversions === 120 && nb.net_revenue === 6000,
+    'the raw arm counts pass through the normaliser unchanged');
+  // The originals are preserved beside the converted ones, so the payload stays
+  // self-describing.
+  near(nb.stats.conversion.confidence, 0.97, 1e-12, 'the original fraction is preserved alongside');
+
+  // ── B2 · A WITHHELD NUMBER IS NEVER RENDERED AS ZERO ───────────────────
+  // This is the whole withholding contract arriving intact at the UI. `null`
+  // must become `undefined` (the '—' signal), NEVER 0.
+  hr('B2 · a withheld (null) figure becomes undefined, never 0');
+  const withheld = normalizeLifetimeStats({
+    arms: [{
+      arm_key: 'b', exposures: 5,
+      stats: {
+        arm_key: 'b', cvr: null,
+        conversion: { confidence: null, p_value: null, reason: 'below_stats_floor' },
+        revenue: { confidence: null, p_value: null, reason: 'below_stats_floor' },
+        lift: {},
+      },
+    }],
+    verdict: { status: 'insufficient_data', ready: false },
+  });
+  const wb = withheld.arms[0];
+  assert(wb.stats.conversion.confidence_pct === undefined,
+    `a null conversion confidence is undefined, not 0 (got ${wb.stats.conversion.confidence_pct})`);
+  assert(wb.stats.revenue.confidence_pct === undefined,
+    `a null revenue confidence is undefined, not 0 (got ${wb.stats.revenue.confidence_pct})`);
+  assert(wb.stats.cvr_pct === undefined, `a null cvr is undefined, not 0 (got ${wb.stats.cvr_pct})`);
+  assert(wb.stats.conversion.reason === 'below_stats_floor', 'the withholding reason survives to the UI');
+  // A 0 that is a REAL measurement must still render as 0.
+  const zero = normalizeLifetimeStats({
+    arms: [{ arm_key: 'a', stats: { arm_key: 'a', cvr: 0, conversion: { confidence: 0 }, revenue: {}, lift: {} } }],
+    verdict: { status: 'no_winner', ready: true },
+  });
+  assert(zero.arms[0].stats.cvr_pct === 0, 'a genuine cvr of 0 still renders as 0, not as a dash');
+
+  // An arm with no statistics at all (older row) must not crash the normaliser.
+  const noStats = normalizeLifetimeStats({ arms: [{ arm_key: 'a', exposures: 3 }], verdict: {} });
+  assert(noStats.arms[0].stats === null, 'an arm with no stats normalises to null rather than throwing');
+
+  // ── B3 · THE WINNER-BADGE TRUTH TABLE ──────────────────────────────────
+  // The one rule on this surface whose failure costs money.
+  hr('B3 · the winner badge truth table — never a trophy below readiness');
+  const table = [
+    [{ is_winner: true }, { status: 'winner', ready: true }, true, 'winner + ready + status winner'],
+    [{ is_winner: true }, { status: 'winner', ready: false }, false, 'NOT ready -> no badge, even if flagged winner'],
+    [{ is_winner: true }, { status: 'not_ready', ready: false }, false, 'status not_ready -> no badge'],
+    [{ is_winner: true }, { status: 'no_winner', ready: true }, false, 'status no_winner -> no badge'],
+    [{ is_winner: true }, { status: 'insufficient_data', ready: false }, false, 'insufficient_data -> no badge'],
+    [{ is_winner: false }, { status: 'winner', ready: true }, false, 'a non-winning arm never gets the badge'],
+    [{}, { status: 'winner', ready: true }, false, 'a missing is_winner defaults to NO badge'],
+    [{ is_winner: true }, {}, false, 'a missing verdict defaults to NO badge'],
+    [{ is_winner: true }, null, false, 'a null verdict defaults to NO badge'],
+    [null, { status: 'winner', ready: true }, false, 'null stats defaults to NO badge'],
+    [undefined, undefined, false, 'both missing defaults to NO badge'],
+    [{ is_winner: true }, { status: 'winner' }, false, 'ready ABSENT (not false) still means NO badge'],
+  ];
+  for (const [st, vd, want, label] of table) {
+    let got;
+    let threw = null;
+    try { got = shouldShowWinnerBadge(st, vd); } catch (err) { threw = err; }
+    assert(!threw, `${label}: does not throw${threw ? ` (${threw.message})` : ''}`);
+    assert(got === want, `${label}: ${want} (got ${got})`);
+  }
+
+  // ── B4 · fetchLifetimeStats DEGRADES, NEVER THROWS ─────────────────────
+  // The results modal renders two independent reads side by side. If this one
+  // throws, the modal takes the whole surface down — which is the failure the
+  // analytics reader was already written to avoid.
+  hr('B4 · fetchLifetimeStats degrades honestly and never throws');
+  const scenarios = [
+    ['a full payload', async () => ({ data: { data: { arms: [{ arm_key: 'a', stats: { conversion: {}, revenue: {}, lift: {} } }], verdict: { status: 'not_ready' } } } }),
+      { available: true }],
+    ['an UNWRAPPED payload (no success/data envelope)', async () => ({ data: { arms: [{ arm_key: 'a', stats: { conversion: {}, revenue: {}, lift: {} } }], verdict: { status: 'not_ready' } } }),
+      { available: true }],
+    ['200 with raw counts but NO statistics (an older deploy)', async () => ({ data: { data: { arms: [{ arm_key: 'a' }] } } }),
+      { available: false, reason: 'no_statistics_on_this_deploy' }],
+    ['200 with no arms array', async () => ({ data: { data: { verdict: {} } } }),
+      { available: false, reason: 'unrecognised_shape' }],
+    ['200 with a null body', async () => ({ data: null }),
+      { available: false, reason: 'unrecognised_shape' }],
+    ['a 404', async () => { const e = new Error('nf'); e.response = { status: 404 }; throw e; },
+      { available: false, reason: 'http_404' }],
+    ['a 500', async () => { const e = new Error('boom'); e.response = { status: 500 }; throw e; },
+      { available: false, reason: 'http_500' }],
+    ['a network error with no response', async () => { throw new Error('ECONNREFUSED'); },
+      { available: false, reason: 'network_error' }],
+  ];
+  for (const [label, get, want] of scenarios) {
+    globalThis.__SPLIT_API_STUB__ = { get };
+    let res;
+    let threw = null;
+    try { res = await fetchLifetimeStats('lbsg_x'); } catch (err) { threw = err; }
+    assert(!threw, `${label}: never throws${threw ? ` (${threw.message})` : ''}`);
+    if (!threw) {
+      assert(res.available === want.available, `${label}: available = ${want.available} (got ${res.available})`);
+      if (want.reason) assert(res.reason === want.reason, `${label}: reason = ${want.reason} (got ${res.reason})`);
+    }
+  }
+
+  // ── B5 · THE END-TO-END SHAPE ──────────────────────────────────────────
+  // The SERVICE's own output, fed through the CLIENT's reader, with nothing
+  // hand-written in between. This is the assertion that would catch the two
+  // sides drifting apart — a field renamed on the server and still read here.
+  hr('B5 · the real service output survives the real client reader');
+  const serviceOut = computeSplitStatistics([
+    arm('a', { control: true, visitors: 4000, conversions: 400, revenue: 20000, sumsq: 1400000 }),
+    arm('b', { control: false, visitors: 4000, conversions: 520, revenue: 26000, sumsq: 1960000 }),
+  ]);
+  const payload = {
+    arms: Object.values(serviceOut.arms).map((st) => ({
+      arm_key: st.arm_key, exposures: st.visitors, conversions: st.conversions, stats: st,
+    })),
+    verdict: serviceOut.verdict,
+    floors: serviceOut.floors,
+  };
+  globalThis.__SPLIT_API_STUB__ = { get: async () => ({ data: { data: payload } }) };
+  const live = await fetchLifetimeStats('lbsg_e2e');
+  assert(live.available === true, 'the real service payload is accepted by the client reader');
+  const bArm = live.data.arms.find((a) => a.arm_key === 'b');
+  assert(bArm.stats.revenue.confidence_pct > 1,
+    `confidence renders above 1% (got ${bArm.stats.revenue.confidence_pct}) — the 100x regression guard`);
+  near(bArm.stats.revenue.confidence_pct, serviceOut.arms.b.revenue.confidence * 100, 1e-6,
+    'the rendered percent is exactly 100x the service fraction');
+  assert(bArm.stats.readiness.ready === true, 'readiness survives the round trip');
+  assert(shouldShowWinnerBadge(bArm.stats, live.data.verdict) === Boolean(serviceOut.verdict.winner === 'b'),
+    'the badge predicate agrees with the service verdict end to end');
+  delete globalThis.__SPLIT_API_STUB__;
+}
+
+// ══════════════════════════════════════════════════════════════════════════
 async function main() {
   console.log('SPLIT STATISTICS HARNESS');
   knownAnswers();
   properties();
+  await clientBoundary();
 
   let sql = null;
   try {

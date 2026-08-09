@@ -152,6 +152,136 @@ export async function fetchLifetimeResults(testId) {
   return res.data?.data || null;
 }
 
+// ── THE LIFETIME STATISTICS CONTRACT ───────────────────────────────────────
+//
+// `GET /split-tests/:id/results` grew a statistics layer
+// (server/src/services/splitStats.js, attached in services/splitCredits.js).
+// It is PURELY ADDITIVE — every raw count this endpoint has always returned is
+// unchanged in name, type and value, pinned by
+// server/tests/split/statistics.mjs. So nothing that reads the raw counts (the
+// canvas tile fallback below) needs to know this exists.
+//
+//   200 { data: {
+//     testId,
+//     arms: [{ ...the raw counts, unchanged..., stats: {
+//       arm_key, is_control, is_winner, visitors, conversions,
+//       cvr, cvr_withheld, rev_per_visitor, net_revenue_variance,
+//       readiness: { ready, visitors, conversions, needs_visitors,
+//                    needs_conversions, min_visitors, min_conversions,
+//                    blockers: [] },
+//       conversion: { p_value, confidence, significant, statistic,
+//                     required_sample_per_arm, reason, normal_approx_weak },
+//       revenue:    { p_value, confidence, significant, statistic,
+//                     degrees_of_freedom, required_sample_per_arm, reason,
+//                     sample_small },
+//       lift: { control_rpv, challenger_rpv, rpv_delta, rpv_lift_pct,
+//               per_1000_visitors, earned_so_far, cvr_delta, cvr_lift_pct },
+//       money_sessions, net_revenue_sum, net_revenue_sum_squares
+//     }}],
+//     totals,
+//     verdict: { status: 'winner'|'no_winner'|'not_ready'|'insufficient_data',
+//                reason, headline, body, winner, leader, control, ready,
+//                thin_arms: [], comparisons, alpha_adjusted,
+//                required_sample_per_arm, time_to_decision_days, ranked: [] },
+//     floors: { min_visitors_per_arm, min_conversions_per_arm,
+//               min_stats_sample, alpha },
+//     method: { ... }
+//   } }
+//
+// ⚠️ SAME 100× TRAP AS THE ANALYTICS ENDPOINT, AND IT IS A DIFFERENT ENDPOINT
+// SO IT NEEDS ITS OWN CONVERSION. `confidence` is `1 - pValue`, a FRACTION:
+// 0.97 means 97%. `cvr` is a fraction. `rpv_lift_pct` and `cvr_lift_pct` are
+// ALREADY percents (the service multiplies by 100) and must NOT be converted
+// again. Converted exactly once, below, and nowhere else.
+//
+// ⚠️ A NULL IS NOT A ZERO. `p_value: null` / `confidence: null` means the
+// service WITHHELD the figure (below the sample floor, fewer than two arms with
+// data, or zero variance). It must render as '—' with the reason, never as 0%.
+// `num()` already maps null to undefined, which is the '—' signal everywhere.
+
+/**
+ * Lifetime results + statistics, NEVER throwing.
+ *
+ * Mirrors fetchSplitMetrics' posture rather than fetchLifetimeResults': the
+ * results modal renders this next to a windowed overlay that may be absent, and
+ * a surface whose whole point is degrading honestly cannot have one of its two
+ * reads throw.
+ *
+ * @returns {Promise<{available:boolean, reason?:string, data?:object}>}
+ */
+export async function fetchLifetimeStats(testId) {
+  try {
+    const res = await api.get(`/split-tests/${encodeURIComponent(testId)}/results`);
+    const raw = readEnvelope(res.data);
+    // `arms` is the load-bearing key, same rule as the analytics reader. A 200
+    // without it is a shape we do not understand; rendering from it would
+    // invent numbers.
+    if (!raw || !Array.isArray(raw.arms)) return { available: false, reason: 'unrecognised_shape' };
+    // An older deploy answers 200 with the raw counts and NO statistics. That is
+    // a legitimate state, not an error — report it as such so the panel can say
+    // "this deploy does not compute them" instead of rendering an empty box.
+    if (!raw.verdict) return { available: false, reason: 'no_statistics_on_this_deploy' };
+    return { available: true, data: normalizeLifetimeStats(raw) };
+  } catch (err) {
+    const status = err?.response?.status;
+    return { available: false, reason: status ? `http_${status}` : 'network_error' };
+  }
+}
+
+/**
+ * MAY THIS ARM WEAR A WINNER BADGE?
+ *
+ * Extracted from the JSX and exported so it can be PINNED BY EXECUTION
+ * (server/tests/split/statistics.mjs walks its truth table). A safety rule that
+ * lives inline in a render function is a safety rule nothing tests, and this is
+ * the one rule on this surface whose failure costs money: a trophy on a thin
+ * sample is exactly how an operator promotes a losing page.
+ *
+ * ALL THREE must hold, and the redundancy is deliberate:
+ *   • the service marked THIS arm the winner;
+ *   • the service's verdict status is actually 'winner';
+ *   • the service says every arm cleared its readiness floors.
+ *
+ * splitStats' winner gate already refuses to set `is_winner` below readiness,
+ * so conditions 2 and 3 are a belt on a structural guarantee. They are cheap,
+ * and they mean a future change to the service's gate cannot silently put a
+ * trophy on an unready test here. Defaults are FALSE at every missing field —
+ * an unknown readiness is not a readiness.
+ */
+export function shouldShowWinnerBadge(stats, verdict) {
+  return Boolean(stats?.is_winner) && verdict?.status === 'winner' && Boolean(verdict?.ready);
+}
+
+/**
+ * Fractions → percents, EXACTLY ONCE, for the lifetime payload.
+ *
+ * Only three fields cross the boundary: `cvr`, `conversion.confidence` and
+ * `revenue.confidence`. Everything else is a count, a money amount, or an
+ * already-percent lift. The raw arm counts are passed through untouched — this
+ * function must never be the reason a raw figure changes.
+ */
+export function normalizeLifetimeStats(raw) {
+  const arms = (raw.arms || []).map((a) => {
+    const st = a.stats;
+    if (!st) return { ...a, stats: null };
+    const conf = (block) => {
+      const c = num(block?.confidence);
+      return c === undefined ? undefined : fracToPct(c, 'lifetime confidence');
+    };
+    const cvr = num(st.cvr);
+    return {
+      ...a,
+      stats: {
+        ...st,
+        cvr_pct: cvr === undefined ? undefined : fracToPct(cvr, 'lifetime cvr'),
+        conversion: { ...st.conversion, confidence_pct: conf(st.conversion) },
+        revenue: { ...st.revenue, confidence_pct: conf(st.revenue) },
+      },
+    };
+  });
+  return { ...raw, arms };
+}
+
 // ── The analytics overlay (the analytics lane's API — merged; may still 404) ─
 
 /**
