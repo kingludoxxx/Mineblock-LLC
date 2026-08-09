@@ -1922,5 +1922,56 @@ BUILT: 6 new seed templates + 4 new XSS-safe block renderers (order_confirmation
 TESTED: server/tests/page-types/page-types.mjs — 81 checks (real authed page-create route per type, serve 200 per type, hostile-prop XSS probes on every new block, downsell double-click exactly-once vs mock Whop, optin honeypot/rate-limit/origin/bounds, session snapshot edge cases). Browser click-through (Playwright): optin submit advance + lead row, quiz 3-step + sessionStorage + no answers in URL + finish advance, countdown tick + expired text — 9/9. Regressions: shopify-order-create 56/56, upsell-page 49/49. 12 screenshots desktop+mobile.
 OUTPUT: 81 passed 0 failed; 9/9 click-through; regressions green; screenshots in scratchpad shots/.
 DECISIONS: DECISION MADE — used existing enum value 'thankyou' (not 'thank_you'); seeded advertorial under existing 'lead' type instead of adding an 'advertorial' enum; added 'optin'+'storefront' to PAGE_TYPES; advertorial quote uses own html block because the native testimonial renderer hardcodes an em-dash (ban on Puure buyer copy); downsell CSS carries .lb-upsell-status[hidden]{display:none} fix (upsell template has the same pre-existing bug — spawned follow-up task).
+TIMESTAMP: 2026-08-09 02:05
+TASK: Domain Hub lane — buy/attach/manage custom domains per funnel (feat/domain-hub)
+BUILT: lb_domains + domain_events + whois-contact schema; attach/verify/detach state
+machine (pending_dns → verifying → connected | error, bounded retries, idempotent
+Render registration); node:dns provider detection + required-records engine; optional
+Cloudflare auto-DNS; Namecheap registrar adapter (XML, POST body, confirm-gated
+purchase) + cloudflare stub; background verify sweep (moneySweeps pattern);
+resolveCustomHost + customDomainMiddleware (30s cached, fail-open, documented hook —
+NOT wired); routes/domainHub.js (authed funnels:access); DomainHubPage UI (5 tabs).
+TESTED: test-domain-hub.mjs — 93 assertions on embedded PG :5433 (db puure_domains),
+app :4026, mocked Render/Namecheap/Cloudflare via env base seams, injected DNS
+resolver. Edge cases: DNS resolver outage, Render 500 + recovery, retry exhaustion,
+double-attach, double-purchase, detach with failed unregister. vite build green.
+UI verified in browser against demo backend (all tabs + modals screenshotted).
+OUTPUT: 93 passed, 0 failed. Render create called exactly once across repeated
+verifies; purchase refused without confirm/creds; homoglyph + own-host domains 400.
+DECISIONS: connected-without-Render-creds allowed in local/dev but logged as
+degraded; domain unique 1:1 to funnel (friend's tool allows multi-funnel hosts —
+simplified); logs/progress.md append is the only shared-file write beyond the two
+flagged App.jsx/Sidebar lines.
+STATUS: COMPLETE (module-only; integration hooks documented, wired at merge)
+---
+
+---
+TIMESTAMP: 2026-08-09 02:40
+TASK: Domain Hub lane — review hardening (pre-auth host DoS + prod degraded-connect)
+BUILT: (1) hostRouting.js — isPlausibleHost() syntactic gate runs BEFORE any DB
+round-trip and before any cache insert (must contain '.', /^[a-z0-9.-]+$/, <=253,
+no leading/trailing '-' or '.', labels 1..63 and not hyphen-edged); split the single
+shared cache into positiveCache (cap 1000, connected rows) + negativeCache (cap 500)
+so junk churn can never evict a real domain; added setHostQueryRunner/hostCacheStats
+seams. (2) attachService.js — NODE_ENV=production && !renderConfigured() no longer
+flips to connected: holds at 'verifying' with error_detail 'render_not_configured…'
+(Render's apex IP is shared across all Render customers, so DNS-pointing alone is not
+ownership) and logs loudly; non-production degraded behaviour unchanged and audited.
+(3) UI — a reason on a non-error status renders yellow, not red. (4) header note: a
+non-GET/HEAD request to a page-relative path on a custom host is deliberately not
+rewritten (funnel forms post to /api/*, a passthrough prefix).
+TESTED: test-domain-hub.mjs extended 93 → 127 assertions. New: 19 isPlausibleHost
+unit cases; 10k distinct junk Hosts through resolveCustomHost with an injected
+counting query runner; 700 plausible-unknown hosts to prove the negative path still
+queries and stays capped; prod-without-creds / prod-with-creds / non-prod matrix.
+UI re-verified in browser (verifying+reason row renders yellow, distinct from error).
+OUTPUT: 127 passed, 0 failed. 10k junk Hosts → queries=0 and cache {positive:1,
+negative:0}; connected domain still served from cache afterwards. 700 plausible
+misses → queries=1400 (2/miss: exact + www sibling, pre-existing semantics),
+negative cache <=500, positive entry survived. Prod without Render creds → status
+verifying + 'render_not_configured…', host resolves to null; with creds → connected,
+error_detail cleared; non-prod → connected (degraded) + audit event. vite build green.
+DECISIONS: 2 queries per plausible miss left as-is (apex/www resolution is required
+behaviour); the assertion, not the code, was corrected after it first failed at 1400.
 STATUS: COMPLETE
 ---

@@ -26,6 +26,7 @@ import checkoutAdminRoutes from './checkoutAdmin.js';
 import funnelsRoutes from './funnels.js';
 import splitTestsRoutes from './splitTests.js';
 import trackingAdminRoutes from './trackingAdmin.js';
+import domainHubRoutes from './domainHub.js';
 
 const mountRoutes = (app) => {
   app.use('/api/v1/users', userRoutes);
@@ -56,6 +57,7 @@ const mountRoutes = (app) => {
   app.use('/api/v1/checkout', checkoutAdminRoutes); // authed CRM surface (public /checkout/public mounted earlier in app.js)
   app.use('/api/v1/tracking-admin', trackingAdminRoutes); // authed attribution read surface (public /track mounted earlier in app.js)
   app.use('/api/v1/split-tests', splitTestsRoutes); // authed A/B test CRUD + results (credits ledger)
+  app.use('/api/v1/domain-hub', domainHubRoutes); // authed custom-domain buy/attach/manage (verify sweep starts on load)
 };
 
 export default mountRoutes;

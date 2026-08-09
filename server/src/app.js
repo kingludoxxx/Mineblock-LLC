@@ -27,6 +27,7 @@ import funnelPublicRoutes from './routes/funnelPublic.js';
 import gatewayWebhookRoutes from './routes/gatewayWebhooks.js';
 import checkoutPublicRoutes from './routes/checkoutPublic.js';
 import optinPublicRoutes from './routes/optinPublic.js';
+import { customDomainMiddleware } from './services/domainHub/hostRouting.js';
 import trackingPublicRoutes from './routes/trackingPublic.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -98,6 +99,14 @@ app.use('/api/v1/checkout/public', checkoutPublicRoutes);
 // honeypot, bounded fields). Mounted before the /api limiter, like the
 // checkout intake, so a burst of leads is throttled by the router's own rule.
 app.use('/api/v1/optin/public', optinPublicRoutes);
+
+// Custom-domain host routing — rewrites a CONNECTED custom host to its funnel's
+// /f/<slug> path so funnelPublic serves it unchanged (same publish gates).
+// Fronts every request, so it is deliberately inert and fail-open: app hosts
+// short-circuit before any DB access, implausible hosts are rejected
+// syntactically (no query, no cache entry), /api + /f + assets pass through,
+// and any error falls through to next(). Must sit BEFORE /f and the SPA fallback.
+app.use(customDomainMiddleware());
 
 // Public funnel pages — unauthenticated, gated by FUNNEL_PUBLIC_ENABLED at
 // request time inside the router (before API routes, outside auth).
