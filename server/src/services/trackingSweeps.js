@@ -4,6 +4,7 @@
 // background timer racing its assertions (TRACKING_SWEEPS_DISABLED=1).
 import { pgQuery } from '../db/pg.js';
 import { ensureTrackingTables } from './trackingSchema.js';
+import { ensureIntegrationsTables } from './trackingIntegrationsSchema.js';
 import { runDelivery } from './trackingDelivery.js';
 
 const PRUNE_INTERVAL_MS = 60 * 60 * 1000;   // hourly TTL prune
@@ -103,6 +104,70 @@ export async function pruneTrackingEvents() {
   return deleted;
 }
 
+// ── lb_inbound_events retention (review m4) ─────────────────────────────────
+// The inbound ledger is written by an UNAUTHENTICATED endpoint. Even with the
+// token gate, the no-conversion-data guard and the per-IP limiter, it is the
+// one table in this lane whose row count is driven by strangers — so leaving
+// it unbounded was the same unbounded-growth bug lb_tracking_events already
+// had, on a table with a worse write profile.
+//
+// SAME RETENTION AND THE SAME REASONING AS lb_tracking_events: 180 days is
+// generous on purpose. An inbound row is a PARTNER'S CLAIM that a conversion
+// happened — exactly the evidence an operator needs during a chargeback or a
+// payout dispute, and those windows run to ~120 days.
+//
+// Batched, bounded per tick, and served by a bare-`ts` index for the same
+// three reasons the events prune is (an unbounded DELETE seq-scans, pgQuery's
+// timeout does not cancel the server-side statement, and the statement_timeout
+// rollback then deletes nothing forever).
+const INBOUND_RETENTION_DAYS = 180;
+const INBOUND_PRUNE_BATCH = 5000;
+const INBOUND_PRUNE_MAX_PER_TICK = 50_000;
+const INBOUND_PRUNE_TIMEOUT_MS = 60_000;
+
+let inboundTsIndexReady = false;
+async function ensureInboundTsIndex() {
+  if (inboundTsIndexReady) return;
+  try {
+    await pgQuery(
+      `CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_lb_inbound_events_ts ON lb_inbound_events (ts)`,
+      [],
+      { timeout: INBOUND_PRUNE_TIMEOUT_MS }
+    );
+    inboundTsIndexReady = true;
+  } catch (err) {
+    console.warn('[tracking] idx_lb_inbound_events_ts build skipped (non-fatal):', err.message);
+  }
+}
+
+export async function pruneInboundEvents() {
+  await ensureIntegrationsTables();
+  await ensureInboundTsIndex();
+  let deleted = 0;
+  while (deleted < INBOUND_PRUNE_MAX_PER_TICK) {
+    // Interpolated, not parameterised: Postgres rejects a bind parameter inside
+    // an INTERVAL literal, and every value here is a module constant.
+    // `ORDER BY id` is NOT copied from the events prune — that table's id is a
+    // BIGSERIAL correlated with ts, and this one's is a random `lbie_<hex>`
+    // TEXT, so ordering by it would sort lexically and defeat the ts index.
+    // The bare-ts index above is what serves this subselect.
+    const batch = await pgQuery(
+      `DELETE FROM lb_inbound_events
+       WHERE id IN (
+         SELECT id FROM lb_inbound_events
+         WHERE ts < NOW() - INTERVAL '${INBOUND_RETENTION_DAYS} days'
+         LIMIT ${INBOUND_PRUNE_BATCH}
+       )`,
+      [],
+      { timeout: INBOUND_PRUNE_TIMEOUT_MS }
+    );
+    const n = batch.count ?? 0;
+    deleted += n;
+    if (n < INBOUND_PRUNE_BATCH) break; // drained
+  }
+  return deleted;
+}
+
 // Delete rows past their expires_at. lb_visitor_firstseen is deliberately NOT
 // pruned (DECISIONS #9). Never throws — a maintenance failure is non-fatal.
 export async function pruneExpired() {
@@ -114,12 +179,21 @@ export async function pruneExpired() {
     await pgQuery(`DELETE FROM lb_postback_queue WHERE status IN ('done','dead') AND created_at < NOW() - INTERVAL '30 days'`);
     // Enforce the "capped feed" the schema promises (see EVENTS_RETENTION_DAYS).
     const events = await pruneTrackingEvents();
-    return { touches: t.count ?? 0, clicks: c.count ?? 0, events };
+    // The inbound ledger's prune is ISOLATED: it depends on another ensure
+    // chain (the integrations schema), and a failure there must not cost the
+    // touches/clicks/queue/events prunes above their tick.
+    let inbound = 0;
+    try {
+      inbound = await pruneInboundEvents();
+    } catch (err) {
+      console.warn('[tracking] inbound-events prune skipped (non-fatal):', err.message);
+    }
+    return { touches: t.count ?? 0, clicks: c.count ?? 0, events, inbound };
   } catch (err) {
     console.error('[tracking] pruneExpired failed (non-fatal):', err.message);
     // Same KEYS as the success path (review N2): a caller destructuring
     // `events` off the failure result must get 0, not undefined.
-    return { touches: 0, clicks: 0, events: 0 };
+    return { touches: 0, clicks: 0, events: 0, inbound: 0 };
   }
 }
 
@@ -136,4 +210,4 @@ export function startTrackingSweeps() {
   if (drain.unref) drain.unref();
 }
 
-export default { startTrackingSweeps, pruneExpired, pruneTrackingEvents };
+export default { startTrackingSweeps, pruneExpired, pruneTrackingEvents, pruneInboundEvents };

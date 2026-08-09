@@ -14,6 +14,8 @@ import { pgQuery } from '../db/pg.js';
 import { ensureTrackingTables } from './trackingSchema.js';
 import { emqScore, idkFrom } from './trackingAttribution.js';
 import { decryptSecret } from './gatewayConfigs.js';
+import { renderPostback, postbackContext } from './trackingPostbackTemplate.js';
+import { customNetworkPixelById } from './trackingCustomNetworks.js';
 
 // Retry schedule AFTER the failed inline attempt: 1m, 5m, 15m, 1h, 3h, 6h,
 // 12h, 24h → dead. Nine total attempts (inline + 8 queued).
@@ -103,7 +105,21 @@ const SECRET_KEYS = [
   'access_token', 'api_secret', 'capi_token',
   'developer_token', 'refresh_token', 'client_secret',
 ];
-const SECRET_KEYS_RE = SECRET_KEYS.join('|');
+// Review M1: the named list above is an ALLOW-LIST of credentials THIS system
+// mints, and it was never going to cover an operator-authored postback
+// template. A custom S2S URL carries whatever the partner network calls its
+// credential — `api_key`, `apikey`, `x-api-key`, `partner_token`, `sig`. So a
+// second, GENERIC pass matches credential-shaped parameter names with an
+// optional prefix run (`[\w-]*[_-]`), which is what catches `access_key` and
+// `x-api-key` where a `\b`-anchored bare `key` cannot (an underscore is a word
+// character, so `\bkey` never matches inside `access_key`).
+//
+// OVER-REDACTION IS THE CORRECT FAILURE MODE HERE. Everything this touches is
+// already an error string bound for an admin-readable column; losing a
+// diagnostic parameter name costs a little context, leaking a live key costs
+// the account.
+const GENERIC_SECRET_RE_SRC = '(?:[\\w-]*[_-])?(?:api_?key|key|token|secret|password|passwd|auth|signature|sig)';
+const SECRET_KEYS_RE = `${SECRET_KEYS.join('|')}|${GENERIC_SECRET_RE_SRC}`;
 // Pass 1 = URL/query form (`key=VALUE`, value runs to a query/JSON delimiter).
 // Pass 2 = JSON/quoted form (`"key":"VALUE"`, `key: VALUE`).
 // Two passes rather than one union because the two forms terminate on
@@ -122,14 +138,49 @@ export function redactTokens(s) {
     .replace(REDACT_JSON_RE, '$1[REDACTED]');
 }
 
+// Review M1 (GATING): STRIP ANY URL WHOLESALE before a string is persisted.
+//
+// Key-anchored redaction is necessary but NOT sufficient for an operator's own
+// postback URL, and the counter-example is the MGID preset shape:
+//   https://a.mgid.com/postback/<POSTBACK_ID>?c=…
+// The credential is a PATH SEGMENT. There is no `key=` to anchor on, so every
+// key-based rule in this file walks straight past it. And postback trackers
+// routinely ECHO THE REQUEST URL in their error bodies ("bad request: <url>"),
+// which is how that path segment reaches lb_tracking_events.error.
+//
+// The only rule that holds for a URL an operator authored — whose credential
+// can be in the path, the query, the fragment or the userinfo — is to persist
+// no URL at all. A URL is never the diagnostic anyway: the operator already
+// knows what they typed, and the test-fire surface hands it back to them
+// verbatim. What they need out of an error is the STATUS and the partner's
+// PROSE, both of which survive this.
+//
+// Applied to the persisted string only — NOT inside redactTokens(), which is
+// separately exercised on real URLs by the google-adapter/delivery-patches
+// regressions and must keep returning a URL with its secrets masked.
+const URL_LIKE_RE = /[a-z][a-z0-9+.-]*:\/\/[^\s"'<>)\]}]*/gi;
+export function stripUrls(s) {
+  return String(s).replace(URL_LIKE_RE, '[url-redacted]');
+}
+
+// The single chokepoint every persisted delivery error passes through
+// (lb_tracking_events.error, lb_postback_queue.last_error). Order matters:
+// strip URLs FIRST — a credential inside one is gone before any key rule has
+// to be clever about it — then key-redact what is left (a JSON body can carry
+// `"api_key":"…"` outside a URL), then bound the excerpt at 200 chars.
+const ERROR_EXCERPT_MAX = 200;
+export function sanitizeForPersist(s) {
+  return redactTokens(stripUrls(String(s))).slice(0, ERROR_EXCERPT_MAX);
+}
+
 export function errOf(res) {
   const r = res || {};
   // Redact the error STRING too, not just the body: a transport error message
   // is the other path a URL (and therefore a query secret) could ride out on.
-  if (r.error) return redactTokens(String(r.error));
+  if (r.error) return sanitizeForPersist(r.error);
   const bodyStr = r.body == null ? '' : (typeof r.body === 'string' ? r.body : (() => { try { return JSON.stringify(r.body); } catch { return String(r.body); } })());
-  const safeBody = bodyStr ? redactTokens(bodyStr) : '';
-  if (Number.isInteger(r.status)) return `http_${r.status}${safeBody ? `: ${safeBody.slice(0, 200)}` : ''}`;
+  const safeBody = bodyStr ? sanitizeForPersist(bodyStr) : '';
+  if (Number.isInteger(r.status)) return `http_${r.status}${safeBody ? `: ${safeBody}` : ''}`;
   return safeBody || 'unknown_error';
 }
 
@@ -333,7 +384,7 @@ export async function endpointAllowed(url) {  // exported for the SSRF regressio
 // throws, and NEVER puts the request URL into the result: `url` may carry a
 // query secret (GA4 MP) and every field of this object can end up in
 // lb_tracking_events.error / lb_postback_queue.last_error.
-async function postJson(url, { headers = {}, body, timeoutMs = 6000 } = {}) {
+async function postJson(url, { headers = {}, body, timeoutMs = 6000, method = 'POST', rawText = false } = {}) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   if (timer.unref) timer.unref();
@@ -341,15 +392,28 @@ async function postJson(url, { headers = {}, body, timeoutMs = 6000 } = {}) {
     // `redirect: 'manual'` stops a 302 from walking the validated host to an
     // unvalidated one (the reference's guard has exactly that hole) — which
     // for GA4 would also hand the query secret to the redirect target.
+    // A GET carries NO body and NO Content-Type (fetch rejects a GET with a
+    // body); the custom-postback adapter is the only caller that uses it.
+    const isGet = method === 'GET';
     const resp = await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', ...headers },
-      body,
+      method,
+      headers: isGet ? { ...headers } : { 'Content-Type': 'application/json', ...headers },
+      ...(isGet ? {} : { body }),
       redirect: 'manual',
       signal: controller.signal,
     });
+    // rawText: postback trackers answer `1` / `OK` / `<html>…`, not JSON, so
+    // resp.json() throws and the operator sees an empty body on a test fire.
+    // The slice is the same 200-char bound errOf applies, taken BEFORE the
+    // value can reach any persisted field.
     let parsed = null;
-    try { parsed = await resp.json(); } catch { parsed = null; }
+    if (rawText) {
+      let text = '';
+      try { text = await resp.text(); } catch { text = ''; }
+      parsed = { raw: String(text || '').slice(0, 200) };
+    } else {
+      try { parsed = await resp.json(); } catch { parsed = null; }
+    }
     if (resp.ok) return { ok: true, status: resp.status, body: parsed };
     return { ok: false, status: resp.status, body: parsed };
   } catch (err) {
@@ -621,6 +685,95 @@ async function sendGa4(pixel, envelope) {
   return res;
 }
 
+// ── CUSTOM S2S postback sender (operator-defined template) ───────────────────
+// The generic adapter: render the operator's {macro} template against this
+// event, re-validate the RESULT through the same SSRF guard every other sender
+// uses, and fire it GET or POST.
+//
+// ⚠️ THE RENDERED URL IS TREATED AS A CREDENTIAL. Operators embed postback
+// secrets in these templates (`…/pb?key=SECRET&cid={click_id}` is the shape
+// half the tracker industry ships). So:
+//   • the url is passed to endpointAllowed and to postJson and NOWHERE else;
+//   • postJson never copies a url into its result, so it cannot reach
+//     lb_tracking_events.error / lb_postback_queue.last_error;
+//   • nothing in this function logs, and the returned result carries only a
+//     status code and a 200-char response slice.
+// The ONE surface that returns the rendered url is the authed test-fire
+// endpoint, which hands the operator back their own text and persists nothing.
+//
+// The template is validated at SAVE time too (validateTemplateShape refuses a
+// macro anywhere in the authority, so the host cannot be steered by an inbound
+// click id) — this is the second of the two checks, and it is the one that
+// resolves DNS.
+export function customPostbackContext(pixel, envelope) {
+  const cfg = (pixel || {}).config || {};
+  const env = envelope || {};
+  const ud = (env.user_data && typeof env.user_data === 'object') ? env.user_data : {};
+  const cd = (env.custom_data && typeof env.custom_data === 'object') ? env.custom_data : {};
+  const eventName = String(env.event_name || '');
+  return postbackContext({
+    eventName,
+    eventId: env.event_id,
+    // buildUserData carries click_id UNHASHED (it is a platform token, not
+    // PII) — that is the value a postback tracker matches on.
+    clickId: ud.click_id || cd.click_id || '',
+    clickKey: cfg.click_id_param || '',
+    network: cfg.label || pixel.pixel_id || '',
+    value: cd.value,
+    currency: cd.currency,
+    orderId: cd.order_id,
+    // Refund is the one event whose status is not 'approved'; anything else an
+    // upstream sets is passed through, bounded by postbackContext's String().
+    status: cd.status || (eventName === 'Refund' ? 'refund' : 'approved'),
+    vid: env.vid,
+    funnel: cfg.label || '',
+    funnelId: pixel.funnel_id,
+    pageUrl: env.event_source_url,
+    subs: cd.subs,
+  });
+}
+
+async function sendCustomNetwork(pixel, envelope) {
+  const cfg = (pixel || {}).config || {};
+  // A template we could not DECRYPT is not a template we do not HAVE. This is
+  // deliberately retryable (not in HARD_ERRORS): the operator fixing
+  // CHECKOUT_CREDS_KEY heals the whole queued backlog, because queue rows
+  // re-read the row at send time.
+  if (cfg.template_decrypt_failed) return { ok: false, error: 'template_decrypt_failed' };
+  const template = String(cfg.url_template || '');
+  if (!template) return { ok: false, error: 'not_configured' };
+  const url = renderPostback(template, customPostbackContext(pixel, envelope));
+  const guard = await endpointAllowed(url);
+  if (guard !== true) return { ok: false, error: `unsafe_url:${guard}` };
+  const method = String(cfg.method || 'GET').toUpperCase() === 'POST' ? 'POST' : 'GET';
+  // POST carries the SAME macro context as a JSON body, so a partner that
+  // wants a body gets one without a second template to maintain. GET is the
+  // tracker default and sends nothing but the rendered query string.
+  const body = method === 'POST'
+    ? JSON.stringify({ ...customPostbackContext(pixel, envelope) })
+    : undefined;
+  return postJson(url, { method, body, rawText: true, timeoutMs: 8000 });
+}
+
+// Render + fire ONE synthetic postback and return the resolved url alongside
+// the result. AUTHED CALLERS ONLY (the admin test-fire route) — this is the
+// single function in the delivery layer that ever returns a rendered url.
+export async function testFireCustomNetwork(pixel, envelope) {
+  const cfg = (pixel || {}).config || {};
+  if (cfg.template_decrypt_failed) return { ok: false, error: 'template_decrypt_failed', rendered_url: '' };
+  const template = String(cfg.url_template || '');
+  if (!template) return { ok: false, error: 'not_configured', rendered_url: '' };
+  const url = renderPostback(template, customPostbackContext(pixel, envelope));
+  const guard = await endpointAllowed(url);
+  if (guard !== true) return { ok: false, error: `unsafe_url:${guard}`, rendered_url: url };
+  const method = String(cfg.method || 'GET').toUpperCase() === 'POST' ? 'POST' : 'GET';
+  const body = method === 'POST'
+    ? JSON.stringify({ ...customPostbackContext(pixel, envelope) })
+    : undefined;
+  const res = await postJson(url, { method, body, rawText: true, timeoutMs: 8000 });
+  return { ...res, rendered_url: url, method };
+}
+
 // ── per-kind dispatch ────────────────────────────────────────────────────────
 // One adapter per pixel kind. A kind with no entry is REGISTERED BUT NOT WIRED
 // (google_ads today): it dead-letters as 'kind_not_wired' in one pass rather
@@ -628,6 +781,10 @@ async function sendGa4(pixel, envelope) {
 const KIND_SENDERS = {
   meta_pixel: sendMetaPixel,
   ga4: sendGa4,
+  // Operator-defined outbound postback template. Its "pixel" is a projection
+  // of an lb_custom_networks row (trackingCustomNetworks.asPixel), never an
+  // lb_pixels row — see that module's header for why.
+  custom: sendCustomNetwork,
 };
 
 // Review HIGH #1a: a DRY RUN is a send whose result can never mean "delivered".
@@ -825,6 +982,35 @@ export async function runDelivery({ limit = 200 } = {}) {
   return out;
 }
 
+// Resolve a queue row's delivery TARGET back into a pixel-shaped object.
+// Returns an array (0 or 1 rows) so the caller's `pixels.length` checks and
+// its 'pixel_gone' branch are unchanged.
+//
+// Two tables, one queue. lb_pixels holds the named-network rows; a custom S2S
+// network is an lb_custom_networks row projected by asPixel. The queue stores
+// only the row id, so the re-read must know both — and it MUST be a re-read
+// rather than a rendered request stored at enqueue time (DECISIONS #12): a
+// template fixed mid-outage has to heal the whole backlog on the next drain,
+// exactly as a fixed credential does.
+async function loadDeliveryTarget(rowId) {
+  const id = String(rowId || '');
+  if (!id) return [];
+  const rows = await pgQuery(`SELECT * FROM lb_pixels WHERE id = $1`, [id]);
+  if (rows.length) return rows;
+  // Only ids minted by createNetwork can be custom rows; the prefix check
+  // keeps the common (named-network) path to a single query.
+  if (!id.startsWith('lbcn_')) return [];
+  try {
+    const px = await customNetworkPixelById(id);
+    return px ? [px] : [];
+  } catch (err) {
+    // A schema/read failure here must not be read as 'pixel_gone' (which
+    // dead-letters the row). Re-throw: runDelivery's per-row isolation settles
+    // this ONE row and the tick continues.
+    throw new Error(`custom_network_read_failed:${err.message}`);
+  }
+}
+
 // One queue row: re-read the pixel, re-send, settle. Throws are caught by the
 // caller, which settles the row — nothing in here may swallow silently.
 async function drainOne(id, out) {
@@ -838,7 +1024,7 @@ async function drainOne(id, out) {
     if (!claimed.length) return;
     const row = claimed[0];
     // Re-read the pixel at send time (credentials may have been fixed).
-    const pixels = await pgQuery(`SELECT * FROM lb_pixels WHERE id = $1`, [row.pixel_row_id]);
+    const pixels = await loadDeliveryTarget(row.pixel_row_id);
     // Review HIGH #1a, drain side: the queue must obey the dry-run rule too.
     // A queued conversion drained while GA4_MP_DEBUG is on would otherwise be
     // marked 'done' against an endpoint that ingested NOTHING — the row is
@@ -909,4 +1095,5 @@ export default {
   deliverToPixel, runDelivery, buildUserData, retryable, payloadRejected,
   breakerOpen, breakerRecord, resolveEndpoint, graphVersion,
   ga4EventName, ga4ClientId, ga4CollectUrl, ga4DebugActive, dryRunReason,
+  customPostbackContext, testFireCustomNetwork,
 };
