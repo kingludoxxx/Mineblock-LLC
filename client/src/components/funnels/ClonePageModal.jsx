@@ -7,8 +7,9 @@
 // children of <body> (or <main>). The optional "original URL" is used only
 // to absolutize relative image/link paths — the server never fetches it.
 //
-// "Generate with AI" and "From Shopify" are visible-but-disabled tabs: the
-// reference tool ships them, this slice does not.
+// "Generate with AI" is live (AiGenerateTab — brief in, streamed sections
+// out, creation through the same /page-clone/create). "From Shopify" stays a
+// visible-but-disabled tab.
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   X, ClipboardPaste, FileUp, Sparkles, ShoppingBag, ScanLine,
@@ -16,14 +17,24 @@ import {
 } from 'lucide-react';
 import api from '../../services/api';
 import Button from '../ui/Button';
-import { formatHtml, formatCss } from './codeFormat';
+import { formatHtml, formatCss, highlightHtml, highlightCss } from './codeFormat';
+import AiGenerateTab from './ai-generate/AiGenerateTab';
 
 const TABS = [
   { value: 'paste', label: 'Paste code', icon: ClipboardPaste },
   { value: 'file', label: 'Import file', icon: FileUp },
-  { value: 'ai', label: 'Generate with AI', icon: Sparkles, disabled: true },
+  { value: 'ai', label: 'Generate with AI', icon: Sparkles },
   { value: 'shopify', label: 'From Shopify', icon: ShoppingBag, disabled: true },
 ];
+
+// Token colors for the paste-pane highlighter (light panes, GitHub-light-ish).
+const HL_CSS = `
+.cf-hl .cf-t{color:#116329}
+.cf-hl .cf-a{color:#0550ae}
+.cf-hl .cf-s{color:#0a3069}
+.cf-hl .cf-c{color:#6e7781;font-style:italic}
+.cf-hl .cf-p{color:#57606a}
+`;
 
 const fmtBytes = (n) => {
   if (!Number.isFinite(n)) return '';
@@ -42,9 +53,41 @@ const fileToBase64 = (file) =>
   });
 
 // One paste pane: label + subtitle + Format button over a monospace,
-// dark-on-light, no-soft-wrap code textarea (no code-editor dep in
-// package.json, so this is a styled <textarea>).
-function CodePane({ label, subtitle, value, onChange, onFormat, placeholder }) {
+// dark-on-light, no-soft-wrap code editor (no code-editor dep in
+// package.json). Highlighting is the classic overlay technique: a <pre>
+// highlight layer under a transparent-text textarea, scroll-synced, plus a
+// line-number gutter. Past 300KB (or on any tokenizer hiccup) the pane
+// silently degrades to the plain textarea.
+function CodePane({ label, subtitle, value, onChange, onFormat, placeholder, mode }) {
+  const taRef = useRef(null);
+  const preRef = useRef(null);
+  const gutterRef = useRef(null);
+
+  const highlighted = useMemo(() => {
+    try {
+      return mode === 'css' ? highlightCss(value) : highlightHtml(value);
+    } catch {
+      return null; // pathological input — degrade silently
+    }
+  }, [value, mode]);
+  const degraded = highlighted === null;
+  const lineCount = useMemo(
+    () => (degraded ? 1 : String(value).split('\n').length || 1),
+    [value, degraded]
+  );
+
+  const syncScroll = useCallback(() => {
+    const ta = taRef.current;
+    if (!ta) return;
+    if (preRef.current) {
+      preRef.current.scrollTop = ta.scrollTop;
+      preRef.current.scrollLeft = ta.scrollLeft;
+    }
+    if (gutterRef.current) gutterRef.current.scrollTop = ta.scrollTop;
+  }, []);
+
+  const codeText = 'text-xs font-mono leading-5 whitespace-pre';
+
   return (
     <div className="min-w-0 flex flex-col rounded-lg border border-border-default overflow-hidden">
       <div className="flex items-center justify-between gap-2 px-3 py-2 bg-bg-elevated border-b border-border-subtle">
@@ -63,14 +106,47 @@ function CodePane({ label, subtitle, value, onChange, onFormat, placeholder }) {
           Format
         </button>
       </div>
-      <textarea
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        placeholder={placeholder}
-        spellCheck={false}
-        wrap="off"
-        className="w-full flex-1 min-h-[340px] px-3 py-2.5 bg-white text-neutral-800 text-xs font-mono leading-5 whitespace-pre overflow-auto placeholder:text-neutral-400 focus:outline-none resize-y"
-      />
+      <div className="flex flex-1 h-[340px] min-h-[200px] bg-white resize-y overflow-hidden">
+        {!degraded && (
+          <div
+            ref={gutterRef}
+            aria-hidden
+            className={`w-10 shrink-0 overflow-hidden bg-neutral-50 border-r border-neutral-200 text-right text-neutral-400 ${codeText} py-2.5 pr-2 select-none`}
+          >
+            {Array.from({ length: lineCount }, (_, i) => (
+              <div key={i}>{i + 1}</div>
+            ))}
+            {/* overscroll parity with the textarea's bottom padding */}
+            <div className="h-5" />
+          </div>
+        )}
+        <div className="relative flex-1 min-w-0">
+          {!degraded && (
+            <pre
+              ref={preRef}
+              aria-hidden
+              className={`cf-hl absolute inset-0 m-0 px-3 py-2.5 ${codeText} text-neutral-800 overflow-hidden pointer-events-none`}
+              // Tokenizer output is built exclusively from escaped source text
+              // (see codeFormat.js) — nothing user-controlled lands unescaped.
+              dangerouslySetInnerHTML={{ __html: `${highlighted}\n` }}
+            />
+          )}
+          <textarea
+            ref={taRef}
+            value={value}
+            onChange={(e) => onChange(e.target.value)}
+            onScroll={syncScroll}
+            placeholder={placeholder}
+            spellCheck={false}
+            wrap="off"
+            className={`absolute inset-0 w-full h-full px-3 py-2.5 ${codeText} overflow-auto placeholder:text-neutral-400 focus:outline-none resize-none ${
+              degraded
+                ? 'bg-white text-neutral-800'
+                : 'bg-transparent text-transparent caret-neutral-800'
+            }`}
+          />
+        </div>
+      </div>
     </div>
   );
 }
@@ -222,14 +298,19 @@ export default function ClonePageModal({ open, onClose, funnelId, onCreated }) {
       onClick={(e) => { if (e.target === e.currentTarget) onClose?.(); }}
     >
       <div className={`w-full ${!result && tab === 'paste' ? 'max-w-5xl' : 'max-w-3xl'} max-h-[88vh] flex flex-col bg-bg-card border border-border-default rounded-xl shadow-2xl overflow-hidden`}>
+        <style>{HL_CSS}</style>
         {/* ── Header ─────────────────────────────────────────────── */}
         <div className="shrink-0 flex items-start justify-between px-5 py-3.5 border-b border-border-subtle">
           <div className="min-w-0">
             <h2 className="text-base font-semibold text-text-primary">
-              Clone a page — paste code or import a file
+              {tab === 'ai' && !result
+                ? 'Generate with AI — describe the page'
+                : 'Clone a page — paste code or import a file'}
             </h2>
             <p className="mt-0.5 text-xs text-text-faint">
-              Scan strips junk scripts &amp; tracking pixels (Meta, Google, ...), the source title &amp; meta — then splits it into sections.
+              {tab === 'ai' && !result
+                ? 'Claude designs the architecture, writes each section live, and leaves image slots as placeholders.'
+                : 'Scan strips junk scripts & tracking pixels (Meta, Google, ...), the source title & meta — then splits it into sections.'}
             </p>
           </div>
           <button
@@ -277,6 +358,10 @@ export default function ClonePageModal({ open, onClose, funnelId, onCreated }) {
               })}
             </div>
 
+            {tab === 'ai' ? (
+              <AiGenerateTab funnelId={funnelId} onCreated={onCreated} onClose={onClose} />
+            ) : (
+            <>
             {/* ── Input body ────────────────────────────────────── */}
             <div className="flex-1 min-h-0 overflow-y-auto p-5 space-y-4">
               {tab === 'paste' ? (
@@ -288,6 +373,7 @@ export default function ClonePageModal({ open, onClose, funnelId, onCreated }) {
                     onChange={setPasteHtml}
                     onFormat={() => setPasteHtml((v) => formatHtml(v))}
                     placeholder={'<!doctype html> … paste the full page source here'}
+                    mode="html"
                   />
                   <CodePane
                     label="CSS"
@@ -296,6 +382,7 @@ export default function ClonePageModal({ open, onClose, funnelId, onCreated }) {
                     onChange={setPasteCss}
                     onFormat={() => setPasteCss((v) => formatCss(v))}
                     placeholder={'/* extra styles applied on top of the page */'}
+                    mode="css"
                   />
                 </div>
               ) : (
@@ -369,6 +456,8 @@ export default function ClonePageModal({ open, onClose, funnelId, onCreated }) {
                 </Button>
               </div>
             </div>
+            </>
+            )}
           </>
         ) : (
           <>

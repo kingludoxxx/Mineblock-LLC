@@ -207,3 +207,152 @@ export function formatCss(source) {
   flush();
   return lines.join('\n');
 }
+
+// ---------------------------------------------------------------------------
+// Syntax highlighting for the paste panes — dependency-free regex/scanner
+// tokenizers that return an HTML string of <span class="cf-…"> tokens over
+// FULLY ESCAPED source text. Token classes:
+//   cf-t  tag name / CSS selector      cf-a  attribute / CSS property
+//   cf-s  string / CSS value           cf-c  comment
+//   cf-p  punctuation (=, {, }, ;, :)
+// Past HIGHLIGHT_MAX bytes-ish (chars) the highlighters return null and the
+// pane silently degrades to a plain textarea.
+// ---------------------------------------------------------------------------
+
+export const HIGHLIGHT_MAX = 300 * 1024; // 300KB
+
+const escHtml = (s) =>
+  String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+const span = (cls, text) => (text ? `<span class="${cls}">${escHtml(text)}</span>` : '');
+
+// Highlight the inside of one raw tag string ("<div class=…>").
+function highlightTagInner(raw) {
+  const m = raw.match(/^(<\/?)([a-zA-Z][a-zA-Z0-9-]*)/);
+  if (!m) return span('cf-c', raw); // <!doctype…>, <?xml…>, stray '<'
+  let out = span('cf-p', m[1]) + span('cf-t', m[2]);
+  const rest = raw.slice(m[0].length);
+  // whitespace | quoted string | = | tag close | bare token
+  const re = /(\s+)|("[^"]*"|'[^']*')|(=)|(\/?>)|([^\s=>'"]+)/g;
+  let afterEq = false;
+  let t;
+  while ((t = re.exec(rest))) {
+    if (t[1]) out += escHtml(t[1]);
+    else if (t[2]) { out += span('cf-s', t[2]); afterEq = false; }
+    else if (t[3]) { out += span('cf-p', '='); afterEq = true; continue; }
+    else if (t[4]) out += span('cf-p', t[4]);
+    else out += span(afterEq ? 'cf-s' : 'cf-a', t[5]);
+    afterEq = false;
+  }
+  return out;
+}
+
+// HTML highlighter: tags/attrs/strings/comments; <style> bodies get the CSS
+// highlighter, <script> bodies pass through escaped-plain.
+export function highlightHtml(source) {
+  const src = String(source);
+  if (src.length > HIGHLIGHT_MAX) return null;
+  let out = '';
+  let i = 0;
+  while (i < src.length) {
+    if (src[i] === '<') {
+      if (src.startsWith('<!--', i)) {
+        const end = src.indexOf('-->', i + 4);
+        const stop = end === -1 ? src.length : end + 3;
+        out += span('cf-c', src.slice(i, stop));
+        i = stop;
+        continue;
+      }
+      const end = findTagEnd(src, i);
+      if (end === -1) {
+        out += escHtml(src.slice(i)); // unterminated tag — plain tail
+        break;
+      }
+      const raw = src.slice(i, end + 1);
+      out += highlightTagInner(raw);
+      i = end + 1;
+      const om = raw.match(/^<(style|script)\b/i);
+      if (om && !/\/\s*>$/.test(raw)) {
+        const name = om[1].toLowerCase();
+        const close = src.slice(i).match(new RegExp(`</${name}\\s*>`, 'i'));
+        if (close) {
+          const bodyRaw = src.slice(i, i + close.index);
+          out += name === 'style' ? highlightCss(bodyRaw) ?? escHtml(bodyRaw) : escHtml(bodyRaw);
+          out += highlightTagInner(close[0]);
+          i += close.index + close[0].length;
+        }
+      }
+    } else {
+      const next = src.indexOf('<', i);
+      const stop = next === -1 ? src.length : next;
+      out += escHtml(src.slice(i, stop));
+      i = stop;
+    }
+  }
+  return out;
+}
+
+// CSS highlighter: selectors / properties / values / comments. Strings and
+// parenthesised runs (url(data:…;base64,…)) never split tokens.
+export function highlightCss(source) {
+  const src = String(source);
+  if (src.length > HIGHLIGHT_MAX) return null;
+  let out = '';
+  let buf = '';
+  let depth = 0;
+  let afterColon = false;
+  const bufClass = () => {
+    if (depth === 0) return 'cf-t'; // selector / at-rule prelude
+    return afterColon ? 'cf-s' : 'cf-a'; // value : property
+  };
+  const flush = () => {
+    if (!buf) return;
+    if (buf.trim()) out += span(bufClass(), buf);
+    else out += escHtml(buf);
+    buf = '';
+  };
+  let i = 0;
+  while (i < src.length) {
+    const c = src[i];
+    if (c === '/' && src[i + 1] === '*') {
+      flush();
+      const end = src.indexOf('*/', i + 2);
+      const stop = end === -1 ? src.length : end + 2;
+      out += span('cf-c', src.slice(i, stop));
+      i = stop;
+      continue;
+    }
+    if (c === '"' || c === "'") {
+      let j = i + 1;
+      while (j < src.length && src[j] !== c) {
+        if (src[j] === '\\') j += 1;
+        j += 1;
+      }
+      const stop = Math.min(j + 1, src.length);
+      buf += src.slice(i, stop); // stays inside the current token run
+      i = stop;
+      continue;
+    }
+    if (c === '(') {
+      // consume the whole parenthesised run into the current token
+      let j = i + 1;
+      let paren = 1;
+      while (j < src.length && paren > 0) {
+        if (src[j] === '(') paren += 1;
+        else if (src[j] === ')') paren -= 1;
+        j += 1;
+      }
+      buf += src.slice(i, j);
+      i = j;
+      continue;
+    }
+    if (c === '{') { flush(); out += span('cf-p', '{'); depth += 1; afterColon = false; i += 1; continue; }
+    if (c === '}') { flush(); out += span('cf-p', '}'); depth = Math.max(0, depth - 1); afterColon = false; i += 1; continue; }
+    if (c === ';') { flush(); out += span('cf-p', ';'); afterColon = false; i += 1; continue; }
+    if (c === ':' && depth > 0 && !afterColon) { flush(); out += span('cf-p', ':'); afterColon = true; i += 1; continue; }
+    buf += c;
+    i += 1;
+  }
+  flush();
+  return out;
+}
