@@ -105,16 +105,19 @@ function cleanCustomer(body) {
     last_name: s(c.last_name, 100),
     phone: s(c.phone, 40),
   };
+  const addr = (a) => ({
+    address1: s(a.address1, 200),
+    address2: s(a.address2, 200),
+    city: s(a.city, 100),
+    state: s(a.state, 100),
+    zip: s(a.zip, 20),
+    country: s(a.country, 60),
+  });
   const sh = c.shipping;
-  if (sh && typeof sh === 'object' && !Array.isArray(sh)) {
-    out.shipping = {
-      address1: s(sh.address1, 200),
-      address2: s(sh.address2, 200),
-      city: s(sh.city, 100),
-      state: s(sh.state, 100),
-      zip: s(sh.zip, 20),
-      country: s(sh.country, 60),
-    };
+  if (sh && typeof sh === 'object' && !Array.isArray(sh)) out.shipping = addr(sh);
+  const bi = c.billing;
+  if (bi && typeof bi === 'object' && !Array.isArray(bi)) {
+    out.billing = { ...addr(bi), first_name: s(bi.first_name, 100), last_name: s(bi.last_name, 100) };
   }
   return out;
 }

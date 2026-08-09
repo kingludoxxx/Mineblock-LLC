@@ -428,6 +428,22 @@ const settleArgs = (id, payId) => ({
   check('T15 email on the order', o.email === 'buyer@puure.co', JSON.stringify(o.email));
 }
 
+// ══ TEST 16 — a DISTINCT billing address reaches Shopify, unmixed with shipping ══
+{
+  mock.mode = 'ok'; mock.calls.length = 0;
+  const id = await seedSession({ id: 'co_bill', total: 30, customerOverride: {
+    email: 'b@puure.co', first_name: 'Ada', last_name: 'L',
+    shipping: { address1: 'Ship St 1', city: 'Roma', state: 'RM', zip: '00100', country: 'IT' },
+    billing:  { first_name: 'Bill', last_name: 'Payer', address1: 'Bill Ave 9', city: 'Napoli', state: 'NA', zip: '80100', country: 'IT' },
+  } });
+  await sql`UPDATE co_sessions SET line_items = ${sql.json([{ variant_id: '58222941077807', quantity: 1, price: 30, currency: 'USD' }])}, total = 30, subtotal = 30 WHERE id = ${id}`;
+  await settleSessionPaid({ sessionId: id, gateway: 'whop', gatewayId: 'pay_bill', idempotencyKey: 'wh_pay_bill', amount: 30, currency: 'USD' });
+  const o = mock.calls.length ? mock.calls[mock.calls.length - 1].body : {};
+  check('T16 shipping stays the shipping address', o.shipping_address?.address1 === 'Ship St 1' && o.shipping_address?.city === 'Roma', JSON.stringify(o.shipping_address));
+  check('T16 billing is the DISTINCT billing address (not shipping)', o.billing_address?.address1 === 'Bill Ave 9' && o.billing_address?.city === 'Napoli', JSON.stringify(o.billing_address));
+  check('T16 billing name is the payer', o.billing_address?.first_name === 'Bill' && o.billing_address?.last_name === 'Payer', JSON.stringify(o.billing_address));
+}
+
 console.log(`\nRESULT: ${pass} passed, ${fail} failed`);
 mockServer.close();
 await sql.end();
