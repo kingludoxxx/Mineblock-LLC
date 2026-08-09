@@ -177,7 +177,17 @@ export function classifyPixel({ pixel, spec, h24, breakerOpen, queuedNow }) {
   // 5. Nothing at all happened in the window. NOT a failure — this is the
   //    honest reading for a funnel with no traffic, a paused campaign, or a
   //    brand-new pixel. The 7d counters and last_sent_at carry the nuance.
-  if (windowTotal(w) === 0) {
+  //
+  //    `queuedNow` is load-bearing here and is NOT part of windowTotal: the
+  //    window counts the EVENT LEDGER (lb_tracking_events), while queuedNow is
+  //    the LIVE backlog (lb_postback_queue). Those diverge in exactly the case
+  //    that matters — events queued before the window opened are still stuck
+  //    retrying, but their ledger rows have aged out of 24h. Without this
+  //    clause a pixel with a live backlog and a quiet ledger reported "No
+  //    traffic — nothing to judge" while conversions sat undelivered. Caught by
+  //    the E2E harness (extras-e2e.mjs E7); the pure fixture had put the
+  //    backlog in the ledger, which is not a shape the real system produces.
+  if (windowTotal(w) === 0 && queuedNow === 0) {
     return { status: 'no_traffic', reason: 'No delivery records in this window — nothing to judge.' };
   }
   // 6. There WAS activity and every delivery attempt failed.

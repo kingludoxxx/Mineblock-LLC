@@ -164,6 +164,28 @@ const only = (args) => shape(args).pixels[0];
   });
   eq(p.status, 'outage', 'T10b retry backlog with zero deliveries → outage');
 }
+{
+  // REGRESSION (found by extras-e2e.mjs E7, missed here): a live queue backlog
+  // with an ENTIRELY EMPTY ledger window. queuedNow comes from
+  // lb_postback_queue while the window counts lb_tracking_events, so the two
+  // diverge whenever events were queued before the window opened and are still
+  // retrying. The original fixture above put the backlog in the LEDGER, a shape
+  // the real system does not produce, so the zero-traffic branch short-circuited
+  // ahead of the queue check and reported "no traffic" over stuck conversions.
+  const p = only({
+    pixels: [metaPixel()],
+    counts: [],
+    queueDepth: [{ kind: 'meta_pixel', n: 2 }],
+  });
+  eq(p.status, 'outage', 'T10c EMPTY ledger window + live queue backlog → outage, NOT no_traffic');
+  eq(p.queued_now, 2, 'T10c live queue depth carried with an empty window');
+  ok(p.status !== 'no_traffic', 'T10c never reports "no traffic" while events sit undelivered');
+}
+{
+  // The complement: genuinely nothing anywhere is still no_traffic.
+  const p = only({ pixels: [metaPixel()], counts: [], queueDepth: [] });
+  eq(p.status, 'no_traffic', 'T10d empty ledger AND empty queue → no_traffic (unchanged)');
+}
 
 // ── T11 A SKIP IS NOT A FAILURE (and not a delivery either) ─────────────────
 {
