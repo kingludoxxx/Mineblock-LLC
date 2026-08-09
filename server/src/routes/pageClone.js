@@ -58,6 +58,92 @@ const VOID_TAGS = new Set([
 // Attributes whose relative values get absolutized against original_url.
 const URL_ATTRS = ['src', 'href', 'poster', 'data-src', 'data-href'];
 
+// ---------------------------------------------------------------------------
+// Active-content hardening (applies to EVERY source: paste, upload, Shopify)
+//
+// A cloned page is third-party markup we re-serve from OUR origin, under our
+// session cookies. The scan already drops <script>, but an inline `onclick`,
+// a `javascript:` href, an arbitrary <iframe> and an offsite <form action>
+// are all live code paths that survived it. They do not survive it now.
+// ---------------------------------------------------------------------------
+
+// Hosts allowed to stay in an <iframe>. Everything else is removed: a cloned
+// page has no business embedding an arbitrary origin under ours. Matched as
+// the host itself or any subdomain of it.
+export const IFRAME_EMBED_HOSTS = [
+  'youtube.com',
+  'youtube-nocookie.com',
+  'player.vimeo.com',
+  'wistia.com',
+  'wistia.net', // covers fast.wistia.net
+  'loom.com',
+];
+
+// Attributes that carry a navigable/loadable URL.
+const UNSAFE_URL_ATTRS = [
+  'href', 'src', 'action', 'formaction', 'poster',
+  'data-src', 'data-href', 'xlink:href', 'background',
+];
+
+// Schemes that execute rather than fetch.
+const EXECUTING_SCHEMES = new Set(['javascript', 'vbscript']);
+
+/**
+ * The scheme of an attribute value AS A BROWSER WOULD SEE IT — numeric and
+ * the handful of named entities that spell a colon are decoded, and every
+ * control character and space is removed, before the scheme is read. Without
+ * this, `java&#09;script:x` and `&#106;avascript:x` both read as scheme-less.
+ * Returns '' when the value has no scheme.
+ */
+export function urlScheme(value) {
+  const decoded = String(value == null ? '' : value)
+    .replace(/&#x([0-9a-f]+);?/gi, (_m, h) => {
+      const n = parseInt(h, 16);
+      return Number.isFinite(n) && n <= 0x10ffff ? String.fromCodePoint(n) : '';
+    })
+    .replace(/&#(\d+);?/g, (_m, d) => {
+      const n = parseInt(d, 10);
+      return Number.isFinite(n) && n <= 0x10ffff ? String.fromCodePoint(n) : '';
+    })
+    .replace(/&colon;/gi, ':')
+    .replace(/&(?:tab|newline|nbsp);/gi, ' ')
+    // Control chars and spaces are ignored by URL parsers inside a scheme.
+    .replace(/[\u0000-\u0020]/g, '');
+  const m = /^([a-zA-Z][a-zA-Z0-9+.-]*):/.exec(decoded);
+  return m ? m[1].toLowerCase() : '';
+}
+
+/** True when `host` is one of IFRAME_EMBED_HOSTS or a subdomain of one. */
+export function isAllowedEmbedHost(host) {
+  const h = String(host || '').toLowerCase();
+  if (!h) return false;
+  return IFRAME_EMBED_HOSTS.some((allowed) => h === allowed || h.endsWith(`.${allowed}`));
+}
+
+// The host an <iframe src> would actually load. A relative or absent src has
+// no host, so it is not on the allowlist and the frame goes.
+function iframeHost(tag) {
+  const m = /\bsrc\s*=\s*("([^"]*)"|'([^']*)'|([^\s>]+))/i.exec(tag);
+  if (!m) return '';
+  const raw = (m[2] !== undefined ? m[2] : m[3] !== undefined ? m[3] : m[4] || '')
+    .replace(/&amp;/gi, '&')
+    .trim();
+  if (!raw) return '';
+  try {
+    // A protocol-relative //host/path resolves against the https base; a
+    // genuinely relative path resolves to the sentinel host and is refused.
+    return new URL(raw, 'https://relative.invalid').hostname;
+  } catch {
+    return '';
+  }
+}
+
+// One open/void tag: name + the attribute run, quote-aware so a '>' inside a
+// quoted value does not end the tag early. Close tags start with '/', which
+// [a-zA-Z] excludes.
+const OPEN_TAG_RE = /<([a-zA-Z][a-zA-Z0-9-]*)((?:"[^"]*"|'[^']*'|[^"'>])*)>/g;
+const EVENT_ATTR_RE = /\son[a-zA-Z][a-zA-Z0-9-]*\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/gi;
+
 // A value that already has a scheme (http:, data:, mailto:, javascript:...),
 // is protocol-relative (//cdn...) or a bare fragment is NOT relative.
 const NOT_RELATIVE_RE = /^\s*(?:[a-zA-Z][a-zA-Z0-9+.-]*:|\/\/|#|$)/;
@@ -123,6 +209,10 @@ export function cleanHtml(rawHtml) {
     scripts_removed: 0,
     pixels_stripped: 0,
     comments_removed: 0,
+    handlers_stripped: 0,
+    unsafe_urls_stripped: 0,
+    iframes_removed: 0,
+    forms_neutralized: 0,
     title: '',
   };
 
@@ -179,26 +269,101 @@ export function cleanHtml(rawHtml) {
     /\brel\s*=\s*["']?\s*(preconnect|dns-prefetch|preload)\b/i.test(m) ? '' : m
   );
 
+  // 8. <iframe> that is not a known video embed. Runs AFTER the pixel pass
+  // (step 4), so a tracker iframe is already counted as a pixel and is not
+  // double-counted here. An <iframe> without a src, or with a relative one,
+  // has no host to check and therefore does not survive.
+  html = html.replace(/<iframe\b[^>]*>[\s\S]*?<\/iframe\s*>/gi, (m) => {
+    if (isAllowedEmbedHost(iframeHost(m))) return m;
+    stats.iframes_removed += 1;
+    return '';
+  });
+  // Unclosed / self-closed iframe open tags (defensive — same treatment).
+  html = html.replace(/<iframe\b[^>]*>/gi, (m) => {
+    if (isAllowedEmbedHost(iframeHost(m))) return m;
+    stats.iframes_removed += 1;
+    return '';
+  });
+
+  // 9. <form action> pointing off-origin. The form STAYS — it is layout the
+  // operator cloned on purpose — but it must not post a visitor's data to the
+  // source site from our domain. The original target is kept as an inert
+  // data-* attribute so the operator can see where it used to go.
+  html = html.replace(/<form\b((?:"[^"]*"|'[^']*'|[^"'>])*)>/gi, (full, attrs) => {
+    const m = /\baction\s*=\s*("([^"]*)"|'([^']*)'|([^\s>]+))/i.exec(attrs);
+    if (!m) return full;
+    const value = m[2] !== undefined ? m[2] : m[3] !== undefined ? m[3] : m[4] || '';
+    // Off-origin means "carries a host of its own": an absolute URL or a
+    // protocol-relative one. A same-page or relative action stays.
+    const offsite = /^\s*(?:[a-zA-Z][a-zA-Z0-9+.-]*:)?\/\//.test(value);
+    if (!offsite) return full;
+    stats.forms_neutralized += 1;
+    const stripped = attrs.replace(m[0], '');
+    // The value is re-emitted inside double quotes, so any " it carries is
+    // entity-escaped — it cannot close the attribute and open a new one.
+    return `<form${stripped} data-original-action="${value.replace(/&/g, '&amp;').replace(/"/g, '&quot;')}">`;
+  });
+
+  // 10. Inline event handlers and executing URL schemes, on EVERY remaining
+  // tag. This is the last pass so it also covers tags the earlier passes
+  // chose to keep (kept metas, stylesheet links, allowlisted iframes).
+  html = html.replace(OPEN_TAG_RE, (full, name, attrs) => {
+    let out = attrs;
+
+    // (a) on* handlers — the whole attribute goes.
+    out = out.replace(EVENT_ATTR_RE, () => {
+      stats.handlers_stripped += 1;
+      return '';
+    });
+
+    // (b) javascript:/vbscript: in a navigable attribute — the whole
+    // attribute goes too. Blanking it to "#" would leave a dead control that
+    // looks live; removing it lets the element render as inert markup.
+    for (const attr of UNSAFE_URL_ATTRS) {
+      const re = new RegExp(
+        `\\s${attr.replace(/[.*+?^\${}()|[\\]\\\\]/g, '\\\\$&')}\\s*=\\s*("[^"]*"|'[^']*'|[^\\s>]+)`,
+        'gi'
+      );
+      out = out.replace(re, (whole, quoted) => {
+        const value = /^["']/.test(quoted) ? quoted.slice(1, -1) : quoted;
+        if (!EXECUTING_SCHEMES.has(urlScheme(value))) return whole;
+        stats.unsafe_urls_stripped += 1;
+        return '';
+      });
+    }
+
+    return out === attrs ? full : `<${name}${out}>`;
+  });
+
   return { html, stats };
 }
 
 // Split cleaned markup into top-level sections: direct children of <main>
 // if present, else of <body>, else of the whole fragment. Depth-tracked tag
 // scan — void and self-closed elements do not push depth.
-export function splitSections(cleanedHtml) {
+export function splitSections(cleanedHtml, { fragment = false } = {}) {
   let scope = String(cleanedHtml);
-  const bodyMatch = scope.match(/<body\b[^>]*>([\s\S]*?)<\/body\s*>/i);
-  if (bodyMatch) scope = bodyMatch[1];
-  else {
-    // No <body>: drop doctype/html/head wrappers so head remnants (kept
-    // charset/viewport meta, stylesheet links) don't become "sections".
-    scope = scope
-      .replace(/<!doctype[^>]*>/gi, '')
-      .replace(/<head\b[^>]*>[\s\S]*?<\/head\s*>/gi, '')
-      .replace(/<\/?html\b[^>]*>/gi, '');
+  // FRAGMENT MODE (opt-in, default off — the paste/upload paths are unchanged).
+  // The body/main scoping below is a WHOLE-DOCUMENT heuristic: it keeps only
+  // what sits between the first <body>…</body> (or <main>…</main>) pair. Fed a
+  // FRAGMENT — e.g. a Shopify page's body_html — that heuristic silently
+  // truncates: one stray </body> typed into the page editor scopes the split
+  // to everything before it and the rest of the page is dropped with no error
+  // and no count. A fragment has no document scope to find, so it skips it.
+  if (!fragment) {
+    const bodyMatch = scope.match(/<body\b[^>]*>([\s\S]*?)<\/body\s*>/i);
+    if (bodyMatch) scope = bodyMatch[1];
+    else {
+      // No <body>: drop doctype/html/head wrappers so head remnants (kept
+      // charset/viewport meta, stylesheet links) don't become "sections".
+      scope = scope
+        .replace(/<!doctype[^>]*>/gi, '')
+        .replace(/<head\b[^>]*>[\s\S]*?<\/head\s*>/gi, '')
+        .replace(/<\/?html\b[^>]*>/gi, '');
+    }
+    const mainMatch = scope.match(/<main\b[^>]*>([\s\S]*?)<\/main\s*>/i);
+    if (mainMatch) scope = mainMatch[1];
   }
-  const mainMatch = scope.match(/<main\b[^>]*>([\s\S]*?)<\/main\s*>/i);
-  if (mainMatch) scope = mainMatch[1];
 
   const TAG_RE = /<\/?([a-zA-Z][a-zA-Z0-9-]*)(?:"[^"]*"|'[^']*'|[^"'>])*>/g;
   const chunks = [];
@@ -267,10 +432,10 @@ export function splitSections(cleanedHtml) {
 
 // Full pipeline: clean → (optional) URL rewrite → split. Exported for the
 // harness; the route handler is a thin HTTP shell around this.
-export function scanHtml(rawHtml, { originalUrl } = {}) {
+export function scanHtml(rawHtml, { originalUrl, fragment = false } = {}) {
   const { html, stats } = cleanHtml(rawHtml);
   const rewritten = originalUrl ? rewriteRelativeUrls(html, originalUrl) : html;
-  const sections = splitSections(rewritten);
+  const sections = splitSections(rewritten, { fragment });
   return { sections, stats };
 }
 

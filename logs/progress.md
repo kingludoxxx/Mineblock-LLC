@@ -2614,3 +2614,79 @@ brief named exists here identically (DECISION MADE — needs a port to
 Puure-integrator if that was the intended target).
 STATUS: COMPLETE
 ---
+
+---
+TIMESTAMP: 2026-08-09 23:40
+TASK: Clone-from-Shopify — adversarial review remediation (FIX-FIRST @ 53db9cd)
+BUILT: All four gating findings and all six minors closed on
+feat/clone-from-shopify, plus the M4 hardening policy decided by the
+integrator. B1: /list derived summaries from FULL body_html on the event
+loop shared with public checkout — reproduced at 1,945ms of synchronous block
+and +183MB heap for 500 x 292KB rows; every row is now sliced to
+BODY_PROBE_BYTES (16KB) and its text extracted ONCE for both the summary and
+the theme-built floor, with LIST_NODE_MAX x BODY_PROBE_BYTES bounded by
+LIST_BODY_BUDGET_BYTES and a runtime accumulator as backstop — re-measured at
+59ms / 21MB. M1: storefrontBase() memoised per process (5min on success, 60s
+on failure, keyed on store|apiVersion so a rotation invalidates), killing the
+2-5 Admin calls per request against the bucket shared with live checkout
+pricing; the modal now owns the fetched page list (cache/onLoaded) so Back
+from the picker no longer refetches. M2: permanent Shopify failures no longer
+masquerade as retryable outages — a new codeForStatus() maps 404 on a page
+fetch to HTTP 404 page_not_found, 402 to shopify_store_frozen, 423 to
+shopify_store_locked, other 4xx to shopify_rejected, all retryable:false,
+with shopify_unavailable reserved for 5xx/429/transport. M3: body_html is a
+FRAGMENT — feeding it to the splitter's whole-document heuristics dropped
+76.6% of a page on one stray </body>, silently, at 200; splitSections/scanHtml
+gained an additive `fragment` option (default off, paste/upload unchanged) and
+the Shopify path strips document wrappers first and reports the dropped bytes
+in stats. M4: cleanHtml now strips inline on* handlers, drops href/src/action
+carrying javascript:/vbscript: (entity- and control-char-obfuscated forms
+included), removes iframes whose host is off the exported IFRAME_EMBED_HOSTS
+allowlist, and disarms off-site form actions into data-original-action while
+keeping the form — four new counters surfaced as picker chips, on BOTH the
+paste and Shopify paths. Minors: fields= now rides every cursor hop; the
+short-page floor became a list BADGE not an import gate and its copy states
+the observation instead of guessing at the theme; truncation copy names the
+real remedy; the tab got a request-generation guard, an AbortController on
+unmount and stale-row Import locking; shop.json degrades on every status
+including 403 so the credential verdict comes from the load-bearing call;
+Retry-After is propagated and honoured by a countdown on Try again; the API
+version is anchored to /^\d{4}-\d{2}$/ because it is interpolated into a path.
+TESTED: shopify-import harness extended 213 -> 353 assertions, 353/353. New
+coverage: the B1 wall-time bound and the slice (a marker past the probe window
+is provably never read); the M1 memo across list+import, its failure memo and
+its rotation key; ALL outbound Admin calls counted in the rate-limit
+assertion (the old one counted only the pages mock — it measured a bound it
+did not enforce and missed shop.json entirely); every M2 status mapping over
+HTTP on both routes, including that a 404 on the LIST is NOT a page_not_found;
+four M3 fragment shapes each asserted to keep content on BOTH sides of the
+wrapper; M4 unit + end-to-end (5 obfuscated javascript: forms, look-alike
+embed hosts youtube.com.evil.com and evil-youtube.com, srcless iframe,
+off-site vs same-origin form); Retry-After parsing incl. HTTP-date and
+clamping; five malformed API versions refused and an unset one falling back.
+Regressions: scan-create 92/92 and variant-search 94/94, both identical to
+the pre-change baseline — M4 conflicted with NO existing assertion, so
+nothing was bent. node --check on all four touched server files: OK. eslint
+on both client files: 0 errors. cd client && npx vite build: exit 0. Mount
+re-verified by booting routes/index.js (401, not 404).
+OUTPUT: 353/353 + 92/92 + 94/94; build exit 0; eslint exit 0; B1 1945ms/183MB
+-> 59ms/21MB; M3 76.6% loss -> 0.
+DECISIONS: (1) M3 solved with an additive `fragment` option rather than
+pre-stripping <main>, so the operator's <main> element survives as markup
+while losing its ability to scope the split (DECISION MADE). (2) M4 lives in
+cleanHtml, i.e. the paste and upload tabs are hardened too — the integrator
+scoped it that way and the existing regression proves no paste-path assertion
+disagrees (DECISION MADE). (3) m1 `fields` on cursor hops asserts the shape of
+OUR request only: Shopify documents page_info as combinable with limit and
+fields, but there are no credentials in this environment to verify acceptance
+against the live store, and a live rejection would surface as
+shopify_rejected with the status in the log line (DECISION MADE — flagged as
+the one claim not closed by execution). (4) Three harness assertions I wrote
+in the first pass were VACUOUS and are recorded here because they passed
+while testing nothing: a naive /action="https:\/\/evil/ regex was satisfied by
+the data-original-action attribute the fix introduces; a "body not echoed"
+needle matched the legitimate summary; and an href assertion ignored that the
+link is absolutized. All three were re-anchored and mutation-checked
+(DECISION MADE).
+STATUS: COMPLETE
+---

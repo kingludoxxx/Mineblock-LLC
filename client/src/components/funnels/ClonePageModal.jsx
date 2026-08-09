@@ -176,6 +176,10 @@ export default function ClonePageModal({ open, onClose, funnelId, onCreated }) {
   const [title, setTitle] = useState('');
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState(null);
+  // The Shopify page list lives HERE, not in the tab: Back from the picker
+  // unmounts the tab, and a tab-owned list would re-hit the Shopify Admin API
+  // (the bucket shared with live checkout pricing) on every Back.
+  const [shopifyCache, setShopifyCache] = useState(null);
   const fileInputRef = useRef(null);
 
   // Fresh state every time the modal opens.
@@ -193,6 +197,7 @@ export default function ClonePageModal({ open, onClose, funnelId, onCreated }) {
     setTitle('');
     setCreating(false);
     setError(null);
+    setShopifyCache(null); // a fresh open re-reads the store
   }, [open]);
 
   useEffect(() => {
@@ -335,7 +340,7 @@ export default function ClonePageModal({ open, onClose, funnelId, onCreated }) {
             </h2>
             <p className="mt-0.5 text-xs text-text-faint">
               {result || (tab !== 'ai' && tab !== 'shopify')
-                ? 'Scan strips junk scripts & tracking pixels (Meta, Google, ...), the source title & meta — then splits it into sections.'
+                ? 'Scan strips junk scripts & tracking pixels (Meta, Google, ...), inline event handlers, javascript: links and non-video iframes, the source title & meta — then splits it into sections.'
                 : tab === 'ai'
                   ? 'Claude designs the architecture, writes each section live, and leaves image slots as placeholders.'
                   : 'Your Online Store pages, read straight from the Shopify Admin API — the picked one runs through the same scan.'}
@@ -376,7 +381,12 @@ export default function ClonePageModal({ open, onClose, funnelId, onCreated }) {
             {tab === 'ai' ? (
               <AiGenerateTab funnelId={funnelId} onCreated={onCreated} onClose={onClose} />
             ) : tab === 'shopify' ? (
-              <ShopifyTab onScanned={adoptShopifyScan} onClose={onClose} />
+              <ShopifyTab
+                cache={shopifyCache}
+                onLoaded={setShopifyCache}
+                onScanned={adoptShopifyScan}
+                onClose={onClose}
+              />
             ) : (
             <>
             {/* ── Input body ────────────────────────────────────── */}
@@ -463,7 +473,9 @@ export default function ClonePageModal({ open, onClose, funnelId, onCreated }) {
             {/* ── Input footer ──────────────────────────────────── */}
             <div className="shrink-0 flex items-center justify-between gap-3 px-5 py-3.5 border-t border-border-subtle">
               <p className="text-[11px] text-text-faint">
-                Scan removes scripts, Meta &amp; Google pixels, trackers, the source title &amp; comments.
+                Scan removes scripts, pixels &amp; trackers, inline event handlers,
+                <code className="font-mono"> javascript: </code>
+                links and non-video iframes, and disarms off-site form actions.
               </p>
               <div className="flex items-center gap-2 shrink-0">
                 <Button variant="secondary" onClick={onClose}>Cancel</Button>
@@ -486,6 +498,24 @@ export default function ClonePageModal({ open, onClose, funnelId, onCreated }) {
                 )}
                 {stats?.pixels_stripped > 0 && (
                   <ResultChip>Meta + Google pixels stripped ({stats.pixels_stripped})</ResultChip>
+                )}
+                {/* Active content the scan disarmed. Silent hardening is
+                    indistinguishable from a scan that did nothing, so every
+                    count the cleaner reports is shown. */}
+                {stats?.handlers_stripped > 0 && (
+                  <ResultChip>{stats.handlers_stripped} inline event handler{stats.handlers_stripped === 1 ? '' : 's'} removed</ResultChip>
+                )}
+                {stats?.unsafe_urls_stripped > 0 && (
+                  <ResultChip>{stats.unsafe_urls_stripped} javascript: link{stats.unsafe_urls_stripped === 1 ? '' : 's'} neutralized</ResultChip>
+                )}
+                {stats?.iframes_removed > 0 && (
+                  <ResultChip>{stats.iframes_removed} non-video iframe{stats.iframes_removed === 1 ? '' : 's'} removed</ResultChip>
+                )}
+                {stats?.forms_neutralized > 0 && (
+                  <ResultChip>{stats.forms_neutralized} off-site form action{stats.forms_neutralized === 1 ? '' : 's'} disarmed</ResultChip>
+                )}
+                {stats?.wrapper_bytes_stripped > 0 && (
+                  <ResultChip>{fmtBytes(stats.wrapper_bytes_stripped)} of stray page wrappers removed</ResultChip>
                 )}
                 <ResultChip>Split into {total} section{total === 1 ? '' : 's'}</ResultChip>
                 {metaRemoved && <ResultChip>Source title &amp; meta removed</ResultChip>}

