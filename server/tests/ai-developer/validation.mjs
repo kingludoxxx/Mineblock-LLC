@@ -187,6 +187,85 @@ console.log('\n=== 2. SCREENSHOT VALIDATION — caps + content-type sniff ===');
   ok(!r.error, 'an image just UNDER 4MB is accepted — the cap is a ceiling, not a wall', r.error);
 }
 {
+  // ===== F1: THE SIZE BYPASS =====
+  // The old check stripped '=' GLOBALLY before measuring
+  // (`(clean.replace(/=/g,'').length * 3) / 4`) while the charset regex admitted
+  // '=' ANYWHERE. A 32-char PNG header plus a wall of '=' therefore measured as
+  // 24 bytes and relayed ~21MB to Anthropic. Two independent defenses now: '='
+  // is legal only as trailing padding, AND the size comes from a real decode.
+  const wall = PNG.toString('base64') + '='.repeat(20 * 1024 * 1024);
+  const r = validateChatBody(base({ images: [`data:image/png;base64,${wall}`] }));
+  ok(!!r.error, 'F1 PURE-PADDING REPRO: a PNG header + 20M "=" chars is REFUSED');
+  ok(/must be base64/.test(r.error || ''),
+    'and it is the CHARSET check that stops it — "=" is padding, legal only at the end', r.error);
+  // Prove the OLD formula would have waved it through, so this case cannot rot
+  // into a tautology if someone "simplifies" the validator later.
+  const oldMeasure = Math.floor((wall.replace(/=/g, '').length * 3) / 4);
+  ok(oldMeasure < MAX_IMAGE_BYTES,
+    `the retired formula measured this payload at ${oldMeasure}B — under the ${MAX_IMAGE_BYTES}B cap`);
+  ok(Buffer.byteLength(wall, 'base64') > MAX_IMAGE_BYTES,
+    'while a real decode puts it far OVER the cap — the two disagreed, and the arithmetic one was authoritative');
+}
+{
+  // The interleaved form (caught before the fix, kept as a regression).
+  const interleaved = `${PNG.toString('base64')}${'=A'.repeat(4 * 1024 * 1024)}`;
+  const r = validateChatBody(base({ images: [`data:image/png;base64,${interleaved}`] }));
+  ok(!!r.error, 'F1 INTERLEAVED: "=" scattered through the payload is refused');
+}
+{
+  // Trailing padding is LEGAL and must still work — a fix that refuses all
+  // padding would break every real base64 image.
+  for (const [name, buf] of [['PNG', PNG], ['JPEG', JPEG], ['GIF', GIF], ['WEBP', WEBP]]) {
+    const b64 = buf.toString('base64');
+    const r = validateChatBody(base({ images: [dataUrl(sniffImageType(buf), buf)] }));
+    ok(!r.error, `legal trailing padding still passes (${name}, "${b64.slice(-2)}")`, r.error);
+  }
+}
+{
+  // Line-wrapped (MIME-style) base64 is legal and must survive the charset check.
+  const b64 = PNG.toString('base64');
+  const wrapped = `${b64.slice(0, 8)}\r\n${b64.slice(8)}`;
+  const r = validateChatBody(base({ images: [{ data: wrapped, media_type: 'image/png' }] }));
+  ok(!r.error, 'CRLF-wrapped base64 is accepted (line breaks stripped before the charset check)', r.error);
+  ok(!/[\r\n]/.test(r.images[0].data), 'and the stored payload has no line breaks left in it');
+}
+{
+  // ===== F2: BARE BASE64, NOTHING DECLARED =====
+  // With no data: prefix and no media_type the server used to ASSUME image/png
+  // and then blame the caller for a claim it had invented itself.
+  for (const [name, buf] of [['PNG', PNG], ['JPEG', JPEG], ['GIF', GIF], ['WEBP', WEBP]]) {
+    const expected = sniffImageType(buf);
+    const r = validateChatBody(base({ images: [buf.toString('base64')] }));
+    ok(!r.error, `F2: bare base64 ${name} with NOTHING declared is accepted`, r.error);
+    eq(r.images?.[0]?.media_type, expected, `F2: and the SNIFFED type is adopted (${expected})`);
+  }
+}
+{
+  // Adopting the sniffed type must not become a way to smuggle a non-image:
+  // the sniff still has to recognise it.
+  const r = validateChatBody(base({ images: [Buffer.from('%PDF-1.7 nope nope nope', 'latin1').toString('base64')] }));
+  ok(!!r.error, 'F2 does NOT weaken the sniff — bare base64 that is not an image is still refused');
+}
+{
+  // A DECLARED type is still checked. Adoption applies only to silence.
+  const r = validateChatBody(base({ images: [{ data: JPEG.toString('base64'), media_type: 'image/png' }] }));
+  ok(!!r.error, 'a DECLARED media_type is still enforced — adoption applies only when nothing was declared');
+}
+{
+  // ===== F7: EMPTY USER TURNS =====
+  ok(!!validateChatBody(base({ messages: [{ role: 'user', content: '' }] })).error,
+    'F7: an empty user turn is refused');
+  ok(!!validateChatBody(base({ messages: [{ role: 'user', content: '   \n\t  ' }] })).error,
+    'F7: a whitespace-only user turn is refused');
+  const r = validateChatBody(base({
+    messages: [{ role: 'user', content: 'hi' }, { role: 'assistant', content: '' }, { role: 'user', content: 'go on' }],
+  }));
+  ok(!r.error,
+    'F7: an empty ASSISTANT turn is TOLERATED — a rehydrated thread must not wedge the panel out of sending', r.error);
+  eq(validateChatBody(base({ messages: [{ role: 'user', content: ' x ' }] })).messages[0].content, ' x ',
+    'F7: content is not trimmed in transit — only judged');
+}
+{
   ok(!!validateChatBody(base({ images: 'not-an-array' })).error, 'a non-array images field is refused');
   ok(!!validateChatBody(base({ images: [''] })).error, 'an empty image entry is refused');
   ok(!!validateChatBody(base({ images: [null] })).error, 'a null image entry is refused, never throws');

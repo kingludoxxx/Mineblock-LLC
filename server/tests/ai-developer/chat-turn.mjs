@@ -35,32 +35,37 @@ await admin.end();
 // Mock Anthropic: /v1/messages, SSE, one text block, no tool use.
 // ---------------------------------------------------------------------------
 const seen = []; // every request body the mock received
-const sse = (res, lines) => {
-  res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache' });
-  for (const [event, data] of lines) res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
-  res.end();
-};
+// When set, the mock holds the stream open after the first text delta until this
+// promise resolves — the window in which the F3 case fires its DELETE.
+let stall = null;
+let onRequestSeen = null; // resolved as soon as a request reaches the mock
+
+const write = (res, event, data) => res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+
 const anthropic = http.createServer((req, res) => {
   let body = '';
   req.on('data', (c) => { body += c; });
-  req.on('end', () => {
+  req.on('end', async () => {
     let parsed = null;
     try { parsed = JSON.parse(body); } catch { /* record the raw miss */ }
     seen.push(parsed);
+    if (onRequestSeen) { onRequestSeen(); onRequestSeen = null; }
     const msg = {
       id: 'msg_mock', type: 'message', role: 'assistant', model: parsed?.model || '?',
       content: [], stop_reason: null, stop_sequence: null,
       usage: { input_tokens: 10, output_tokens: 5 },
     };
-    sse(res, [
-      ['message_start', { type: 'message_start', message: msg }],
-      ['content_block_start', { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } }],
-      ['content_block_delta', { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'Looks good. ' } }],
-      ['content_block_delta', { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'Nothing to change.' } }],
-      ['content_block_stop', { type: 'content_block_stop', index: 0 }],
-      ['message_delta', { type: 'message_delta', delta: { stop_reason: 'end_turn', stop_sequence: null }, usage: { output_tokens: 5 } }],
-      ['message_stop', { type: 'message_stop' }],
-    ]);
+    res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache' });
+    write(res, 'message_start', { type: 'message_start', message: msg });
+    write(res, 'content_block_start', { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } });
+    write(res, 'content_block_delta', { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'Looks good. ' } });
+    // ---- the stall window ----
+    if (stall) await stall;
+    write(res, 'content_block_delta', { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'Nothing to change.' } });
+    write(res, 'content_block_stop', { type: 'content_block_stop', index: 0 });
+    write(res, 'message_delta', { type: 'message_delta', delta: { stop_reason: 'end_turn', stop_sequence: null }, usage: { output_tokens: 5 } });
+    write(res, 'message_stop', { type: 'message_stop' });
+    res.end();
   });
 });
 anthropic.listen(0);
@@ -267,6 +272,94 @@ console.log('\n=== FAILURE PATH: the thread write throws ===');
   ok(r.stream, 'the endpoint recovers once the table is back — no wedged state');
   const msgs = await schema.readThread(P1, FA);
   eq(msgs.at(-2).content, 'still alive?', 'and persistence resumes');
+}
+
+console.log('\n=== F3: DELETE issued MID-STREAM ===');
+{
+  // The exact defect sequence: a turn is streaming, the operator clears the
+  // conversation, the turn then reaches its persist block. Before the epoch
+  // guard, that persist repopulated the thread the operator had just emptied.
+  await schema.appendThread(P1, FA, [{ role: 'user', content: 'seed before the clear' }]);
+  const seededBefore = (await schema.readThread(P1, FA)).length;
+  ok(seededBefore > 0, 'the thread has content before the mid-stream clear');
+
+  let release;
+  stall = new Promise((r) => { release = r; });
+  const requestReached = new Promise((r) => { onRequestSeen = r; });
+
+  // Fire the turn WITHOUT awaiting it.
+  const inFlight = chat(turn({ messages: [{ role: 'user', content: 'clear me mid-stream' }] }));
+
+  // Wait until Anthropic has actually been called — which proves the route has
+  // already opened its epoch (openThreadEpoch runs before the model call).
+  await requestReached;
+
+  // …now clear, while the stream is still open.
+  const del = await fetch(`${BASE}/ai-developer/chat?page_id=${P1}&funnel_id=${FA}`, { method: 'DELETE', headers: H });
+  const delJson = await del.json();
+  eq(del.status, 200, 'the mid-stream DELETE succeeds');
+  ok(delJson?.data?.cleared >= 1, 'and reports the rows it removed', JSON.stringify(delJson));
+
+  const [{ c: rightAfter }] = await sql`SELECT COUNT(*)::int AS c FROM lb_ai_dev_chats WHERE page_id = ${P1}`;
+  eq(rightAfter, 0, 'the thread is empty immediately after the clear');
+
+  // Let the turn finish and settle.
+  release();
+  const r = await inFlight;
+  stall = null;
+  ok(r.stream, 'the in-flight turn still completes normally for the operator', JSON.stringify(r.j));
+  eq(r.frames.find((x) => x.event === 'done')?.data?.reply, 'Looks good. Nothing to change.',
+    'and still delivers its reply — the clear does not cost the operator their answer');
+
+  const [{ c: afterSettle }] = await sql`SELECT COUNT(*)::int AS c FROM lb_ai_dev_chats WHERE page_id = ${P1}`;
+  eq(afterSettle, 0,
+    'F3: AFTER THE TURN SETTLES THE THREAD IS STILL EMPTY — the clear was not silently undone');
+  eq((await schema.readThread(P1, FA)).length, 0, 'and the endpoint agrees the thread is empty');
+}
+{
+  // And the very next turn persists normally — the guard stands down exactly
+  // one turn, it does not wedge the thread.
+  const r = await chat(turn({ messages: [{ role: 'user', content: 'after the clear' }] }));
+  ok(r.stream, 'the next turn streams');
+  const msgs = await schema.readThread(P1, FA);
+  eq(msgs.map((m) => m.content), ['after the clear', 'Looks good. Nothing to change.'],
+    'and it is persisted — only the post-clear turn is in the thread');
+}
+
+console.log('\n=== F7: an empty user turn ===');
+{
+  const before = seen.length;
+  const r = await chat(turn({ messages: [{ role: 'user', content: '   ' }] }));
+  eq(r.status, 400, 'a whitespace-only user turn is a 400');
+  eq(seen.length, before, 'and costs no Anthropic call');
+}
+
+console.log('\n=== F1: the size bypass, end to end ===');
+{
+  const before = seen.length;
+  const wall = `data:image/png;base64,${PNG.toString('base64')}${'='.repeat(6 * 1024 * 1024)}`;
+  const r = await chat(turn({ images: [wall] }));
+  eq(r.status, 400, 'F1 e2e: the padding-wall image is refused at the route');
+  eq(seen.length, before, 'F1 e2e: and NOTHING was relayed to Anthropic');
+}
+{
+  // Whatever does get through must be inside the cap. Measure what the mock
+  // actually received rather than trusting the validator's own arithmetic.
+  const big = Buffer.concat([PNG, Buffer.alloc(3 * 1024 * 1024)]); // ~3MB, under the cap
+  const r = await chat(turn({ images: [dataUrl('image/png', big)] }));
+  ok(r.stream, 'a large-but-legal image is accepted', JSON.stringify(r.j));
+  const img = seen.at(-1).messages.at(-1).content.find((b) => b.type === 'image');
+  const relayed = Buffer.byteLength(img.source.data, 'base64');
+  ok(relayed <= 4 * 1024 * 1024,
+    `F1 e2e: the mock received ${relayed} decoded bytes — at or under the 4MB cap`);
+}
+
+console.log('\n=== F2: bare base64 end to end ===');
+{
+  const r = await chat(turn({ images: [JPEG.toString('base64')] }));
+  ok(r.stream, 'F2 e2e: a bare-base64 JPEG with nothing declared is accepted', JSON.stringify(r.j));
+  const img = seen.at(-1).messages.at(-1).content.find((b) => b.type === 'image');
+  eq(img.source.media_type, 'image/jpeg', 'F2 e2e: and Anthropic is told image/jpeg, the SNIFFED truth');
 }
 
 console.log('\n=== missing API key ===');

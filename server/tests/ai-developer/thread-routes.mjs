@@ -63,7 +63,8 @@ const { default: express } = await import('express');
 const { default: funnelsRoutes, ensureTables } = await import('../../src/routes/funnels.js');
 const { default: aiDevRoutes, MODEL_ALLOWLIST, DEFAULT_MODEL } = await import('../../src/routes/aiDeveloper.js');
 const {
-  THREAD_LIMIT, appendThread, ensureAiDevChatTables, readThread,
+  THREAD_LIMIT, appendThread, clearThread, ensureAiDevChatTables, openThreadEpoch,
+  readThread, readThreadEpoch,
 } = await import('../../src/services/aiDeveloperSchema.js');
 
 const app = express();
@@ -248,6 +249,100 @@ console.log('\n=== the 50-message bound ===');
   eq(await appendThread(P2, FA, [{ role: 'system', content: 'x' }]), 0,
     'appending only unstorable messages writes nothing (and does not open a transaction that fails)');
   eq(await appendThread(P2, FA, null), 0, 'appending null writes nothing, never throws');
+}
+
+// ===========================================================================
+// F4 — the prune bound under REAL concurrency
+// ===========================================================================
+// The header used to claim a burst "can never outrun a pruner". That was only
+// true single-threaded: two appends racing could each see <=50 rows and each
+// insert. The epoch row is now locked FOR UPDATE by every append, which
+// serializes them per thread and makes the bound EXACT. This asserts the
+// contract that is actually kept.
+console.log('\n=== the bound under concurrency (F4) ===');
+{
+  const p3 = await freq('POST', `/${FA}/pages`, { title: 'Concurrent', slug: '/three', type: 'generic' });
+  const P3 = p3.j?.data?.id;
+  ok(p3.status === 201, 'seed: a third page for the concurrency case');
+
+  // 40 appends x 4 messages = 160 messages, fired in PARALLEL at one thread.
+  const bursts = Array.from({ length: 40 }, (_, i) => appendThread(P3, FA, [
+    { role: 'user', content: `c${i}-a` }, { role: 'assistant', content: `c${i}-b` },
+    { role: 'user', content: `c${i}-c` }, { role: 'assistant', content: `c${i}-d` },
+  ]));
+  const written = await Promise.all(bursts);
+  eq(written.reduce((a, b) => a + b, 0), 160, 'all 160 messages report as written');
+
+  const [{ count }] = await sql`SELECT COUNT(*)::int AS count FROM lb_ai_dev_chats WHERE page_id = ${P3}`;
+  eq(count, THREAD_LIMIT,
+    'THE BOUND IS EXACT UNDER CONCURRENCY — 40 parallel appends leave exactly 50 rows, not 50+excess');
+
+  const msgs = await readThread(P3, FA);
+  eq(msgs.length, THREAD_LIMIT, 'and the read agrees');
+  ok(new Set(msgs.map((m) => m.id)).size === THREAD_LIMIT, 'with no duplicate rows');
+}
+
+// ===========================================================================
+// F3 — the epoch: a clear beats an in-flight append
+// ===========================================================================
+console.log('\n=== the thread epoch (F3) ===');
+{
+  const p4 = await freq('POST', `/${FA}/pages`, { title: 'Epoch', slug: '/four', type: 'generic' });
+  const P4 = p4.j?.data?.id;
+  ok(p4.status === 201, 'seed: a page for the epoch cases');
+
+  eq(await readThreadEpoch(P4, FA), '0', 'a never-used thread reads epoch 0 WITHOUT creating a row');
+  const opened = await openThreadEpoch(P4, FA);
+  eq(opened, '0', 'opening the epoch returns 0 and creates the row');
+  eq(await openThreadEpoch(P4, FA), '0', 'opening again is idempotent — it does NOT bump');
+
+  await appendThread(P4, FA, [{ role: 'user', content: 'kept' }], { expectEpoch: opened });
+  eq((await readThread(P4, FA)).length, 1, 'an append with the CURRENT epoch is written');
+
+  // The defect: a turn opens at epoch N, the operator clears, the turn persists.
+  const stale = await openThreadEpoch(P4, FA);
+  const cleared = await clearThread(P4, FA);
+  eq(cleared, 1, 'the clear removed the existing row');
+  eq(await readThreadEpoch(P4, FA), '1', 'and BUMPED the epoch');
+
+  const wrote = await appendThread(P4, FA, [
+    { role: 'user', content: 'ghost' }, { role: 'assistant', content: 'ghost reply' },
+  ], { expectEpoch: stale });
+  eq(wrote, 0, 'F3: an append holding the STALE epoch writes NOTHING');
+  const [{ c }] = await sql`SELECT COUNT(*)::int AS c FROM lb_ai_dev_chats WHERE page_id = ${P4}`;
+  eq(c, 0, 'F3: THE CLEARED THREAD STAYS CLEARED — the in-flight turn did not repopulate it');
+
+  // And the thread is usable again immediately afterwards.
+  const fresh = await openThreadEpoch(P4, FA);
+  eq(fresh, '1', 'the next turn opens at the new epoch');
+  eq(await appendThread(P4, FA, [{ role: 'user', content: 'after' }], { expectEpoch: fresh }), 1,
+    'and appends normally — the clear did not wedge the thread');
+  eq((await readThread(P4, FA)).map((m) => m.content), ['after'], 'only the post-clear turn is present');
+}
+{
+  // An append with NO expectEpoch is unconditional (the escape hatch stays open).
+  const p5 = await freq('POST', `/${FA}/pages`, { title: 'Uncond', slug: '/five', type: 'generic' });
+  const P5 = p5.j?.data?.id;
+  await openThreadEpoch(P5, FA);
+  await clearThread(P5, FA); // epoch is now 1
+  eq(await appendThread(P5, FA, [{ role: 'user', content: 'x' }]), 1,
+    'an append that passes NO epoch is unconditional');
+}
+{
+  // Epochs are per (page, funnel) — clearing one must not stand down another.
+  // NB: deliberately NOT clearing P1 here. An earlier draft did, and it emptied
+  // the thread the DELETE section below asserts a count of — the harness broke
+  // its own later case. Cross-test state is a real hazard in a shared-DB run.
+  const p6 = await freq('POST', `/${FA}/pages`, { title: 'Sibling', slug: '/six', type: 'generic' });
+  const P6 = p6.j?.data?.id;
+  await openThreadEpoch(P6, FA);
+  const siblingBefore = await readThreadEpoch(P6, FA);
+  const p7 = await freq('POST', `/${FA}/pages`, { title: 'Cleared', slug: '/seven', type: 'generic' });
+  const P7 = p7.j?.data?.id;
+  await openThreadEpoch(P7, FA);
+  await clearThread(P7, FA);
+  eq(await readThreadEpoch(P7, FA), '1', 'the cleared page\'s epoch advanced');
+  eq(await readThreadEpoch(P6, FA), siblingBefore, 'clearing one page does not move a sibling page\'s epoch');
 }
 
 // ===========================================================================

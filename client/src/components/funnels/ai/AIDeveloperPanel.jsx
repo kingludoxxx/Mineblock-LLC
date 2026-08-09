@@ -95,6 +95,10 @@ export default function AIDeveloperPanel({
   // pendingImages.length, which lags by one async FileReader read. The cap has
   // to be judged against the former or a fast double-paste slips past it.
   const pendingCountRef = useRef(0);
+  // Bumped on every send. A FileReader from a previous batch checks it and drops
+  // its result rather than appending to the composer the operator has moved on
+  // from. (Reads are fast, but a large screenshot on a slow disk is not free.)
+  const imageGenRef = useRef(0);
   const blocksRef = useRef(blocks);
   useEffect(() => { blocksRef.current = blocks; }, [blocks]);
 
@@ -150,15 +154,18 @@ export default function AIDeveloperPanel({
 
   // Re-arm the attachment whenever the builder selection changes.
   useEffect(() => { setDetached(false); }, [selectedBlock?.id]);
-  // MEMOIZED, not a bare conditional. A fresh object literal every render makes
-  // it a changing dependency of send()/applyAsset()/the excerpt memo, which
-  // rebuilds those on every keystroke — the value is identical, only its
-  // identity moves.
+  // MEMOIZED, and keyed on the block's IDENTITY FIELDS rather than the block
+  // object. `selectedBlock` gets a new identity on every prop edit, so keying on
+  // it rebuilt this memo — and therefore send() and applyAsset() — on every
+  // keystroke the operator typed into the inspector, which is exactly what the
+  // memo exists to prevent. Only id/type/index actually feed the value.
+  const selectedBlockId = selectedBlock?.id ?? null;
+  const selectedBlockType = selectedBlock?.type ?? null;
   const attachment = useMemo(() => (
-    !detached && selectedBlock
-      ? { block_id: selectedBlock.id, kind: selectedBlock.type, block_path: `blocks[${selectedIndex}]` }
+    !detached && selectedBlockId
+      ? { block_id: selectedBlockId, kind: selectedBlockType, block_path: `blocks[${selectedIndex}]` }
       : null
-  ), [detached, selectedBlock, selectedIndex]);
+  ), [detached, selectedBlockId, selectedBlockType, selectedIndex]);
   // A short excerpt of the anchored block, read off the live draft so the chip
   // describes what is on the canvas right now rather than what it said when the
   // selection was made.
@@ -243,6 +250,7 @@ export default function AIDeveloperPanel({
     setInput('');
     setPendingImages([]);
     pendingCountRef.current = 0;
+    imageGenRef.current += 1; // orphan any FileReader still resolving
     setShowExamples(false);
 
     const userItem = {
@@ -373,11 +381,26 @@ export default function AIDeveloperPanel({
     if (errors.length) {
       setItems((prev) => [...prev, ...errors.map((text) => ({ id: newItemId(), type: 'error', text }))]);
     }
+    // The generation this batch belongs to. send() bumps it, so a FileReader
+    // that resolves AFTER the operator has already sent cannot drop its image
+    // into the NEXT message's composer.
+    const gen = imageGenRef.current;
     for (const file of accepted) {
       const reader = new FileReader();
-      reader.onload = () => setPendingImages((prev) => [...prev, reader.result]);
+      reader.onload = () => {
+        if (gen !== imageGenRef.current) return; // this batch was already sent
+        // The cap is re-applied INSIDE the updater as well as before the read.
+        // The pre-check alone trusts pendingCountRef to be in perfect sync with
+        // the list, and it cannot be: removals, send() resets and failed reads
+        // all move one without the other. This is a pure guard (no side effect),
+        // so React re-invoking the updater is harmless — and it is the one that
+        // actually bounds the array.
+        setPendingImages((prev) => (prev.length >= MAX_IMAGES ? prev : [...prev, reader.result]));
+      };
       reader.onerror = () => {
-        pendingCountRef.current = Math.max(0, pendingCountRef.current - 1);
+        if (gen === imageGenRef.current) {
+          pendingCountRef.current = Math.max(0, pendingCountRef.current - 1);
+        }
         setItems((prev) => [...prev, {
           id: newItemId(), type: 'error', text: `Could not read "${file.name || 'image'}".`,
         }]);
@@ -415,6 +438,12 @@ export default function AIDeveloperPanel({
   // is awaited so the panel cannot show an empty chat that a refresh refills;
   // if it fails the transcript is left alone and the operator is told, rather
   // than being handed a blank panel over a thread that still exists.
+  //
+  // Clearing MID-TURN is safe: the server bumps the thread's epoch, and the
+  // in-flight turn's persist checks the epoch it opened with and stands down.
+  // The button is disabled while `busy` anyway, but the guarantee does not
+  // depend on that — another tab, or the same page open twice, can issue the
+  // DELETE while this one streams.
   const [clearing, setClearing] = useState(false);
   const resetChat = useCallback(async () => {
     if (busy || clearing) return;

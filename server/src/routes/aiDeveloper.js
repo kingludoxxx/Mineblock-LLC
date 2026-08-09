@@ -23,7 +23,7 @@ import { checkRateLimit } from '../middleware/rateLimiter.js';
 import { validateBlocks } from './funnels.js';
 import { createImageJob, createVideoJob, getJob, isAllowedAssetUrl } from '../services/higgsfield.js';
 import {
-  THREAD_LIMIT, appendThread, clearThread, ensureAiDevChatTables, readThread,
+  THREAD_LIMIT, appendThread, clearThread, ensureAiDevChatTables, openThreadEpoch, readThread,
 } from '../services/aiDeveloperSchema.js';
 
 const router = Router();
@@ -50,9 +50,16 @@ export const DEFAULT_MODEL = 'claude-fable-5';
 // ---------------------------------------------------------------------------
 const MAX_MESSAGES = 40; // conversation length cap (client trims too)
 const MAX_TEXT_CHARS = 20_000; // per message text
-// Screenshot caps, matched to the reference tool: 2 per message, 4MB decoded
-// each. Per-image ceiling is UP from 2MB, per-message count is DOWN from 5, so
-// the worst-case payload this endpoint accepts FALLS from 10MB to 8MB.
+// Screenshot caps, matched to the reference tool: 2 per message, 4MB DECODED
+// each. Per-image ceiling is UP from 2MB, per-message count is DOWN from 5.
+//
+// The cap is on DECODED bytes, so the worst-case DECODED image payload is 8MB
+// (2 x 4MB) — down from the previous 10MB (5 x 2MB). The worst-case REQUEST is
+// larger than that and always was: base64 inflates by 4/3, so 8MB decoded is
+// ~10.7MB on the wire, and the body as a whole is bounded by the app's 50mb
+// express limit, not by this constant. An earlier version of this comment
+// claimed the accepted payload "falls from 10MB to 8MB" full stop, which
+// conflated decoded bytes with request bytes.
 export const MAX_IMAGES = 2;
 export const MAX_IMAGE_BYTES = 4 * 1024 * 1024; // decoded bytes per image
 const MAX_TOOL_ROUNDS = 6;
@@ -481,6 +488,15 @@ export function validateChatBody(body) {
     if (m.content.length > MAX_TEXT_CHARS) {
       return { error: `messages[${i}] exceeds ${MAX_TEXT_CHARS} characters` };
     }
+    // A whitespace-only USER turn is refused. Anthropic rejects an empty text
+    // block outright, so this would have burned a request to earn a 400 from
+    // the vendor — and, worse, an empty turn that DID get through would be
+    // persisted, leaving a blank bubble in the thread forever. Assistant turns
+    // are deliberately NOT held to this: a rehydrated thread that happens to
+    // carry an empty reply must not wedge the panel out of sending anything.
+    if (m.role === 'user' && !m.content.trim()) {
+      return { error: `messages[${i}] is empty — say what you want changed` };
+    }
     messages.push({ role: m.role, content: m.content });
   }
   if (messages[messages.length - 1].role !== 'user') {
@@ -496,22 +512,51 @@ export function validateChatBody(body) {
       const img = body.images[i];
       const str = typeof img === 'string' ? img : (isPlainObject(img) ? String(img.data || '') : '');
       const mtMatch = /^data:(image\/(?:png|jpeg|webp|gif));base64,(.+)$/.exec(str);
-      const mediaType = mtMatch ? mtMatch[1] : (isPlainObject(img) && typeof img.media_type === 'string' ? img.media_type : 'image/png');
+      // DECLARED is null when the caller said nothing about the type — bare
+      // base64 with no data: prefix and no media_type field. That is NOT the
+      // same as declaring image/png, which is what the previous default made it:
+      // a bare JPEG was refused as "declared image/png but its bytes are
+      // image/jpeg", blaming the caller for a claim the SERVER invented.
+      const declared = mtMatch
+        ? mtMatch[1]
+        : (isPlainObject(img) && typeof img.media_type === 'string' ? img.media_type : null);
       const b64 = mtMatch ? mtMatch[2] : str;
-      if (!b64 || !/^[A-Za-z0-9+/=\r\n]+$/.test(b64)) return { error: `images[${i}] must be base64 (or a data: URL)` };
-      if (!ALLOWED_MEDIA_TYPES.includes(mediaType)) {
-        return { error: `images[${i}] has an unsupported media type` };
-      }
+      if (!b64) return { error: `images[${i}] must be base64 (or a data: URL)` };
+
+      // Strip the line breaks a MIME-wrapped payload legally carries, THEN
+      // validate the charset. '=' is base64 PADDING: it is legal only as the
+      // last one or two characters. Admitting it anywhere (the old
+      // `[A-Za-z0-9+/=\r\n]+`) is what let the size check be defeated below.
       const clean = b64.replace(/[\r\n]/g, '');
-      const bytes = Math.floor((clean.replace(/=/g, '').length * 3) / 4);
+      if (!/^[A-Za-z0-9+/]+={0,2}$/.test(clean)) {
+        return { error: `images[${i}] must be base64 (or a data: URL)` };
+      }
+
+      // SIZE. Measured by DECODING, not by arithmetic on the string length.
+      //
+      // The arithmetic form this replaces stripped '=' GLOBALLY before
+      // measuring — `(clean.replace(/=/g,'').length * 3) / 4`. Combined with a
+      // charset check that admitted '=' anywhere, a 32-char PNG header followed
+      // by 20 million '=' characters measured as 24 BYTES and sailed past the
+      // 4MB cap, relaying ~21MB of payload to Anthropic (reproduced end to end;
+      // the only real ceiling was the app's 50mb express limit). The trailing-
+      // padding charset fix above kills that input, and byteLength makes the
+      // measurement independent of the charset check rather than dependent on
+      // it — two independent defenses, not one.
+      const bytes = Buffer.byteLength(clean, 'base64');
       if (bytes > MAX_IMAGE_BYTES) return { error: `images[${i}] exceeds 4MB` };
+
       // The declared type is a CLIENT claim. Check it against the magic number
       // and refuse a mismatch — the media_type is relayed to Anthropic, so a
-      // blob labelled image/png must actually be a PNG.
+      // blob labelled image/png must actually be a PNG. When nothing was
+      // declared, ADOPT what the bytes say.
       const sniffed = sniffBase64Image(clean);
       if (!sniffed) return { error: `images[${i}] is not a recognized image (png, jpeg, webp or gif)` };
-      if (sniffed !== mediaType) {
-        return { error: `images[${i}] is declared ${mediaType} but its bytes are ${sniffed}` };
+      if (declared !== null && !ALLOWED_MEDIA_TYPES.includes(declared)) {
+        return { error: `images[${i}] has an unsupported media type` };
+      }
+      if (declared !== null && sniffed !== declared) {
+        return { error: `images[${i}] is declared ${declared} but its bytes are ${sniffed}` };
       }
       images.push({ media_type: sniffed, data: clean });
     }
@@ -722,6 +767,20 @@ router.post('/chat', async (req, res) => {
 
     const system = buildSystemPrompt({ page, funnel, blocks: contextBlocks, attachment: resolvedAttachment });
 
+    // OPEN THE THREAD EPOCH *BEFORE* the model runs. This is the value the
+    // persist below is checked against: if the operator clears the conversation
+    // while this turn is streaming, the epoch moves and the persist stands down
+    // rather than repopulating the thread they just emptied. Opening it also
+    // guarantees the row exists, so the persist's FOR UPDATE has a real row to
+    // lock. Best-effort — a turn must not be lost to a bookkeeping failure.
+    let turnEpoch;
+    try {
+      await ensureAiDevChatTables();
+      turnEpoch = await openThreadEpoch(pageId, funnelId);
+    } catch (epochErr) {
+      console.error('[ai-developer] thread epoch open failed:', epochErr?.message || epochErr);
+    }
+
     // Anthropic conversation: prior turns as plain text, last user turn gets
     // the pasted screenshots as vision blocks.
     const convo = messages.map((m, i) => {
@@ -827,6 +886,11 @@ router.post('/chat', async (req, res) => {
     // PERSIST the turn: the operator's message and Claude's reply, appended to
     // this page's rolling thread and pruned back to THREAD_LIMIT.
     //
+    // GUARDED BY turnEpoch — if the operator cleared the conversation while this
+    // was streaming, the epoch has moved and appendThread writes NOTHING. A
+    // clear must win over a turn already in flight; the previous version
+    // repopulated the thread the operator had just emptied.
+    //
     // BEST-EFFORT, and after the answer is computed — the transcript is a
     // convenience, and a database blip must never cost the operator a turn they
     // already paid for. A failure is logged and the `done` frame still ships.
@@ -843,7 +907,7 @@ router.post('/chat', async (req, res) => {
           model,
         },
         { role: 'assistant', content: reply, ops_count: allOps.length, model },
-      ], { createdBy: req.user?.id || null });
+      ], { createdBy: req.user?.id || null, expectEpoch: turnEpoch });
     } catch (persistErr) {
       console.error('[ai-developer] thread persist failed:', persistErr?.message || persistErr);
     }
