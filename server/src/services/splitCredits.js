@@ -27,6 +27,7 @@
 // throw a 500 up the webhook).
 import pgDb, { pgQuery } from '../db/pg.js';
 import { ensureSplitTables, EXPOSURE_CHARGE_SENTINEL } from './splitTestSchema.js';
+import { computeSplitStatistics } from './splitStats.js';
 
 // Money that can never poison an aggregate: finite, non-negative, 2dp.
 // (funnel-os lb_split_ledger_service._safe_amount.)
@@ -457,13 +458,97 @@ export async function voidSessionRefund(
 }
 
 /**
+ * SUFFICIENT STATISTICS for revenue per visitor, straight out of the ledger.
+ *
+ * Returns per arm `{ money_sessions, sum_x, sum_x2 }` where x is ONE SESSION's
+ * NET value — every credit leg it carries, minus every void row against those
+ * legs. Three decisions are load-bearing here:
+ *
+ *   • PER SESSION, NOT PER LEG. The unit of observation must be the unit of
+ *     randomisation, and the ledger randomises SESSIONS onto arms. Summing legs
+ *     would give a buyer with three upsells three observations, which
+ *     understates the variance and manufactures confidence — the exact defect
+ *     funnel-os documented on its incremental path (22% of its production
+ *     buyers carry 2-5 legs). `readResults` already counts `conversions` as
+ *     DISTINCT sessions for the same reason; these moments now match it.
+ *   • NET, NOT GROSS. `kind IN ('credit','void')` so a refunded order stops
+ *     counting as revenue AND stops inflating the variance. Σx therefore equals
+ *     the `net_revenue` column up to float rounding — the mean and the variance
+ *     come from ONE series, which is what makes the t statistic coherent.
+ *   • NON-CONVERTERS ARE NOT HERE, AND THAT IS CORRECT. A visitor who bought
+ *     nothing is a genuine 0 observation: it adds nothing to Σx or Σx² but it
+ *     DOES enlarge n. The caller passes n = exposures, so `varianceFromSums`
+ *     picks the zeros up from the denominator. Filtering them out of n instead
+ *     would compare only buyers, i.e. AOV, not revenue per visitor.
+ *
+ * NUMERIC columns arrive from postgres.js as STRINGS. Coerced at the boundary
+ * here rather than deep in the statistics, so a string can never reach an
+ * arithmetic operator and silently concatenate.
+ */
+async function readArmMoments(testId, query) {
+  const rows = await query(
+    `WITH per_session AS (
+       SELECT arm_key, session_id, SUM(value) AS net
+       FROM lb_split_credits
+       WHERE group_id = $1 AND kind IN ('credit', 'void')
+       GROUP BY arm_key, session_id
+     )
+     SELECT arm_key,
+            COUNT(*)::int                     AS money_sessions,
+            COALESCE(SUM(net), 0)             AS sum_x,
+            COALESCE(SUM(net * net), 0)       AS sum_x2
+     FROM per_session
+     GROUP BY arm_key`,
+    [String(testId)]
+  );
+  return new Map(rows.map((r) => [r.arm_key, {
+    money_sessions: Number(r.money_sessions || 0),
+    sum_x: Number(r.sum_x || 0),
+    sum_x2: Number(r.sum_x2 || 0),
+  }]));
+}
+
+/**
  * DERIVED results per arm — exposures vs credited conversions, netted against
  * refunds. Counters are computed from the ledger, never stored. Both sides of
  * the take rate are SESSIONS (funnel-os invariant: accepts<=offers holds only
  * because both count sessions), so `conversions` counts DISTINCT converting
  * sessions, not money legs — while revenue SUMS every leg.
  *
- * @returns {Promise<{testId, arms: Array, totals: object}>}
+ * ── THE STATISTICS BLOCK IS PURELY ADDITIVE ────────────────────────────────
+ *
+ * Every key this function returned before — `arm_key, weight, is_control,
+ * archived, visitors, exposures, conversions, credited_legs, gross_revenue,
+ * refunded, net_revenue, take_rate` and the whole `totals` object — is
+ * UNCHANGED, in value and in type. Two things are ADDED and nothing is moved:
+ *
+ *   • `arms[i].stats` — per-arm significance, readiness and incremental lift;
+ *   • `verdict` — the test-level verdict block, plus `floors` and `method`.
+ *
+ * The harness (server/tests/split/statistics.mjs) pins this by asserting the
+ * pre-change key set is a strict subset of the post-change one with identical
+ * values, because the canvas tile reader (FunnelCanvasPage's lifetime fallback)
+ * consumes the raw counts and must not notice this change at all.
+ *
+ * THE DENOMINATOR IS `exposures`, NOT `visitors`, AND THE CHOICE IS FORCED.
+ * `visitors` counts delivered page renders (lb_split_views); `exposures` counts
+ * the checkout-attributable sessions the money moments are summed over. Mixing
+ * them would put a mean over one population and a variance over another, and
+ * the t statistic would be describing neither. `visitors` is still reported
+ * untouched — it is a real number, just not this test's denominator.
+ *
+ * ARCHIVED ARMS STAY IN THE COMPARISON. Excluding them would make the same
+ * ledger score differently before and after an operator retires a loser — a
+ * verdict that moves when nothing about the money moved. It also matches the
+ * rule this function already documents for the raw figures (archiving must
+ * never silently drop an arm's history) and the precedent in
+ * analyticsStats.buildVerdict, which is fed every arm. The cost is real and
+ * accepted: an archived arm that never cleared its floors keeps the test
+ * `not_ready`, which is a true statement about a test that cannot be concluded
+ * on the arms it actually ran.
+ *
+ * @returns {Promise<{testId, arms: Array, totals: object, verdict: object,
+ *                    floors: object, method: object}>}
  */
 export async function readResults({ testId }, { query = pgQuery } = {}) {
   await ensureSplitTables(query);
@@ -500,6 +585,14 @@ export async function readResults({ testId }, { query = pgQuery } = {}) {
      FROM lb_split_views WHERE test_id = $1 GROUP BY arm_key`,
     [String(testId)]
   );
+  // Sufficient statistics for the Welch t on revenue per visitor. A FOURTH
+  // read, in the same failure domain as the three above: if the ledger is
+  // unreachable they all throw together and the route answers 500, exactly as
+  // it did before this block existed. Deliberately NOT wrapped in a try that
+  // would degrade the stats to zeros — a zeroed moment is not "no statistics",
+  // it is a variance of 0, which reads as a perfectly consistent arm and is the
+  // one input that can manufacture false confidence.
+  const momentsByArm = await readArmMoments(testId, query);
   const viewsByArm = new Map(views.map((r) => [r.arm_key, Number(r.visitors || 0)]));
   const byArm = new Map(agg.map((r) => [r.arm_key, r]));
   // Dedupe arm definitions per key, preferring the live one (the partial
@@ -549,5 +642,50 @@ export async function readResults({ testId }, { query = pgQuery } = {}) {
     }),
     { visitors: 0, exposures: 0, conversions: 0, credited_legs: 0, gross_revenue: 0, refunded: 0, net_revenue: 0 }
   );
-  return { testId: String(testId), arms: result, totals };
+
+  // ── ADDITIVE STATISTICS ──────────────────────────────────────────────────
+  // computeSplitStatistics is PURE and total — the harness pins that no input
+  // (empty, one arm, zero variance, corrupt sums) makes it throw or emit
+  // NaN/Infinity — so there is nothing here to catch and nothing to default.
+  const stats = computeSplitStatistics(
+    result.map((a) => {
+      const m = momentsByArm.get(a.arm_key) || { sum_x: 0, sum_x2: 0 };
+      return {
+        arm_key: a.arm_key,
+        is_control: a.is_control,
+        visitors: a.exposures,
+        conversions: a.conversions,
+        // Σx from the MOMENTS, not from the net_revenue column. They agree to
+        // float rounding, but the t statistic must take its mean and its
+        // variance from one series or it is describing a distribution that
+        // does not exist.
+        net_revenue: m.sum_x,
+        net_revenue_sum_squares: m.sum_x2,
+      };
+    })
+  );
+
+  // Attached per arm rather than returned as a parallel map, so a renderer that
+  // walks `arms` cannot get the two out of step.
+  for (const a of result) {
+    const m = momentsByArm.get(a.arm_key) || { money_sessions: 0, sum_x: 0, sum_x2: 0 };
+    a.stats = {
+      ...(stats.arms[a.arm_key] || {}),
+      // The raw moments travel with the block so the verdict is reproducible
+      // from the response alone — an operator (or a reviewer) can recompute
+      // every p-value on this page without a database.
+      money_sessions: m.money_sessions,
+      net_revenue_sum: Math.round(m.sum_x * 100) / 100,
+      net_revenue_sum_squares: m.sum_x2,
+    };
+  }
+
+  return {
+    testId: String(testId),
+    arms: result,
+    totals,
+    verdict: stats.verdict,
+    floors: stats.floors,
+    method: stats.method,
+  };
 }
