@@ -41,6 +41,8 @@ const AD_NETWORKS = [
 const TRK_ERR = {
   unknown_kind: 'The server does not support this network yet.',
   invalid_mode: 'Invalid tracking mode — pick one of the three options.',
+  invalid_pixel_id: 'That does not look like a Meta Pixel ID — it is numeric, 5 to 20 digits.',
+  invalid_enabled: 'Enabled must be on or off.',
   invalid_graph_version: 'Graph version must look like v23.0.',
   pixel_id_required: 'Enter a Pixel ID first — the network config is stored keyed to it.',
   internal_error: 'Server error — try again.',

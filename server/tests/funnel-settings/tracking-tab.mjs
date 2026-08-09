@@ -6,14 +6,12 @@
 //      persistence — PATCH /api/v1/funnels/:id {settings:{tracking:{…}}} is
 //      accepted by validateFunnelSettings (no key whitelist), round-trips,
 //      and a read-merge-write from another section preserves it.
-//   2. The /tracking-admin surface. MAIN already carries the read spine
-//      (events/touches/clicks/attribution/queue) — the events-feed seam is
-//      tested unconditionally. The NETWORKS surface (GET/PUT networks +
-//      tracking/summary) ships on feat/tracking-server; on THIS pre-merge
-//      branch GET /networks 404s, so that sub-block SKIPS WITH A NOTICE and
-//      activates automatically once the server branch merges. (Its behavior
-//      was executed once pre-merge by pointing TRACKING_ADMIN_PATH at the
-//      feat/tracking-server worktree.)
+//   2. The /tracking-admin surface — masked network reads, PUT validation
+//      codes, summary + events shapes. The events read spine has been on main
+//      since the attribution merge; the NETWORKS surface landed with
+//      feat/tracking-server (merged @ b5b5206 — this branch is rebased onto
+//      it, so the whole block runs). The 404-probe skip remains as a guard
+//      for running this harness on an older branch.
 //
 // Run:  node server/tests/funnel-settings/tracking-tab.mjs
 process.env.DATABASE_URL = 'postgres://puure@127.0.0.1:5433/puure_shoporder';
@@ -159,6 +157,16 @@ if (!trackingAdminRouter) {
   {
     const r = await req('PUT', `/tracking-admin/${FID}/networks/klingon_pixel`, { pixel_id: '123' });
     check('ta: PUT unknown kind → 400 unknown_kind', r.status === 400 && r.j?.error?.code === 'unknown_kind', JSON.stringify(r.j));
+  }
+  {
+    const r = await req('PUT', `/tracking-admin/${FID}/networks/meta_pixel`, { pixel_id: 'not-numeric' });
+    check('ta: PUT malformed pixel id → 400 invalid_pixel_id',
+      r.status === 400 && r.j?.error?.code === 'invalid_pixel_id', JSON.stringify(r.j));
+  }
+  {
+    const r = await req('PUT', `/tracking-admin/${FID}/networks/meta_pixel`, { pixel_id: '12345678901', enabled: 'false' });
+    check('ta: PUT string-boolean enabled → 400 invalid_enabled',
+      r.status === 400 && r.j?.error?.code === 'invalid_enabled', JSON.stringify(r.j));
   }
   {
     // The mode-segment PUT on an UNCONFIGURED network (client sends {mode} alone).
