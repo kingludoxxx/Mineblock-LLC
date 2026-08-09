@@ -116,6 +116,70 @@ async function createTables() {
     ON lb_cost_rates (cost_item_id, effective_from DESC) WHERE scope = 'item'
   `);
 
+  // ── lb_cost_items — COST GROUPS (the 'item' scope's identity table) ──────
+  // A group is one cost item that several Shopify variants share (the same
+  // bottle sold as 1x/3x/5x, the same tee in six colours). ONE rate covers
+  // every member.
+  //
+  // MEMBERSHIP IS NOT STORED HERE. It is lb_variant_costs.cost_item_id — the
+  // column the engine ALREADY reads in resolveUnitCogs/resolveUnitShip. A
+  // second membership table would be a second source of truth the P&L engine
+  // does not consult, i.e. a group whose rate silently never applies. The
+  // group layer is additive precisely because it writes the column the
+  // existing read path already bisects on.
+  //
+  // Rates for a group live in lb_cost_rates with scope='item' — the SAME
+  // append-only, effective-dated ledger as per-variant rates. There is no
+  // second rate table and no second history.
+  await pgQuery(`
+    CREATE TABLE IF NOT EXISTS lb_cost_items (
+      cost_item_id TEXT PRIMARY KEY,
+      name TEXT NOT NULL DEFAULT '',
+      note TEXT NOT NULL DEFAULT '',
+      archived BOOLEAN NOT NULL DEFAULT FALSE,
+      created_by TEXT NOT NULL DEFAULT '',
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
+  await pgQuery(`CREATE INDEX IF NOT EXISTS idx_lb_cost_items_live ON lb_cost_items (archived, cost_item_id)`);
+  // Membership lookups ("who is in this group") hit this column on every
+  // group read; without it each one is a seq scan of the whole catalog.
+  await pgQuery(`
+    CREATE INDEX IF NOT EXISTS idx_lb_variant_costs_item
+    ON lb_variant_costs (cost_item_id) WHERE cost_item_id IS NOT NULL
+  `);
+
+  // ── lb_cost_group_proposals — auto-detected candidate groupings ──────────
+  // A proposal is a SUGGESTION, never a cost. Nothing here can move a margin:
+  // accepting one creates a group and binds members, and the operator still
+  // has to enter a rate through the one write door (lb_cost_rates).
+  //
+  // fingerprint is the candidate's stable identity: the sorted member
+  // variant_ids, hashed. It is UNIQUE, and that single constraint is what
+  // makes the detector idempotent AND makes a dismissal stick — a re-run
+  // re-derives the same fingerprint, collides, and leaves the existing row
+  // (with its 'dismissed' status) alone. Suppression needs no second table.
+  await pgQuery(`
+    CREATE TABLE IF NOT EXISTS lb_cost_group_proposals (
+      id BIGSERIAL PRIMARY KEY,
+      fingerprint TEXT NOT NULL UNIQUE,
+      status TEXT NOT NULL DEFAULT 'open'
+        CHECK (status IN ('open','accepted','dismissed')),
+      rule TEXT NOT NULL DEFAULT '',
+      title TEXT NOT NULL DEFAULT '',
+      reason JSONB NOT NULL DEFAULT '{}',
+      score NUMERIC(14,4) NOT NULL DEFAULT 0,
+      members JSONB NOT NULL DEFAULT '[]',
+      cost_item_id TEXT,
+      detected_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      refreshed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      decided_at TIMESTAMPTZ,
+      decided_by TEXT NOT NULL DEFAULT ''
+    )
+  `);
+  await pgQuery(`CREATE INDEX IF NOT EXISTS idx_lb_cost_group_proposals_status ON lb_cost_group_proposals (status, score DESC)`);
+
   // ── lb_fee_settings — single row (id = 1) ──
   // gateways: {"whop":null,"stripe":null,"paypal":null,"nmi":null} — a key
   // present but null means "this rail runs on the default rate". Seeding the

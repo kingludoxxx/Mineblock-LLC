@@ -86,6 +86,100 @@ export const COSTS_ROUTES = {
     `${COSTS_BASE}/pnl/funnel/${encodeURIComponent(fid)}/spend-manual/${encodeURIComponent(day)}`,
 };
 
+/* ── cost groups + proposals ───────────────────────────────────────────────
+ * A SECOND BASE, on purpose. Groups live at /funnel-cost-groups because they
+ * touch none of the money surface above — no P&L, no spend feed.
+ *
+ * THERE IS NO GROUP-RATE FUNCTION HERE. A group's cost is written with
+ * `postRate({scope:'item', cost_item_id})` — the same append-only door as a
+ * variant rate, which is why RateDrawer's "Cost group" scope already works
+ * the moment a variant has a cost_item_id. A second write path would be a
+ * second history.
+ *
+ *   GET    /                          -> { items:[GROUP], total }
+ *   POST   /                          body { name, note?, members:[{variant_id, units_per?}] } -> 201
+ *   GET    /:id                       -> { group:GROUP }
+ *   PATCH  /:id                       body { name?, note?, archived? }
+ *   DELETE /:id                       archive + unbind (rate history KEPT)
+ *   POST   /:id/members               body { members:[{variant_id, units_per?}] }
+ *   DELETE /:id/members/:variantId
+ *   GET    /:id/history               -> { cost_item_id, items, count }
+ *   POST   /proposals/detect          -> { proposals, open, certain, high, review, … }
+ *   GET    /proposals?status&limit    -> { items:[PROPOSAL], count }
+ *   POST   /proposals/:id/accept      body { name?, note?, members? } -> becomes a group
+ *   POST   /proposals/:id/dismiss     body { reason? }
+ *   POST   /proposals/:id/reopen
+ *
+ * GROUP = { cost_item_id, name, note, archived, member_count, members:[…],
+ *           rate:{unit_cogs, ship, effective_from, …}|null,
+ *           coverage:{counts, coverage_pct, revenue_30d, revenue_at_risk_30d, shadowed} }
+ */
+export const GROUPS_BASE = '/funnel-cost-groups';
+
+export const GROUP_ROUTES = {
+  groups: GROUPS_BASE,
+  group: (id) => `${GROUPS_BASE}/${encodeURIComponent(id)}`,
+  members: (id) => `${GROUPS_BASE}/${encodeURIComponent(id)}/members`,
+  member: (id, variantId) => `${GROUPS_BASE}/${encodeURIComponent(id)}/members/${encodeURIComponent(variantId)}`,
+  groupHistory: (id) => `${GROUPS_BASE}/${encodeURIComponent(id)}/history`,
+  proposals: `${GROUPS_BASE}/proposals`,
+  proposalsDetect: `${GROUPS_BASE}/proposals/detect`,
+  proposalAccept: (id) => `${GROUPS_BASE}/proposals/${encodeURIComponent(id)}/accept`,
+  proposalDismiss: (id) => `${GROUPS_BASE}/proposals/${encodeURIComponent(id)}/dismiss`,
+  proposalReopen: (id) => `${GROUPS_BASE}/proposals/${encodeURIComponent(id)}/reopen`,
+};
+
+export function fetchCostGroups(params = {}) {
+  return api.get(GROUP_ROUTES.groups, { params }).then(unwrap);
+}
+
+export function createCostGroup(body) {
+  return api.post(GROUP_ROUTES.groups, body).then(unwrap);
+}
+
+export function patchCostGroup(id, body) {
+  return api.patch(GROUP_ROUTES.group(id), body).then(unwrap);
+}
+
+/** Archive + unbind. The group's rate history is kept, never dropped. */
+export function deleteCostGroup(id) {
+  return api.delete(GROUP_ROUTES.group(id)).then(unwrap);
+}
+
+export function addCostGroupMembers(id, members) {
+  return api.post(GROUP_ROUTES.members(id), { members }).then(unwrap);
+}
+
+export function removeCostGroupMember(id, variantId) {
+  return api.delete(GROUP_ROUTES.member(id, variantId)).then(unwrap);
+}
+
+export function fetchCostGroupHistory(id) {
+  return api.get(GROUP_ROUTES.groupHistory(id)).then(unwrap);
+}
+
+/** Body `{}` — express strict json 400s on a literal null body (B2). */
+export function postProposalsDetect() {
+  return api.post(GROUP_ROUTES.proposalsDetect, {}).then(unwrap);
+}
+
+export function fetchProposals(params = { status: 'open' }) {
+  return api.get(GROUP_ROUTES.proposals, { params }).then(unwrap);
+}
+
+/** Accept → the proposal becomes a group. Creates NO rate. */
+export function acceptProposal(id, body = {}) {
+  return api.post(GROUP_ROUTES.proposalAccept(id), body).then(unwrap);
+}
+
+export function dismissProposal(id, reason = '') {
+  return api.post(GROUP_ROUTES.proposalDismiss(id), { reason }).then(unwrap);
+}
+
+export function reopenProposal(id) {
+  return api.post(GROUP_ROUTES.proposalReopen(id), {}).then(unwrap);
+}
+
 /** Seeded gateways, in the order the fee card renders them (lb_fee_settings). */
 export const GATEWAYS = [
   { key: 'whop', label: 'Whop' },
@@ -215,6 +309,22 @@ const API_ERRORS = {
   bad_action: 'A campaign map action is pin or unpin.',
   usd_only: 'Only USD rates are supported in v1.',
   window_too_small: 'The detection window must be at least 30 days.',
+  // ── cost groups ──
+  name_required: 'A cost group needs a name.',
+  too_few_members: 'A cost group needs at least two variants — one variant does not need a group.',
+  too_many_members: 'That is more variants than one cost group can hold.',
+  bad_members: 'The member list is not in a shape the server understands.',
+  bad_units_per: 'Units per variant must be a whole number of 1 or more.',
+  group_not_found: 'That cost group no longer exists.',
+  group_archived: 'Un-archive this group before binding variants to it.',
+  bad_cost_item_id: 'That does not look like a cost group id.',
+  unknown_proposal: 'That suggestion no longer exists — re-run detection.',
+  bad_proposal_id: 'That does not look like a suggestion id.',
+  already_accepted: 'That suggestion has already become a group.',
+  bad_status: 'That is not a status the suggestions list knows about.',
+  no_members: 'Name at least one variant.',
+  empty_patch: 'Nothing to change.',
+  unknown_field: 'That field cannot be edited here.',
 };
 
 /**

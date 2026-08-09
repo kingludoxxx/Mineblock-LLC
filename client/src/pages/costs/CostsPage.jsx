@@ -27,6 +27,7 @@ import { AlertTriangle, Coins } from 'lucide-react';
 import Card from '../../components/ui/Card';
 import Tabs from '../../components/ui/Tabs';
 import { usePermissions } from '../../hooks/usePermissions';
+import CostGroupsTab from './components/CostGroupsTab';
 import CostsSubnav from './components/CostsSubnav';
 import CoverageBanner from './components/CoverageBanner';
 import FeeSettingsCard from './components/FeeSettingsCard';
@@ -45,7 +46,7 @@ const PAGE_SIZE = 500;
 
 // The vocabularies the URL may name, and the defaults it falls back to — an
 // unknown `?tab=deleted-tab` degrades to the ordinary page, not a blank one.
-const TAB_KEYS = ['funnels', 'variants', 'fees'];
+const TAB_KEYS = ['funnels', 'variants', 'groups', 'fees'];
 const FILTER_KEYS = ['all', 'needs_cost', 'ready', 'ignored'];
 const DEFAULT_TAB = 'funnels';
 const DEFAULT_FILTER = 'needs_cost';
@@ -53,6 +54,7 @@ const DEFAULT_FILTER = 'needs_cost';
 const TABS = [
   { value: 'funnels', label: 'By funnel' },
   { value: 'variants', label: 'Variants' },
+  { value: 'groups', label: 'Groups' },
   { value: 'fees', label: 'Fees' },
 ];
 
@@ -349,6 +351,21 @@ export default function CostsPage() {
             onToggleIgnore={toggleIgnore}
           />
         </div>
+      )}
+
+      {/* Groups bind several variants to ONE cost item. `rows` is passed in so
+          the member picker searches exactly what the grid already shows, and
+          `onChanged` reloads them after every bind — a binding changes a
+          variant's resolved cost, and a stale row would feed the next rate
+          save a cost that is no longer true (the same snapshot trap
+          applyPatch exists for). */}
+      {tab === 'groups' && (
+        <CostGroupsTab
+          rows={rows}
+          canEdit={canEdit}
+          notify={notify}
+          onChanged={() => load({ quiet: true })}
+        />
       )}
 
       {tab === 'fees' && (
