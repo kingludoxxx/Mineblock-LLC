@@ -38,12 +38,14 @@ import {
   Home,
   Copy as CopyIcon,
   Shuffle,
+  SlidersHorizontal,
 } from 'lucide-react';
 import api from '../../services/api';
 import Button from '../../components/ui/Button';
 import { StatusPill } from './FunnelsPage';
 import PageNode from '../../components/funnels/PageNode';
 import { PALETTE, DEVICE_WIDTHS } from '../../components/funnels/pageTypes';
+import FunnelSettingsModal from '../../components/funnels/settings/FunnelSettingsModal';
 
 const nodeTypes = { page: PageNode };
 
@@ -88,6 +90,7 @@ function CanvasInner() {
   const [saveState, setSaveState] = useState('idle'); // idle | saving | saved | error
   const [publishing, setPublishing] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [funnelSettingsOpen, setFunnelSettingsOpen] = useState(false);
   const [renaming, setRenaming] = useState(false);
   const [nameDraft, setNameDraft] = useState('');
   const [creating, setCreating] = useState(false);
@@ -509,6 +512,16 @@ function CanvasInner() {
           )}
         </div>
 
+        {/* Funnel settings (operator control center) */}
+        <button
+          onClick={() => setFunnelSettingsOpen(true)}
+          className="flex items-center gap-1.5 text-text-muted hover:text-text-primary cursor-pointer text-sm"
+          title="Funnel settings"
+        >
+          <SlidersHorizontal className="w-4 h-4" />
+          <span className="hidden lg:inline">Settings</span>
+        </button>
+
         {/* Autosave hint */}
         <span className={`flex items-center gap-1 text-xs ${saveHint.cls}`}>
           {SaveIcon && <SaveIcon className={`w-3.5 h-3.5 ${saveHint.spin ? 'animate-spin' : ''}`} />}
@@ -724,6 +737,14 @@ function CanvasInner() {
       ) : (
         <RedirectsTab funnelId={id} />
       )}
+
+      <FunnelSettingsModal
+        open={funnelSettingsOpen}
+        onClose={() => setFunnelSettingsOpen(false)}
+        funnel={funnel}
+        initialSection="payments"
+        onFunnelUpdated={(f) => { if (f) setFunnel((prev) => ({ ...prev, ...f })); }}
+      />
     </div>
   );
 }
