@@ -2215,3 +2215,55 @@ was added to the funnels list beyond the stated client scope, because the
 export endpoint is otherwise unreachable from the product - DECISION MADE.
 STATUS: COMPLETE
 ---
+
+---
+TIMESTAMP: 2026-08-09 19:20
+TASK: Funnel transfer + promote-winner — adversarial review fixes (2 HIGH, 6 MED, 7 low/nit)
+BUILT: HIGH#1 import now runs the allowlisted settings through funnels.js's own
+validateFunnelSettings → 422 settings_invalid (a 3MB description + 5MB head code
+previously imported at 201 and left the funnel unsaveable from its own settings
+modal). HIGH#2 rebuildFlow de-duplicates node ids, drops self-edges and
+duplicate edges, caps at 1000/2000, and a flowLooksStorable belt drops the
+layout to empty with a note rather than ever blocking the import. MED#3
+name_override is read ONLY from the {envelope, name_override} wrapper and is
+stripped from a bare-posted envelope (file content must not set request
+params); blank-after-trim = not supplied. MED#4 one shared codeWarnings()
+detector now also flags html/embed blocks and props.html carrying <script>,
+mirrored in the client modal. MED#5 clampCode reports per field and per page,
+and warnings are computed from the STORED rows, not the envelope. MED#6
+promotions are retractable — the entry endpoint (different arm), PATCH
+{enabled:true}, and archiving the promoted entry arm all clear
+promoted_arm_id/promoted_at; the false comment is corrected. MED#7 PATCH
+/:id/arms/:armId now runs inside a transaction taking the same parent
+SELECT…FOR UPDATE the promote path takes, plus a statement-level `AND NOT
+archived` belt on the entry set. MED#8 the envelope carries warnings[] and the
+client confirms before writing the file; `stripped` moved OUT of the file into
+meta. MED#9 funnel_redirects travel and are recreated in the same transaction,
+with malformed/open-redirect/self-loop/prefix-on-root rules dropped and
+reported. LOW#10 export on grid cards; #11 onPromoted wired on the canvas
+(fence-extended one-liner); #12 archived-leader renders a disabled explanation;
+#14 export of an archived funnel 403s; #15 FOR SHARE on the promote page read;
+#16 redundant ternary removed.
+TESTED: funnel-transfer.mjs grown 83 → 121 assertions, 121/121 twice. Every
+reviewer probe is now a permanent test, including the 3MB/5MB settings case,
+the 5000-duplicate-node/5000-self-edge flow (proved by feeding the STORED
+layout back through the REAL PATCH /:id/flow and requiring 200), the planted
+name_override, the html-block script, the clamped-field note, the redirect
+round trip and its refusals, and 6 rounds of concurrent promote+archive.
+Regression: page-duplicate 34/34, verifySplitTesting 48/48, split-delivery
+33/33. vite build clean; node --check clean; eslint 11 problems on the touched
+client files, identical to main's 11 (zero introduced).
+OUTPUT: three harness assertions of my own were wrong and were corrected rather
+than the code: E8/R11 asserted the pre-fix envelope shape and wording, L14 used
+DELETE /:id when the archive route is POST /:id/archive, and M7 originally
+flagged a LEGAL promote-then-archive sequence as a false success — restated as
+the real invariant (promoted_arm_id must never name an archived arm, and the
+entry arm must never be archived), which is what the parent lock actually buys.
+DECISIONS: FLOW_MAX_NODES/FLOW_MAX_EDGES and validateFlow are module-private in
+funnels.js and that file is outside the fence, so the caps are mirrored and the
+gap is documented at the constants; correctness is proved end-to-end through
+the real PATCH /:id/flow rather than through a copy of the validator - DECISION
+MADE. A malformed redirect is dropped with a note rather than failing the
+import - DECISION MADE. Layout never blocks an import - DECISION MADE.
+STATUS: COMPLETE
+---

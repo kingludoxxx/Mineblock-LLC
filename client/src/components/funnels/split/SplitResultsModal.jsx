@@ -301,6 +301,14 @@ function PromoteWinner({ test, handle, available, verdict, onPromoted }) {
   const winnerKey = available && verdict.status === 'winner' ? verdict.leader : null;
   const arms = Array.isArray(test?.arms) ? test.arms : [];
   const winnerArm = winnerKey ? arms.find((a) => a.arm_key === winnerKey && !a.archived) : null;
+  // Review LOW #12: the service can crown an arm that has since been ARCHIVED
+  // (the verdict is computed over the window's ledger, which still contains the
+  // arm's traffic). Rendering nothing in that case was the worst option — the
+  // operator reads "winner: b" in the banner directly above and finds no way to
+  // act on it, with no explanation. Say why instead.
+  const archivedWinner = Boolean(
+    winnerKey && !winnerArm && arms.some((a) => a.arm_key === winnerKey && a.archived)
+  );
   // A test that has already ENDED must not offer the button again — the
   // endpoint would answer 409 for a different arm and the operator would be
   // reading an error instead of a state.
@@ -349,6 +357,26 @@ function PromoteWinner({ test, handle, available, verdict, onPromoted }) {
             <p className="mt-1 text-xs text-text-muted leading-relaxed">
               The route stays live and every visitor sees the winning page. Nothing already in the ledger moved \u2014
               the figures above still describe the traffic that was split.
+            </p>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (archivedWinner && !alreadyEnded) {
+    return (
+      <div className="rounded-xl border border-border-default bg-bg-elevated/50 px-4 py-3">
+        <div className="flex items-start gap-2.5">
+          <Trophy className="w-4 h-4 mt-0.5 shrink-0 text-text-faint" />
+          <div className="min-w-0">
+            <p className="text-sm font-semibold text-text-muted">
+              Cannot promote <span className="font-mono">{winnerKey}</span> — the winning arm is archived
+            </p>
+            <p className="mt-1 text-xs text-text-muted leading-relaxed">
+              The verdict above is computed from traffic this arm took before it was retired. An archived arm
+              takes no traffic and cannot serve the route, so it cannot be promoted. Restore the arm first if
+              you want it to win.
             </p>
           </div>
         </div>

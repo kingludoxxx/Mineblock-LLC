@@ -38,7 +38,13 @@ router.get('/:funnelId/export', async (req, res) => {
     await ensureTables();
     const result = await exportFunnel(req.params.funnelId);
     if (!result.ok) return fail(res, result.status, result.error, result.detail);
-    return res.json({ success: true, data: result.envelope });
+    // `data` IS the portable file, byte for byte — the client writes exactly
+    // this to disk. `meta.stripped` is a list of the KEY NAMES this deployment
+    // refused to export (`settings.checkout.maps_api_key`,
+    // `settings.tracking`), which is a map of where the credentials live. It
+    // goes to the authenticated operator who asked and NEVER into the file
+    // that gets handed to someone else — so it sits OUTSIDE `data`.
+    return res.json({ success: true, data: result.envelope, meta: { stripped: result.stripped } });
   } catch (err) {
     console.error('[funnelTransfer] export failed:', err);
     return fail(res, 500, 'server_error');
@@ -55,14 +61,35 @@ router.post('/import', async (req, res) => {
   try {
     await ensureTables();
     const body = req.body || {};
-    // Accept a bare envelope too: the operator's downloaded file IS the
-    // envelope, and a client that posts it directly should not get a shape
-    // error for guessing the friendlier of two reasonable calls.
-    const envelope = body.envelope !== undefined ? body.envelope : body;
-    const nameOverride = body.name_override !== undefined ? body.name_override : undefined;
+
+    // ── REVIEW MED #3: FILE CONTENT MUST NOT SET REQUEST PARAMETERS ────────
+    // Accepting a BARE envelope is a convenience (the downloaded file IS the
+    // envelope). But when the body IS the envelope, every key in it is
+    // attacker-authored file content — including a `name_override` an exporter
+    // could have planted, which then silently renamed the funnel the importing
+    // operator thought they were creating. Request semantics may only come from
+    // the WRAPPER.
+    //
+    // So: `name_override` is read ONLY from the explicit
+    // { envelope, name_override } form. In the bare form it is not read, and it
+    // is stripped from the envelope object so it cannot be mistaken for one
+    // later either.
+    const wrapped = body.envelope !== undefined;
+    let envelope = wrapped ? body.envelope : body;
+    let nameOverride = wrapped ? body.name_override : undefined;
+
+    if (!wrapped && envelope && typeof envelope === 'object' && !Array.isArray(envelope)) {
+      const { name_override: _ignoredFromFile, ...rest } = envelope;
+      envelope = rest;
+    }
+
     if (nameOverride !== undefined && nameOverride !== null && typeof nameOverride !== 'string') {
       return fail(res, 400, 'name_override_must_be_a_string');
     }
+    // Review #13: a blank (or whitespace-only) override is NOT an instruction
+    // to name the funnel ''. It is an empty field the operator left alone, so
+    // it falls back to the envelope's own name.
+    if (typeof nameOverride === 'string' && !nameOverride.trim()) nameOverride = undefined;
     const result = await importFunnel({ envelope, nameOverride });
     if (!result.ok) return fail(res, result.status, result.error, result.detail);
     return res.status(201).json({ success: true, data: result.data });

@@ -99,6 +99,43 @@ function orderedPages(funnel) {
   return chain;
 }
 
+// Shown before an export file is written, and only when the envelope earned
+// warnings. It names WHAT is about to leave — the operator is handing this file
+// to someone, and "2 pages carry custom scripts" is the sentence that makes
+// that a decision rather than a click.
+function ExportConfirmModal({ pending, onCancel, onConfirm }) {
+  const { funnel, warnings, stripped } = pending;
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4" onClick={onCancel}>
+      <div
+        className="w-full max-w-md bg-bg-card border border-border-default rounded-xl p-5"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-center justify-between mb-3">
+          <h2 className="text-lg font-semibold text-text-primary">Export {funnel.name}?</h2>
+          <button onClick={onCancel} className="text-text-muted hover:text-text-primary cursor-pointer">
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+        <p className="text-sm text-text-muted mb-3">This file contains:</p>
+        <ul className="text-xs text-amber-300/90 space-y-1 pl-5 list-disc mb-3">
+          {warnings.map((w) => <li key={w}>{w}</li>)}
+        </ul>
+        <p className="text-xs text-text-faint mb-4">
+          Anyone who receives this file receives that code. Credentials never travel
+          {stripped.length ? ` (${stripped.length} settings key${stripped.length === 1 ? '' : 's'} withheld)` : ''}.
+        </p>
+        <div className="flex justify-end gap-2">
+          <Button variant="secondary" onClick={onCancel}>Cancel</Button>
+          <Button onClick={onConfirm}>
+            <Download className="w-4 h-4" /> Export
+          </Button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function CreateFunnelModal({ onClose, onCreated }) {
   const [name, setName] = useState('');
   const [saving, setSaving] = useState(false);
@@ -199,13 +236,18 @@ function FlowThumbnail({ pages }) {
   );
 }
 
-function FunnelCard({ funnel, onOpen }) {
+function FunnelCard({ funnel, onOpen, onExport, exporting }) {
   const pages = orderedPages(funnel);
   const summary = pages.map((p) => typeMeta(p.type).label).join(' → ');
   return (
+    // Review LOW #10: the export affordance lives on the CARD too — grid is the
+    // default view, and an action that only exists in list view is an action
+    // most operators never find. `relative` so the icon can sit over the card
+    // without becoming a nested <button> inside the card's own <button>.
+    <div className="relative">
     <button
       onClick={onOpen}
-      className="text-left bg-bg-card border border-border-default rounded-xl p-4 hover:border-border-strong hover:bg-bg-hover transition-colors cursor-pointer flex flex-col gap-3"
+      className="w-full text-left bg-bg-card border border-border-default rounded-xl p-4 hover:border-border-strong hover:bg-bg-hover transition-colors cursor-pointer flex flex-col gap-3"
     >
       <FlowThumbnail pages={pages} />
       <div className="flex items-start gap-2.5">
@@ -227,14 +269,30 @@ function FunnelCard({ funnel, onOpen }) {
         <span>{fmtDate(funnel.created_at)}</span>
       </div>
     </button>
+      <button
+        onClick={(e) => { e.stopPropagation(); onExport?.(funnel); }}
+        disabled={exporting}
+        title="Export as .json"
+        className="absolute top-2 right-2 p-1.5 rounded-md text-text-faint hover:text-text-primary
+          hover:bg-bg-elevated transition-colors cursor-pointer disabled:opacity-40 disabled:pointer-events-none"
+      >
+        <Download className="w-3.5 h-3.5" />
+      </button>
+    </div>
   );
 }
 
-function GridView({ funnels, onOpen, onCreate }) {
+function GridView({ funnels, onOpen, onCreate, onExport, exportingId }) {
   return (
     <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
       {funnels.map((f) => (
-        <FunnelCard key={f.id} funnel={f} onOpen={() => onOpen(f)} />
+        <FunnelCard
+          key={f.id}
+          funnel={f}
+          onOpen={() => onOpen(f)}
+          onExport={onExport}
+          exporting={exportingId === f.id}
+        />
       ))}
       <button
         onClick={onCreate}
@@ -626,6 +684,31 @@ export default function FunnelsPage() {
   // funnel-os's LBWebsitesPage.jsx:760-771) rather than served as an
   // attachment, because the endpoint is authed with a bearer token and a
   // plain <a download> could not carry it.
+  // ── EXPORT: FETCH, THEN CONFIRM, THEN WRITE THE FILE ───────────────────
+  // Review MED #8: export is the IRREVERSIBLE half of this feature. Once the
+  // .json exists, whatever code it carries has already left — warning the
+  // person who IMPORTS it is warning the wrong end of the transfer. So the
+  // envelope is fetched first (a read), its own warnings are shown, and the
+  // file is only written after the operator says yes.
+  //
+  // The envelope is written client-side (same approach as funnel-os's
+  // LBWebsitesPage.jsx:760-771) rather than served as an attachment, because
+  // the endpoint is authed with a bearer token and a plain <a download> could
+  // not carry it.
+  const [pendingExport, setPendingExport] = useState(null);
+
+  const writeEnvelopeFile = (funnel, envelope) => {
+    const blob = new Blob([JSON.stringify(envelope, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `funnel-${funnel.slug || funnel.id}.json`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  };
+
   const exportFunnel = async (f) => {
     if (exportingId) return;
     setExportingId(f.id);
@@ -634,20 +717,24 @@ export default function FunnelsPage() {
       const res = await api.get(`/funnel-transfer/${f.id}/export`);
       const envelope = res.data?.data;
       if (!envelope?.format) throw new Error('empty envelope');
-      const blob = new Blob([JSON.stringify(envelope, null, 2)], { type: 'application/json' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `funnel-${f.slug || f.id}.json`;
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      URL.revokeObjectURL(url);
+      // `stripped` rides in meta, NOT in the file — it names where this
+      // deployment keeps its credentials, so it is shown to the operator here
+      // and never written to disk.
+      const stripped = res.data?.meta?.stripped || [];
+      const warnings = Array.isArray(envelope.warnings) ? envelope.warnings : [];
+      if (warnings.length) {
+        setPendingExport({ funnel: f, envelope, warnings, stripped });
+      } else {
+        writeEnvelopeFile(f, envelope);
+      }
     } catch (err) {
+      const code = err?.response?.data?.error?.code;
       setRowError(
-        err?.response?.data?.error?.code
-          ? `Export failed: ${err.response.data.error.code}`
-          : 'Export failed. Nothing was downloaded.'
+        code === 'funnel_archived'
+          ? 'That funnel is archived. Restore it before exporting.'
+          : code
+            ? `Export failed: ${code}`
+            : 'Export failed. Nothing was downloaded.'
       );
     } finally {
       setExportingId(null);
@@ -766,7 +853,13 @@ export default function FunnelsPage() {
             No {filter} funnels.
           </div>
         ) : (
-          <GridView funnels={visible} onOpen={openFunnel} onCreate={() => setShowCreate(true)} />
+          <GridView
+            funnels={visible}
+            onOpen={openFunnel}
+            onCreate={() => setShowCreate(true)}
+            onExport={exportFunnel}
+            exportingId={exportingId}
+          />
         )
       ) : (
         <div className="bg-bg-card border border-border-default rounded-xl overflow-hidden">
@@ -827,6 +920,17 @@ export default function FunnelsPage() {
             {visible.length} funnel{visible.length === 1 ? '' : 's'}
           </div>
         </div>
+      )}
+
+      {pendingExport && (
+        <ExportConfirmModal
+          pending={pendingExport}
+          onCancel={() => setPendingExport(null)}
+          onConfirm={() => {
+            writeEnvelopeFile(pendingExport.funnel, pendingExport.envelope);
+            setPendingExport(null);
+          }}
+        />
       )}
 
       {showImport && (

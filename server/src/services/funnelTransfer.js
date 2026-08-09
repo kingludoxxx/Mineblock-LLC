@@ -26,18 +26,37 @@
 //      transaction (pgClient.begin), the same posture as
 //      services/domainHub/attachService.js reassignDomain.
 //
+// ─────────────────────────────────────────────────────────────────────────────
+// WHAT TRAVELS
+//   funnel   — name, slug, allowlisted settings, allowlisted seo
+//   pages    — title, slug, type, is_home, status, blocks, allowlisted seo,
+//              custom_html / custom_css / custom_js / head_html / body_end_html
+//   flow     — the canvas graph, as ARRAY INDICES into `pages` (never ids)
+//   redirects— funnel-relative (from_path, to_path, match, code, enabled) tuples
+//   warnings — what code this file carries, so the SENDER is told before the
+//              file is written, not just the receiver after it lands
+//
 // WHAT NEVER TRAVELS: row ids, funnel_id, custom_domain (funnel or page),
-// default_page_id, `misc`, timestamps, split tests, and any settings key
-// outside the allowlist. An imported funnel is ALWAYS a draft with no domain
-// attached, so nothing it carries can serve before an operator looks at it
-// (the public gate is funnelPublic.js:136, `funnel.status !== 'published'`).
+// default_page_id, `misc`, timestamps, split tests, any settings key outside
+// the allowlist, and the `stripped` list itself (it names where THIS
+// deployment keeps its credentials — it goes in the HTTP response, not the
+// file). An imported funnel is ALWAYS a draft with no domain attached, so
+// nothing it carries can serve before an operator looks at it (the public gate
+// is funnelPublic.js:136, `funnel.status !== 'published'`).
+// ─────────────────────────────────────────────────────────────────────────────
 import { randomBytes } from 'crypto';
 import { pgQuery, client as pgClient } from '../db/pg.js';
 // The SAME gate PATCH /funnels/:id/pages/:pageId uses on blocks (funnels.js:1115).
 // Imported blocks are operator-authored JSON from an untrusted file — the exact
 // payload the public renderer will walk — so they go through the identical
 // validator rather than a second, drifting copy of it.
-import { validateBlocks, ensureTables } from '../routes/funnels.js';
+// validateFunnelSettings is the SAME gate PATCH /funnels/:id applies to the
+// settings blob (funnels.js:468). Review HIGH #1: without it, an import could
+// land a settings object the settings modal can no longer PATCH — the funnel
+// became permanently unsaveable from its own UI, and every GET /funnels paid
+// for the bloat. The allowlist decides WHICH keys travel; this decides whether
+// what travelled is still writable.
+import { validateBlocks, validateFunnelSettings, ensureTables } from '../routes/funnels.js';
 
 export const FORMAT_TAG = 'puure-funnel-v1';
 
@@ -48,6 +67,20 @@ export const FORMAT_TAG = 'puure-funnel-v1';
 export const MAX_PAGES = 100;
 export const MAX_BLOCKS_BYTES_PER_PAGE = 2 * 1024 * 1024; // 2MB
 export const MAX_TOTAL_BYTES = 20 * 1024 * 1024; // 20MB
+export const MAX_REDIRECTS = 500;
+
+// ⚠️ MIRRORED CONSTANTS, NOT IMPORTED ONES. funnels.js keeps FLOW_MAX_NODES /
+// FLOW_MAX_EDGES / validateFlow module-private (funnels.js:548-552) and this
+// task's change fence does not admit that file, so the caps are restated here.
+// THE GAP IS REAL: if funnels.js lowers its caps, this file will not follow.
+// It is covered the only way that actually proves anything — the harness feeds
+// the flow layout this module STORED back through the REAL
+// PATCH /api/v1/funnels/:id/flow endpoint and requires a 200. That is a
+// round trip through the genuine validateFlow, not through a copy of it.
+// To close the gap properly, export both constants and validateFlow from
+// funnels.js and import them here.
+const FLOW_MAX_NODES = 1000;
+const FLOW_MAX_EDGES = 2000;
 
 const UNIQUE_VIOLATION = '23505';
 const genId = (prefix) => `${prefix}_${randomBytes(7).toString('hex')}`; // matches funnels.js
@@ -138,6 +171,58 @@ export function applyAllowlist(blob, allowlist, prefix = '') {
   return { value, dropped };
 }
 
+// ── THE CODE DETECTOR ──────────────────────────────────────────────────────
+//
+// Review MED #4: warning on the `custom_js` / `head_html` / `body_end_html`
+// COLUMNS missed the more common hiding place. funnelRender emits an `html`
+// (and `embed`) block's `props.html` VERBATIM into the document, so a <script>
+// pasted into a block is executable code that the old detector reported as
+// nothing at all. A page can carry a tracking pixel, a redirect, or a keylogger
+// in a block and the import summary would have said "no scripts".
+//
+// One detector, used by BOTH sides of the transfer (export warns before the
+// file is written, import warns before it is opened) and mirrored in the client
+// modal so the operator reads the same sentence at every step.
+const HTML_BLOCK_TYPES = new Set(['html', 'embed']);
+
+function pageCarriesRawHtmlBlock(page) {
+  const blocks = Array.isArray(page?.blocks) ? page.blocks : [];
+  return blocks.some((b) => {
+    if (!isPlainObject(b)) return false;
+    if (HTML_BLOCK_TYPES.has(String(b.type))) return true;
+    // A non-html block can still hold markup in a props.html field.
+    const html = isPlainObject(b.props) ? b.props.html : undefined;
+    return typeof html === 'string' && /<script/i.test(html);
+  });
+}
+
+/**
+ * The warnings a set of pages + a settings blob earn, in operator language.
+ * Pure and shared, so export, import and the client cannot drift apart.
+ */
+export function codeWarnings(pages, settings) {
+  const list = Array.isArray(pages) ? pages : [];
+  const out = [];
+  const plural = (n) => (n === 1 ? '' : 's');
+
+  const js = list.filter((p) => str(p?.custom_js).trim()).length;
+  if (js) out.push(`custom_js on ${js} page${plural(js)} — review before publishing`);
+
+  const rawFields = list.filter(
+    (p) => ['custom_html', 'head_html', 'body_end_html'].some((k) => str(p?.[k]).trim())
+  ).length;
+  if (rawFields) out.push(`raw HTML fields (custom_html / head_html / body_end_html) on ${rawFields} page${plural(rawFields)} — review before publishing`);
+
+  const htmlBlocks = list.filter(pageCarriesRawHtmlBlock).length;
+  if (htmlBlocks) out.push(`${htmlBlocks} page${plural(htmlBlocks)} carry raw HTML/embed blocks — review before publishing`);
+
+  if (isPlainObject(settings)
+    && (str(settings.custom_head_code).trim() || str(settings.custom_body_end_code).trim())) {
+    out.push('funnel-level script (settings.custom_head_code / custom_body_end_code) — review before publishing');
+  }
+  return out;
+}
+
 // ── EXPORT ─────────────────────────────────────────────────────────────────
 
 /**
@@ -157,6 +242,11 @@ export async function exportFunnel(funnelId, { query = pgQuery } = {}) {
 
   const [funnel] = await query(`SELECT * FROM funnels WHERE id = $1`, [id]);
   if (!funnel) return { ok: false, status: 404, error: 'funnel_not_found' };
+  // Review LOW #14: every WRITE endpoint on funnels.js refuses an archived
+  // funnel ("restore it before …"). Export is a READ, but it is the read that
+  // produces a portable copy — resurrecting a trashed funnel by exporting and
+  // re-importing it routes around the archive. Same refusal, same wording.
+  if (funnel.archived) return { ok: false, status: 403, error: 'funnel_archived' };
 
   // Same page set and same order the funnel detail endpoint serves
   // (funnels.js:379-383) — home first, then creation order. That order IS the
@@ -167,6 +257,23 @@ export async function exportFunnel(funnelId, { query = pgQuery } = {}) {
      ORDER BY is_home DESC, created_at ASC`,
     [id]
   );
+
+  // Review MED #9: funnel-relative redirects travel too. They are pure
+  // (from, to, match, code, enabled) tuples — no ids, no hosts — and a funnel
+  // that loses them on transfer silently 404s every legacy ad URL pointed at it.
+  let redirects = [];
+  try {
+    redirects = await query(
+      `SELECT from_path, to_path, match, code, enabled FROM funnel_redirects
+       WHERE funnel_id = $1 ORDER BY created_at ASC LIMIT $2`,
+      [id, MAX_REDIRECTS]
+    );
+  } catch (err) {
+    // funnel_redirects is created by the same ensureTables this route awaits,
+    // so a missing table means an older database mid-upgrade — an export
+    // without redirects beats no export at all.
+    if (err?.code !== '42P01') throw err;
+  }
 
   const [{ now }] = await query(`SELECT NOW() AS now`);
 
@@ -208,15 +315,34 @@ export async function exportFunnel(funnelId, { query = pgQuery } = {}) {
     // above. A node pointing at a page that is not in the export (archived
     // between the two reads) is dropped rather than emitted dangling.
     flow: buildPortableFlow(funnel.flow_layout, pages),
-    // What the allowlist refused, so the operator can see it rather than
-    // discover it missing on the other side.
-    stripped: [
-      ...settings.dropped.map((k) => `settings.${k}`),
-      ...seo.dropped.map((k) => `seo.${k}`),
-    ],
+    redirects: redirects.map((r) => ({
+      from_path: str(r.from_path),
+      to_path: str(r.to_path),
+      match: r.match === 'prefix' ? 'prefix' : 'exact',
+      code: Number(r.code) === 302 ? 302 : 301,
+      enabled: r.enabled !== false,
+    })),
   };
 
-  return { ok: true, envelope };
+  // Review MED #8: EXPORT IS THE IRREVERSIBLE ACT. Once the file exists the
+  // operator has already handed the code inside it to wherever the file goes;
+  // warning at import time is warning the receiver, not the sender. So the
+  // envelope carries its own warnings and the client shows them BEFORE writing
+  // the file to disk.
+  envelope.warnings = codeWarnings(envelope.pages, envelope.funnel.settings);
+
+  // ⚠️ `stripped` IS DELIBERATELY NOT PART OF THE ENVELOPE (review MED #8).
+  // It is a list of KEY NAMES that were refused — `settings.checkout.
+  // maps_api_key`, `settings.tracking` — which is a map of where this
+  // deployment keeps its credentials. That belongs in the HTTP response to the
+  // authenticated operator who asked, and NOT in a file designed to be handed
+  // to someone else. The route puts it in `meta`, outside `data`.
+  const stripped = [
+    ...settings.dropped.map((k) => `settings.${k}`),
+    ...seo.dropped.map((k) => `seo.${k}`),
+  ];
+
+  return { ok: true, envelope, stripped };
 }
 
 function buildPortableFlow(flowLayout, pages) {
@@ -293,12 +419,67 @@ export function validateEnvelope(raw) {
       };
     }
     // THE SAME GATE THE EDITOR USES. 422 (not 400): the envelope's shape is
-    // fine, its CONTENT is unprocessable.
-    const err = validateBlocks(Array.isArray(blocks) ? blocks : blocks);
+    // fine, its CONTENT is unprocessable. (Review NIT #16: this used to read
+    // `Array.isArray(blocks) ? blocks : blocks` — both arms identical, which
+    // read as a guard that guarded nothing. validateBlocks refuses a non-array
+    // itself, so the value goes straight in.)
+    const err = validateBlocks(blocks);
     if (err) return { ok: false, status: 422, error: 'invalid_blocks', detail: `pages[${i}]: ${err}` };
   }
 
+  if (raw.redirects !== undefined) {
+    if (!Array.isArray(raw.redirects)) return { ok: false, status: 400, error: 'redirects_must_be_an_array' };
+    if (raw.redirects.length > MAX_REDIRECTS) {
+      return {
+        ok: false, status: 413, error: 'too_many_redirects',
+        detail: `${raw.redirects.length} redirects exceeds the ${MAX_REDIRECTS} cap`,
+      };
+    }
+  }
+
   return { ok: true };
+}
+
+// ── Redirect sanitising ────────────────────────────────────────────────────
+// funnels.js keeps its redirect validators module-private (validatePath /
+// validateRedirectRule, funnels.js:658-687), so the rules are restated here —
+// same rules, same reasons, and the same gap note as the flow caps above.
+// A BAD REDIRECT IS DROPPED, NEVER A HARD FAILURE: a redirect is a convenience
+// attached to a funnel, and refusing an entire import over one malformed rule
+// would trade the whole funnel for a rule the operator can retype in seconds.
+// Every drop is reported in `notes`.
+const REDIRECT_PATH_RE = /^\/[^\s?#]*$/;
+const REDIRECT_PATH_MAX = 2048;
+
+function sanitizeRedirects(raw, notes) {
+  const out = [];
+  if (!Array.isArray(raw)) return out;
+  const seen = new Set();
+  for (let i = 0; i < raw.length && out.length < MAX_REDIRECTS; i++) {
+    const r = raw[i];
+    const drop = (why) => notes.push(`Redirect ${i + 1} was dropped (${why}).`);
+    if (!isPlainObject(r)) { drop('not an object'); continue; }
+    const from = String(r.from_path ?? '').trim();
+    const to = String(r.to_path ?? '').trim();
+    const match = r.match === 'prefix' ? 'prefix' : 'exact';
+    const bad = (label, v) =>
+      !v.startsWith('/') || v.startsWith('//') || v.startsWith('/\\')
+      || v.length > REDIRECT_PATH_MAX || !REDIRECT_PATH_RE.test(v)
+        ? `${label} is not a same-site funnel path` : null;
+    const e = bad('from_path', from) || bad('to_path', to);
+    if (e) { drop(e); continue; }
+    // The two shapes that take a whole funnel offline (funnels.js:681-687).
+    if (from === to) { drop('it redirects to itself forever'); continue; }
+    if (match === 'prefix' && from === '/') { drop("a prefix rule on '/' swallows every page"); continue; }
+    const key = `${match}:${from}`;
+    if (seen.has(key)) { drop('duplicate of an earlier rule'); continue; }
+    seen.add(key);
+    out.push({ from_path: from, to_path: to, match, code: Number(r.code) === 302 ? 302 : 301, enabled: r.enabled !== false });
+  }
+  if (Array.isArray(raw) && raw.length > MAX_REDIRECTS) {
+    notes.push(`Only the first ${MAX_REDIRECTS} redirects were imported.`);
+  }
+  return out;
 }
 
 const PAGE_SLUG_RE = /^\/$|^\/[a-z0-9-]+$/;
@@ -336,10 +517,19 @@ const PAGE_TYPES = new Set([
 ]);
 
 const ESCAPE_HATCH_MAX = 2 * 1024 * 1024;
-const clampCode = (v) => {
-  const s = String(v ?? '');
-  return Buffer.byteLength(s, 'utf8') > ESCAPE_HATCH_MAX ? '' : s;
-};
+
+// Review MED #5: this used to blank an over-cap field and say NOTHING. The
+// operator was told "custom_js on 1 page — review before publishing" about code
+// that had already been deleted, and the page they went to review was empty.
+// Clamping still happens (funnels.js refuses over-cap escape hatches, so
+// storing one would make the page unsaveable — the same trap as HIGH #1), but
+// now it REPORTS, per field and per page.
+function clampCode(value, { field, page, notes }) {
+  const s = String(value ?? '');
+  if (Buffer.byteLength(s, 'utf8') <= ESCAPE_HATCH_MAX) return s;
+  notes.push(`${field} on page ${page} exceeded the 2MB limit and was removed.`);
+  return '';
+}
 
 // ── IMPORT ─────────────────────────────────────────────────────────────────
 
@@ -387,29 +577,29 @@ export async function importFunnel({ envelope, nameOverride } = {}, { client = p
     notes.push(`${homeCount} pages were marked home — the first won and ${homeCount - 1} were demoted.`);
   }
 
-  // ── Scripts warning ─────────────────────────────────────────────────────
-  // custom_js arrives VERBATIM (that is the contract — a funnel without its
-  // scripts is not the funnel). What is NOT allowed is for it to arrive
-  // quietly: the imported funnel is a draft precisely so a human can read this
-  // warning and the code behind it before anything serves.
-  const jsPages = envelope.pages.filter((p) => str(p.custom_js).trim().length > 0).length;
-  if (jsPages) {
-    warnings.push(`custom_js present on ${jsPages} page${jsPages === 1 ? '' : 's'} — review before publishing`);
-  }
-  const otherCode = envelope.pages.filter(
-    (p) => str(p.custom_html).trim() || str(p.head_html).trim() || str(p.body_end_html).trim()
-  ).length;
-  if (otherCode) {
-    warnings.push(`raw HTML (custom_html / head_html / body_end_html) present on ${otherCode} page${otherCode === 1 ? '' : 's'} — review before publishing`);
-  }
   const importedSettings = applyAllowlist(srcFunnel.settings, SETTINGS_ALLOWLIST);
-  if (str(importedSettings.value.custom_head_code).trim() || str(importedSettings.value.custom_body_end_code).trim()) {
-    warnings.push('funnel-level script (settings.custom_head_code / custom_body_end_code) present — review before publishing');
-  }
   if (importedSettings.dropped.length) {
     notes.push(`Settings keys outside the transfer allowlist were dropped: ${importedSettings.dropped.join(', ')}.`);
   }
   const importedSeo = applyAllowlist(srcFunnel.seo, SEO_ALLOWLIST);
+
+  // ── REVIEW HIGH #1: the allowlisted settings must still be WRITABLE ──────
+  // The allowlist decides which KEYS travel. It says nothing about SIZE, and
+  // `description` is an allowlisted string. A 3MB description plus a 5MB
+  // custom_head_code imported cleanly at 201, added ~8MB to every GET /funnels
+  // response, and — worst of all — made the funnel permanently unsaveable from
+  // the settings modal, because PATCH runs validateFunnelSettings and the
+  // funnel now failed it ON ITS OWN STORED DATA. A row you cannot edit through
+  // the only UI that edits it is corruption, not content.
+  //
+  // So the import runs the SAME validator the PATCH path runs, and refuses.
+  // 422 rather than 413: nothing here is over a TRANSFER cap (the envelope was
+  // well within 20MB) — the content is unprocessable by the app that has to
+  // own it afterwards.
+  const settingsErr = validateFunnelSettings(importedSettings.value);
+  if (settingsErr) {
+    return { ok: false, status: 422, error: 'settings_invalid', detail: settingsErr };
+  }
 
   // ── Page rows, fully resolved before the transaction opens ──────────────
   const taken = new Set();
@@ -427,15 +617,29 @@ export async function importFunnel({ envelope, nameOverride } = {}, { client = p
       is_home: i === homeIndex,
       blocks: Array.isArray(p.blocks) ? p.blocks : [],
       seo: applyAllowlist(p.seo, SEO_ALLOWLIST).value,
-      custom_html: clampCode(p.custom_html),
-      custom_css: clampCode(p.custom_css),
-      custom_js: clampCode(p.custom_js),
-      head_html: clampCode(p.head_html),
-      body_end_html: clampCode(p.body_end_html),
+      custom_html: clampCode(p.custom_html, { field: 'custom_html', page: i + 1, notes }),
+      custom_css: clampCode(p.custom_css, { field: 'custom_css', page: i + 1, notes }),
+      custom_js: clampCode(p.custom_js, { field: 'custom_js', page: i + 1, notes }),
+      head_html: clampCode(p.head_html, { field: 'head_html', page: i + 1, notes }),
+      body_end_html: clampCode(p.body_end_html, { field: 'body_end_html', page: i + 1, notes }),
     };
   });
 
-  const flowLayout = rebuildFlow(envelope.flow, rows);
+  // ── Warnings are computed from what is ACTUALLY STORED ──────────────────
+  // Review MED #5: computing them from the ENVELOPE warned about code that
+  // clampCode had just deleted. `rows` is the post-clamp, post-allowlist truth
+  // — the exact values the INSERT below writes — so a warning here always has
+  // a page behind it that really carries the code.
+  warnings.push(...codeWarnings(rows, importedSettings.value));
+
+  const redirectRows = sanitizeRedirects(envelope.redirects, notes);
+
+  // Layout is cosmetic and must never cost the operator the funnel (HIGH #2).
+  let flowLayout = rebuildFlow(envelope.flow, rows, notes);
+  if (!flowLooksStorable(flowLayout, rows)) {
+    notes.push('The canvas layout in this export could not be made valid and was dropped. Page content is unaffected — open the canvas and re-arrange.');
+    flowLayout = { nodes: [], edges: [] };
+  }
 
   // Funnel slug: a fresh one derived from the name, de-collided against LIVE
   // funnels. The unique index is partial (`WHERE NOT archived`, funnels.js:62),
@@ -488,6 +692,17 @@ export async function importFunnel({ envelope, nameOverride } = {}, { client = p
               r.custom_html, r.custom_css, r.custom_js, r.head_html, r.body_end_html, i]
           );
         }
+        // Redirects ride the SAME transaction (review MED #9): a funnel that
+        // committed without its redirects would answer 404 on every legacy ad
+        // URL, which is the failure the redirects exist to prevent.
+        for (const rd of redirectRows) {
+          // eslint-disable-next-line no-await-in-loop
+          await q(
+            `INSERT INTO funnel_redirects (id, funnel_id, from_path, to_path, match, code, enabled)
+             VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+            [genId('frd'), funnelId, rd.from_path, rd.to_path, rd.match, rd.code, rd.enabled]
+          );
+        }
         return funnelRow;
       });
       break;
@@ -516,6 +731,7 @@ export async function importFunnel({ envelope, nameOverride } = {}, { client = p
       funnel: created,
       pages: pageSummary,
       pages_count: pageSummary.length,
+      redirects_count: redirectRows.length,
       home_page_slug: rows[homeIndex]?.slug ?? null,
       home_adjusted: homeCount !== 1,
       warnings,
@@ -525,28 +741,91 @@ export async function importFunnel({ envelope, nameOverride } = {}, { client = p
 }
 
 // Turn the id-free `flow` back into funnels.flow_layout's id-keyed shape, now
-// pointing at the NEW page ids. An index outside the imported page set is
-// dropped — flow_layout's own validator (funnels.js validateFlow) refuses
-// dangling references, and writing one here would just make the canvas
-// unsaveable later.
-function rebuildFlow(flow, rows) {
+// pointing at the NEW page ids.
+//
+// REVIEW HIGH #2 — THIS FUNCTION USED TO WRITE A LAYOUT THE CANVAS COULD NOT
+// SAVE. `page_index` is attacker-controlled and repeatable, so 5000 nodes all
+// pointing at index 0 became 5000 nodes sharing ONE id, and 5000 self-edges
+// became 5000 loops. Both stored happily at 201 — and then the canvas refused
+// its own persisted layout ("duplicate id") on the next save. The import
+// succeeded and left the funnel's canvas permanently unsaveable.
+//
+// Everything validateFlow refuses is now refused HERE, at the same values:
+//   • duplicate node ids     — FIRST WINS (the operator's first placement)
+//   • self-edges             — dropped
+//   • duplicate edges        — dropped
+//   • dangling indices       — dropped (an index outside the imported set)
+//   • non-finite coordinates — dropped (NaN/Infinity crash React Flow)
+//   • counts over the caps   — truncated at FLOW_MAX_NODES / FLOW_MAX_EDGES
+//   • edges whose endpoints did not survive node de-duplication — dropped
+//
+// Layout is COSMETIC. Nothing here ever fails the import: a flow that cannot be
+// made legal is dropped to an empty layout with a note, because losing the
+// node positions is a smaller harm than losing the funnel.
+function rebuildFlow(flow, rows, notes = []) {
   const out = { nodes: [], edges: [] };
   if (!isPlainObject(flow)) return out;
   const at = (i) => (Number.isInteger(i) && i >= 0 && i < rows.length ? rows[i].id : null);
+
+  const seenNode = new Set();
+  let droppedNodes = 0;
   for (const n of Array.isArray(flow.nodes) ? flow.nodes : []) {
-    if (!isPlainObject(n)) continue;
+    if (out.nodes.length >= FLOW_MAX_NODES) { droppedNodes++; continue; }
+    if (!isPlainObject(n)) { droppedNodes++; continue; }
     const id = at(n.page_index);
     const x = Number(n.x);
     const y = Number(n.y);
-    if (!id || !Number.isFinite(x) || !Number.isFinite(y)) continue;
+    if (!id || !Number.isFinite(x) || !Number.isFinite(y)) { droppedNodes++; continue; }
+    if (seenNode.has(id)) { droppedNodes++; continue; } // first placement wins
+    seenNode.add(id);
     out.nodes.push({ id, x, y });
   }
+
+  const seenEdge = new Set();
+  let droppedEdges = 0;
   for (const e of Array.isArray(flow.edges) ? flow.edges : []) {
-    if (!isPlainObject(e)) continue;
+    if (out.edges.length >= FLOW_MAX_EDGES) { droppedEdges++; continue; }
+    if (!isPlainObject(e)) { droppedEdges++; continue; }
     const source = at(e.source_index);
     const target = at(e.target_index);
-    if (!source || !target) continue;
-    out.edges.push({ source, target, kind: e.kind === 'fallback' ? 'fallback' : 'main' });
+    // An edge may only join nodes that actually survived above — otherwise the
+    // layout references a node it does not contain.
+    if (!source || !target || !seenNode.has(source) || !seenNode.has(target)) { droppedEdges++; continue; }
+    if (source === target) { droppedEdges++; continue; } // self-edge
+    const kind = e.kind === 'fallback' ? 'fallback' : 'main';
+    const key = `${source}>${target}:${kind}`;
+    if (seenEdge.has(key)) { droppedEdges++; continue; }
+    seenEdge.add(key);
+    out.edges.push({ source, target, kind });
+  }
+
+  if (droppedNodes || droppedEdges) {
+    notes.push(
+      `Canvas layout was repaired on import: ${droppedNodes} node${droppedNodes === 1 ? '' : 's'} and `
+      + `${droppedEdges} edge${droppedEdges === 1 ? '' : 's'} were dropped (duplicates, self-links, `
+      + 'unknown pages or over the layout limits). Page content is unaffected.'
+    );
   }
   return out;
+}
+
+// Last line of defence for the layout, restating validateFlow's structural
+// rules over the ALREADY-rebuilt object. If this ever returns false the flow is
+// stored empty rather than stored broken — see the note in importFunnel.
+function flowLooksStorable(flow, rows) {
+  if (!isPlainObject(flow) || !Array.isArray(flow.nodes) || !Array.isArray(flow.edges)) return false;
+  if (flow.nodes.length > FLOW_MAX_NODES || flow.edges.length > FLOW_MAX_EDGES) return false;
+  const valid = new Set(rows.map((r) => r.id));
+  const ids = new Set();
+  for (const n of flow.nodes) {
+    if (!isPlainObject(n) || !valid.has(n.id) || ids.has(n.id)) return false;
+    if (!Number.isFinite(n.x) || !Number.isFinite(n.y)) return false;
+    ids.add(n.id);
+  }
+  for (const e of flow.edges) {
+    if (!isPlainObject(e) || !ids.has(e.source) || !ids.has(e.target)) return false;
+    if (e.source === e.target) return false;
+    if (e.kind !== 'main' && e.kind !== 'fallback') return false;
+  }
+  return true;
 }

@@ -184,10 +184,10 @@ ok(ENV.funnel.settings.brand_colors?.primary === '#0f0'
   && ENV.funnel.settings.fonts?.family === 'inter'
   && ENV.funnel.settings.logo_url === 'https://cdn.example.com/logo.png',
 'E7 allowlisted settings survive');
-ok(Array.isArray(ENV.stripped)
-  && ENV.stripped.includes('settings.checkout.maps_api_key')
-  && ENV.stripped.includes('settings.stripe_secret_key'),
-'E8 stripped[] REPORTS both dropped keys', JSON.stringify(ENV.stripped));
+ok(Array.isArray(ex.j?.meta?.stripped)
+  && ex.j.meta.stripped.includes('settings.checkout.maps_api_key')
+  && ex.j.meta.stripped.includes('settings.stripe_secret_key'),
+'E8 the response REPORTS both dropped keys (in meta — see M8b/M8c)', JSON.stringify(ex.j?.meta?.stripped));
 
 for (const id of [SRC, PA, PB, PC]) {
   ok(!ENV_TEXT.includes(id), `E9 no source id in the envelope (${id.slice(0, 8)}…)`);
@@ -238,7 +238,7 @@ ok(newFunnelRow.flow_layout.nodes.length === 3
   && newFunnelRow.flow_layout.edges.every((e) => newIds.has(e.source) && newIds.has(e.target)),
 'R10 flow rebuilt onto the NEW page ids', JSON.stringify(newFunnelRow.flow_layout));
 
-ok((imp.j?.data?.warnings || []).some((w) => /custom_js present on 1 page/.test(w)),
+ok((imp.j?.data?.warnings || []).some((w) => /custom_js on 1 page/.test(w)),
   'R11 custom_js warning surfaces on the import response', JSON.stringify(imp.j?.data?.warnings));
 
 const impNamed = await T('POST', '/import', { envelope: ENV, name_override: 'Renamed Import' });
@@ -493,6 +493,265 @@ ok(bodyAfter.includes('ARM B WINNER PAGE') && !bodyAfter.includes('ARM A LOSER P
     'P21 promoting a DIFFERENT arm afterwards → 409 already_promoted', JSON.stringify(r.j));
   const entry = await sql`SELECT arm_key FROM lb_split_arms WHERE test_id = ${TID} AND is_entry AND NOT archived`;
   ok(entry[0]?.arm_key === 'b', 'P22 …and the 409 changed nothing', JSON.stringify(entry));
+}
+
+// ═══ 6. REVIEW FIXES — every case below is a reviewer probe, kept forever ══
+
+// ── HIGH #1: allowlisted-but-unwritable settings are REFUSED ───────────────
+// The reviewer's exact payload: a 3MB `description` (allowlisted!) plus a 5MB
+// custom_head_code. Both pass the allowlist and both fit inside the 20MB
+// envelope cap — and before the fix they imported at 201, added ~8MB to every
+// GET /funnels, and left the funnel PERMANENTLY UNSAVEABLE from the settings
+// modal, because PATCH runs validateFunnelSettings and the stored row now
+// failed it.
+{
+  const fat = JSON.parse(ENV_TEXT);
+  fat.funnel.settings = {
+    description: 'd'.repeat(3 * 1024 * 1024),
+    custom_head_code: '<script>/*'.padEnd(5 * 1024 * 1024, 'x') + '*/</script>',
+  };
+  const before = await counts();
+  const r = await T('POST', '/import', { envelope: fat });
+  const after = await counts();
+  ok(r.status === 422 && r.j?.error?.code === 'settings_invalid',
+    'H1a 3MB description + 5MB head code → 422 settings_invalid', `${r.status} ${JSON.stringify(r.j?.error)}`);
+  ok(before.funnels === after.funnels && before.pages === after.pages,
+    'H1b …and NOTHING was created', `${JSON.stringify(before)} vs ${JSON.stringify(after)}`);
+}
+// The bound is on the STRUCTURED remainder (32KB) — a legitimate settings blob
+// still imports, so the guard is not just "refuse everything large".
+{
+  const okSettings = JSON.parse(ENV_TEXT);
+  okSettings.funnel.settings = { description: 'd'.repeat(1000), brand_colors: { primary: '#abc' } };
+  const r = await T('POST', '/import', { envelope: okSettings });
+  ok(r.status === 201, 'H1c a normal settings blob still imports', JSON.stringify(r.j?.error));
+}
+
+// ── HIGH #2: a hostile flow can no longer poison the canvas ────────────────
+// 5000 nodes all pointing at page_index 0 (⇒ 5000 rows sharing ONE id) and 5000
+// self-edges. Before the fix this stored at 201 and the canvas then REFUSED its
+// own persisted layout on the next save.
+{
+  const hostile = JSON.parse(ENV_TEXT);
+  hostile.flow = { nodes: [], edges: [] };
+  for (let i = 0; i < 5000; i++) {
+    hostile.flow.nodes.push({ page_index: 0, x: i, y: i });
+    hostile.flow.edges.push({ source_index: 0, target_index: 0, kind: 'main' });
+  }
+  const r = await T('POST', '/import', { envelope: hostile });
+  ok(r.status === 201, 'H2a hostile flow does NOT block the import (layout is cosmetic)', JSON.stringify(r.j?.error));
+  const fid = r.j?.data?.funnel?.id;
+  const [row] = await sql`SELECT flow_layout FROM funnels WHERE id = ${fid}`;
+  const fl = row.flow_layout;
+  const ids = fl.nodes.map((n) => n.id);
+  ok(new Set(ids).size === ids.length, 'H2b stored layout has NO duplicate node ids', `${ids.length} nodes`);
+  ok(fl.edges.every((e) => e.source !== e.target), 'H2c stored layout has NO self-edges', `${fl.edges.length} edges`);
+  ok(fl.nodes.length <= 1000 && fl.edges.length <= 2000,
+    'H2d stored layout is within the canvas caps', JSON.stringify({ n: fl.nodes.length, e: fl.edges.length }));
+  ok((r.j?.data?.notes || []).some((n) => /Canvas layout was repaired/.test(n)),
+    'H2e the repair is REPORTED', JSON.stringify(r.j?.data?.notes));
+  // THE REAL PROOF: hand the stored layout back to the GENUINE
+  // PATCH /:id/flow endpoint — the one the canvas calls, running the real
+  // validateFlow. A 200 means the canvas can save what the import wrote.
+  const back = await F('PATCH', `/${fid}/flow`, { nodes: fl.nodes, edges: fl.edges });
+  ok(back.status === 200, 'H2f the REAL validateFlow accepts the stored layout (canvas can save it)', JSON.stringify(back.j));
+}
+// A well-formed flow still round-trips intact (the repair is not a bulldozer).
+{
+  const r = await T('POST', '/import', { envelope: ENV });
+  const [row] = await sql`SELECT flow_layout FROM funnels WHERE id = ${r.j.data.funnel.id}`;
+  const back = await F('PATCH', `/${r.j.data.funnel.id}/flow`, { nodes: row.flow_layout.nodes, edges: row.flow_layout.edges });
+  ok(row.flow_layout.nodes.length === 3 && row.flow_layout.edges.length === 2 && back.status === 200,
+    'H2g a clean flow survives untouched and is canvas-saveable', JSON.stringify({ n: row.flow_layout.nodes.length, e: row.flow_layout.edges.length, back: back.status }));
+}
+
+// ── MED #3: file content must not set request parameters ───────────────────
+{
+  const planted = JSON.parse(ENV_TEXT);
+  planted.name_override = 'PWNED BY THE FILE';
+  // Bare-posted: the body IS the envelope, so every key in it is file content.
+  const r = await T('POST', '/import', planted);
+  ok(r.status === 201 && r.j?.data?.funnel?.name === 'Transfer Source',
+    'M3a a name_override planted INSIDE a bare-posted envelope is ignored', JSON.stringify(r.j?.data?.funnel?.name));
+  // The wrapper form is still honoured — that one is the operator speaking.
+  const r2 = await T('POST', '/import', { envelope: planted, name_override: 'Operator Chose This' });
+  ok(r2.status === 201 && r2.j?.data?.funnel?.name === 'Operator Chose This',
+    'M3b the WRAPPED name_override is honoured', JSON.stringify(r2.j?.data?.funnel?.name));
+}
+{
+  const r = await T('POST', '/import', { envelope: ENV, name_override: '   ' });
+  ok(r.status === 201 && r.j?.data?.funnel?.name === 'Transfer Source',
+    'M13 a blank-after-trim name_override falls back to the envelope name', JSON.stringify(r.j?.data?.funnel?.name));
+}
+
+// ── MED #4: scripts hidden in html/embed BLOCKS are warned about ───────────
+{
+  const blocky = JSON.parse(ENV_TEXT);
+  blocky.pages[2].blocks = [{ type: 'html', props: { html: '<script>fetch("//evil")</script>' } }];
+  blocky.pages[1].blocks = [{ type: 'cta', props: { html: '<script>alert(1)</script>' } }];
+  blocky.pages.forEach((p) => { p.custom_js = ''; p.custom_html = ''; p.head_html = ''; p.body_end_html = ''; });
+  blocky.funnel.settings = {};
+  const r = await T('POST', '/import', { envelope: blocky });
+  ok(r.status === 201, 'M4a html-block envelope imports', JSON.stringify(r.j?.error));
+  ok((r.j?.data?.warnings || []).some((w) => /2 pages carry raw HTML\/embed blocks/.test(w)),
+    'M4b an html BLOCK and a props.html <script> BOTH raise the warning', JSON.stringify(r.j?.data?.warnings));
+}
+
+// ── MED #5: a clamped field is REPORTED, and warnings describe what is STORED ─
+{
+  const clamped = JSON.parse(ENV_TEXT);
+  clamped.pages.forEach((p) => { p.custom_js = ''; });
+  clamped.pages[0].custom_js = 'j'.repeat(2 * 1024 * 1024 + 128); // over the 2MB field cap
+  const r = await T('POST', '/import', { envelope: clamped });
+  ok(r.status === 201, 'M5a over-cap custom_js still imports (the field is dropped, not the funnel)', JSON.stringify(r.j?.error));
+  ok((r.j?.data?.notes || []).some((n) => /custom_js on page 1 exceeded the 2MB limit and was removed/.test(n)),
+    'M5b the removal is REPORTED per field and per page', JSON.stringify(r.j?.data?.notes));
+  ok(!(r.j?.data?.warnings || []).some((w) => /custom_js/.test(w)),
+    'M5c …and no custom_js warning is raised for code that was DELETED', JSON.stringify(r.j?.data?.warnings));
+  const [stored] = await sql`SELECT custom_js FROM funnel_pages WHERE funnel_id = ${r.j.data.funnel.id} AND is_home`;
+  ok(stored.custom_js === '', 'M5d the stored field really is empty', JSON.stringify(stored.custom_js?.length));
+}
+
+// ── MED #8: the envelope warns, and `stripped` does NOT travel in the file ──
+{
+  ok(Array.isArray(ENV.warnings) && ENV.warnings.some((w) => /custom_js on 1 page/.test(w)),
+    'M8a the EXPORT envelope carries its own warnings', JSON.stringify(ENV.warnings));
+  ok(ENV.stripped === undefined, 'M8b `stripped` is NOT in the portable file (it maps where credentials live)');
+  ok(Array.isArray(ex.j?.meta?.stripped)
+    && ex.j.meta.stripped.includes('settings.checkout.maps_api_key')
+    && ex.j.meta.stripped.includes('settings.stripe_secret_key'),
+  'M8c …it rides in meta, to the authenticated operator only', JSON.stringify(ex.j?.meta?.stripped));
+}
+
+// ── MED #9: redirects travel ───────────────────────────────────────────────
+{
+  await sql`INSERT INTO funnel_redirects (id, funnel_id, from_path, to_path, match, code, enabled) VALUES
+    ('frd_t1', ${SRC}, '/old-lp', '/lp-b', 'exact', 301, TRUE),
+    ('frd_t2', ${SRC}, '/legacy', '/gamma', 'prefix', 302, FALSE)`;
+  const ex2 = await T('GET', `/${SRC}/export`);
+  const env2 = ex2.j?.data;
+  ok(env2.redirects?.length === 2, 'M9a export carries the redirects', JSON.stringify(env2.redirects));
+  ok(!JSON.stringify(env2.redirects).includes('frd_t1'), 'M9b …with no ids');
+  const r = await T('POST', '/import', { envelope: env2 });
+  const got = await sql`SELECT from_path, to_path, match, code, enabled FROM funnel_redirects
+                        WHERE funnel_id = ${r.j.data.funnel.id} ORDER BY from_path`;
+  ok(r.j?.data?.redirects_count === 2 && got.length === 2
+    && got[0].from_path === '/legacy' && got[0].match === 'prefix' && got[0].code === 302 && got[0].enabled === false
+    && got[1].from_path === '/old-lp' && got[1].match === 'exact' && got[1].code === 301,
+  'M9c import recreates them exactly, ids fresh', JSON.stringify(got));
+
+  // A malformed / funnel-killing rule is DROPPED with a note, never a hard fail.
+  const bad = JSON.parse(JSON.stringify(env2));
+  bad.redirects = [
+    { from_path: 'https://evil.example/x', to_path: '/a', match: 'exact', code: 301 },
+    { from_path: '//evil.example', to_path: '/a', match: 'exact', code: 301 },
+    { from_path: '/loop', to_path: '/loop', match: 'exact', code: 301 },
+    { from_path: '/', to_path: '/a', match: 'prefix', code: 301 },
+    { from_path: '/good', to_path: '/lp-b', match: 'exact', code: 301 },
+  ];
+  const r2 = await T('POST', '/import', { envelope: bad });
+  ok(r2.status === 201 && r2.j?.data?.redirects_count === 1,
+    'M9d open-redirect / self-loop / prefix-on-root rules are dropped, the good one survives', JSON.stringify(r2.j?.data?.redirects_count));
+  ok((r2.j?.data?.notes || []).filter((n) => /Redirect \d+ was dropped/.test(n)).length === 4,
+    'M9e …and every drop is REPORTED', JSON.stringify(r2.j?.data?.notes));
+
+  const tooMany = JSON.parse(JSON.stringify(env2));
+  tooMany.redirects = [];
+  for (let i = 0; i < 501; i++) tooMany.redirects.push({ from_path: `/r-${i}`, to_path: '/lp-b', match: 'exact', code: 301 });
+  await refuse('M9f 501 redirects', { envelope: tooMany }, 413, 'too_many_redirects');
+}
+
+// ── LOW #14: an archived funnel cannot be exported ─────────────────────────
+{
+  const tmp = await F('POST', '/', { name: 'Archive Me', slug: 'archive-me-exp' });
+  await F('POST', `/${tmp.j.data.id}/pages`, { title: 'p', slug: '/', type: 'generic' });
+  const okBefore = await T('GET', `/${tmp.j.data.id}/export`);
+  await F('POST', `/${tmp.j.data.id}/archive`, { archived: true });
+  const r = await T('GET', `/${tmp.j.data.id}/export`);
+  ok(okBefore.status === 200 && r.status === 403 && r.j?.error?.code === 'funnel_archived',
+    'L14 export of an ARCHIVED funnel → 403 (no resurrection by round trip)', `${okBefore.status} → ${r.status} ${JSON.stringify(r.j?.error)}`);
+}
+
+// ── MED #6: a promotion is RETRACTABLE ─────────────────────────────────────
+// The 409 used to be permanent: the entry endpoint never cleared
+// promoted_arm_id, so a promoted test could never be re-promoted and the row
+// kept asserting a winner that had stopped serving.
+{
+  // TID is promoted onto arm b from section 5. Move the entry to arm a.
+  const mv = await S('POST', `/${TID}/arms/${armId('a')}/entry`);
+  ok(mv.status === 200, 'M6a entry moved to arm a', JSON.stringify(mv.j));
+  const [t] = await sql`SELECT promoted_arm_id, promoted_at FROM lb_split_tests WHERE id = ${TID}`;
+  ok(t.promoted_arm_id === null && t.promoted_at === null,
+    'M6b moving the entry to a DIFFERENT arm RETRACTS the promotion', JSON.stringify(t));
+  const again = await S('POST', `/${TID}/promote`, { arm_id: armId('a'), confirm: true });
+  ok(again.status === 200 && again.j?.data?.promoted_arm_id === armId('a'),
+    'M6c …so a second promote now SUCCEEDS (the 409 is no longer a dead end)', JSON.stringify(again.j?.error));
+}
+{
+  // Re-enabling restarts the experiment, so the winner claim is retracted too.
+  const re = await S('PATCH', `/${TID}`, { enabled: true });
+  ok(re.status === 200, 'M6d test re-enabled', JSON.stringify(re.j?.error));
+  const [t] = await sql`SELECT enabled, promoted_arm_id, promoted_at FROM lb_split_tests WHERE id = ${TID}`;
+  ok(t.enabled === true && t.promoted_arm_id === null && t.promoted_at === null,
+    'M6e re-enabling RETRACTS the promotion', JSON.stringify(t));
+}
+{
+  // Archiving the promoted entry arm hands the entry on — the stamp goes too.
+  await S('POST', `/${TID}/promote`, { arm_id: armId('b'), confirm: true });
+  const arch = await S('PATCH', `/${TID}/arms/${armId('b')}`, { archived: true });
+  ok(arch.status === 200, 'M6f promoted entry arm archived', JSON.stringify(arch.j));
+  const [t] = await sql`SELECT promoted_arm_id FROM lb_split_tests WHERE id = ${TID}`;
+  ok(t.promoted_arm_id === null, 'M6g …archiving the promoted arm RETRACTS the promotion too', JSON.stringify(t));
+}
+
+// ── MED #7: concurrent promote + archive never yields a false success ───────
+// Before the fix the arm PATCH did NOT take the parent lock, so an archive
+// could land between promote's read and promote's write: a 200 promote of an
+// arm that no longer serves.
+{
+  let falseSuccess = null;
+  for (let round = 0; round < 6 && !falseSuccess; round++) {
+    const f = await F('POST', '/', { name: `Race ${round}`, slug: `race-fnl-${round}` });
+    const FID2 = f.j.data.id;
+    const pA = await F('POST', `/${FID2}/pages`, { title: 'RA', slug: '/ra', type: 'lead' });
+    const pB = await F('POST', `/${FID2}/pages`, { title: 'RB', slug: '/rb', type: 'lead' });
+    await F('PATCH', `/${FID2}/pages/${pA.j.data.id}`, { status: 'published' });
+    await F('PATCH', `/${FID2}/pages/${pB.j.data.id}`, { status: 'published' });
+    const t = await S('POST', '/', {
+      funnel_id: FID2, name: `race ${round}`, scope: 'page', handle: `race-h-${round}`,
+      arms: [
+        { arm_key: 'a', weight: 1, page_id: pA.j.data.id, is_control: true, is_entry: true },
+        { arm_key: 'b', weight: 1, page_id: pB.j.data.id },
+        { arm_key: 'c', weight: 1, page_id: pB.j.data.id },
+      ],
+    });
+    const rid = t.j.data.id;
+    const rows = await sql`SELECT id, arm_key FROM lb_split_arms WHERE test_id = ${rid}`;
+    const bId = rows.find((a) => a.arm_key === 'b').id;
+    // Fire both at the same instant.
+    const [promo, arch] = await Promise.all([
+      S('POST', `/${rid}/promote`, { arm_id: bId, confirm: true }),
+      S('PATCH', `/${rid}/arms/${bId}`, { archived: true }),
+    ]);
+    // THE INVARIANT IS ABOUT THE END STATE, NOT THE STATUS CODES.
+    // Either order of these two requests is legal on its own — promote-then-
+    // archive is a real thing an operator does. What must NEVER survive is a
+    // test whose promoted_arm_id names an ARCHIVED arm (a winner that cannot
+    // serve), or an entry arm that is archived (a live route pointing at a
+    // retired page). Before the parent lock, the interleaving produced exactly
+    // the first of those.
+    const [armRow] = await sql`SELECT archived, is_entry FROM lb_split_arms WHERE id = ${bId}`;
+    const [testRow] = await sql`SELECT promoted_arm_id, enabled FROM lb_split_tests WHERE id = ${rid}`;
+    const entryRows = await sql`SELECT archived FROM lb_split_arms WHERE test_id = ${rid} AND is_entry`;
+    if (testRow.promoted_arm_id === bId && armRow.archived) {
+      falseSuccess = { round, why: 'promoted_arm_id names an ARCHIVED arm', promo: promo.status, arch: arch.status };
+    } else if (entryRows.some((e) => e.archived)) {
+      falseSuccess = { round, why: 'the ENTRY arm is archived', promo: promo.status, arch: arch.status };
+    }
+  }
+  ok(!falseSuccess,
+    'M7 6 concurrent promote+archive rounds never left a promoted-or-entry arm ARCHIVED',
+    JSON.stringify(falseSuccess));
 }
 
 // ═══ Done ═════════════════════════════════════════════════════════════════

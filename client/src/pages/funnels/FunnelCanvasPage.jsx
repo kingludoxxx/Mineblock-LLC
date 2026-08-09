@@ -1034,6 +1034,9 @@ function CanvasInner() {
         open={Boolean(splitResultsId)}
         onClose={() => setSplitResultsId(null)}
         test={splits.find((t) => t.id === splitResultsId) || null}
+        // Promoting a winner pauses the test and moves the entry arm; without
+        // this the canvas kept rendering the pre-promote state until a reload.
+        onPromoted={loadSplits}
       />
 
       <SplitQuickCreateModal

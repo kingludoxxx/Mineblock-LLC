@@ -238,7 +238,18 @@ router.patch('/:id', async (req, res) => {
     const vals = [];
     let i = 1;
     if (b.name !== undefined) { sets.push(`name = $${i++}`); vals.push(s(b.name, 200)); }
-    if (b.enabled !== undefined) { sets.push(`enabled = $${i++}`); vals.push(Boolean(b.enabled)); }
+    if (b.enabled !== undefined) {
+      sets.push(`enabled = $${i++}`); vals.push(Boolean(b.enabled));
+      // Re-enabling a promoted test RESTARTS the experiment: traffic branches
+      // across the arms again, so "this arm won" stops describing what is
+      // happening. The stamp is retracted with it (review MED #6) — otherwise
+      // the row keeps asserting a winner while the ledger fills with fresh,
+      // contradicting exposures.
+      if (b.enabled === true) {
+        await ensurePromoteColumns();
+        sets.push('promoted_arm_id = NULL', 'promoted_at = NULL');
+      }
+    }
     if (b.archived !== undefined) { sets.push(`archived = $${i++}`); vals.push(Boolean(b.archived)); }
     if (b.handle !== undefined) {
       const h = normHandle(b.handle);
@@ -364,6 +375,7 @@ router.post('/:id/arms', async (req, res) => {
 router.patch('/:id/arms/:armId', async (req, res) => {
   try {
     await ensureSplitTables();
+    await ensurePromoteColumns(); // this handler clears promoted_arm_id (MED #6)
     const b = req.body || {};
     const sets = [];
     const vals = [];
@@ -390,64 +402,93 @@ router.patch('/:id/arms/:armId', async (req, res) => {
 
     const testId = s(req.params.id, 120);
     const armId = s(req.params.armId, 120);
-    // Flipping an arm TO control while another live arm already holds it is
-    // rejected (mirror of the create-path rule) — use POST .../control instead.
-    if (b.is_control === true) {
-      const ctrl = await pgQuery(
-        `SELECT 1 FROM lb_split_arms WHERE test_id = $1 AND is_control AND NOT archived AND id <> $2`,
-        [testId, armId]
-      );
-      if (ctrl.length) return res.status(422).json({ success: false, error: { code: 'multiple_control_arms' } });
-    }
-    // ── The baseline guards ────────────────────────────────────────────────
-    const wouldUnsetControl = b.is_control === false;
-    const wouldArchive = b.archived === true;
-    if (wouldUnsetControl || wouldArchive) {
-      const live = await pgQuery(
-        `SELECT id, is_control FROM lb_split_arms WHERE test_id = $1 AND NOT archived`,
-        [testId]
-      );
-      const target = live.find((a) => a.id === armId);
-      // Only guard when the row is currently a LIVE arm — patching an already
-      // archived arm cannot change how many live controls exist.
-      if (target) {
-        if (wouldArchive && live.length <= 1) {
-          return res.status(422).json({ success: false, error: { code: 'last_live_arm' } });
-        }
-        if (target.is_control) {
-          if (wouldArchive) {
-            return res.status(422).json({ success: false, error: { code: 'control_required' } });
-          }
-          if (wouldUnsetControl && !live.some((a) => a.is_control && a.id !== armId)) {
-            return res.status(422).json({ success: false, error: { code: 'control_required' } });
+
+    // ── REVIEW MED #7: THIS ENDPOINT NOW TAKES THE PARENT LOCK TOO ─────────
+    // The promote endpoint's comment claimed "every writer takes this same lock
+    // first". It was not true of THIS handler, and the gap was reachable: its
+    // guards were read-then-write against the SHARED pool, so a concurrent
+    // `archived: true` here could land between promote's arms read and
+    // promote's UPDATE. Measured by the reviewer: a 200 promote of an arm that
+    // was archived and therefore does not serve — a "winner" pointing at a
+    // retired page.
+    //
+    // Wrapping this handler in the SAME parent-row SELECT … FOR UPDATE makes
+    // the claim true. Every guard below now reads inside that lock, so it sees
+    // a state no concurrent writer can change underneath it. Parent row, not
+    // arm rows, for the reason documented on the entry endpoint: N tuples
+    // locked in plan order deadlock (40P01), one parent row cannot.
+    const result = await pgDb.begin(async (tx) => {
+      const q = (text, params = []) => tx.unsafe(text, params);
+      const [test] = await q(`SELECT id FROM lb_split_tests WHERE id = $1 FOR UPDATE`, [testId]);
+      if (!test) return { error: 'not_found', status: 404 };
+
+      // Flipping an arm TO control while another live arm already holds it is
+      // rejected (mirror of the create-path rule) — use POST .../control instead.
+      if (b.is_control === true) {
+        const ctrl = await q(
+          `SELECT 1 FROM lb_split_arms WHERE test_id = $1 AND is_control AND NOT archived AND id <> $2`,
+          [testId, armId]
+        );
+        if (ctrl.length) return { error: 'multiple_control_arms', status: 422 };
+      }
+      // ── The baseline guards ──────────────────────────────────────────────
+      const wouldUnsetControl = b.is_control === false;
+      const wouldArchive = b.archived === true;
+      if (wouldUnsetControl || wouldArchive) {
+        const live = await q(
+          `SELECT id, is_control FROM lb_split_arms WHERE test_id = $1 AND NOT archived`,
+          [testId]
+        );
+        const target = live.find((a) => a.id === armId);
+        // Only guard when the row is currently a LIVE arm — patching an already
+        // archived arm cannot change how many live controls exist.
+        if (target) {
+          if (wouldArchive && live.length <= 1) return { error: 'last_live_arm', status: 422 };
+          if (target.is_control) {
+            if (wouldArchive) return { error: 'control_required', status: 422 };
+            if (wouldUnsetControl && !live.some((a) => a.is_control && a.id !== armId)) {
+              return { error: 'control_required', status: 422 };
+            }
           }
         }
       }
-    }
-    vals.push(armId, testId);
-    const rows = await pgQuery(
-      `UPDATE lb_split_arms SET ${sets.join(', ')} WHERE id = $${i++} AND test_id = $${i} RETURNING id, is_entry, archived`,
-      vals
-    );
-    if (!rows.length) return res.status(404).json({ success: false, error: { code: 'not_found' } });
-    // ARCHIVING THE ENTRY ARM would leave /<handle> pointing at a retired page
-    // — a live route with nothing behind it. Hand the role to the control (or,
-    // failing that, the first live arm) instead of refusing: the operator's
-    // intent (retire this arm) is unambiguous, and a route that answers is
-    // strictly better than one that does not. The partial unique index makes
-    // the promotion safe — it can never produce a second entry.
-    if (rows[0].archived && rows[0].is_entry) {
-      await pgQuery(`UPDATE lb_split_arms SET is_entry = FALSE WHERE id = $1`, [rows[0].id]);
-      await pgQuery(
-        `UPDATE lb_split_arms SET is_entry = TRUE WHERE id = (
-           SELECT id FROM lb_split_arms
-           WHERE test_id = $1 AND NOT archived
-           ORDER BY is_control DESC, sort_order, arm_key LIMIT 1
-         )`,
-        [s(req.params.id, 120)]
+      const rows = await q(
+        `UPDATE lb_split_arms SET ${sets.join(', ')} WHERE id = $${i++} AND test_id = $${i} RETURNING id, is_entry, archived`,
+        [...vals, armId, testId]
       );
+      if (!rows.length) return { error: 'not_found', status: 404 };
+      // ARCHIVING THE ENTRY ARM would leave /<handle> pointing at a retired page
+      // — a live route with nothing behind it. Hand the role to the control (or,
+      // failing that, the first live arm) instead of refusing: the operator's
+      // intent (retire this arm) is unambiguous, and a route that answers is
+      // strictly better than one that does not. The partial unique index makes
+      // the promotion safe — it can never produce a second entry.
+      if (rows[0].archived && rows[0].is_entry) {
+        await q(`UPDATE lb_split_arms SET is_entry = FALSE WHERE id = $1`, [rows[0].id]);
+        await q(
+          `UPDATE lb_split_arms SET is_entry = TRUE WHERE id = (
+             SELECT id FROM lb_split_arms
+             WHERE test_id = $1 AND NOT archived
+             ORDER BY is_control DESC, sort_order, arm_key LIMIT 1
+           )`,
+          [testId]
+        );
+        // The entry arm moved off the promoted arm as a side effect of
+        // retiring it — the promotion no longer describes what serves, so the
+        // stamp goes with it (review MED #6).
+        await q(
+          `UPDATE lb_split_tests SET promoted_arm_id = NULL, promoted_at = NULL, updated_at = NOW()
+           WHERE id = $1 AND promoted_arm_id = $2`,
+          [testId, rows[0].id]
+        );
+      }
+      return { id: rows[0].id };
+    });
+
+    if (result.error) {
+      return res.status(result.status).json({ success: false, error: { code: result.error } });
     }
-    return res.json({ success: true, data: { id: rows[0].id } });
+    return res.json({ success: true, data: { id: result.id } });
   } catch (err) {
     console.error('[splitTests] update arm failed:', err);
     return res.status(500).json({ success: false, error: { code: 'server_error' } });
@@ -465,6 +506,7 @@ router.patch('/:id/arms/:armId', async (req, res) => {
 router.post('/:id/arms/:armId/entry', async (req, res) => {
   try {
     await ensureSplitTables();
+    await ensurePromoteColumns(); // this handler retracts a promotion (MED #6)
     const testId = s(req.params.id, 120);
     const armId = s(req.params.armId, 120);
     const result = await pgDb.begin(async (tx) => {
@@ -490,6 +532,19 @@ router.post('/:id/arms/:armId/entry', async (req, res) => {
       if (target.archived) return { error: 'arm_archived' };
       await q(`UPDATE lb_split_arms SET is_entry = FALSE WHERE test_id = $1 AND is_entry AND id <> $2`, [testId, armId]);
       await q(`UPDATE lb_split_arms SET is_entry = TRUE WHERE id = $1`, [armId]);
+      // REVIEW MED #6 — THIS IS THE ESCAPE HATCH THE PROMOTE ENDPOINT PROMISED.
+      // Promote's 409 comment said the operator "clears it with the existing
+      // entry endpoint". That was FALSE: this handler never touched
+      // promoted_arm_id, so a promoted test was a permanent dead end — a second
+      // promote could never succeed, and worse, moving the entry away left
+      // promoted_arm_id asserting a winner that was no longer being served,
+      // which is a stale claim about money sitting next to a live ledger.
+      // Moving the entry to a DIFFERENT arm now retracts the promotion.
+      await q(
+        `UPDATE lb_split_tests SET promoted_arm_id = NULL, promoted_at = NULL
+         WHERE id = $1 AND promoted_arm_id IS NOT NULL AND promoted_arm_id <> $2`,
+        [testId, armId]
+      );
       await q(`UPDATE lb_split_tests SET updated_at = NOW() WHERE id = $1`, [testId]);
       return { id: armId };
     });
@@ -614,8 +669,20 @@ const PROMOTE_TEST_COLS = `${TEST_COLS}, promoted_arm_id, promoted_at`;
 // Promoting a second, different arm onto an already-promoted test is not a
 // retry — it is a new decision about which page earns the traffic, and the
 // ledger behind the first verdict no longer describes what is serving. That
-// answers 409 `already_promoted`; the operator clears it with the existing
-// entry endpoint, which is explicit about what it does.
+// answers 409 `already_promoted`.
+//
+// ⚠️ THE 409 IS RECOVERABLE, AND IT ONLY BECAME SO IN THIS CHANGE (review
+// MED #6). An earlier version of this comment claimed the operator could clear
+// the state with the entry endpoint; that endpoint did not touch
+// promoted_arm_id, so the 409 was permanent and the row went on asserting a
+// winner that had stopped serving. TWO paths now retract a promotion, both
+// deliberate operator acts:
+//   • POST /:id/arms/:armId/entry with a DIFFERENT arm — the entry moved, so
+//     the promotion no longer describes what serves.
+//   • PATCH /:id { enabled: true } — the experiment restarted, so there is no
+//     winner any more.
+// Archiving the promoted entry arm retracts it too, because that handler hands
+// the entry role to another arm.
 router.post('/:id/promote', async (req, res) => {
   try {
     await ensureSplitTables();
@@ -652,9 +719,16 @@ router.post('/:id/promote', async (req, res) => {
       if (target.archived) return { error: 'arm_archived', status: 422 };
       if (!target.page_id) return { error: 'arm_has_no_page', status: 422 };
       // The exact predicate splitDelivery uses to decide an arm is servable.
+      // FOR SHARE (review LOW #15): the page's published state is a PRECONDITION
+      // of this promote, and without a share lock a concurrent PATCH could
+      // un-publish the page between this read and the commit — promoting a
+      // winner onto a page that is dark by the time the response is written.
+      // A share lock blocks that UPDATE until this transaction ends without
+      // blocking other readers.
       const [page] = await q(
         `SELECT id FROM funnel_pages
-         WHERE id = $1 AND NOT archived AND status = 'published'`,
+         WHERE id = $1 AND NOT archived AND status = 'published'
+         FOR SHARE`,
         [String(target.page_id)]
       );
       if (!page) return { error: 'arm_page_not_published', status: 422 };
@@ -663,7 +737,16 @@ router.post('/:id/promote', async (req, res) => {
         `UPDATE lb_split_arms SET is_entry = FALSE WHERE test_id = $1 AND is_entry AND id <> $2`,
         [testId, armId]
       );
-      await q(`UPDATE lb_split_arms SET is_entry = TRUE WHERE id = $1`, [armId]);
+      // Structural belt for MED #7: even with the arm PATCH now taking this
+      // same parent lock, the promotion refuses to set an archived arm as
+      // entry at the STATEMENT level. Zero rows here means the arm was retired
+      // under us; the transaction returns arm_archived instead of a 200 that
+      // crowns a page nobody will ever see.
+      const entrySet = await q(
+        `UPDATE lb_split_arms SET is_entry = TRUE WHERE id = $1 AND NOT archived RETURNING id`,
+        [armId]
+      );
+      if (!entrySet.length) return { error: 'arm_archived', status: 422 };
       const [row] = await q(
         `UPDATE lb_split_tests
          SET enabled = FALSE, promoted_arm_id = $2,

@@ -39,6 +39,10 @@ const ERROR_COPY = {
   page_blocks_too_large: 'One page in this export is over the 2MB content limit.',
   envelope_too_large: 'This export is over the 20MB limit.',
   invalid_blocks: 'A page in this export has content the editor cannot store.',
+  settings_invalid: 'This export\u2019s funnel settings are too large for the settings editor to save afterwards, so the import was refused.',
+  too_many_redirects: 'This export has more redirects than a single import allows (500).',
+  redirects_must_be_an_array: 'This export\u2019s redirects list is malformed.',
+  funnel_archived: 'That funnel is archived. Restore it before exporting.',
   slug_collision: 'Could not find a free URL slug for the new funnel. Try again.',
   name_too_long: 'The name is too long (200 characters max).',
   server_error: 'The server could not complete the import. Nothing was created.',
@@ -59,12 +63,30 @@ const describeError = (err) => {
 // Read the envelope WITHOUT trusting it. Everything here tolerates a missing or
 // wrong-typed field — this is a file from somewhere else, and the summary must
 // render rather than throw on a malformed one.
+// Review MED #4: the old detector only looked at the custom_js / head_html /
+// body_end_html FIELDS, so a <script> pasted into an `html` or `embed` BLOCK —
+// which funnelRender emits verbatim — was summarised as "no scripts". This
+// mirrors the server's `codeWarnings` detector (services/funnelTransfer.js) on
+// purpose: the operator must read the same sentence here, on the export
+// confirm, and on the import response. If one side changes, change all three.
+const HTML_BLOCK_TYPES = new Set(['html', 'embed']);
+const carriesRawHtmlBlock = (page) => {
+  const blocks = Array.isArray(page?.blocks) ? page.blocks : [];
+  return blocks.some((b) => {
+    if (!b || typeof b !== 'object') return false;
+    if (HTML_BLOCK_TYPES.has(String(b.type))) return true;
+    const html = b.props && typeof b.props === 'object' ? b.props.html : undefined;
+    return typeof html === 'string' && /<script/i.test(html);
+  });
+};
+
 function summarize(env) {
   const pages = Array.isArray(env?.pages) ? env.pages : [];
   const jsPages = pages.filter((p) => typeof p?.custom_js === 'string' && p.custom_js.trim()).length;
   const htmlPages = pages.filter(
     (p) => ['custom_html', 'head_html', 'body_end_html'].some((k) => typeof p?.[k] === 'string' && p[k].trim())
   ).length;
+  const blockPages = pages.filter(carriesRawHtmlBlock).length;
   const settings = env?.funnel?.settings || {};
   const funnelCode = ['custom_head_code', 'custom_body_end_code'].some(
     (k) => typeof settings?.[k] === 'string' && settings[k].trim()
@@ -73,6 +95,7 @@ function summarize(env) {
   const warnings = [];
   if (jsPages) warnings.push(`custom_js on ${jsPages} page${jsPages === 1 ? '' : 's'} — this is code from another funnel. Read it before publishing.`);
   if (htmlPages) warnings.push(`Raw HTML on ${htmlPages} page${htmlPages === 1 ? '' : 's'} (custom_html / head_html / body_end_html).`);
+  if (blockPages) warnings.push(`${blockPages} page${blockPages === 1 ? '' : 's'} carry raw HTML/embed blocks — these render verbatim, scripts included.`);
   if (funnelCode) warnings.push('Funnel-level script (head / body-end code) travels with this export.');
   if (homes.length === 0) warnings.push('No page is marked as the home page — the first page will be promoted.');
   if (homes.length > 1) warnings.push(`${homes.length} pages are marked home — the first wins and the rest are demoted.`);
@@ -81,6 +104,7 @@ function summarize(env) {
     slug: typeof env?.funnel?.slug === 'string' ? env.funnel.slug : '',
     exportedAt: env?.exported_at,
     pageCount: pages.length,
+    redirectCount: Array.isArray(env?.redirects) ? env.redirects.length : 0,
     home: homes[0]?.slug || pages[0]?.slug || '—',
     pages,
     warnings,
@@ -223,6 +247,7 @@ export default function ImportFunnelModal({ onClose, onImported }) {
                     <p className="text-sm font-medium text-text-primary truncate">{summary.name}</p>
                     <p className="text-xs text-text-muted mt-0.5">
                       {summary.pageCount} page{summary.pageCount === 1 ? '' : 's'}
+                      {summary.redirectCount ? <> · {summary.redirectCount} redirect{summary.redirectCount === 1 ? '' : 's'}</> : null}
                       {summary.slug ? <> · source slug <span className="font-mono">{summary.slug}</span></> : null}
                       {' '}· home <span className="font-mono">{summary.home}</span>
                     </p>
@@ -256,6 +281,10 @@ export default function ImportFunnelModal({ onClose, onImported }) {
                 </div>
               )}
 
+              {/* Envelopes exported before this change carried a `stripped`
+                  list. It no longer travels in the file (it names where the
+                  source deployment keeps its credentials), so this renders only
+                  for those older files. */}
               {summary.stripped.length > 0 && (
                 <p className="text-[11px] text-text-faint">
                   The exporter left {summary.stripped.length} setting
