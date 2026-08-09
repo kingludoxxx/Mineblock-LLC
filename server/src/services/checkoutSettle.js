@@ -16,6 +16,7 @@ import { ensureCheckoutTables } from './checkoutSchema.js';
 import { REUSABLE_PM_TYPES } from './gateways/stripe.js';
 import { createShopifyOrderForSession } from './shopifyOrderCreate.js';
 import { fireUpsellPurchaseConversion } from './trackingService.js';
+import { fireKlaviyoUpsellEvent } from './klaviyoEvents.js';
 
 const round2 = (n) => Math.round(Number(n) * 100) / 100;
 
@@ -205,6 +206,8 @@ export async function settleUpsellCharge({ chargeRowId, gatewayPaymentId, amount
   // replayed settle can never double-send.
   fireUpsellPurchaseConversion(row.session_id, chargeRowId, Number(row.amount))
     .catch((err) => console.error('[settle] upsell tracking fire failed (fail-open):', err.message));
+  // KLAVIYO-LANE HOOK: Placed Upsell Order event (ku_<sid>_<chargeRow> claim).
+  fireKlaviyoUpsellEvent(row.session_id, chargeRowId, Number(row.amount)).catch(() => {});
   return { ok: true, settled: true };
 }
 

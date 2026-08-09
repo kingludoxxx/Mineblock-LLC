@@ -30,6 +30,7 @@ import { startMoneySweeps } from '../services/moneySweeps.js';
 // a tracking failure can never block or fail settlement (DECISIONS #16). The
 // two call sites below are the only tracking-lane edits in this file.
 import { firePurchaseConversion } from '../services/trackingService.js';
+import { fireKlaviyoOrderEvent } from '../services/klaviyoEvents.js';
 // SPLIT-LANE HOOK: arm crediting fires from the same post-settle points as the
 // Purchase relay (both idempotent; failures never touch the webhook response).
 import { creditSessionConversions, voidSessionRefund } from '../services/splitCredits.js';
@@ -408,6 +409,8 @@ router.post('/stripe', async (req, res) => {
     }
     // TRACKING-LANE HOOK: fire Purchase (fire-and-forget, idempotent).
     if (result.ok) firePurchaseConversion(session.id).catch(() => {});
+    // KLAVIYO-LANE HOOK: Placed Order event (fire-and-forget, ko_<sid> claim).
+    if (result.ok) fireKlaviyoOrderEvent(session.id).catch(() => {});
     // SPLIT-LANE HOOK: credit the page-scope arm for the base order (idempotent
     // on (session, group, base:<session>); fires on settled AND already).
     if (result.ok) {
@@ -720,6 +723,8 @@ router.post('/whop', async (req, res) => {
     }
     // TRACKING-LANE HOOK: fire Purchase (fire-and-forget, idempotent).
     if (result.ok) firePurchaseConversion(session.id).catch(() => {});
+    // KLAVIYO-LANE HOOK: Placed Order event (fire-and-forget, ko_<sid> claim).
+    if (result.ok) fireKlaviyoOrderEvent(session.id).catch(() => {});
     // SPLIT-LANE HOOK: credit the page-scope arm for the base order (idempotent
     // on (session, group, base:<session>); fires on settled AND already).
     if (result.ok) {

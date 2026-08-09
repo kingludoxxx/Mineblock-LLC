@@ -27,6 +27,7 @@ import {
 import { resolveArm } from '../services/splitResolver.js';
 import { validateDiscountCode } from '../services/checkoutDiscount.js';
 import { isValidVid } from '../services/trackingClicks.js';
+import { fireKlaviyoLeadEvent } from '../services/klaviyoEvents.js';
 import { recordExposure } from '../services/splitCredits.js';
 
 // Write the exposure denominator. Every failure is swallowed: a split outage
@@ -370,6 +371,9 @@ router.post('/create-session', async (req, res) => {
       path: '/',
       maxAge: 6 * 60 * 60 * 1000,
     });
+
+    // KLAVIYO-LANE HOOK: lead event when an email arrived at mint (kl_<sid> claim).
+    if (cleanCustomer(body).email) fireKlaviyoLeadEvent(sessionId).catch(() => {});
 
     // Event trail — analytics side of the fail-open/fail-closed line: a
     // failed event write must never fail the mint.
@@ -1248,6 +1252,8 @@ router.post('/session/:id/customer', async (req, res) => {
        WHERE id = $1 AND status = 'processing'`,
       [id, customer]
     );
+    // KLAVIYO-LANE HOOK: lead event once an email lands (idempotent kl_<sid> claim).
+    if (customer.email) fireKlaviyoLeadEvent(id).catch(() => {});
     return res.json({ success: true, data: { saved: true } });
   } catch (err) {
     console.error('[checkout] session customer update failed:', err.message);
