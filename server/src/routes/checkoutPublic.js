@@ -1243,7 +1243,7 @@ router.post('/session/:id/bump', async (req, res) => {
     await ensureCheckoutTables();
     const id = String(req.params.id || '').slice(0, 80);
     const rows = await pgQuery(
-      `SELECT id, funnel_id, status, line_items, shipping, tax, currency,
+      `SELECT id, funnel_id, page_id, status, line_items, shipping, tax, currency,
               discount_code, discount_amount, confirm_token_hash
        FROM co_sessions WHERE id = $1`, [id]
     );
@@ -1256,7 +1256,9 @@ router.post('/session/:id/bump', async (req, res) => {
     if (s.status !== 'processing') {
       return res.status(409).json({ success: false, error: { code: 'session_not_editable' } });
     }
-    const pageId = String(req.body?.page_id || '').slice(0, 64);
+    // page_id defaults to the session's own mint page — the checkout page that
+    // rendered the bump is the page the session was minted from.
+    const pageId = String(req.body?.page_id || s.page_id || '').slice(0, 64);
     const blockId = String(req.body?.block_id || '').slice(0, 64);
     const selected = req.body?.selected === true;
     if (!pageId || !blockId) {
@@ -1389,6 +1391,10 @@ router.post('/session/:id/bump', async (req, res) => {
         discount_code: discountCode,
         discount_amount: discountAmount,
         ...(discountDropped ? { discount_dropped: discountDropped } : {}),
+        // Full line set so the page runtime re-renders the order summary
+        // without a second round-trip (prices are ours, display-safe).
+        line_items: newLines,
+        currency: s.currency,
         totals: {
           subtotal,
           shipping: Number(s.shipping),

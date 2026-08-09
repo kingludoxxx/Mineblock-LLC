@@ -624,8 +624,16 @@ function renderBlockInner(block) {
           ? `<p class='lb-bump-desc' style='margin:8px 0 0 28px;color:#6b7280;font-size:0.9rem'>${esc(String(p.description))}</p>`
           : '';
       const checked = p.checked === true ? " checked='checked'" : '';
+      // Charge wiring: the checkout runtime only arms bumps that carry a
+      // variant (data-bump-armed). The block id is the server-side offer key —
+      // POST /session/:id/bump reads variant/qty from THIS page's block props,
+      // so the browser can never name a product or a price.
+      const bumpId = /^[A-Za-z0-9_-]{1,64}$/.test(String((block || {}).id || ''))
+        ? String(block.id) : '';
+      const armed = bumpId && String(p.variant_id || '').trim() ? " data-bump-armed='1'" : '';
+      const bumpRef = bumpId ? ` data-bump-block='${bumpId}'${armed}` : '';
       return (
-        `<div class='lb-order-bump' style='border:2px dashed #f59e0b;border-radius:12px;background:#fffbeb;padding:16px 18px;margin:16px 0'>` +
+        `<div class='lb-order-bump'${bumpRef} style='border:2px dashed #f59e0b;border-radius:12px;background:#fffbeb;padding:16px 18px;margin:16px 0'>` +
         `<label style='display:flex;align-items:flex-start;gap:10px;cursor:pointer'>` +
         `<input type='checkbox' class='lb-bump-check'${checked} style='margin-top:3px;width:18px;height:18px;accent-color:#f59e0b'/>` +
         `<span class='lb-bump-label' data-el='label' style='flex:1;font-weight:600;color:#111827'>${label}</span>` +
@@ -1335,7 +1343,28 @@ var fb=root.querySelector('[data-fos-fallback]');if(fb&&embed.purchase_url){fb.s
 
 function initBlock(root){var cfg={};try{cfg=JSON.parse((root.querySelector('.fos-checkout-cfg')||{}).textContent||'{}');}catch(e){cfg={};}var items=(cfg&&cfg.line_items)||[];if(!items.length){showError(root,'This checkout has no product configured yet.');return;}
 post('/create-session',{funnel_id:CTX.funnel_id,page_id:CTX.page_id,gateway:'whop',line_items:items}).then(function(res){if(res.status!==200||!res.json||!res.json.success){showError(root,sessErr((res.json&&res.json.error&&res.json.error.code)||('http_'+res.status)));return;}var session=res.json.data;window.__fos_checkout.session=session;persistSession(session);fillSummaries(session);return post('/whop/create-session',{session_id:session.session_id}).then(function(er){if(er.status!==200||!er.json||!er.json.success){showError(root,embedErr((er.json&&er.json.error&&er.json.error.code)||('http_'+er.status)));return;}var embed=er.json.data;if(!embed||!embed.whop_session_id){showError(root,'Checkout is not fully set up yet (no session).');return;}mountEmbed(root,embed);});}).catch(function(){showError(root,'Network error starting checkout. Please try again.');});}
+/* ORDER BUMP toggle. Only ARMED bumps (a variant wired in the block settings)
+   are interactive; the server re-prices from the published page's block, so
+   this code names only the block id and a boolean. SAFETY: when the in-place
+   plan update is not confirmed (frame_update !== 'in_place'), the toggle is
+   REVERTED server-side and the box restored — the payment frame must never
+   charge a total the session no longer holds. */
+function bumpNote(wrap,msg){try{var n=wrap.querySelector('.lb-bump-note');if(!n){n=document.createElement('p');n.className='lb-bump-note';n.style.margin='8px 0 0 28px';n.style.fontSize='0.85rem';n.style.color='#b45309';wrap.appendChild(n);}n.textContent=msg;}catch(e){}}
+function bumpApply(d){try{var ses=window.__fos_checkout.session||{};ses.line_items=d.line_items||ses.line_items;ses.totals=d.totals||ses.totals;ses.currency=d.currency||ses.currency;window.__fos_checkout.session=ses;fillSummaries(ses);}catch(e){}}
+function initBump(wrap){var box=wrap.querySelector('input.lb-bump-check');if(!box){return;}var blockId=wrap.getAttribute('data-bump-block')||'';if(!blockId){return;}
+box.addEventListener('change',function(){var want=box.checked;var ses=window.__fos_checkout.session||{};var sid=ses.session_id||'';if(!sid){box.checked=!want;bumpNote(wrap,'Checkout is still loading - try again in a moment.');return;}
+box.disabled=true;
+post('/session/'+sid+'/bump',{block_id:blockId,selected:want}).then(function(r){
+if(r.status!==200||!r.json||!r.json.success){box.checked=!want;box.disabled=false;var code=(r.json&&r.json.error&&r.json.error.code)||('http_'+r.status);if(code==='bump_not_chargeable'){bumpNote(wrap,'This offer is not available right now.');}else if(code==='total_below_minimum'){bumpNote(wrap,'Removing this would put the order below the minimum amount.');}else if(code==='pricing_unavailable'||code==='discount_unavailable'){bumpNote(wrap,'Pricing is temporarily unavailable - please try again.');}else{bumpNote(wrap,'Could not update the order - please try again.');}return;}
+var d=r.json.data||{};
+if(d.frame_update!=='in_place'){/* revert: never let the frame charge a stale total */
+post('/session/'+sid+'/bump',{block_id:blockId,selected:!want}).then(function(rr){var dd=(rr.json&&rr.json.data)||{};bumpApply(dd);box.checked=!want;box.disabled=false;bumpNote(wrap,'The payment form could not pick up this change - please refresh the page to apply it.');}).catch(function(){box.checked=!want;box.disabled=false;bumpNote(wrap,'Please refresh the page.');});return;}
+bumpApply(d);box.disabled=false;
+if(d.discount_dropped){bumpNote(wrap,'Note: your discount code no longer applies to this order total.');}else{var old=wrap.querySelector('.lb-bump-note');if(old){old.remove();}}
+}).catch(function(){box.checked=!want;box.disabled=false;bumpNote(wrap,'Network error - please try again.');});
+});}
 ready(function(){try{var blocks=document.querySelectorAll('[data-fos-checkout]');if(!blocks.length){return;}Array.prototype.forEach.call(blocks,function(b){try{initBlock(b);}catch(e){}});}catch(e){}});
+ready(function(){try{var bumps=document.querySelectorAll(".lb-order-bump[data-bump-armed='1']");Array.prototype.forEach.call(bumps,function(w){try{initBump(w);}catch(e){}});}catch(e){}});
 })();`;
   return `<script>window.__fos_checkout=Object.assign(window.__fos_checkout||{},${json});${body}</script>`;
 }
