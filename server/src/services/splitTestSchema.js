@@ -175,6 +175,55 @@ async function createTables(query) {
     `CREATE INDEX IF NOT EXISTS idx_split_pending_open
      ON lb_split_pending_credits (created_at) WHERE resolved_at IS NULL`
   );
+
+  await addOperatorColumns(query);
+}
+
+// ── Operator-surface columns (ADDITIVE ONLY) ───────────────────────────────
+// Everything below was added for the operator UI (setup modal / canvas A/B node
+// / results modal). Every statement is ADD COLUMN IF NOT EXISTS or CREATE INDEX
+// IF NOT EXISTS: no column is ever dropped, retyped or backfilled, and NO
+// existing invariant moves. A database created before this lane picks the new
+// columns up on the next boot with its ledger untouched.
+//
+//   handle      — the route slug the split owns, funnel-os's lb_split_groups.slug
+//                 ("the canonical route it owns"). Serving is a SEPARATE wiring
+//                 task; this column is the operator's declaration of intent and
+//                 the thing the UI renders as /<handle>.
+//   domain      — optional host binding for the WHOLE split (blank = the
+//                 funnel's default domain). One domain per test, never per arm:
+//                 arms that serve on different hosts are not comparable.
+//   sort_order  — operator-chosen arm order (A, B, C … left-to-right). Ties
+//                 fall back to arm_key so ordering is always total.
+//   is_entry    — the arm served at the bare /<handle> route.
+//
+// DECISION MADE — is_entry is a NEW flag, NOT a reuse of is_control:
+//   is_control is the STATISTICAL baseline (the results table's "A ctrl" column
+//   and the vs-control comparison read it). is_entry is a SERVING fact (which
+//   arm answers the bare route). Overloading one flag would mean that moving
+//   the entry arm silently moves the statistical baseline mid-experiment, which
+//   invalidates every vs-control number already published. They are allowed to
+//   point at the same arm — and do by default — but they are separate columns.
+async function addOperatorColumns(query) {
+  await query(`ALTER TABLE lb_split_tests ADD COLUMN IF NOT EXISTS handle TEXT`);
+  await query(`ALTER TABLE lb_split_tests ADD COLUMN IF NOT EXISTS domain TEXT`);
+  await query(`ALTER TABLE lb_split_arms ADD COLUMN IF NOT EXISTS sort_order INTEGER NOT NULL DEFAULT 0`);
+  await query(`ALTER TABLE lb_split_arms ADD COLUMN IF NOT EXISTS is_entry BOOLEAN NOT NULL DEFAULT FALSE`);
+
+  // A live handle is unique PER FUNNEL — the database is the arbiter of a
+  // create race, exactly as funnel-os makes (website_id, slug) unique with a
+  // partial filter on archived:false. NULL handles never collide (Postgres
+  // treats NULLs as distinct in a unique index), so a test with no handle yet
+  // is always insertable.
+  await query(
+    `CREATE UNIQUE INDEX IF NOT EXISTS uq_split_tests_handle
+     ON lb_split_tests (funnel_id, handle) WHERE NOT archived AND handle IS NOT NULL`
+  );
+  // At most ONE live entry arm per test — structural, not a read-then-write.
+  await query(
+    `CREATE UNIQUE INDEX IF NOT EXISTS uq_split_arms_entry
+     ON lb_split_arms (test_id) WHERE is_entry AND NOT archived`
+  );
 }
 
 export const EXPOSURE_CHARGE_SENTINEL = '__exposure__';
