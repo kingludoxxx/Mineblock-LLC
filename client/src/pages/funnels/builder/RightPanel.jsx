@@ -607,8 +607,13 @@ function BlockProps({ block, onProp, onDelete, onDuplicate }) {
 // F6. The Status dropdown could unpublish a live page in one click with no
 // confirmation. Draft→Published stays one click; Published→Draft is the
 // destructive direction and asks first, naming the URL that goes dark.
-function PageSettings({ meta, onMeta, funnel, blocksCount, saveError }) {
-  const slugTaken = isSlugCollision(saveError);
+function PageSettings({ meta, onMeta, funnel, blocksCount, saveError, slugRefusal }) {
+  // Two sources, deliberately. `saveError` is the live banner — it flags the
+  // box the moment the PATCH comes back. `slugRefusal` is the STICKY record
+  // the page keeps per field: the refused slug is held out of the dirty set,
+  // so once an unrelated save succeeds and clears the banner, this is the only
+  // thing left saying the value the operator typed never reached the server.
+  const slugTaken = isSlugCollision(saveError) || !!slugRefusal;
   const [slugDraft, setSlugDraft] = useState(meta.slug);
   const [lastSeenSlug, setLastSeenSlug] = useState(meta.slug);
 
@@ -701,9 +706,16 @@ function PageSettings({ meta, onMeta, funnel, blocksCount, saveError }) {
           {slugTaken ? (
             <p className="mt-1.5 flex items-start gap-1.5 text-[11px] text-danger leading-snug">
               <AlertTriangle className="w-3 h-3 mt-0.5 shrink-0" />
-              Another page in this funnel already uses this slug, so the server refused the change and your
-              previous slug is still live. Pick a different one and press Enter — the refused slug is NOT
-              retried on its own, which is what keeps your other edits saving normally.
+              <span>
+                {/* Names BOTH values when we have them. "The server refused the change" alone
+                    left the operator to work out which slug is live — and the box above now
+                    shows the SERVER's, not the one they typed. */}
+                {slugRefusal?.value
+                  ? <>Another page in this funnel already uses <code className="font-mono">{String(slugRefusal.value)}</code>, so it was refused and this page is still at <code className="font-mono">{meta.slug}</code>. </>
+                  : <>Another page in this funnel already uses this slug, so the server refused the change and your previous slug is still live. </>}
+                Pick a different one and press Enter — the refused slug is NOT retried on its own,
+                which is what keeps your other edits saving normally.
+              </span>
             </p>
           ) : (
             <p className="mt-1 text-[11px] text-text-faint leading-snug">
@@ -739,19 +751,32 @@ function PageSettings({ meta, onMeta, funnel, blocksCount, saveError }) {
   );
 }
 
-export default function RightPanel({ block, meta, funnel, blocksCount, saveError, onMeta, onProp, onDelete, onDuplicate }) {
+export default function RightPanel({
+  block, meta, funnel, blocksCount, saveError, slugRefusal, propsEpoch = 0,
+  onMeta, onProp, onDelete, onDuplicate,
+}) {
   return (
     <aside className="w-72 shrink-0 border-l border-border-subtle bg-bg-card overflow-y-auto min-h-0">
       {block ? (
+        // `propsEpoch` in the key is how an AI batch that rewrote THIS block
+        // discards half-typed prop editors (F13-edge). JsonField commits on
+        // blur, so a surviving draft would write the pre-batch value back.
         <BlockProps
-          key={block.id}
+          key={`${block.id}:${propsEpoch}`}
           block={block}
           onProp={onProp}
           onDelete={onDelete}
           onDuplicate={onDuplicate}
         />
       ) : (
-        <PageSettings meta={meta} onMeta={onMeta} funnel={funnel} blocksCount={blocksCount} saveError={saveError} />
+        <PageSettings
+          meta={meta}
+          onMeta={onMeta}
+          funnel={funnel}
+          blocksCount={blocksCount}
+          saveError={saveError}
+          slugRefusal={slugRefusal}
+        />
       )}
     </aside>
   );

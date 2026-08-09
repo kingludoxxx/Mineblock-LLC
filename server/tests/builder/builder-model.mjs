@@ -13,6 +13,7 @@ import {
   parseInlineMarkup, bumpHeadline, bumpUnconfigured, blockNameAttr,
   isSlugCollision, escapeHtml, displayPrice, bumpNameColor,
   refusedSaveField, retryFieldsAfterRefusal, mergeReplaceProps, WIRING_KEYS,
+  resyncMeta, metaFromPage, recordRefusal, clearRefusals, META_FIELDS,
   BUMP_DEFAULT_HEADLINE, BUMP_DEFAULT_NAME_COLOR, SERVER_GENERATED_NOTE,
 } from '../../../client/src/pages/funnels/builder/builderModel.js';
 
@@ -347,6 +348,116 @@ eq(refusedSaveField({}), null, 'F5: an object → null, never throws');
     retryFieldsAfterRefusal(carried, null), carried,
     'F5: a null error (network abort) re-queues everything — an unread refusal is not a named one'
   );
+}
+
+// ===========================================================================
+// resyncMeta — THE PHANTOM SLUG (F5-b)
+//
+// The gating defect the F5 fix introduced. Holding the refused field out of
+// the dirty set stops the poisoning, but the refused VALUE stayed in `meta`,
+// which is what the slug box renders — so the box showed a slug that existed
+// nowhere but the browser, and the next successful save of anything else
+// cleared the banner. Chip: "Saved". Box: a slug the server never accepted.
+// ===========================================================================
+{
+  // The exact sequence: operator typed /checkout, server refused it, page is
+  // still at /checkout-2, and a LATER save of the blocks succeeds.
+  const afterRefusal = { title: 'Checkout', slug: '/checkout', status: 'draft' };
+  const serverPage = { title: 'Checkout', slug: '/checkout-2', status: 'draft' };
+  const next = resyncMeta(afterRefusal, serverPage, new Set(['blocks']));
+  eq(next.slug, '/checkout-2', 'F5-b: the refused slug is replaced by the one the server actually holds');
+  eq(next.title, 'Checkout', 'F5-b: untouched fields are left alone');
+}
+{
+  // The re-sync must NOT eat keystrokes typed while the PATCH was in flight.
+  const current = { title: 'New title', slug: '/a', status: 'draft' };
+  const serverPage = { title: 'Old title', slug: '/a', status: 'draft' };
+  const next = resyncMeta(current, serverPage, new Set(['title']));
+  eq(next.title, 'New title', 'F5-b: a field STILL DIRTY belongs to the operator and is not overwritten');
+}
+{
+  // Identity when nothing moved, so React bails out of the re-render.
+  const current = { title: 't', slug: '/a', status: 'draft' };
+  ok(
+    resyncMeta(current, { title: 't', slug: '/a', status: 'draft' }, new Set()) === current,
+    'F5-b: an unchanged re-sync returns the SAME object (no render churn)'
+  );
+  ok(
+    resyncMeta(current, null, new Set()) === current,
+    'F5-b: a response with no page is not authority to overwrite anything'
+  );
+  ok(
+    resyncMeta(current, undefined, []) === current,
+    'F5-b: undefined page → identity, never throws'
+  );
+}
+{
+  // Status rides the same path — this is what makes the publish flip honest.
+  const next = resyncMeta({ title: '', slug: '/', status: 'draft' }, { status: 'published' }, []);
+  eq(next.status, 'published', 'F5-b: status is re-synced from the response too');
+  eq(next.slug, '/', 'F5-b: an absent slug on the row reads as "/", matching load()');
+  eq(next.title, '', 'F5-b: an absent title reads as "", matching load()');
+}
+eq(
+  metaFromPage(null), { title: '', slug: '/', status: 'draft' },
+  'F5-b: metaFromPage(null) is the same default load() uses, never throws'
+);
+eq([...META_FIELDS], ['title', 'slug', 'status'], 'F5-b: the re-synced field set is exactly the meta bag');
+ok(Object.isFrozen(META_FIELDS), 'F5-b: the field list is frozen');
+
+// ===========================================================================
+// recordRefusal / clearRefusals — STICKINESS (F5-b)
+//
+// The banner rides on `saveError`, which the next successful save clears. A
+// refusal whose field is no longer queued would vanish while its cause was
+// unresolved, so it is kept per-FIELD until a write actually carries it.
+// ===========================================================================
+{
+  const msg = 'A page with this slug already exists in this funnel';
+  const r1 = recordRefusal({}, msg, { slug: '/checkout', blocks: [] });
+  eq(r1.slug.value, '/checkout', 'F5-b: the refusal remembers the value that was REJECTED, not the live one');
+  eq(r1.slug.message, msg, 'F5-b: the refusal keeps the server message verbatim');
+
+  // A save of something ELSE must not clear it — that is the whole point.
+  const r2 = clearRefusals(r1, ['blocks', 'title']);
+  ok(r2.slug, 'F5-b: a successful save of OTHER fields leaves the slug refusal standing');
+  ok(r2 === r1, 'F5-b: …and returns the same object, so nothing re-renders');
+
+  // A save that CARRIES the slug clears it.
+  const r3 = clearRefusals(r1, ['slug', 'blocks']);
+  eq(Object.keys(r3), [], 'F5-b: a write that carries the slug clears its refusal');
+}
+{
+  const msg = 'A page with this slug already exists in this funnel';
+  // A second collision replaces the record rather than stacking.
+  const r1 = recordRefusal({}, msg, { slug: '/a' });
+  const r2 = recordRefusal(r1, msg, { slug: '/b' });
+  eq(r2.slug.value, '/b', 'F5-b: a fresh collision replaces the remembered value');
+  eq(Object.keys(r2).length, 1, 'F5-b: refusals key by field, they do not stack');
+}
+{
+  // A refusal that names NO field records nothing — there is no box to flag.
+  const r = recordRefusal({}, 'blocks exceed the 2MB limit', { blocks: [] });
+  eq(Object.keys(r), [], 'F5-b: an unscoped refusal records no field marker');
+  ok(recordRefusal({}, null, null) !== undefined, 'F5-b: null error / null payload → {}, never throws');
+  eq(clearRefusals(null, ['slug']), {}, 'F5-b: a null map → {}, never throws');
+  eq(clearRefusals({ slug: { message: 'x' } }, null), { slug: { message: 'x' } }, 'F5-b: a non-array field list is a no-op');
+}
+{
+  // END-TO-END of the reported defect, as state transitions.
+  const msg = 'A page with this slug already exists in this funnel';
+  let meta = { title: 'T', slug: '/taken', status: 'draft' };   // operator typed it
+  let refusals = {};
+  // 1. the PATCH carrying title+slug is refused
+  refusals = recordRefusal(refusals, msg, { title: 'T', slug: '/taken' });
+  const retry = retryFieldsAfterRefusal(['title', 'slug'], msg);
+  eq(retry, ['title'], 'end-to-end: the slug is held back, the title still retries');
+  // 2. a later save of blocks succeeds and the response carries the real page
+  meta = resyncMeta(meta, { title: 'T', slug: '/live', status: 'draft' }, new Set());
+  refusals = clearRefusals(refusals, ['blocks']);
+  eq(meta.slug, '/live', 'end-to-end: the box now shows the slug the SERVER holds');
+  ok(refusals.slug, 'end-to-end: …and the refusal is STILL on screen saying /taken was rejected');
+  eq(refusals.slug.value, '/taken', 'end-to-end: naming the value the operator tried');
 }
 
 // ===========================================================================

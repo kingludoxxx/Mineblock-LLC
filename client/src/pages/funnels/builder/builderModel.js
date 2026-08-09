@@ -398,6 +398,75 @@ export function retryFieldsAfterRefusal(keys, saveError) {
   return list.filter((k) => k !== refused);
 }
 
+/** The meta fields the top bar and the inspector render. */
+export const META_FIELDS = Object.freeze(['title', 'slug', 'status']);
+
+/** The meta bag a page row describes. Same coercions load() and restore use. */
+export function metaFromPage(page) {
+  const p = page && typeof page === 'object' ? page : {};
+  return { title: p.title || '', slug: p.slug || '/', status: p.status || 'draft' };
+}
+
+/**
+ * Meta re-synced from a successful PATCH response.
+ *
+ * THE PHANTOM-SLUG FIX. retryFieldsAfterRefusal drops a refused field from the
+ * dirty set so one taken slug cannot poison every later save — but the refused
+ * VALUE stayed in `meta`, which is what the slug box renders. The box then
+ * showed a value that existed nowhere but this browser, and the next
+ * successful save of anything else cleared the error banner, leaving the chip
+ * reading "Saved" over a slug the server had never accepted.
+ *
+ * `dirtyFields` is the set still queued when the response lands. Those belong
+ * to the OPERATOR — they were typed after this PATCH went out — and are
+ * skipped, which is what stops the re-sync from eating keystrokes.
+ *
+ * Returns `current` unchanged when nothing moved, so React can bail out.
+ */
+export function resyncMeta(current, page, dirtyFields) {
+  const cur = current && typeof current === 'object' ? current : {};
+  // No page in the response is not authority to overwrite anything.
+  if (!page || typeof page !== 'object') return cur;
+  const server = metaFromPage(page);
+  const dirty = dirtyFields instanceof Set
+    ? dirtyFields
+    : new Set(Array.isArray(dirtyFields) ? dirtyFields : []);
+  let changed = false;
+  const next = { ...cur };
+  for (const k of META_FIELDS) {
+    if (dirty.has(k)) continue;
+    if (next[k] !== server[k]) { next[k] = server[k]; changed = true; }
+  }
+  return changed ? next : cur;
+}
+
+/**
+ * Sticky per-field refusals: { slug: { message, value } }.
+ *
+ * The top-bar banner rides on `saveError`, which the next successful save
+ * clears. A refusal whose field is no longer queued would therefore vanish
+ * from the screen while its cause was still unresolved — so it is recorded
+ * against the FIELD, with the value that was rejected, and cleared only when a
+ * write actually carries that field (or a restore replaces the page).
+ */
+export function recordRefusal(refusals, saveError, payload) {
+  const base = refusals && typeof refusals === 'object' ? refusals : {};
+  const field = refusedSaveField(saveError);
+  if (!field) return base;
+  const p = payload && typeof payload === 'object' ? payload : {};
+  return { ...base, [field]: { message: String(saveError), value: p[field] } };
+}
+
+/** Drops refusals for fields a write has now carried. Identity when no match. */
+export function clearRefusals(refusals, fields) {
+  const base = refusals && typeof refusals === 'object' ? refusals : {};
+  const list = Array.isArray(fields) ? fields : [];
+  if (!list.some((k) => Object.prototype.hasOwnProperty.call(base, k))) return base;
+  const next = { ...base };
+  for (const k of list) delete next[k];
+  return next;
+}
+
 // ---------------------------------------------------------------------------
 // AI op wiring floor
 // ---------------------------------------------------------------------------
