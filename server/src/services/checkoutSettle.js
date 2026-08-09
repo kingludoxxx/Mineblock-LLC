@@ -15,6 +15,7 @@ import { pgQuery } from '../db/pg.js';
 import { ensureCheckoutTables } from './checkoutSchema.js';
 import { REUSABLE_PM_TYPES } from './gateways/stripe.js';
 import { createShopifyOrderForSession } from './shopifyOrderCreate.js';
+import { fireUpsellPurchaseConversion } from './trackingService.js';
 
 const round2 = (n) => Math.round(Number(n) * 100) / 100;
 
@@ -199,6 +200,11 @@ export async function settleUpsellCharge({ chargeRowId, gatewayPaymentId, amount
   } catch (err) {
     console.error('[settle] upsell event write failed (non-fatal):', err.message);
   }
+  // Ad-platform Purchase for the upsell leg — fire-and-forget; idempotent via
+  // the lb_tracking_sent claim (event_id pur_<sid>_u_<chargeRowId>), so a
+  // replayed settle can never double-send.
+  fireUpsellPurchaseConversion(row.session_id, chargeRowId, Number(row.amount))
+    .catch((err) => console.error('[settle] upsell tracking fire failed (fail-open):', err.message));
   return { ok: true, settled: true };
 }
 

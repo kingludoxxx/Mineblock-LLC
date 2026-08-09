@@ -26,6 +26,7 @@ import {
 // mint (page scope) and at the upsell decision point (offer scope).
 import { resolveArm } from '../services/splitResolver.js';
 import { validateDiscountCode } from '../services/checkoutDiscount.js';
+import { isValidVid } from '../services/trackingClicks.js';
 import { recordExposure } from '../services/splitCredits.js';
 
 // Write the exposure denominator. Every failure is swallowed: a split outage
@@ -311,6 +312,27 @@ router.post('/create-session', async (req, res) => {
     }
 
     const sessionId = `co_${crypto.randomBytes(16).toString('hex')}`;
+    // Last-click attribution handoff: persist the visitor id + a snapshot of
+    // the click ids this visitor landed with (latest value per click param),
+    // so the paid-session Purchase fire attributes revenue even after the
+    // lb_clicks 90d TTL. Fail-open — a vault miss must never block the mint.
+    const visitorVid = String(req.cookies?._fos_vid || '');
+    const clickVault = {};
+    if (isValidVid(visitorVid)) {
+      try {
+        const clicks = await pgQuery(
+          `SELECT DISTINCT ON (click_key) click_key, click_id
+           FROM lb_clicks
+           WHERE vid = $1 AND bot = FALSE AND click_key IS NOT NULL
+           ORDER BY click_key, ts DESC
+           LIMIT 8`,
+          [visitorVid]
+        );
+        for (const c of clicks) clickVault[c.click_key] = c.click_id;
+      } catch (err) {
+        console.error('[checkout] click-vault read failed (fail-open):', err.message);
+      }
+    }
     // Charge-authorization secret (see loadPaidSession). Only the HASH is
     // stored; the token itself leaves this server exactly once, as an HttpOnly
     // cookie, so it can never reach a URL, a beacon, a log or page JavaScript.
@@ -320,8 +342,8 @@ router.post('/create-session', async (req, res) => {
       `INSERT INTO co_sessions (
          id, funnel_id, page_id, status, line_items,
          subtotal, shipping, tax, total, currency, customer, tracking_net,
-         confirm_token_hash
-       ) VALUES ($1, $2, $3, 'processing', $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
+         confirm_token_hash, vid, click_vault
+       ) VALUES ($1, $2, $3, 'processing', $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`,
       [
         sessionId,
         body.funnel_id ? String(body.funnel_id).slice(0, 64) : null,
@@ -332,6 +354,8 @@ router.post('/create-session', async (req, res) => {
         cleanCustomer(body),
         trackingSnapshot(req),
         hashToken(confirmToken),
+        isValidVid(visitorVid) ? visitorVid : null,
+        clickVault,
       ]
     );
 
