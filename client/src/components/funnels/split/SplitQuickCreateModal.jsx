@@ -9,6 +9,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { X, Shuffle, AlertTriangle, Loader2, Image as ImageIcon } from 'lucide-react';
 import usePageThumbnail from '../usePageThumbnail';
 import { createSplitTest, fetchEligiblePages, quickHandleFromSlug, randSuffix4 } from './splitApi';
+import { pageOptionText } from './splitUiCopy';
 
 const ERROR_COPY = {
   invalid_handle: 'Could not derive a valid route handle from this page — rename its slug first.',
@@ -159,12 +160,10 @@ export default function SplitQuickCreateModal({ open, onClose, funnel, pageA, on
                   text-text-primary focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent
                   transition-colors cursor-pointer disabled:opacity-40"
               >
-                <option value="">{loading ? 'Loading pages…' : 'Pick a page'}</option>
+                <option value="">{loading ? 'Loading pages…' : 'Choose a page…'}</option>
                 {options.map((p) => (
                   <option key={p.id} value={p.id} disabled={!p.eligible}>
-                    {p.title || 'Untitled'} ({p.slug})
-                    {p.eligible ? '' : ` — ${p.reason_label}`}
-                    {p.eligible && p.status !== 'published' ? " · draft (won't serve until published)" : ''}
+                    {pageOptionText(p)}
                   </option>
                 ))}
               </select>

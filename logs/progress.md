@@ -3875,3 +3875,138 @@ belongs on the analytics-lane payload; CLAUDE.md section 5 says coordinate
 rather than cross, so it is documented in-code instead.
 STATUS: COMPLETE
 ---
+
+---
+TIMESTAMP: 2026-08-10 00:52
+TASK: Split-test UI parity with the reference tool (creation / management /
+canvas node)
+BUILT: Brought three split surfaces to the operator's reference spec on branch
+feat/split-ui-parity. (1) CREATE modal: the select placeholder now reads
+"Choose a page…" and its option text moved to a shared helper. (2) SPLIT PAGES
+modal: the handle label is now "Split Name (handle)"; created/last-edited moved
+into a top-right "Page Analytics" block; every arm after the first gained a
+"Choose / import page" select that re-points the arm via PATCH
+/:id/arms/:armId; the add-arm column became Duplicate a page -> "or" divider ->
+a real "Import existing page" <select> (the popover is gone). (3) CANVAS NODE:
+header is "<handle> A/B" with no leading slash; the three tiles are now
+Visitors / CTR % / CVR % with the unit in the LABEL and no sign in the value;
+the caption is the verbatim "lifetime · not the verdict"; SPLIT + A/B chips
+added at the card bottom. New pure module
+client/src/components/funnels/split/splitUiCopy.js holds every copy/option
+helper so the harness can import it directly (no JSX, no services/api).
+FunnelCanvasPage now passes RAW numbers to the node instead of pre-formatted
+strings. Four sibling-lane files (SplitResultsModal.jsx, splitStats.js,
+splitCredits.js, splitApi.js) were read but NOT modified.
+TESTED: node scripts/verifySplitUiGuards.mjs (extended from 41 to 97
+assertions, incl. em-dash-vs-zero honesty, NaN/Infinity/garbage inputs, null
+page objects, no-args partitioning, nextSplitLetter-vs-armLetter drift over 200
+indices, and a verbatim reference-copy guard over all three JSX files);
+node server/tests/money-path/split-delivery.mjs; node
+scripts/verifySplitTesting.mjs; npx vite build; npx eslint over the five
+changed files. Edge cases exercised: absent measurement must render an em-dash
+while a measured zero must render 0 (both directions asserted), a letterless
+arm, a handle of "" / null / undefined, and a page picker with zero eligible
+pages.
+OUTPUT: verifySplitUiGuards 97 passed / 0 failed (exit 0); split-delivery 33
+passed / 0 failed; verifySplitTesting 48 passed / 0 failed; vite build exit 0
+(2705 modules, only the pre-existing >500kB chunk warning); eslint exit 0 with
+no output on the changed files. One harness assertion I wrote initially FAILED
+(fmtRate1(12.35) expected "12.4", got "12.3") — the code was right and my
+expectation was wrong: toFixed rounds the stored binary double (12.3499…), so
+the assertion was corrected and pinned with a comment rather than the code
+being changed.
+DECISIONS: (1) CTR % renders a permanent em-dash. Verified by reading the
+source, not assumed: server/src/services/funnelAnalytics.js:1222 sets per-arm
+submit_rate to `visitors > 0 ? 1 : null`, a constant that would paint "100.0"
+on every arm forever, and the split ledger has never recorded a click. The
+reference feeds its CTR from page-level lifetime click counters this platform
+does not have per arm. Orders lost its tile to the reference's three-tile
+layout and was preserved in the CVR tile's tooltip rather than dropped
+(DECISION MADE). (2) The caption's word "lifetime" is literally true because
+the canvas fetch windows from the test's created_at and no exposure can predate
+the test that minted it — that window IS the test's whole life, not a trailing
+30 days. The window was deliberately NOT widened (DECISION MADE). (3) The
+SPLIT/A-B chips sit INSIDE the card frame rather than below it as in the
+reference: the hover toolbar already occupies the -bottom-9 strip and the two
+would overlap (DECISION MADE). (4) Ellipses use U+2026 ("Choose a page…")
+rather than three periods, matching both the reference tool's own strings and
+the surrounding codebase (DECISION MADE). (5) NO server change was made or
+needed for a 3rd arm: the route's only arm-count rule is a floor
+(need_at_least_two_arms, splitTests.js:101), arm_key is an open 32-char charset
+with no CHECK and no enum, POST /:id/arms appends an Nth arm, and the resolver
+walks a cumulative sum over N relative weights. Verified against the route and
+schema (DECISION MADE). (6) The per-arm page picker is withheld from arm A: it
+is the split's original page, and swapping it silently would change what "the
+control" means without changing a single number (DECISION MADE).
+STATUS: COMPLETE
+---
+
+---
+TIMESTAMP: 2026-08-10 01:12
+TASK: Split-test UI parity — FIX-FIRST review round (1 blocker, 5 medium, 6 minor)
+BUILT: B1 (BLOCKER): PATCH /:id/arms/:armId { page_id } had ZERO server-side
+validation while every other money-meaning write in routes/splitTests.js was
+guarded — a page id was taken on trust, truncated and written. Added
+assertArmPageAssignable + ARM_PAGE_REFUSALS in that route: the page must exist,
+belong to THIS funnel, not be archived, be published (arm_page_not_published,
+mirroring /promote, with FOR SHARE so a concurrent un-publish cannot race the
+commit), not be the funnel default, not be post-purchase, not be an arm of
+another live test, and NOT already be an arm of THIS test. Every refusal is a
+named code plus prose; the arm's existence is now checked before the page rules
+so a bad arm id answers not_found rather than a page refusal. The client's
+errText now PREFERS the server's sentence over its own code map.
+M1: both selects were commit-on-change — one mutation per keyboard arrow, so
+arrowing from A to D added B and C on the way. Both are now pick-then-confirm
+(local pending state + an explicit button); the per-arm one shows the confirm
+sentence. M2/M5: canChoosePage is keyed on is_control, not on index (the
+control is not necessarily first — POST .../control moves it — and sort_order
+is operator-reorderable), and re-pointing any live arm now requires an explicit
+confirm naming both pages and what survives. M5 also fixed real header drift:
+the "+ Add Split X" header was count-based while the POST minted the first
+UNUSED arm_key, so with a mid-sequence archived arm the header promised C and
+the server minted b. One function (nextArmKey) now answers both. M3: the canvas
+Visitors tooltip is source-aware — overlay mode says "reached checkout" (the
+results modal's own wording for that number, which is a checkout-mint count),
+ledger mode says "assigned to this arm". M4: the parity guard could not fail —
+it grepped raw source, so a needle was satisfied by the COMMENT describing the
+copy. It now strips comments and title= tooltips first, splits needles into
+COPY vs BINDING, and carries mutation checks. Minors: m1 same-test siblings
+render disabled with "already an arm of this test" instead of vanishing; m2 one
+eligibility predicate (isIneligible, explicit === false); m3 an unofferable
+current page renders as a disabled selected option instead of a blank select;
+m5 the ledger-fallback CVR now obeys the same floor and clamp as overlay mode;
+m6 the CTR rationale softened; NIT "1 arms" → armCountLabel. m7 left alone (out
+of lane).
+TESTED: NEW route-level harness server/tests/money-path/split-arm-page-guard.mjs
+drives the REAL router over embedded PG (real authenticate + requirePermission +
+the transaction): all 8 refusals with code + prose + a no-write assertion, the
+happy path, re-assigning an arm to its own page (must NOT self-refuse), clearing
+page_id, an archived arm not blocking its page, an archived test not blocking
+its pages, unknown arm/test → 404, a SQL-ish page id, a 5000-char page id, no
+token → 401, and the untouched weight/control paths. verifySplitUiGuards grew
+from 97 to 168 assertions. Regressions: split-delivery and verifySplitTesting.
+OUTPUT: split-arm-page-guard 42/42; verifySplitUiGuards 168/168; split-delivery
+33/33; verifySplitTesting 48/48; vite build exit 0; eslint 0 on all five changed
+client files; node --check on routes/splitTests.js OK. M4 was verified BY LIVE
+MUTATION, not by assertion alone: with "Split Name (handle)" replaced by "Split
+handle" in the real file the harness reported "FAIL parity copy:
+split/SplitSetupModal.jsx renders \"Split Name (handle)\" — 167 passed, 1
+failed"; the file was restored and it returned to 168/168.
+DECISIONS: (1) CORRECTION TO THE PREVIOUS ENTRY. That entry's DECISION (1) said
+"neither source can produce" a CTR. That was too strong and I am retracting it:
+funnelAnalytics DOES publish a per-PAGE ctr. What does not exist is a per-ARM
+click — the ledger has never carried one and per-arm submit_rate is a constant.
+Borrowing the page-level proxy would answer a different question over a
+different window under a caption that says "lifetime", so the dash is a PRODUCT
+CALL, not a data limit. The comment and the tooltip now say that (DECISION
+MADE). (2) Clearing an arm's page (page_id: null) is deliberately NOT guarded —
+the resolver treats a page-less arm as dark and re-picks around it
+(split-delivery T13), so it is a retreat to a safe state (DECISION MADE).
+(3) The eligibility predicate treats only an EXPLICIT eligible:false as
+ineligible; an unstated page is offered, because the server guard is now the
+authority and hiding an option the operator can see is worse than a named
+refusal (DECISION MADE). (4) splitPages.js was NOT modified — only its exported
+POST_PURCHASE_TYPES is imported — to keep the change inside the route file the
+coordinator named (DECISION MADE).
+STATUS: COMPLETE
+---

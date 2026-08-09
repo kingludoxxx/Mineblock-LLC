@@ -22,6 +22,7 @@ import { ensureSplitTables } from '../services/splitTestSchema.js';
 import { readResults } from '../services/splitCredits.js';
 import {
   listArmEligiblePages, normHandle, normDomain, handleCollidesWithPageSlug,
+  POST_PURCHASE_TYPES,
 } from '../services/splitPages.js';
 
 const router = Router();
@@ -355,6 +356,70 @@ router.post('/:id/arms', async (req, res) => {
   }
 });
 
+// ── ARM PAGE ASSIGNMENT GUARD (review B1) ──────────────────────────────────
+//
+// PATCH page_id re-points a LIVE arm at a different page. It is every bit as
+// money-meaning as /promote — it changes what a visitor assigned to that arm
+// sees, while the arm keeps its key, its weight and its whole ledger history —
+// and it was the ONLY write in this router with no validation at all. A page
+// id was taken on trust, truncated to 120 chars and written.
+//
+// The predicate below mirrors listArmEligiblePages (the same rules the picker
+// greys pages out with) plus /promote's published check, so the server refuses
+// exactly what the UI declines to offer. The UI is now a convenience over this
+// guard rather than the only thing enforcing it.
+//
+// SAME-TEST DUPLICATE IS ITS OWN REFUSAL, and it is the one a mirror of
+// listArmEligiblePages would have missed. That function deliberately keeps THIS
+// test's own arm pages "eligible" — they ARE the arms — so mirroring it alone
+// would let arm B be pointed at arm A's page: a test measuring X against X,
+// which produces a real-looking split, real traffic, and a difference that is
+// pure noise by construction.
+const ARM_PAGE_REFUSALS = {
+  page_not_found: 'That page is not on this funnel, or it has been archived.',
+  arm_page_not_published: 'That page is a draft. Publish it first — a draft arm holds weight but never serves, so the split would quietly run on one page.',
+  page_is_funnel_default: 'The funnel default page is reached without passing the splitter, so an arm pointed at it can never be measured.',
+  page_post_purchase: 'That is a post-purchase page. It sits behind the checkout and is routed by the funnel itself, never by the splitter.',
+  page_in_other_test: 'That page is already an arm of another live split on this funnel.',
+  page_already_an_arm: 'That page is already an arm of THIS test. A split cannot measure a page against itself.',
+};
+
+/**
+ * @returns {Promise<string|null>} a refusal code, or null when assignable.
+ * Runs inside the caller's transaction — every read is under the parent-row
+ * lock the handler already holds.
+ */
+async function assertArmPageAssignable(q, { testId, funnelId, armId, pageId }) {
+  // FOR SHARE, exactly as /promote does and for the same reason: the page's
+  // published state is a PRECONDITION of this write, and without the share lock
+  // a concurrent un-publish could land between this read and the commit,
+  // arming a page that is dark by the time the response is written.
+  const [page] = await q(
+    `SELECT id, is_home, type, status FROM funnel_pages
+     WHERE id = $1 AND funnel_id = $2 AND NOT archived
+     FOR SHARE`,
+    [pageId, funnelId]
+  );
+  if (!page) return 'page_not_found';
+  if (String(page.status) !== 'published') return 'arm_page_not_published';
+  if (page.is_home) return 'page_is_funnel_default';
+  if (POST_PURCHASE_TYPES.has(String(page.type))) return 'page_post_purchase';
+
+  // Claimed by a LIVE arm of a LIVE test on this funnel. Split into two codes
+  // so the operator gets the reason they can act on: another test is somebody
+  // else's experiment, this test is their own duplicate.
+  const claimed = await q(
+    `SELECT a.test_id FROM lb_split_arms a
+     JOIN lb_split_tests t ON t.id = a.test_id
+     WHERE t.funnel_id = $1 AND NOT t.archived AND NOT a.archived
+       AND a.page_id = $2 AND a.id <> $3`,
+    [funnelId, pageId, armId]
+  );
+  if (claimed.some((r) => r.test_id !== testId)) return 'page_in_other_test';
+  if (claimed.length) return 'page_already_an_arm';
+  return null;
+}
+
 // PATCH /:id/arms/:armId  — weight / control / archived / page / order.
 //
 // THE BASELINE IS MONEY-MEANING, SO IT IS GUARDED IN BOTH DIRECTIONS.
@@ -419,8 +484,36 @@ router.patch('/:id/arms/:armId', async (req, res) => {
     // locked in plan order deadlock (40P01), one parent row cannot.
     const result = await pgDb.begin(async (tx) => {
       const q = (text, params = []) => tx.unsafe(text, params);
-      const [test] = await q(`SELECT id FROM lb_split_tests WHERE id = $1 FOR UPDATE`, [testId]);
+      const [test] = await q(
+        `SELECT id, funnel_id FROM lb_split_tests WHERE id = $1 FOR UPDATE`,
+        [testId]
+      );
       if (!test) return { error: 'not_found', status: 404 };
+
+      // ── ARM PAGE ASSIGNMENT (review B1) ─────────────────────────────────
+      // The arm's existence is checked HERE rather than being left to the
+      // UPDATE's zero-row case, so a patch aimed at a non-existent arm answers
+      // not_found instead of a page refusal about an arm that isn't there.
+      if (b.page_id !== undefined) {
+        const [targetArm] = await q(
+          `SELECT id FROM lb_split_arms WHERE id = $1 AND test_id = $2`,
+          [armId, testId]
+        );
+        if (!targetArm) return { error: 'not_found', status: 404 };
+        // Only a NON-NULL assignment is guarded. Clearing an arm's page stays
+        // allowed: the resolver already treats a page-less arm as dark and
+        // re-picks around it (split-delivery T13), so clearing is a retreat to
+        // a safe state, not a new reachable one.
+        const pid = b.page_id ? s(b.page_id, 120) : null;
+        if (pid) {
+          const refusal = await assertArmPageAssignable(q, {
+            testId, funnelId: test.funnel_id, armId, pageId: pid,
+          });
+          if (refusal) {
+            return { error: refusal, status: 422, message: ARM_PAGE_REFUSALS[refusal] };
+          }
+        }
+      }
 
       // Flipping an arm TO control while another live arm already holds it is
       // rejected (mirror of the create-path rule) — use POST .../control instead.
@@ -486,7 +579,14 @@ router.patch('/:id/arms/:armId', async (req, res) => {
     });
 
     if (result.error) {
-      return res.status(result.status).json({ success: false, error: { code: result.error } });
+      // Named code + prose. Every other refusal in this router is code-only and
+      // the client maps it; the page refusals carry the sentence too, because
+      // they are the ones that say WHY a page the operator can see cannot be
+      // used, and that reason is not derivable from the code alone.
+      return res.status(result.status).json({
+        success: false,
+        error: { code: result.error, ...(result.message ? { message: result.message } : {}) },
+      });
     }
     return res.json({ success: true, data: { id: result.id } });
   } catch (err) {
