@@ -121,49 +121,127 @@ const round = (v, dp = 6) => {
 };
 const money = (v) => (Number.isFinite(v) ? Math.round(v * 100) / 100 : null);
 
+// ── DISPLAY FLOORS FOR THE TAIL ────────────────────────────────────────────
+//
+// A p-value of 4e-9 is arithmetically fine and RENDERS AS A LIE. Rounded to six
+// decimals it becomes 0.000000, and `1 - p` becomes exactly 1, which the panel
+// prints as "100.0% confidence" — a claim no finite experiment can support and
+// the single most over-confident string this module could emit.
+//
+// analyticsStats already refuses to do this on its zero-variance branch (it
+// caps at 0.9999 and names the reason rather than emitting 1/Infinity). These
+// two constants apply that same posture to the ORDINARY path, where a large
+// sample with a real effect reaches the same place by a different road.
+//
+// FLOORED FOR DISPLAY, NOT FOR THE DECISION. `significant` is still judged on
+// the true p against the corrected alpha, so flooring can never flip a verdict —
+// it only stops the panel printing a certainty that does not exist.
+export const P_DISPLAY_FLOOR = 1e-6;
+export const CONFIDENCE_DISPLAY_CAP = 0.9999;
+
+// A published p is never below the floor, and a published confidence is never
+// above the cap. `p_value_floored` travels beside them so the UI can render
+// "< 0.000001" rather than an exact-looking 0.000001.
+const publishP = (p) => (p === null || p === undefined ? null : Math.max(Number(p), P_DISPLAY_FLOOR));
+const publishConfidence = (c) => (c === null || c === undefined
+  ? null
+  : Math.min(Number(c), CONFIDENCE_DISPLAY_CAP));
+
+/**
+ * THE CONVERSION NUMERATOR, under two spellings.
+ *
+ * funnelAnalytics' arm rows call it `orders`; the split ledger
+ * (`splitCredits.readResults`) calls it `conversions`. Both are accepted, and
+ * the tie-break is EXPLICIT rather than positional:
+ *
+ *   the first POSITIVE value wins, checking `conversions` then `orders`;
+ *   if neither is positive, the first value that is present at all wins.
+ *
+ * The positive-first rule exists because `orders: 0` is what an object literal
+ * carries when the field was simply never populated, and a structural 0 must
+ * not shadow a real count sitting in the other spelling. That is not
+ * hypothetical: reading `orders` unconditionally is exactly how a real
+ * cvr_delta of 0.03 got published as 0.00 in the first cut of this file.
+ *
+ * A genuine zero still survives — when BOTH spellings are absent or zero the
+ * answer is 0, which is the truth for an arm that converted nothing.
+ */
+function conversionNumerator(row) {
+  const candidates = [row?.conversions, row?.orders];
+  for (const v of candidates) {
+    const n = Number(v);
+    if (Number.isFinite(n) && n > 0) return n;
+  }
+  for (const v of candidates) {
+    if (v !== undefined && v !== null) return v;
+  }
+  return 0;
+}
+
+/**
+ * THE DENOMINATOR, under two spellings.
+ *
+ * `exposures` is this module's name for it (see the M4 note on
+ * computeSplitStatistics). `visitors` is accepted because funnelAnalytics'
+ * arm rows spell it that way, and rejecting them would make this module
+ * usable from only one of its two natural callers.
+ */
+function exposureDenominator(row) {
+  const e = Number(row?.exposures);
+  if (Number.isFinite(e) && e > 0) return e;
+  return row?.exposures !== undefined && row?.exposures !== null ? row.exposures : row?.visitors;
+}
+
 /**
  * PER-ARM READINESS — how far THIS arm is from being scoreable, in deltas.
  *
  * `buildVerdict` answers "which arms are thin"; this answers "how much more".
- * The deltas are what the UI prints ("needs ~240 more visitors") and they are
+ * The deltas are what the UI prints ("needs ~240 more exposures") and they are
  * the reason this is per-arm rather than a single global figure: with 3 arms,
- * one can be 10 visitors short while another is 2,000 short, and one number
- * describing both is wrong for both.
+ * one can be 10 short while another is 2,000 short, and one number describing
+ * both is wrong for both.
+ *
+ * THE UNIT IS `exposures`, NOT `visitors`, AND THE RENAME IS THE POINT. Two
+ * different numbers were both called "visitors" on one screen: the results
+ * table's `visitors` counts DELIVERED PAGE RENDERS (lb_split_views) while this
+ * one counts ATTRIBUTABLE CHECKOUT SESSIONS (the exposure ledger). They differ
+ * by a large factor in normal operation — 910 against 400 on the fixture that
+ * exposed this — and an operator seeing "400/300 visitors ready" directly under
+ * a table reading "910 visitors" concludes the panel is broken. Both numbers
+ * are real; only one is this test's denominator.
  *
  * `blockers` is an ORDERED list of machine-readable reasons, so the UI can
  * render them without parsing prose. Empty ⇔ ready.
  *
- * @param {{arm_key?:string, visitors?:number, conversions?:number}} row
- * @param {{minVisitors?:number, minConversions?:number}} [opts]
- * @returns {{arm_key:string, visitors:number, conversions:number, ready:boolean,
- *            needs_visitors:number, needs_conversions:number,
- *            min_visitors:number, min_conversions:number, blockers:string[]}}
+ * @param {{arm_key?:string, exposures?:number, visitors?:number,
+ *          conversions?:number, orders?:number}} row
+ * @param {{minExposures?:number, minConversions?:number}} [opts]
  */
 export function armReadiness(row, opts = {}) {
-  const minVisitors = nonNegInt(opts.minVisitors) || SPLIT_MIN_VISITORS_PER_ARM;
+  const minExposures = nonNegInt(opts.minExposures) || SPLIT_MIN_VISITORS_PER_ARM;
   const minConversions = Number.isFinite(Number(opts.minConversions)) && Number(opts.minConversions) >= 0
     ? Math.floor(Number(opts.minConversions))
     : SPLIT_MIN_CONVERSIONS_PER_ARM;
-  const visitors = nonNegInt(row?.visitors);
+  const exposures = nonNegInt(exposureDenominator(row));
   // Conversions are CLAMPED to the denominator. A crediting bug upstream that
   // reports more orders than exposures must produce a capped (wrong-but-sane)
   // readiness, never a negative "needs" that would read as a surplus.
-  const conversions = Math.min(nonNegInt(row?.conversions), visitors);
+  const conversions = Math.min(nonNegInt(conversionNumerator(row)), exposures);
 
-  const needsVisitors = Math.max(0, minVisitors - visitors);
+  const needsExposures = Math.max(0, minExposures - exposures);
   const needsConversions = Math.max(0, minConversions - conversions);
   const blockers = [];
-  if (needsVisitors > 0) blockers.push('below_visitor_floor');
+  if (needsExposures > 0) blockers.push('below_exposure_floor');
   if (needsConversions > 0) blockers.push('below_conversion_floor');
 
   return {
     arm_key: String(row?.arm_key ?? ''),
-    visitors,
+    exposures,
     conversions,
     ready: blockers.length === 0,
-    needs_visitors: needsVisitors,
+    needs_exposures: needsExposures,
     needs_conversions: needsConversions,
-    min_visitors: minVisitors,
+    min_exposures: minExposures,
     min_conversions: minConversions,
     blockers,
   };
@@ -197,19 +275,16 @@ export function armReadiness(row, opts = {}) {
  * @param {{visitors?:number, orders?:number, conversions?:number, net_revenue?:number}} challenger
  */
 export function incrementalLift(control, challenger) {
-  const nC = nonNegInt(control?.visitors);
-  const nV = nonNegInt(challenger?.visitors);
+  const nC = nonNegInt(exposureDenominator(control));
+  const nV = nonNegInt(exposureDenominator(challenger));
   const revC = finite(control?.net_revenue);
   const revV = finite(challenger?.net_revenue);
 
   const rpvC = nC > 0 ? revC / nC : null;
   const rpvV = nV > 0 ? revV / nV : null;
 
-  const numerator = (row) => (row?.orders !== undefined && row?.orders !== null
-    ? row.orders
-    : row?.conversions);
-  const ordersC = Math.min(nonNegInt(numerator(control)), nC);
-  const ordersV = Math.min(nonNegInt(numerator(challenger)), nV);
+  const ordersC = Math.min(nonNegInt(conversionNumerator(control)), nC);
+  const ordersV = Math.min(nonNegInt(conversionNumerator(challenger)), nV);
   const cvrC = nC > 0 ? ordersC / nC : null;
   const cvrV = nV > 0 ? ordersV / nV : null;
 
@@ -254,14 +329,14 @@ export function incrementalLift(control, challenger) {
  * read as unknown; "0 days" reads as "decide now", which is the opposite.
  *
  * @param {number|null} requiredPerArm
- * @param {number} visitorsPerDay — total across all arms, the operator's own unit
+ * @param {number} exposuresPerDay — total across all arms, the operator's own unit
  * @param {{arms?:number, alreadyPerArm?:number}} [opts]
  * @returns {number|null} days, 1dp
  */
-export function timeToDecisionDays(requiredPerArm, visitorsPerDay, opts = {}) {
+export function timeToDecisionDays(requiredPerArm, exposuresPerDay, opts = {}) {
   const required = Number(requiredPerArm);
   if (!Number.isFinite(required) || required <= 0) return null;
-  const rate = Number(visitorsPerDay);
+  const rate = Number(exposuresPerDay);
   if (!Number.isFinite(rate) || rate <= 0) return null;
   const arms = nonNegInt(opts.arms) || 2;
   const already = nonNegInt(opts.alreadyPerArm);
@@ -275,25 +350,40 @@ export function timeToDecisionDays(requiredPerArm, visitorsPerDay, opts = {}) {
 // Prose for each withheld state. Written out rather than composed from
 // fragments so the sentence an operator reads is reviewable in one place, and
 // so no code path can assemble a half-sentence.
+// Each entry is a function of the shape it is describing, so the sentence can
+// never disagree with the arm count it is talking about. The first cut wrote
+// "Both arms need at least 30 visitors" unconditionally, which is simply false
+// prose on a 4-arm test — and "Only one arm has recorded traffic" was reachable
+// with ZERO arms, describing a state that did not exist.
 const WITHHOLD_PROSE = {
-  no_arms: 'This test has no arms with any recorded traffic, so there is nothing to compare.',
-  fewer_than_two_arms_with_data:
-    'Only one arm has recorded traffic. A split test needs at least two arms with data before any '
-    + 'comparison is possible — the figures below are a report, not an experiment.',
-  below_stats_floor:
-    `Both arms need at least ${MIN_STATS_SAMPLE} visitors before a confidence figure means anything. `
-    + 'Below that the test would report a percentage drawn almost entirely from noise, so no p-value '
-    + 'is calculated at all.',
-  zero_variance:
-    'Every visitor in both arms produced an identical outcome, so there is no variation for a '
+  no_arms: () =>
+    'This test has no arms, so there is nothing to compare. Add at least two arms to run it.',
+  fewer_than_two_arms: () =>
+    'This test has only one arm. A split test needs at least two before any comparison is '
+    + 'possible — the figures below are a report, not an experiment.',
+  fewer_than_two_arms_with_data: ({ withData }) =>
+    `${withData === 0 ? 'No arm has' : 'Only one arm has'} recorded traffic yet. A comparison needs `
+    + 'at least two arms with data, so no test has been run on these figures.',
+  below_stats_floor: ({ total, qualifying }) =>
+    `${qualifying === 0 ? 'No arm' : 'Only 1 of the ' + total + ' arms'} has reached the `
+    + `${MIN_STATS_SAMPLE}-exposure minimum needed before a confidence figure means anything, and a `
+    + 'comparison needs two. Below that floor a percentage is drawn almost entirely from noise, so '
+    + 'no p-value is calculated at all.',
+  zero_variance: () =>
+    'Every exposure in every arm produced an identical outcome, so there is no variation for a '
     + 'significance test to work on. No p-value can be calculated from a constant.',
-  no_control:
+  no_control: () =>
     'No control arm is marked on this test, so there is no baseline to compare the other arms '
     + 'against.',
+  control_below_stats_floor: () =>
+    `The control arm has not reached the ${MIN_STATS_SAMPLE}-exposure minimum. Every comparison on `
+    + 'this test is measured against the control, so until it clears the floor no arm can be scored '
+    + '— however much traffic the other arms have taken.',
 };
 
 const emptyComparison = () => ({
   p_value: null,
+  p_value_floored: false,
   confidence: null,
   significant: false,
   statistic: null,
@@ -307,38 +397,64 @@ const emptyComparison = () => ({
  * PURE: rows in, verdicts out. Every number is derived from the arguments and
  * nothing else — no DB, no clock, no environment.
  *
- * Each row: `{ arm_key, is_control, visitors, conversions, net_revenue,
+ * Each row: `{ arm_key, is_control, exposures, conversions, net_revenue,
  *              net_revenue_sum_squares }`
- *   • `visitors` is the FULL denominator (buyers AND non-buyers). A non-buyer is
- *     a genuine 0 observation; dropping them would compare only buyers, which is
- *     AOV, not RPV — a different metric on a different denominator.
+ *   • `exposures` is the FULL denominator (buyers AND non-buyers). A non-buyer
+ *     is a genuine 0 observation; dropping them would compare only buyers, which
+ *     is AOV, not RPV — a different metric on a different denominator.
+ *     `visitors` is accepted as an alias for funnelAnalytics-shaped rows, and
+ *     `orders` as an alias for `conversions`; see conversionNumerator.
  *   • `net_revenue` is Σx over that same population, and
  *     `net_revenue_sum_squares` is Σx². Sufficient statistics, so the caller can
  *     compute them in ONE SQL pass instead of shipping every row, and so the
  *     mean and the variance are guaranteed to come from the same series.
+ *
+ * ── SUB-FLOOR ARMS ARE EXCLUDED FROM THE FAMILY, NOT ALLOWED TO POISON IT ──
+ *
+ * The first cut gated on EVERY arm (`parsed.some(r => r.exposures < FLOOR)`)
+ * and withheld the whole test if any one of them was thin. That is wrong in the
+ * most expensive direction: adding a fresh arm to a 20,000-exposure test — or
+ * merely having an archived zero-traffic arm ride along in readResults' output,
+ * which it always does — nulled every figure on the entire test, while the
+ * windowed banner thirty pixels above went on naming a winner. The operator saw
+ * two panels disagreeing and believed the confident one.
+ *
+ * So the family is scoped:
+ *   • QUALIFYING arms (`exposures >= MIN_STATS_SAMPLE`) are compared, counted in
+ *     the Bonferroni correction, and subject to the readiness floors.
+ *   • PENDING arms (below it) get `stats_status: 'insufficient'`, keep their
+ *     readiness block so the panel can say how far off they are, and take NO
+ *     part in the comparison, the alpha correction or the winner gate. They are
+ *     reported in `verdict.pending_arms`.
+ *   • The verdict needs >= 2 QUALIFYING arms; otherwise it withholds.
+ *
+ * The control is the one arm that cannot be merely pending: every comparison is
+ * measured against it, so a sub-floor control withholds the whole test under its
+ * own named reason.
  *
  * Returns `{ arms: {arm_key: {...}}, verdict: {...}, floors: {...},
  *            method: {...} }`. `arms` is keyed rather than an array so a caller
  *            can attach each block to its own row without an index join.
  *
  * @param {Array} rows
- * @param {{alpha?:number, minVisitors?:number, minConversions?:number,
- *          visitorsPerDay?:number}} [opts]
+ * @param {{alpha?:number, minExposures?:number, minConversions?:number,
+ *          exposuresPerDay?:number}} [opts]
  */
 export function computeSplitStatistics(rows, opts = {}) {
   const alpha = Number.isFinite(opts.alpha) && opts.alpha > 0 ? opts.alpha : SPLIT_ALPHA;
-  const minVisitors = nonNegInt(opts.minVisitors) || SPLIT_MIN_VISITORS_PER_ARM;
+  const minExposures = nonNegInt(opts.minExposures) || SPLIT_MIN_VISITORS_PER_ARM;
   const minConversions = Number.isFinite(Number(opts.minConversions)) && Number(opts.minConversions) >= 0
     ? Math.floor(Number(opts.minConversions))
     : SPLIT_MIN_CONVERSIONS_PER_ARM;
+  const exposuresPerDay = opts.exposuresPerDay;
 
   const parsed = (Array.isArray(rows) ? rows : []).map((r) => {
-    const visitors = nonNegInt(r?.visitors);
+    const exposures = nonNegInt(exposureDenominator(r));
     return {
       arm_key: String(r?.arm_key ?? ''),
       is_control: Boolean(r?.is_control),
-      visitors,
-      conversions: Math.min(nonNegInt(r?.conversions), visitors),
+      exposures,
+      conversions: Math.min(nonNegInt(conversionNumerator(r)), exposures),
       net_revenue: finite(r?.net_revenue),
       // Σx² is a sum of squares — it cannot be negative. A negative one is
       // corrupt input, and clamping it here stops varianceFromSums being fed a
@@ -349,11 +465,13 @@ export function computeSplitStatistics(rows, opts = {}) {
   });
 
   const floors = {
-    min_visitors_per_arm: minVisitors,
+    min_exposures_per_arm: minExposures,
     min_conversions_per_arm: minConversions,
     min_stats_sample: MIN_STATS_SAMPLE,
     alpha,
   };
+
+  const qualifies = (r) => r.exposures >= MIN_STATS_SAMPLE;
 
   // Per-arm blocks exist for EVERY arm, always — including in every withheld
   // state. A UI that has to branch on "did the stats block come back?" ends up
@@ -361,41 +479,65 @@ export function computeSplitStatistics(rows, opts = {}) {
   // readiness numbers.
   const armsOut = {};
   for (const r of parsed) {
-    const readiness = armReadiness(r, { minVisitors, minConversions });
-    const variance = varianceFromSums(r.visitors, r.net_revenue, r.net_revenue_sum_squares);
+    const readiness = armReadiness(r, { minExposures, minConversions });
+    const variance = varianceFromSums(r.exposures, r.net_revenue, r.net_revenue_sum_squares);
+    const belowFloor = !qualifies(r);
     armsOut[r.arm_key] = {
       arm_key: r.arm_key,
       is_control: r.is_control,
       is_winner: false,
-      visitors: r.visitors,
+      // 'insufficient' — below the statistics floor, excluded from the family.
+      // 'baseline'/'compared' are assigned once a control is resolved.
+      stats_status: belowFloor ? 'insufficient' : 'pending_comparison',
+      in_comparison: !belowFloor,
+      exposures: r.exposures,
       conversions: r.conversions,
-      // Rates are WITHHELD below the stats floor, exactly as funnelAnalytics
-      // withholds `cvr`. A "50% conversion rate" off 2 visitors reads as a
-      // measurement.
-      cvr: r.visitors >= MIN_STATS_SAMPLE ? round(r.conversions / r.visitors, 6) : null,
-      cvr_withheld: r.visitors > 0 && r.visitors < MIN_STATS_SAMPLE,
-      rev_per_visitor: r.visitors > 0 ? round(r.net_revenue / r.visitors, 6) : null,
+      // BOTH rates are withheld below the floor, and they are withheld
+      // TOGETHER. The first cut withheld `cvr` but published
+      // `rev_per_visitor` from the same sub-floor denominator — so the panel
+      // refused to print "50% conversion" off 2 exposures and cheerfully
+      // printed "$37.50 per visitor" off the same two. One floor, both rates.
+      cvr: belowFloor ? null : round(r.conversions / r.exposures, 6),
+      cvr_withheld: r.exposures > 0 && belowFloor,
+      rev_per_exposure: belowFloor ? null : round(r.net_revenue / r.exposures, 6),
+      rev_per_exposure_withheld: r.exposures > 0 && belowFloor,
       net_revenue_variance: round(variance, 6),
       readiness,
-      // Filled in below for non-control arms once a baseline exists AND the
-      // withholding gates pass. Present-and-null, never absent — an absent key
-      // and a null key render differently in JS and only one of them is honest.
+      // Filled in below for qualifying non-control arms. Present-and-null, never
+      // absent — an absent key and a null key render differently in JS and only
+      // one of them is honest.
       conversion: emptyComparison(),
       revenue: emptyComparison(),
       lift: null,
     };
   }
 
+  // NaN-FREE COMPARATOR. `(-Infinity) - (-Infinity)` is NaN, so the previous
+  // subtraction form made the sort comparator undefined for any PAIR of
+  // zero-exposure arms — and a comparator that returns NaN leaves the order
+  // engine-defined. Compared, not subtracted.
+  const rpvOf = (r) => (r.exposures > 0 ? r.net_revenue / r.exposures : null);
   const ranked = [...parsed].sort((x, y) => {
-    const rx = x.visitors > 0 ? x.net_revenue / x.visitors : -Infinity;
-    const ry = y.visitors > 0 ? y.net_revenue / y.visitors : -Infinity;
+    const rx = rpvOf(x);
+    const ry = rpvOf(y);
+    if (rx === null && ry === null) return String(x.arm_key).localeCompare(String(y.arm_key));
+    if (rx === null) return 1;
+    if (ry === null) return -1;
+    if (rx === ry) return String(x.arm_key).localeCompare(String(y.arm_key));
     return ry - rx;
   }).map((r) => r.arm_key);
 
-  const withData = parsed.filter((r) => r.visitors > 0);
-  const readinessAll = parsed.map((r) => armsOut[r.arm_key].readiness);
-  const thinArms = readinessAll.filter((r) => !r.ready).map((r) => r.arm_key);
-  const ready = parsed.length >= 2 && thinArms.length === 0;
+  const withData = parsed.filter((r) => r.exposures > 0);
+  const qualifying = parsed.filter(qualifies);
+  const pendingArms = parsed.filter((r) => !qualifies(r)).map((r) => r.arm_key);
+  // Readiness is judged over the arms IN THE FAMILY. A pending arm is not
+  // "thin", it is not yet part of the experiment at all — calling it thin is
+  // what let one fresh arm hold an otherwise-conclusive test hostage.
+  const thinArms = qualifying
+    .map((r) => armsOut[r.arm_key].readiness)
+    .filter((rd) => !rd.ready)
+    .map((rd) => rd.arm_key);
+  const ready = qualifying.length >= 2 && thinArms.length === 0;
 
   const withhold = (reason) => ({
     arms: armsOut,
@@ -405,13 +547,19 @@ export function computeSplitStatistics(rows, opts = {}) {
       status: 'insufficient_data',
       reason,
       headline: 'Not enough data to call this test.',
-      body: WITHHOLD_PROSE[reason] || WITHHOLD_PROSE.below_stats_floor,
+      body: (WITHHOLD_PROSE[reason] || WITHHOLD_PROSE.below_stats_floor)({
+        total: parsed.length,
+        withData: withData.length,
+        qualifying: qualifying.length,
+      }),
       winner: null,
       leader: null,
       control: parsed.find((r) => r.is_control)?.arm_key ?? null,
       ready,
       thin_arms: thinArms,
-      comparisons: Math.max(0, parsed.length - 1),
+      pending_arms: pendingArms,
+      qualifying_arms: qualifying.map((r) => r.arm_key),
+      comparisons: Math.max(0, qualifying.length - 1),
       alpha_adjusted: null,
       required_sample_per_arm: null,
       time_to_decision_days: null,
@@ -419,9 +567,8 @@ export function computeSplitStatistics(rows, opts = {}) {
     },
   });
 
-  if (parsed.length < 2 || withData.length === 0) {
-    return withhold(parsed.length < 2 ? 'fewer_than_two_arms_with_data' : 'no_arms');
-  }
+  if (parsed.length === 0) return withhold('no_arms');
+  if (parsed.length === 1) return withhold('fewer_than_two_arms');
   if (withData.length < 2) return withhold('fewer_than_two_arms_with_data');
 
   // BASELINE. `is_control` is the ONLY source. There is deliberately no
@@ -433,56 +580,59 @@ export function computeSplitStatistics(rows, opts = {}) {
   // is reported as a missing control rather than papered over with a guess.
   const control = parsed.find((r) => r.is_control);
   if (!control) return withhold('no_control');
+  // The control is the one arm that may not merely be pending — every
+  // comparison is measured against it.
+  if (!qualifies(control)) return withhold('control_below_stats_floor');
+  if (qualifying.length < 2) return withhold('below_stats_floor');
 
-  // Every arm must clear the STATISTICS floor — not the readiness floor — for a
-  // p-value to be printed at all. Checked across all arms, not just the pair
-  // being compared: a 3-arm test where one arm has 4 visitors cannot honestly
-  // print a family-wide corrected alpha over a family that includes it.
-  if (parsed.some((r) => r.visitors < MIN_STATS_SAMPLE)) return withhold('below_stats_floor');
+  armsOut[control.arm_key].stats_status = 'baseline';
 
-  const comparisons = Math.max(1, parsed.length - 1);
+  // Bonferroni over the QUALIFYING family only. Counting a pending arm here
+  // would tighten every other arm's bar for a comparison that is not being made.
+  const comparisons = Math.max(1, qualifying.length - 1);
   // Bonferroni. With 4 arms against one control at α=0.05 the chance of at
   // least one false winner is ~14% uncorrected. The corrected bar is the claim
   // the UI actually makes, so it is the bar every comparison is judged at.
   const alphaAdjusted = alpha / comparisons;
 
   const controlStats = {
-    visitors: control.visitors,
+    exposures: control.exposures,
     conversions: control.conversions,
     net_revenue: control.net_revenue,
     net_revenue_sum_squares: control.net_revenue_sum_squares,
   };
 
-  // ZERO VARIANCE ACROSS THE WHOLE TEST. Checked once, over every arm: if no
-  // arm has any spread in per-visitor revenue AND no arm's conversion rate
-  // differs, there is nothing for either test to work on.
-  const anyRevenueVariance = parsed.some(
-    (r) => varianceFromSums(r.visitors, r.net_revenue, r.net_revenue_sum_squares) > 0
+  // ZERO VARIANCE ACROSS THE FAMILY. Over QUALIFYING arms only, for the same
+  // reason the comparisons are: a pending arm's constant outcome says nothing
+  // about whether the arms being compared have spread.
+  const anyRevenueVariance = qualifying.some(
+    (r) => varianceFromSums(r.exposures, r.net_revenue, r.net_revenue_sum_squares) > 0
   );
-  const anyCvrSpread = new Set(parsed.map((r) => r.conversions / r.visitors)).size > 1;
+  const anyCvrSpread = new Set(qualifying.map((r) => r.conversions / r.exposures)).size > 1;
   if (!anyRevenueVariance && !anyCvrSpread) return withhold('zero_variance');
 
-  let bestRpv = control.visitors > 0 ? control.net_revenue / control.visitors : -Infinity;
+  let bestRpv = control.exposures > 0 ? control.net_revenue / control.exposures : -Infinity;
   let winner = null;
   const requiredCandidates = [];
 
-  for (const r of parsed) {
+  for (const r of qualifying) {
     if (r.arm_key === control.arm_key) continue;
     const block = armsOut[r.arm_key];
+    block.stats_status = 'compared';
 
     const conv = compareConversion(
-      { visitors: controlStats.visitors, conversions: controlStats.conversions },
-      { visitors: r.visitors, conversions: r.conversions },
+      { visitors: controlStats.exposures, conversions: controlStats.conversions },
+      { visitors: r.exposures, conversions: r.conversions },
       { alpha: alphaAdjusted }
     );
     const rev = compareRevenuePerVisitor(
       {
-        visitors: controlStats.visitors,
+        visitors: controlStats.exposures,
         revenueSum: controlStats.net_revenue,
         revenueSumSquares: controlStats.net_revenue_sum_squares,
       },
       {
-        visitors: r.visitors,
+        visitors: r.exposures,
         revenueSum: r.net_revenue,
         revenueSumSquares: r.net_revenue_sum_squares,
       },
@@ -495,9 +645,13 @@ export function computeSplitStatistics(rows, opts = {}) {
     const convDegenerate = Boolean(conv.reason);
     const revDegenerate = Boolean(rev.reason);
 
+    // SIGNIFICANCE IS JUDGED ON THE TRUE p, PUBLISHED ON THE FLOORED ONE. The
+    // display floor can therefore never move a verdict — it only stops the
+    // panel printing a certainty no finite sample supports.
     block.conversion = {
-      p_value: convDegenerate ? null : conv.pValue,
-      confidence: convDegenerate ? null : conv.confidence,
+      p_value: convDegenerate ? null : publishP(conv.pValue),
+      p_value_floored: !convDegenerate && conv.pValue < P_DISPLAY_FLOOR,
+      confidence: convDegenerate ? null : publishConfidence(conv.confidence),
       significant: !convDegenerate && conv.significant,
       statistic: convDegenerate ? null : conv.statistic,
       required_sample_per_arm: conv.requiredSamplePerArm ?? null,
@@ -505,8 +659,9 @@ export function computeSplitStatistics(rows, opts = {}) {
       normal_approx_weak: Boolean(conv.normalApproxWeak),
     };
     block.revenue = {
-      p_value: revDegenerate ? null : rev.pValue,
-      confidence: revDegenerate ? null : rev.confidence,
+      p_value: revDegenerate ? null : publishP(rev.pValue),
+      p_value_floored: !revDegenerate && rev.pValue < P_DISPLAY_FLOOR,
+      confidence: revDegenerate ? null : publishConfidence(rev.confidence),
       significant: !revDegenerate && rev.significant,
       statistic: revDegenerate ? null : rev.statistic,
       degrees_of_freedom: rev.degreesOfFreedom ?? null,
@@ -520,13 +675,13 @@ export function computeSplitStatistics(rows, opts = {}) {
     if (Number.isFinite(rev.requiredSamplePerArm)) requiredCandidates.push(rev.requiredSamplePerArm);
 
     // WINNER GATE — all three, and the order is the point:
-    //   1. every arm past its readiness floors (a significant p-value on a thin
-    //      sample is a coin that landed heads three times);
-    //   2. this arm leads the control on net revenue per visitor;
+    //   1. every QUALIFYING arm past its readiness floors (a significant
+    //      p-value on a thin sample is a coin that landed heads three times);
+    //   2. this arm leads the control on net revenue per exposure;
     //   3. its RPV difference is significant at the CORRECTED alpha.
     // Ranked on MONEY, never on conversion rate: an arm can convert worse and
     // still be the winner if it sells a better basket.
-    const rpv = r.visitors > 0 ? r.net_revenue / r.visitors : null;
+    const rpv = r.exposures > 0 ? r.net_revenue / r.exposures : null;
     if (ready && !revDegenerate && rev.significant && rpv !== null && rpv > bestRpv) {
       bestRpv = rpv;
       winner = r.arm_key;
@@ -541,13 +696,26 @@ export function computeSplitStatistics(rows, opts = {}) {
   // so the raw formula happily answers "42 per arm" in the same breath the
   // readiness rule says 300. Without the floor the panel contradicts itself.
   const rawRequired = requiredCandidates.length ? Math.max(...requiredCandidates) : null;
-  const requiredPerArm = rawRequired === null ? null : Math.max(rawRequired, minVisitors);
+  const requiredPerArm = rawRequired === null ? null : Math.max(rawRequired, minExposures);
 
-  const worstVisitors = Math.min(...parsed.map((r) => r.visitors));
-  const timeToDecision = timeToDecisionDays(requiredPerArm, opts.visitorsPerDay, {
-    arms: parsed.length,
-    alreadyPerArm: worstVisitors,
+  // Over QUALIFYING arms — the wait is until the arms IN THE COMPARISON are big
+  // enough. A pending arm's tiny sample is not what the operator is waiting on.
+  const worstExposures = Math.min(...qualifying.map((r) => r.exposures));
+  const timeToDecision = timeToDecisionDays(requiredPerArm, exposuresPerDay, {
+    arms: qualifying.length,
+    alreadyPerArm: worstExposures,
   });
+  // The projection sentence is only appended where it is TRUE. In the winner
+  // state there is nothing left to prove, and appending "proving it would take
+  // N more" under a declared winner is the orphan sentence the review caught.
+  const waitClause = requiredPerArm
+    ? `about ${requiredPerArm.toLocaleString('en-US')} exposures per arm`
+      + (timeToDecision === null ? '.' : ` — roughly ${timeToDecision} more days at the current rate.`)
+    : null;
+  const pendingClause = pendingArms.length
+    ? ` ${pendingArms.join(', ')} ${pendingArms.length === 1 ? 'is' : 'are'} still collecting and `
+      + `${pendingArms.length === 1 ? 'is' : 'are'} not part of this comparison yet.`
+    : '';
 
   const leader = ranked.find((k) => k !== control.arm_key) ?? null;
 
@@ -559,32 +727,31 @@ export function computeSplitStatistics(rows, opts = {}) {
     const conf = armsOut[winner].revenue.confidence;
     const pct = lift?.rpv_lift_pct;
     status = 'winner';
-    headline = `${winner} beats ${control.arm_key} on net revenue per visitor`
+    headline = `${winner} beats ${control.arm_key} on net revenue per exposure`
       + (pct === null || pct === undefined ? '' : ` by ${round(pct, 1)}%`)
       + (conf === null ? '.' : ` — ${(conf * 100).toFixed(1)}% confidence.`);
-    body = lift?.earned_so_far === null || lift?.earned_so_far === undefined
-      ? 'Every arm has cleared its sample floors and the gap is significant at the corrected threshold.'
+    body = (lift?.earned_so_far === null || lift?.earned_so_far === undefined
+      ? 'Every compared arm has cleared its sample floors and the gap is significant at the '
+        + 'corrected threshold.'
       : `On the traffic it has already taken, ${winner} earned $${lift.earned_so_far.toFixed(2)} more than `
-        + `${control.arm_key}'s rate would have produced.`;
+        + `${control.arm_key}'s rate would have produced.`) + pendingClause;
   } else if (!ready) {
     status = 'not_ready';
     headline = 'Not ready — the sample is still too thin to call.';
     body = `${thinArms.join(', ')} ${thinArms.length === 1 ? 'has' : 'have'} not reached `
-      + `${minVisitors.toLocaleString('en-US')} visitors and ${minConversions} orders yet. `
-      + (requiredPerArm
-        ? `At the gap observed so far, proving it would take about `
-          + `${requiredPerArm.toLocaleString('en-US')} visitors per arm`
-          + (timeToDecision === null ? '.' : ` — roughly ${timeToDecision} more days at the current rate.`)
-        : 'No winner can be named until every arm clears both floors.');
+      + `${minExposures.toLocaleString('en-US')} exposures and ${minConversions} orders yet. `
+      + (waitClause
+        ? `At the gap observed so far, proving it would take ${waitClause}`
+        : 'No winner can be named until every compared arm clears both floors.')
+      + pendingClause;
   } else {
     status = 'no_winner';
     headline = 'No winner yet — the arms are too close to call.';
-    body = requiredPerArm
-      ? `Every arm has cleared its floors, but the gap is not significant at the corrected threshold. `
-        + `Proving it would take about ${requiredPerArm.toLocaleString('en-US')} visitors per arm`
-        + (timeToDecision === null ? '.' : ` — roughly ${timeToDecision} more days at the current rate.`)
-      : 'Every arm has cleared its floors and the observed gap is zero, so no amount of further traffic '
-        + 'will prove one.';
+    body = (waitClause
+      ? 'Every compared arm has cleared its floors, but the gap is not significant at the corrected '
+        + `threshold. Proving it would take ${waitClause}`
+      : 'Every compared arm has cleared its floors and the observed gap is zero, so no amount of '
+        + 'further traffic will prove one.') + pendingClause;
   }
 
   return {
@@ -601,13 +768,19 @@ export function computeSplitStatistics(rows, opts = {}) {
       control: control.arm_key,
       ready,
       thin_arms: thinArms,
+      // Arms below the statistics floor: reported so the panel can say they are
+      // still collecting, and excluded from every number above.
+      pending_arms: pendingArms,
+      qualifying_arms: qualifying.map((r) => r.arm_key),
       comparisons,
       alpha_adjusted: round(alphaAdjusted),
       required_sample_per_arm: requiredPerArm,
       required_sample_raw: rawRequired,
-      required_sample_floored: rawRequired !== null && rawRequired < minVisitors,
-      sized_on_observed_effect: true,
-      time_to_decision_days: timeToDecision,
+      required_sample_floored: rawRequired !== null && rawRequired < minExposures,
+      // Only true where a projection was actually emitted, so the UI's caveat
+      // cannot orphan itself under a winner.
+      sized_on_observed_effect: Boolean(waitClause) && !winner,
+      time_to_decision_days: winner ? null : timeToDecision,
       ranked,
     },
   };
@@ -618,11 +791,15 @@ export function computeSplitStatistics(rows, opts = {}) {
 export const SPLIT_STATS_METHOD = Object.freeze({
   conversion: 'two-proportion z-test, pooled SE, two-sided',
   revenue: "Welch's t-test on revenue per visitor, exact Student-t tail via regularized incomplete beta, two-sided",
-  variance: 'reconstructed from sufficient statistics (n, Σx, Σx²) over the FULL visitor population, non-buyers included as 0',
+  variance: 'reconstructed from sufficient statistics (n, Σx, Σx²) over the FULL exposure population, non-buyers included as 0',
   sample_size: 'observed-effect sizing at α=0.05 two-sided, power 0.80, floored at the readiness bar',
-  multiplicity: 'Bonferroni over (arms − 1) comparisons against the control',
-  ranking: 'net revenue per visitor',
-  withheld: `no p-value below ${MIN_STATS_SAMPLE} visitors per arm, with fewer than 2 arms with data, or at zero variance`,
+  multiplicity: 'Bonferroni over (qualifying arms − 1) comparisons against the control',
+  ranking: 'net revenue per exposure',
+  denominator: 'exposures = attributable checkout sessions (the credits ledger), NOT delivered page renders',
+  withheld: `arms below ${MIN_STATS_SAMPLE} exposures are excluded from the comparison and reported as pending; `
+    + 'the whole test is withheld with fewer than 2 qualifying arms, a sub-floor control, or zero variance',
+  display_floor: `p-values are published no lower than ${P_DISPLAY_FLOOR} and confidence no higher than `
+    + `${CONFIDENCE_DISPLAY_CAP}; significance is judged on the TRUE p, so the floor never moves a verdict`,
 });
 
 export { requiredSampleForProportions, requiredSampleForMeans };

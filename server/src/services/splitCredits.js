@@ -509,6 +509,57 @@ async function readArmMoments(testId, query) {
 }
 
 /**
+ * EXPOSURES PER DAY — the rate that makes "time to decision" a real number.
+ *
+ * Without it `timeToDecisionDays` returns null on every call and the whole
+ * feature is dead prose. The rate is derived from timestamps the ledger already
+ * carries, so it costs one cheap aggregate and no new column.
+ *
+ * THE WINDOW IS first→last EXPOSURE, and the choice is deliberate:
+ *
+ *   • NOT first-exposure→NOW. A concluded or paused test would keep aging while
+ *     taking no traffic, so its rate would decay toward zero and the estimate
+ *     toward infinity — the panel would tell an operator a finished test needs
+ *     another 400 days.
+ *   • NOT a trailing 7 days. The exposure ledger is the only source here and a
+ *     test younger than the window would divide by a span it never lived
+ *     through, understating the rate and overstating the wait.
+ *
+ * The known bias, stated: a test that took traffic for two days and then went
+ * quiet for eight still reports the two-day rate, because `last_at` stops
+ * moving. That overstates the rate and UNDERSTATES the wait. It is the
+ * optimistic direction, which is why the estimate is labelled "roughly" and why
+ * `required_sample_per_arm` — a hard floor that does not depend on this rate —
+ * is always shown beside it.
+ *
+ * A span shorter than a day is FLOORED at one day rather than extrapolated: 40
+ * exposures in the first ten minutes of a test is not "5,760 per day", and
+ * dividing by the true fraction would print exactly that.
+ *
+ * Returns null (never 0) when there is nothing to measure — an unknown rate must
+ * read as unknown, and 0 would make every estimate infinite.
+ */
+async function readExposureRate(testId, query) {
+  const rows = await query(
+    `SELECT COUNT(*)::int AS n,
+            MIN(created_at) AS first_at,
+            MAX(created_at) AS last_at
+     FROM lb_split_credits
+     WHERE group_id = $1 AND kind = 'exposure'`,
+    [String(testId)]
+  );
+  const row = rows[0] || {};
+  const n = Number(row.n || 0);
+  if (!n || !row.first_at || !row.last_at) return null;
+  const first = new Date(row.first_at).getTime();
+  const last = new Date(row.last_at).getTime();
+  if (!Number.isFinite(first) || !Number.isFinite(last)) return null;
+  const spanDays = Math.max(1, (last - first) / 86400000);
+  const rate = n / spanDays;
+  return Number.isFinite(rate) && rate > 0 ? rate : null;
+}
+
+/**
  * DERIVED results per arm — exposures vs credited conversions, netted against
  * refunds. Counters are computed from the ledger, never stored. Both sides of
  * the take rate are SESSIONS (funnel-os invariant: accepts<=offers holds only
@@ -537,20 +588,30 @@ async function readArmMoments(testId, query) {
  * the t statistic would be describing neither. `visitors` is still reported
  * untouched — it is a real number, just not this test's denominator.
  *
- * ARCHIVED ARMS STAY IN THE COMPARISON. Excluding them would make the same
- * ledger score differently before and after an operator retires a loser — a
- * verdict that moves when nothing about the money moved. It also matches the
- * rule this function already documents for the raw figures (archiving must
- * never silently drop an arm's history) and the precedent in
- * analyticsStats.buildVerdict, which is fed every arm. The cost is real and
- * accepted: an archived arm that never cleared its floors keeps the test
- * `not_ready`, which is a true statement about a test that cannot be concluded
- * on the arms it actually ran.
+ * ARCHIVED ARMS STAY IN THE PAYLOAD, AND THE STATISTICS SCOPE THEMSELVES.
+ * Excluding an archived arm's rows would make the same ledger score differently
+ * before and after an operator retires a loser — a verdict that moves when
+ * nothing about the money moved. So every arm is still returned and still
+ * carries a stats block.
  *
- * @returns {Promise<{testId, arms: Array, totals: object, verdict: object,
- *                    floors: object, method: object}>}
+ * What CHANGED after review: an archived (or brand-new) arm below the statistics
+ * floor no longer poisons the whole test. `computeSplitStatistics` scopes the
+ * comparison to arms at or above `MIN_STATS_SAMPLE` exposures and reports the
+ * rest in `verdict.pending_arms`. Before that fix, a zero-traffic archived arm —
+ * which this function returns on essentially every concluded test — nulled every
+ * figure on a test with tens of thousands of exposures.
+ *
+ * @param {{testId: string}} args
+ * @param {{query?: Function, withStats?: boolean}} [deps] — `withStats: false`
+ *   returns the raw counts ONLY and skips both extra reads and the verdict. Used
+ *   by funnelAnalytics, which calls this for ledger RECONCILIATION on its own
+ *   windowed request and never reads the lifetime verdict; computing one there
+ *   made every windowed page-load pay for a second moments query and a second
+ *   verdict nothing rendered.
+ * @returns {Promise<{testId, arms: Array, totals: object, verdict?: object,
+ *                    floors?: object, method?: object}>}
  */
-export async function readResults({ testId }, { query = pgQuery } = {}) {
+export async function readResults({ testId }, { query = pgQuery, withStats = true } = {}) {
   await ensureSplitTables(query);
   // ALL arms, archived included (DECISION, documented): archiving an arm must
   // never silently drop its historical ledger rows from the results — the
@@ -592,7 +653,7 @@ export async function readResults({ testId }, { query = pgQuery } = {}) {
   // would degrade the stats to zeros — a zeroed moment is not "no statistics",
   // it is a variance of 0, which reads as a perfectly consistent arm and is the
   // one input that can manufacture false confidence.
-  const momentsByArm = await readArmMoments(testId, query);
+  const momentsByArm = withStats ? await readArmMoments(testId, query) : new Map();
   const viewsByArm = new Map(views.map((r) => [r.arm_key, Number(r.visitors || 0)]));
   const byArm = new Map(agg.map((r) => [r.arm_key, r]));
   // Dedupe arm definitions per key, preferring the live one (the partial
@@ -643,17 +704,29 @@ export async function readResults({ testId }, { query = pgQuery } = {}) {
     { visitors: 0, exposures: 0, conversions: 0, credited_legs: 0, gross_revenue: 0, refunded: 0, net_revenue: 0 }
   );
 
+  // The RAW payload — byte-identical to what this function returned before the
+  // statistics landed, and what `withStats: false` callers get.
+  if (!withStats) return { testId: String(testId), arms: result, totals };
+
   // ── ADDITIVE STATISTICS ──────────────────────────────────────────────────
   // computeSplitStatistics is PURE and total — the harness pins that no input
   // (empty, one arm, zero variance, corrupt sums) makes it throw or emit
   // NaN/Infinity — so there is nothing here to catch and nothing to default.
+  //
+  // The exposure RATE is read here rather than inside the statistics, which
+  // have no clock and no database by construction.
+  const exposuresPerDay = await readExposureRate(testId, query);
   const stats = computeSplitStatistics(
     result.map((a) => {
       const m = momentsByArm.get(a.arm_key) || { sum_x: 0, sum_x2: 0 };
       return {
         arm_key: a.arm_key,
         is_control: a.is_control,
-        visitors: a.exposures,
+        // `exposures`, not `visitors` — the ledger's attributable checkout
+        // sessions, which is the population the moments below are summed over.
+        // `visitors` (lb_split_views, delivered renders) is a different number
+        // and is deliberately NOT this denominator.
+        exposures: a.exposures,
         conversions: a.conversions,
         // Σx from the MOMENTS, not from the net_revenue column. They agree to
         // float rounding, but the t statistic must take its mean and its
@@ -662,7 +735,8 @@ export async function readResults({ testId }, { query = pgQuery } = {}) {
         net_revenue: m.sum_x,
         net_revenue_sum_squares: m.sum_x2,
       };
-    })
+    }),
+    { exposuresPerDay }
   );
 
   // Attached per arm rather than returned as a parallel map, so a renderer that
@@ -687,5 +761,8 @@ export async function readResults({ testId }, { query = pgQuery } = {}) {
     verdict: stats.verdict,
     floors: stats.floors,
     method: stats.method,
+    // Reported so the "roughly N more days" figure on the panel is checkable
+    // rather than magic. Null when the ledger had nothing to measure.
+    exposures_per_day: exposuresPerDay === null ? null : Math.round(exposuresPerDay * 100) / 100,
   };
 }

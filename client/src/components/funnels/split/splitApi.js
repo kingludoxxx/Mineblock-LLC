@@ -253,6 +253,44 @@ export function shouldShowWinnerBadge(stats, verdict) {
 }
 
 /**
+ * MAY THIS ARM'S COMPARISON BE LABELLED "significant"?
+ *
+ * Gated on readiness for the SAME reason the trophy is, and it was not before:
+ * an arm 240 exposures short of its floor rendered a green "significant" label
+ * beside its confidence, directly under a panel headed NOT READY. The label is
+ * the operator's shorthand for "you may act on this", so showing it on a thin
+ * sample says the opposite of what the panel above says — and green is the
+ * colour they believe.
+ *
+ * Below readiness the p-value is still SHOWN (it is real, and watching it move
+ * is how an operator judges whether to keep waiting); it is the verdict-flavoured
+ * LABEL and its colour that are withheld. `hedges` carries the caveats the
+ * service already computes — they were shipped and rendered nowhere, which is
+ * the entire reason they exist.
+ *
+ * @returns {{show:boolean, significant:boolean, hedges:string[]}}
+ */
+export function shouldShowSignificance(stats, verdict) {
+  const rev = stats?.revenue || {};
+  const conv = stats?.conversion || {};
+  const hedges = [];
+  // Order matters: the strongest caveat first, so a truncated line still
+  // carries the most important one.
+  if (rev.sample_small) hedges.push('small sample');
+  if (conv.normal_approx_weak) hedges.push('few conversions');
+  if (rev.p_value_floored || conv.p_value_floored) hedges.push('beyond measurement precision');
+  return {
+    // The arm must be IN the comparison, the test must be ready, and there must
+    // be a real (non-withheld) p-value behind the label.
+    show: Boolean(verdict?.ready)
+      && stats?.stats_status === 'compared'
+      && rev.p_value !== null && rev.p_value !== undefined,
+    significant: Boolean(rev.significant),
+    hedges,
+  };
+}
+
+/**
  * Fractions → percents, EXACTLY ONCE, for the lifetime payload.
  *
  * Only three fields cross the boundary: `cvr`, `conversion.confidence` and
@@ -377,7 +415,12 @@ export function assertPercentScale() {
   const failures = [];
   const cases = [
     { name: 'confidence 0.97', raw: 0.97, expect: 97 },
-    { name: 'confidence 1', raw: 1, expect: 100 },
+    // 0.9999 is the SERVICE's confidence cap (splitStats CONFIDENCE_DISPLAY_CAP),
+    // so it is the largest confidence that can legitimately arrive. The old case
+    // here pinned raw 1 -> 100, which asserted the very output the cap exists to
+    // prevent: a scale check must not certify an over-confident number as
+    // correctly scaled.
+    { name: 'confidence 0.9999 (the service cap)', raw: 0.9999, expect: 99.99 },
     { name: 'cvr 0.0432', raw: 0.0432, expect: 4.32 },
     { name: 'cvr 0', raw: 0, expect: 0 },
     { name: 'already-percent 97 passes through', raw: 97, expect: 97 },
@@ -388,6 +431,13 @@ export function assertPercentScale() {
   }
   // The specific regression: a non-zero fraction confidence must not render sub-1%.
   if (fracToPct(0.97, 'regression') < 1) failures.push('0.97 confidence rendered below 1%');
+  // The OTHER direction: nothing may render as flat 100% certainty. Checked on
+  // the formatter, because that is the last thing between a number and the
+  // operator's eye.
+  for (const raw of [1, 0.999999, 0.99999999]) {
+    const rendered = fmtPct(fracToPct(raw, 'cap check'));
+    if (rendered === '100.00%') failures.push(`confidence ${raw} rendered as flat 100.00%`);
+  }
   return failures;
 }
 
@@ -490,10 +540,31 @@ export function fmtMoney(v, { signed = false } = {}) {
   return signed ? `+$${s}` : `$${s}`;
 }
 
-export function fmtPct(v, { digits = 2, signed = false } = {}) {
+// A CONFIDENCE OF EXACTLY 100% IS A CLAIM NO EXPERIMENT CAN MAKE.
+//
+// `toFixed(2)` rounds 99.99999 up to "100.00", so a very small p-value printed
+// as `1 - p` reached the screen as a flat "100.00% confidence" — certainty,
+// from a finite sample, next to a promote button. The service now caps its own
+// confidence at 0.9999, but the display is capped too: these are two different
+// roads to the same string (rounding here, precision loss there) and closing
+// only one leaves the other open.
+//
+// Applied to MAGNITUDE, so a -100% change still renders as -100.00%. This is
+// about a bounded-at-100 quantity rounding to its own bound, not about
+// clamping data: `cap` is opt-out for callers formatting an unbounded percent
+// such as a lift, where 100% is an ordinary, reachable value.
+export const PCT_DISPLAY_CAP = 99.99;
+export function fmtPct(v, { digits = 2, signed = false, cap = true } = {}) {
   const n = num(v);
   if (n === undefined) return DASH;
-  const s = `${Math.abs(n).toFixed(digits)}%`;
+  const mag = Math.abs(n);
+  // Only the >99.99 band is rewritten, and it is rendered as a BOUND ("> 99.99%")
+  // rather than a value, because that is what it is.
+  if (cap && mag > PCT_DISPLAY_CAP) {
+    const s = `>${PCT_DISPLAY_CAP.toFixed(digits)}%`;
+    return n < 0 ? `-${s}` : s;
+  }
+  const s = `${mag.toFixed(digits)}%`;
   if (n < 0) return `-${s}`;
   return signed && n > 0 ? `+${s}` : s;
 }

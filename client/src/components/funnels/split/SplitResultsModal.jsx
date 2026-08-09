@@ -21,8 +21,9 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { X, TrendingUp, AlertTriangle, Loader2, Trophy, CheckCircle2, Hourglass } from 'lucide-react';
 import {
-  fetchSplitMetrics, fetchLifetimeStats, shouldShowWinnerBadge, promoteSplitWinner,
-  armLetter, fmtInt, fmtMoney, fmtPct, fmtDate, fmtDateTime, isoDay, utcDay, num, DASH,
+  fetchSplitMetrics, fetchLifetimeStats, shouldShowWinnerBadge, shouldShowSignificance,
+  promoteSplitWinner, armLetter, fmtInt, fmtMoney, fmtPct, fmtDate, fmtDateTime,
+  isoDay, utcDay, num, DASH,
 } from './splitApi';
 
 export default function SplitResultsModal({ open, onClose, test, onPromoted }) {
@@ -558,7 +559,7 @@ function ReadinessPanel({ lifetime }) {
       <div className="px-4 py-2.5 border-b border-border-subtle/60 flex items-center gap-2">
         <Hourglass className={`w-3.5 h-3.5 shrink-0 ${tone.icon}`} />
         <span className="text-[10px] font-semibold uppercase tracking-wider text-text-faint">
-          Readiness &amp; significance &middot; lifetime ledger, all traffic since the test started
+          Readiness &amp; significance &middot; lifetime ledger &middot; exposures (attributable sessions)
         </span>
         {!ready && (
           <span className="ml-auto px-1.5 py-0.5 rounded text-[10px] font-semibold uppercase tracking-wide
@@ -580,6 +581,16 @@ function ReadinessPanel({ lifetime }) {
             treat it as a floor, not a forecast.
           </p>
         ) : null}
+
+        {/* THE TWO "VISITORS" ARE DIFFERENT NUMBERS, SAID ONCE, HERE. The table
+            below counts delivered page renders; this panel counts attributable
+            checkout sessions. They differ by a large factor in normal
+            operation, and an operator who is not told reads the gap as a bug. */}
+        <p className="mt-1.5 text-[11px] text-text-faint leading-relaxed">
+          Exposures are attributable checkout sessions from the credits ledger — the denominator every
+          figure here is measured over. The experiment table below counts delivered page renders, which
+          is a larger number and a different population.
+        </p>
 
         <div className="mt-3 space-y-1.5">
           {arms.map((a) => (
@@ -618,10 +629,15 @@ function ArmReadinessRow({ arm, verdict }) {
   }
   const r = st.readiness || {};
   const isControl = Boolean(st.is_control);
-  // The badge rule lives in splitApi as a pure predicate so the harness can pin
-  // its truth table. It is NOT inlined here on purpose: a safety rule inside a
-  // render function is a safety rule nothing tests.
+  // Both rules live in splitApi as pure predicates so the harness can pin their
+  // truth tables. NOT inlined on purpose: a safety rule inside a render function
+  // is a safety rule nothing tests.
   const isWinner = shouldShowWinnerBadge(st, verdict);
+  const sig = shouldShowSignificance(st, verdict);
+  // An arm below the statistics floor is not thin — it is not in the experiment
+  // yet. Said differently on screen, because it asks for a different reaction:
+  // "wait" rather than "this arm is losing".
+  const isPending = st.stats_status === 'insufficient';
 
   // Confidence is the REVENUE comparison's — the metric the winner is ranked
   // on. Undefined (withheld) renders as a dash with the reason, never as 0%.
@@ -629,7 +645,7 @@ function ArmReadinessRow({ arm, verdict }) {
   const reason = st.revenue?.reason;
 
   const shortfall = [];
-  if (r.needs_visitors > 0) shortfall.push(`${fmtInt(r.needs_visitors)} more visitors`);
+  if (r.needs_exposures > 0) shortfall.push(`${fmtInt(r.needs_exposures)} more exposures`);
   if (r.needs_conversions > 0) shortfall.push(`${fmtInt(r.needs_conversions)} more orders`);
 
   return (
@@ -647,14 +663,22 @@ function ArmReadinessRow({ arm, verdict }) {
           <Trophy className="w-3 h-3" /> winner
         </span>
       )}
+      {isPending && (
+        <span className="px-1.5 py-0.5 rounded text-[10px] uppercase tracking-wide
+          border border-border-default bg-bg-elevated/60 text-text-faint">
+          collecting
+        </span>
+      )}
 
       <span className="text-text-muted tabular-nums">
-        {fmtInt(r.visitors)}/{fmtInt(r.min_visitors)} visitors
+        {fmtInt(r.exposures)}/{fmtInt(r.min_exposures)} exposures
         {' · '}
         {fmtInt(r.conversions)}/{fmtInt(r.min_conversions)} orders
       </span>
 
-      {r.ready ? (
+      {isPending ? (
+        <span className="text-text-faint">not in the comparison yet</span>
+      ) : r.ready ? (
         <span className="inline-flex items-center gap-1 text-emerald-400">
           <CheckCircle2 className="w-3 h-3" /> ready
         </span>
@@ -673,10 +697,23 @@ function ArmReadinessRow({ arm, verdict }) {
               {DASH}{reason ? ` (${String(reason).replace(/_/g, ' ')})` : ''}
             </span>
             : <>
-              {fmtPct(conf)}
-              <span className={st.revenue?.significant ? ' text-emerald-400' : ' text-text-faint'}>
-                {st.revenue?.significant ? ' significant' : ' not significant'}
-              </span>
+              {st.revenue?.p_value_floored ? '>' : ''}{fmtPct(conf)}
+              {/* THE LABEL IS GATED ON READINESS, THE NUMBER IS NOT. Below the
+                  floors the confidence still renders (watching it move is how
+                  an operator decides whether to keep waiting) but the
+                  verdict-flavoured word and its green are withheld. */}
+              {sig.show ? (
+                <span className={sig.significant ? ' text-emerald-400' : ' text-text-faint'}>
+                  {sig.significant ? ' significant' : ' not significant'}
+                </span>
+              ) : (
+                <span className="text-text-faint"> not yet judged</span>
+              )}
+              {/* The hedges the service computes. They were shipped and rendered
+                  nowhere, which defeated the point of computing them. */}
+              {sig.hedges.length > 0 && (
+                <span className="block text-[10px] text-amber-300/80">{sig.hedges.join(' · ')}</span>
+              )}
             </>)}
       </span>
     </div>

@@ -76,10 +76,12 @@ function findNonFinite(value, path = '$') {
   return null;
 }
 
+// `exposures` is the module's own spelling; `visitors` is accepted here so the
+// cases written before the rename still exercise the alias path on every run.
 const arm = (key, o) => ({
   arm_key: key,
   is_control: Boolean(o.control),
-  visitors: o.visitors,
+  exposures: o.exposures !== undefined ? o.exposures : o.visitors,
   conversions: o.conversions,
   net_revenue: o.revenue,
   net_revenue_sum_squares: o.sumsq,
@@ -258,7 +260,7 @@ function properties() {
   const b = computeSplitStatistics(big);
   near(b.arms.a.cvr, s.arms.a.cvr, 1e-12, 'control cvr unchanged by 10x scale');
   near(b.arms.b.cvr, s.arms.b.cvr, 1e-12, 'variant cvr unchanged by 10x scale');
-  near(b.arms.b.rev_per_visitor, s.arms.b.rev_per_visitor, 1e-9, 'RPV unchanged by 10x scale');
+  near(b.arms.b.rev_per_exposure, s.arms.b.rev_per_exposure, 1e-9, 'RPV unchanged by 10x scale');
   assert(b.arms.b.conversion.p_value < s.arms.b.conversion.p_value,
     `conversion p-value strictly falls at 10x (${s.arms.b.conversion.p_value} -> ${b.arms.b.conversion.p_value})`);
   assert(b.arms.b.conversion.confidence > s.arms.b.conversion.confidence,
@@ -323,8 +325,8 @@ function properties() {
   assert(thin.verdict.winner === null, 'NO winner is named below the readiness floors');
   assert(thin.arms.b.is_winner === false, 'no arm carries is_winner below the floors');
   assert(thin.verdict.thin_arms.length === 2, 'both arms are reported thin');
-  assert(thin.arms.b.readiness.needs_visitors === SPLIT_MIN_VISITORS_PER_ARM - 40,
-    `readiness reports the exact visitor shortfall (${SPLIT_MIN_VISITORS_PER_ARM - 40})`);
+  assert(thin.arms.b.readiness.needs_exposures === SPLIT_MIN_VISITORS_PER_ARM - 40,
+    `readiness reports the exact exposure shortfall (${SPLIT_MIN_VISITORS_PER_ARM - 40})`);
   assert(thin.arms.b.readiness.needs_conversions === SPLIT_MIN_CONVERSIONS_PER_ARM - 22,
     `readiness reports the exact conversion shortfall (${SPLIT_MIN_CONVERSIONS_PER_ARM - 22})`);
   // The prose must name BOTH thin arms and BOTH floors — an operator reading
@@ -344,9 +346,16 @@ function properties() {
       arm('a', { control: true, visitors: 4000, conversions: 400, revenue: 20000, sumsq: 900000 }),
       arm('b', { control: false, visitors: 0, conversions: 0, revenue: 0, sumsq: 0 }),
     ]],
+    // The control QUALIFIES here and the challenger does not, which is what
+    // isolates `below_stats_floor` from `control_below_stats_floor`. The old
+    // fixture had a sub-floor control too, so it could not tell the two apart.
     ['below_stats_floor', [
-      arm('a', { control: true, visitors: 12, conversions: 1, revenue: 50, sumsq: 2500 }),
+      arm('a', { control: true, visitors: 900, conversions: 90, revenue: 4500, sumsq: 300000 }),
       arm('b', { control: false, visitors: 15, conversions: 6, revenue: 300, sumsq: 15000 }),
+    ]],
+    ['control_below_stats_floor', [
+      arm('a', { control: true, visitors: 12, conversions: 1, revenue: 50, sumsq: 2500 }),
+      arm('b', { control: false, visitors: 900, conversions: 120, revenue: 6000, sumsq: 400000 }),
     ]],
     ['zero_variance', [
       // Every visitor identical in BOTH arms: same cvr, no revenue spread.
@@ -373,7 +382,7 @@ function properties() {
   const one = computeSplitStatistics([
     arm('a', { control: true, visitors: 9000, conversions: 900, revenue: 45000, sumsq: 3000000 }),
   ]);
-  assert(one.verdict.status === 'insufficient_data' && one.verdict.reason === 'fewer_than_two_arms_with_data',
+  assert(one.verdict.status === 'insufficient_data' && one.verdict.reason === 'fewer_than_two_arms',
     'a single arm is insufficient_data, never a result');
   // No control flagged at all — reported, never silently substituted.
   const noCtl = computeSplitStatistics([
@@ -460,6 +469,211 @@ function properties() {
   assert(incrementalLift({ visitors: 100, orders: 0, net_revenue: 0 },
     { visitors: 100, orders: 5, net_revenue: 500 }).rpv_lift_pct === null,
   'relative lift over a ZERO baseline is null, never Infinity');
+  // BOTH SPELLINGS PRESENT, one of them a structural zero. `orders: 0` is what
+  // an object literal carries when the field was never populated; it must not
+  // shadow a real count in the other spelling.
+  const shadow = incrementalLift(
+    { visitors: 1000, orders: 0, conversions: 100, net_revenue: 5000 },
+    { visitors: 1000, orders: 0, conversions: 130, net_revenue: 6500 }
+  );
+  near(shadow.cvr_delta, 0.03, 1e-12, 'orders:0 does NOT shadow a real conversions value');
+  const shadowRev = incrementalLift(
+    { visitors: 1000, conversions: 0, orders: 100, net_revenue: 5000 },
+    { visitors: 1000, conversions: 0, orders: 130, net_revenue: 6500 }
+  );
+  near(shadowRev.cvr_delta, 0.03, 1e-12, 'conversions:0 does NOT shadow a real orders value');
+  // A GENUINE zero still survives — an arm that converted nothing reads 0.
+  const realZero = incrementalLift(
+    { visitors: 1000, conversions: 0, net_revenue: 0 },
+    { visitors: 1000, conversions: 0, net_revenue: 0 }
+  );
+  assert(realZero.cvr_delta === 0, 'a genuine zero on both sides is still 0, not null');
+
+  // ── P9 · SUB-FLOOR ARMS ARE SCOPED OUT, NOT ALLOWED TO POISON ──────────
+  // THE WORST DEFECT THIS HARNESS GUARDS. A fresh or archived zero-traffic arm
+  // riding along in readResults' output must not null every figure on a test
+  // with tens of thousands of exposures.
+  hr('P9 · a sub-floor arm is excluded from the family, never poisons the test');
+  const big2 = [
+    arm('a', { control: true, exposures: 10000, conversions: 1000, revenue: 50000, sumsq: 3000000 }),
+    arm('b', { control: false, exposures: 10000, conversions: 1300, revenue: 65000, sumsq: 4200000 }),
+  ];
+  const decisive = computeSplitStatistics(big2);
+  assert(decisive.verdict.status === 'winner', `the 2-arm test alone is decisive (${decisive.verdict.status})`);
+  // Now add a brand-new arm with 12 exposures — the exact shape that broke it.
+  const withFresh = computeSplitStatistics([
+    ...big2,
+    arm('c', { control: false, exposures: 12, conversions: 1, revenue: 50, sumsq: 2500 }),
+  ]);
+  assert(withFresh.verdict.status === 'winner',
+    `adding a 12-exposure arm does NOT blind the test (got ${withFresh.verdict.status})`);
+  assert(withFresh.verdict.winner === decisive.verdict.winner,
+    'the winner is unchanged by the pending arm');
+  assert(withFresh.arms.b.revenue.p_value !== null, 'the qualifying arm keeps its p-value');
+  assert(withFresh.verdict.pending_arms.join() === 'c', 'the sub-floor arm is reported as pending');
+  assert(withFresh.verdict.qualifying_arms.join() === 'a,b', 'the family is the two qualifying arms');
+  assert(withFresh.arms.c.stats_status === 'insufficient', "the pending arm's status is 'insufficient'");
+  assert(withFresh.arms.c.in_comparison === false, 'the pending arm is flagged out of the comparison');
+  assert(withFresh.arms.c.conversion.p_value === null, 'the pending arm gets NO p-value of its own');
+  assert(withFresh.arms.c.readiness.needs_exposures > 0, 'the pending arm still reports its shortfall');
+  // The correction must not count a comparison that is not being made.
+  assert(withFresh.verdict.comparisons === decisive.verdict.comparisons,
+    `Bonferroni counts only qualifying comparisons (${withFresh.verdict.comparisons})`);
+  assert(withFresh.verdict.alpha_adjusted === decisive.verdict.alpha_adjusted,
+    'the corrected alpha is unchanged by the pending arm');
+  assert(withFresh.verdict.body.includes('c is still collecting'),
+    `the prose names the pending arm (${withFresh.verdict.body})`);
+  // A THIRD QUALIFYING arm, by contrast, MUST tighten the correction.
+  const threeReal = computeSplitStatistics([
+    ...big2,
+    arm('c', { control: false, exposures: 9000, conversions: 900, revenue: 45000, sumsq: 2800000 }),
+  ]);
+  assert(threeReal.verdict.comparisons === 2, 'a third QUALIFYING arm does add a comparison');
+  assert(threeReal.verdict.alpha_adjusted < decisive.verdict.alpha_adjusted,
+    'and it tightens the corrected alpha');
+  // An arm ABOVE the stats floor but BELOW readiness is thin, NOT pending — it
+  // is in the family and must still block the winner.
+  const thinNotPending = computeSplitStatistics([
+    ...big2,
+    arm('c', { control: false, exposures: 120, conversions: 12, revenue: 600, sumsq: 30000 }),
+  ]);
+  assert(thinNotPending.verdict.pending_arms.length === 0, 'a 120-exposure arm is NOT pending');
+  assert(thinNotPending.verdict.thin_arms.join() === 'c', 'it is THIN — inside the family');
+  assert(thinNotPending.verdict.status === 'not_ready',
+    `and it correctly blocks the winner (${thinNotPending.verdict.status})`);
+  // A SUB-FLOOR CONTROL withholds the whole test — every comparison is against it.
+  const thinControl = computeSplitStatistics([
+    arm('a', { control: true, exposures: 12, conversions: 1, revenue: 50, sumsq: 2500 }),
+    arm('b', { control: false, exposures: 10000, conversions: 1300, revenue: 65000, sumsq: 4200000 }),
+  ]);
+  assert(thinControl.verdict.reason === 'control_below_stats_floor',
+    `a sub-floor CONTROL withholds under its own reason (got ${thinControl.verdict.reason})`);
+
+  // ── P10 · THE DISPLAY FLOOR ON THE TAIL ────────────────────────────────
+  // A p-value that rounds to 0 renders as "100.0% confidence" — a certainty no
+  // finite sample supports.
+  hr('P10 · p is floored and confidence capped, without moving any verdict');
+  const overwhelming = computeSplitStatistics([
+    arm('a', { control: true, exposures: 50000, conversions: 2500, revenue: 125000, sumsq: 7000000 }),
+    arm('b', { control: false, exposures: 50000, conversions: 6000, revenue: 300000, sumsq: 22000000 }),
+  ]);
+  const ob = overwhelming.arms.b;
+  assert(ob.conversion.p_value >= 1e-6, `p is never published below 1e-6 (got ${ob.conversion.p_value})`);
+  assert(ob.conversion.confidence <= 0.9999,
+    `confidence is never published above 0.9999 (got ${ob.conversion.confidence})`);
+  assert(ob.conversion.p_value_floored === true, 'and the flooring is DECLARED, so the UI can print "<"');
+  // The floor must not have changed the decision.
+  assert(ob.conversion.significant === true, 'flooring does not stop a real result being significant');
+  assert(overwhelming.verdict.status === 'winner', 'and the verdict still names the winner');
+  // An ordinary p-value is untouched.
+  assert(ka3Ref().arms.b.conversion.p_value_floored === false,
+    'an ordinary p-value is NOT flagged as floored');
+  near(ka3Ref().arms.b.conversion.p_value, 0.035488, 5e-6, 'and is published unchanged');
+
+  // ── P11 · THE RANKED COMPARATOR IS TOTAL ───────────────────────────────
+  // `(-Infinity) - (-Infinity)` is NaN, and a comparator returning NaN leaves
+  // the order engine-defined.
+  hr('P11 · ranking is deterministic even with several zero-exposure arms');
+  const zeros = computeSplitStatistics([
+    arm('a', { control: true, exposures: 0, conversions: 0, revenue: 0, sumsq: 0 }),
+    arm('b', { control: false, exposures: 0, conversions: 0, revenue: 0, sumsq: 0 }),
+    arm('c', { control: false, exposures: 0, conversions: 0, revenue: 0, sumsq: 0 }),
+  ]);
+  assert(zeros.verdict.ranked.join() === 'a,b,c',
+    `three zero-exposure arms rank deterministically (got ${zeros.verdict.ranked.join()})`);
+  const zerosAgain = computeSplitStatistics([
+    arm('c', { control: false, exposures: 0, conversions: 0, revenue: 0, sumsq: 0 }),
+    arm('a', { control: true, exposures: 0, conversions: 0, revenue: 0, sumsq: 0 }),
+    arm('b', { control: false, exposures: 0, conversions: 0, revenue: 0, sumsq: 0 }),
+  ]);
+  assert(zeros.verdict.ranked.join() === zerosAgain.verdict.ranked.join(),
+    'and the order does not depend on input order');
+
+  // ── P12 · BOTH RATES SHARE ONE FLOOR ───────────────────────────────────
+  hr('P12 · cvr and revenue-per-exposure are withheld together');
+  const subFloor = computeSplitStatistics([
+    arm('a', { control: true, exposures: 2, conversions: 1, revenue: 75, sumsq: 5625 }),
+    arm('b', { control: false, exposures: 900, conversions: 90, revenue: 4500, sumsq: 300000 }),
+  ]);
+  assert(subFloor.arms.a.cvr === null, 'cvr is withheld below the floor');
+  assert(subFloor.arms.a.rev_per_exposure === null,
+    'revenue per exposure is withheld below the SAME floor (it was published before)');
+  assert(subFloor.arms.a.cvr_withheld === true && subFloor.arms.a.rev_per_exposure_withheld === true,
+    'both withholdings are declared');
+
+  // ── P13 · PROSE MATCHES THE SHAPE IT DESCRIBES ─────────────────────────
+  hr('P13 · withheld prose never describes a shape that is not there');
+  assert(computeSplitStatistics([]).verdict.reason === 'no_arms',
+    'zero arms -> no_arms (it used to claim "only one arm has traffic")');
+  assert(!/one arm/i.test(computeSplitStatistics([]).verdict.body),
+    'and its prose does not mention "one arm"');
+  assert(computeSplitStatistics([arm('a', { control: true, exposures: 5000, conversions: 500, revenue: 25000, sumsq: 1500000 })])
+    .verdict.reason === 'fewer_than_two_arms', 'one arm -> fewer_than_two_arms');
+  const fourThin = computeSplitStatistics([
+    arm('a', { control: true, exposures: 5, conversions: 1, revenue: 50, sumsq: 2500 }),
+    arm('b', { control: false, exposures: 5, conversions: 1, revenue: 50, sumsq: 2500 }),
+    arm('c', { control: false, exposures: 5, conversions: 1, revenue: 50, sumsq: 2500 }),
+    arm('d', { control: false, exposures: 5, conversions: 1, revenue: 50, sumsq: 2500 }),
+  ]);
+  assert(!/Both arms/i.test(fourThin.verdict.body),
+    `a 4-arm test is never described as "Both arms" (${fourThin.verdict.body})`);
+  // A declared winner must not carry an orphan "proving it would take N more".
+  assert(!/proving it would take/i.test(overwhelming.verdict.body),
+    `a winner verdict carries no projection sentence (${overwhelming.verdict.body})`);
+  assert(overwhelming.verdict.sized_on_observed_effect === false,
+    'and the flag the UI keys its caveat on is false in the winner state');
+  assert(overwhelming.verdict.time_to_decision_days === null,
+    'and there is no "days to decide" on a decided test');
+
+  // ── P14 · TIME TO DECISION IS WIRED, NOT DEAD ──────────────────────────
+  hr('P14 · time_to_decision_days is produced when a rate is supplied');
+  const waiting = computeSplitStatistics([
+    arm('a', { control: true, exposures: 120, conversions: 12, revenue: 600, sumsq: 40000 }),
+    arm('b', { control: false, exposures: 120, conversions: 15, revenue: 780, sumsq: 52000 }),
+  ], { exposuresPerDay: 60 });
+  assert(waiting.verdict.status === 'not_ready', 'the fixture is genuinely not ready');
+  assert(typeof waiting.verdict.time_to_decision_days === 'number',
+    `a rate produces a number (got ${waiting.verdict.time_to_decision_days})`);
+  assert(waiting.verdict.time_to_decision_days > 0, 'and it is positive');
+  assert(/more days at the current rate/.test(waiting.verdict.body),
+    'and the prose actually says it');
+  // No rate -> no estimate, and the sentence must not dangle.
+  const noRate = computeSplitStatistics([
+    arm('a', { control: true, exposures: 120, conversions: 12, revenue: 600, sumsq: 40000 }),
+    arm('b', { control: false, exposures: 120, conversions: 15, revenue: 780, sumsq: 52000 }),
+  ]);
+  assert(noRate.verdict.time_to_decision_days === null, 'no rate -> null, never 0');
+  assert(!/more days/.test(noRate.verdict.body), 'and the prose omits the clause entirely');
+  // Faster traffic must mean a shorter wait.
+  const fast = computeSplitStatistics([
+    arm('a', { control: true, exposures: 120, conversions: 12, revenue: 600, sumsq: 40000 }),
+    arm('b', { control: false, exposures: 120, conversions: 15, revenue: 780, sumsq: 52000 }),
+  ], { exposuresPerDay: 600 });
+  assert(fast.verdict.time_to_decision_days < waiting.verdict.time_to_decision_days,
+    '10x the traffic rate gives a strictly shorter wait');
+
+  // ── P15 · THE ENTRY POINT HONOURS BOTH SPELLINGS ───────────────────────
+  hr('P15 · computeSplitStatistics accepts exposures/visitors and conversions/orders');
+  const viaExposures = computeSplitStatistics([
+    { arm_key: 'a', is_control: true, exposures: 900, conversions: 90, net_revenue: 4500, net_revenue_sum_squares: 300000 },
+    { arm_key: 'b', is_control: false, exposures: 900, conversions: 120, net_revenue: 6000, net_revenue_sum_squares: 400000 },
+  ]);
+  const viaVisitors = computeSplitStatistics([
+    { arm_key: 'a', is_control: true, visitors: 900, orders: 90, net_revenue: 4500, net_revenue_sum_squares: 300000 },
+    { arm_key: 'b', is_control: false, visitors: 900, orders: 120, net_revenue: 6000, net_revenue_sum_squares: 400000 },
+  ]);
+  assert(JSON.stringify(viaExposures) === JSON.stringify(viaVisitors),
+    'the funnelAnalytics spelling and the ledger spelling give byte-identical output');
+  assert(viaVisitors.arms.b.exposures === 900,
+    'and the OUTPUT is always `exposures`, whichever spelling came in');
+}
+
+// Re-used by P10; kept as a function so the two call sites cannot drift.
+function ka3Ref() {
+  return computeSplitStatistics([
+    arm('a', { control: true, exposures: 1000, conversions: 100, revenue: 5000, sumsq: 250000 }),
+    arm('b', { control: false, exposures: 1000, conversions: 130, revenue: 6500, sumsq: 350000 }),
+  ]);
 }
 
 // ══════════════════════════════════════════════════════════════════════════
@@ -615,8 +829,40 @@ async function contract(query, sql) {
     `status is not_ready at 60 exposures/arm (got ${after.verdict.status})`);
   assert(after.verdict.winner === null, 'no winner named below the readiness floor');
   assert(armB2.stats.conversion.p_value !== null, 'a conversion p-value IS printed above the statistics floor');
-  assert(armB2.stats.readiness.needs_visitors === SPLIT_MIN_VISITORS_PER_ARM - 60,
-    `readiness reports needing ${SPLIT_MIN_VISITORS_PER_ARM - 60} more visitors`);
+  assert(armB2.stats.readiness.needs_exposures === SPLIT_MIN_VISITORS_PER_ARM - 60,
+    `readiness reports needing ${SPLIT_MIN_VISITORS_PER_ARM - 60} more exposures`);
+
+  hr('C8 · the exposure rate is read from the ledger and reaches the estimate');
+  // The fixture's exposures all land inside one second, so the span floors at
+  // one day: 120 exposures / 1 day = 120 per day. That the number is EXACT is
+  // the point — it proves the rate came from the ledger rather than a default.
+  assert(after.exposures_per_day === 120,
+    `exposures_per_day = 120 from 120 rows inside a floored 1-day span (got ${after.exposures_per_day})`);
+  assert(typeof after.verdict.time_to_decision_days === 'number',
+    `and it produces a real estimate (got ${after.verdict.time_to_decision_days})`);
+  // The IDENTITY, not a guessed constant: days = (required − held) × arms ÷ rate.
+  // `required` is the observed-effect sizing (larger than the 300 floor on this
+  // fixture, which is why hardcoding 300 here was wrong), so it is read back
+  // from the payload and the wiring arithmetic is checked against it.
+  const req = after.verdict.required_sample_per_arm;
+  assert(req >= SPLIT_MIN_VISITORS_PER_ARM,
+    `required per arm is floored at the readiness bar (got ${req})`);
+  const expectedDays = Math.round(((req - 60) * 2 / 120) * 10) / 10;
+  assert(after.verdict.time_to_decision_days === expectedDays,
+    `days = (${req} - 60) x 2 / 120 = ${expectedDays} (got ${after.verdict.time_to_decision_days})`);
+
+  hr('C9 · withStats:false returns the raw counts ONLY, and skips the extra reads');
+  const raw = await readResults({ testId }, { query, withStats: false });
+  assert(raw.verdict === undefined, 'no verdict is computed on the suppressed path');
+  assert(raw.floors === undefined && raw.method === undefined, 'no floors/method either');
+  assert(raw.exposures_per_day === undefined, 'and no exposure-rate read');
+  assert(raw.arms.every((a) => a.stats === undefined), 'no arm carries a stats block');
+  // The RAW figures must be byte-identical to the full call — that is the whole
+  // point of the flag: a cheaper read, never a different answer.
+  const stripped = after.arms.map(({ stats, ...rest }) => rest);
+  assert(JSON.stringify(raw.arms) === JSON.stringify(stripped),
+    'the raw arm rows are byte-identical to the full call with `stats` removed');
+  assert(JSON.stringify(raw.totals) === JSON.stringify(after.totals), 'totals are byte-identical');
 
   hr('C7 · an empty test yields insufficient_data, not a crash and not a fake verdict');
   const emptyId = 'lbsg_stats_empty';
