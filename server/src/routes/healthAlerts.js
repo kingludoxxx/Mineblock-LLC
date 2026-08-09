@@ -1,21 +1,39 @@
 // HEALTH ALERT ROUTES — read the operational alert feed, acknowledge an alert.
 //
-// AUTH — DECISION MADE. The house pattern is one router-level gate
-// (funnelTransfer.js:26, splitTests.js:28) naming an EXISTING permission
-// rather than minting a new one: splitTests.js says so explicitly ("rather
-// than minting a new 'split' permission"). A brand-new 'health-alerts' key
-// would be held by NO seeded role except SuperAdmin's wildcard
-// (seeds/seed_roles.js:14) — i.e. the feature would ship unreachable for
-// Admin, Manager and Viewer, which is a 403 wearing a feature's clothes.
+// ── AUTH: A REAL PERMISSION, SPLIT READ FROM WRITE ─────────────────────────
 //
-// So the gate is ('audit', 'read'): the closest existing analogue — an
-// append-only operational record — and one every seeded role already carries
-// (seed_roles.js:23, 33, 43). ⚠️ THE CONSEQUENCE IS DELIBERATE AND WORTH
-// STATING: a Viewer can ACK. Acking annotates an operational log; it deletes
-// nothing, publishes nothing and changes no business state. If that ever stops
-// being acceptable, the fix is a real 'health-alerts' permission added to the
-// role seed FIRST and only then referenced here — not a stricter check against
-// a permission nobody holds.
+// An earlier revision of this file gated everything on the existing
+// ('audit','read'), arguing that a new permission key would be held by no
+// seeded role and ship the feature unreachable. THAT PREMISE WAS WRONG, and
+// migrations 086-090 disprove it: `086_add_orders_permission.sql`,
+// `087_add_customers_permission.sql`, `088_add_funnels_permission.sql` and
+// `090_add_checkout_permission.sql` each MINT a new permission and grant it in
+// the same change. Minting one is the established pattern here, not an
+// obstacle. Borrowing `audit:read` also had a consequence worth refusing: it
+// let a Viewer ACKNOWLEDGE, i.e. mark a production fault as seen, purely
+// because they could read the audit log.
+//
+// So this lane ships `091_add_health_alerts_permission.sql`:
+//   'Team - Full Access' → health-alerts: ["read", "ack"]
+//   'Manager'            → health-alerts: ["read"]
+//   'Viewer'             → NOTHING. Deliberate.
+//   SuperAdmin           → already {"*": ["*"]}, untouched.
+//
+// ⚠️ THE VIEWER DECISION IS A REAL BEHAVIOUR CHANGE, STATED PLAINLY: because
+// the list moved off `audit:read` and onto `health-alerts:read`, a Viewer now
+// gets 403 on the alert FEED as well as on ack. That is the conservative
+// direction — a role defined as "read-only access to departments and audit
+// logs" (seed_roles.js:38) was never scoped to production fault data, and a
+// permission is cheap to grant from the Team page if an operator disagrees.
+// The alternative (leaving reads on audit:read) would have left the surface's
+// audience defined by an unrelated permission's history.
+//
+// The gates are SPLIT because reading a fault and declaring it handled are
+// different authorities:
+//   health-alerts:read — GET /            GET /meta
+//   health-alerts:ack  — POST /:id/ack    POST /sweep
+// /sweep sits on the WRITE gate on purpose: it is not a read. It evaluates
+// every rule and WRITES any alert they earn.
 //
 // Errors are structured ({ success:false, error:{ code, detail? } }), matching
 // funnelTransfer.js / splitTests.js.
@@ -28,7 +46,10 @@ import {
 } from '../services/healthAlerts.js';
 
 const router = Router();
-router.use(authenticate, requirePermission('audit', 'read'));
+// Authentication is universal; AUTHORISATION is per-route below.
+router.use(authenticate);
+const canRead = requirePermission('health-alerts', 'read');
+const canAck = requirePermission('health-alerts', 'ack');
 
 const fail = (res, status, code, detail) =>
   res.status(status).json({ success: false, error: detail ? { code, detail } : { code } });
@@ -46,7 +67,7 @@ startHealthAlertSweep();
 // UNACKED FIRST, then newest first. `unacked` in the response is the WHOLE
 // surface's count and ignores the filters — it is the badge, and a filter that
 // shrank it would read as progress that did not happen.
-router.get('/', async (req, res) => {
+router.get('/', canRead, async (req, res) => {
   try {
     await ensureHealthAlertTables();
     // 'true' / 'false' as strings; anything else means "no ack filter".
@@ -69,12 +90,18 @@ router.get('/', async (req, res) => {
   }
 });
 
+// GET /api/v1/health-alerts/meta — the severity vocabulary, so the client's
+// badges and filters cannot drift from the server's validator.
+router.get('/meta', canRead, async (req, res) => {
+  res.json({ success: true, data: { severities: SEVERITIES } });
+});
+
 // POST /api/v1/health-alerts/:id/ack
 //
 // IDEMPOTENT. A second ack answers 200 with the row unchanged (original
 // acked_at / acked_by preserved) and `already_acked: true`, so a double-click
 // is never a 409 the operator has to interpret.
-router.post('/:id/ack', async (req, res) => {
+router.post('/:id/ack', canAck, async (req, res) => {
   try {
     await ensureHealthAlertTables();
     const result = await ackAlert(req.params.id, req.user?.id);
@@ -86,27 +113,32 @@ router.post('/:id/ack', async (req, res) => {
   }
 });
 
-// POST /api/v1/health-alerts/sweep — run the rules once, now.
+// POST /api/v1/health-alerts/sweep?dry=1 — run the rules once, now.
 //
 // The timer is the normal producer; this exists so an operator who just fixed
-// something does not have to wait up to 5 minutes to see the surface agree,
-// and so the sweep is reachable at all on a deployment that disabled the timer.
-// It writes nothing the timer would not have written, and the per-kind cooldown
-// means hammering it cannot manufacture rows.
-router.post('/sweep', async (req, res) => {
+// something does not have to wait up to 5 minutes to see the surface agree, and
+// so the sweep is reachable at all on a deployment that disabled the timer.
+//
+// ── `dry` DEFAULTS TO TRUE, AND `dry` DOES NOT MEAN "CHANGES NOTHING" ───────
+// It means DOES NOT RE-ANCHOR THE BASELINES. Checks still run and any alert
+// they earn is still written — a refresh that hid a genuine fault would be
+// worse than useless. What it must not do is CONSUME the comparison point:
+// needs_review's baseline is the previous observation, and the panel's refresh
+// button firing three times would otherwise anchor 40 → 41 → 42 and report the
+// 40 → 200 climb as three quiet +1 steps. The TIMER owns the series and
+// anchors; a person poking the surface does not.
+//
+// Pass ?dry=0 (or dry=false) to anchor deliberately.
+router.post('/sweep', canAck, async (req, res) => {
   try {
-    const result = await runHealthAlertSweep();
+    const dryRaw = String(req.query.dry ?? '1').toLowerCase();
+    const anchor = dryRaw === '0' || dryRaw === 'false' || dryRaw === 'no';
+    const result = await runHealthAlertSweep({ anchor });
     return res.json({ success: true, data: result });
   } catch (err) {
     console.error('[healthAlerts] sweep failed:', err);
     return fail(res, 500, 'server_error');
   }
-});
-
-// GET /api/v1/health-alerts/meta — the severity vocabulary, so the client's
-// badges and filters cannot drift from the server's validator.
-router.get('/meta', async (req, res) => {
-  res.json({ success: true, data: { severities: SEVERITIES } });
 });
 
 export default router;

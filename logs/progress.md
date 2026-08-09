@@ -2492,3 +2492,62 @@ funnels.js ↔ funnelTransfer.js import cycle is deliberate and verified by
 execution in BOTH module-evaluation orders.
 STATUS: COMPLETE
 ---
+
+---
+TIMESTAMP: 2026-08-09 21:40
+TASK: PLATFORM COMPLETENESS — adversarial review pass (H1, H2, M1-M5, L1-L6)
+BUILT: H1 — the client no longer drops the duplicate's `notes`: duplicateFunnel
+navigates immediately ONLY when there is nothing to report; any notes keep the
+operator on FunnelsPage with the server's sentences rendered and an explicit
+"Open the copy" button (restoreFunnel's pattern + a navigation affordance; the
+builder page is outside the fence). The predictive "e.g. Maps API key" bullet in
+DuplicateConfirmModal is gone — the client no longer guesses at a server-side
+allowlist it cannot see. H2 — minted a real permission via
+server/migrations/091_add_health_alerts_permission.sql (fence extension, 086-090
+pattern): Team - Full Access {read,ack}, Manager {read}, Viewer NOTHING. Router
+gates split: health-alerts:read on GET / and GET /meta, health-alerts:ack on
+POST /:id/ack and POST /sweep (sweep WRITES, so it is a write). The old header's
+"no seeded role would hold it" premise is disproven in-file by 086-090.
+M1 scopeId is a first-class recordAlert param; cooldown keys on (kind,
+context->>'scope_id'). M2 baseline persisted in lb_health_alert_state (kind PK)
++ an env-tunable absolute FLOOR (needs_review > 50) that needs no baseline.
+M3 runHealthAlertSweep({anchor}); POST /sweep defaults dry (anchor=false) so the
+panel's refresh evaluates and writes but never consumes the comparison point;
+the timer anchors. M5 cooldown made exclusive. M4 pre-COUNT before export +
+archived-pages note + the honesty paragraph now lists the caps. L1 name must be
+a string. L4 collapsible pretty-printed context + a NO-PII line in the call-site
+contract. L5 stale-response seq guard + offset clamp on ack. L6 metrics+trash
+note, note keys deduped, offset capped, limit null → default, ackAlert refuses
+with no actor, trash Load-more paging.
+TESTED: platform.mjs grown 141 → 199 assertions. The role matrix is driven
+through roles produced by EXECUTING migration 091 verbatim off disk (incl. an
+idempotence re-run). M5 is proven with FOUR REAL OS PROCESSES contending for one
+(kind, scope). M2's restart is simulated by re-importing the service module with
+a cache-busting query so every module-level variable resets. Full battery re-run.
+OUTPUT: platform.mjs 199 passed / 0 failed (run twice, identical);
+funnel-transfer.mjs 121/0; page-duplicate.mjs 34/0; seam-fixes.mjs 15/0;
+clone-page/scan-create.mjs 92/0; scripts/verifySplitTesting.mjs 48/0; vite build
+✓ 2670 modules, 699ms; eslint delta 0 (4 pre-existing before and after);
+HealthAlertsPanel.jsx eslint clean + compiled separately (3 modules);
+node --check clean on 5 files; both import-cycle orders load (MAX_PAGES=100
+readable across the cycle); routes/index.js mounts and answers 401.
+DECISIONS: (a) DECISION MADE — Viewer LOSES access to the alert feed (it moved
+off audit:read, which Viewer holds, onto health-alerts:read, which it is
+deliberately not granted). Documented in the route header, the migration, and
+asserted at platform.mjs A11/A14. (b) M4's sameDeployment cap relaxation
+(MAX_PAGES 100 → 500) is NOT DONE: it requires editing
+services/funnelTransfer.js, which the fence admits READ-ONLY and the extension
+covered only the migration. The pre-count refusal at 100 is in place and the
+limitation is written into the route's honesty paragraph. BLOCKED pending an
+explicit fence extension.
+TWO REAL BUGS THE HARNESS CAUGHT (both mine, both fixed): (1) JSON.stringify on
+a JSONB param stored a jsonb STRING SCALAR, so context->>'scope_id' was NULL on
+every row and the scoped cooldown matched NOTHING — the exact trap
+funnelTransfer.js:669 documents and my own comment warned about. (2) The
+reviewer-specified single-statement `INSERT … WHERE NOT EXISTS` cannot be made
+atomic even WITH an advisory lock: measured at 4 rows from 4 processes, because
+a statement's snapshot is taken BEFORE it blocks on the lock, so the waiter
+cannot see the row it waited for. Corrected to lock-then-read-then-write across
+statement boundaries inside one transaction (fresh snapshot per statement).
+STATUS: COMPLETE
+---

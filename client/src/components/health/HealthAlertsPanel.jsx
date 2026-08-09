@@ -20,8 +20,8 @@
 // it must not be handed a funnelId it would have to pretend to filter by. It
 // drops into a funnel settings pane, a standalone health page, or a dashboard
 // card unchanged.
-import { useCallback, useEffect, useState } from 'react';
-import { AlertTriangle, Check, Info, OctagonAlert, RefreshCw, ShieldCheck } from 'lucide-react';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { AlertTriangle, Check, ChevronRight, Info, OctagonAlert, RefreshCw, ShieldCheck } from 'lucide-react';
 import api from '../../services/api';
 
 const PAGE_SIZE = 25;
@@ -55,6 +55,46 @@ const fmtWhen = (iso) => {
   });
 };
 
+// The alert's structured detail — the measured depth, the threshold it was
+// judged against, the stale hours, the scope_id. It is the difference between
+// "the queue is backed up" and a number you can act on, and the message can
+// only carry so much of it.
+//
+// COLLAPSED BY DEFAULT: a feed where every row is six lines of JSON is a feed
+// nobody scans. Open on demand, pretty-printed, and scrollable so one large
+// context cannot push the rest of the list off screen.
+//
+// ⛔ By contract (services/healthAlerts.js — THE CALL-SITE CONTRACT) context
+// carries NO PII. This renders it verbatim as text, which is safe precisely
+// because of that contract; it is never dangerouslySetInnerHTML'd.
+function AlertContext({ context }) {
+  const [open, setOpen] = useState(false);
+  if (!context || typeof context !== 'object' || Object.keys(context).length === 0) return null;
+  let pretty;
+  try {
+    pretty = JSON.stringify(context, null, 2);
+  } catch {
+    pretty = String(context);
+  }
+  return (
+    <div className="mt-1.5">
+      <button
+        onClick={() => setOpen((v) => !v)}
+        className="text-[11px] text-text-faint hover:text-text-muted cursor-pointer inline-flex items-center gap-0.5"
+      >
+        <ChevronRight className={`w-3 h-3 transition-transform ${open ? 'rotate-90' : ''}`} />
+        {open ? 'Hide detail' : `Detail (${Object.keys(context).length} field${Object.keys(context).length === 1 ? '' : 's'})`}
+      </button>
+      {open && (
+        <pre className="mt-1 max-h-48 overflow-auto rounded-md border border-border-subtle bg-bg-elevated/50
+          p-2 text-[11px] leading-relaxed text-text-muted font-mono whitespace-pre">
+          {pretty}
+        </pre>
+      )}
+    </div>
+  );
+}
+
 function AlertRow({ alert, onAck, acking }) {
   const acked = Boolean(alert.acked_at);
   return (
@@ -66,6 +106,7 @@ function AlertRow({ alert, onAck, acking }) {
             <span className="text-[11px] font-mono text-text-faint truncate">{alert.kind}</span>
           </div>
           <p className={`mt-1.5 text-sm ${acked ? 'text-text-muted' : 'text-text-primary'}`}>{alert.message}</p>
+          <AlertContext context={alert.context} />
           <div className="mt-1 text-[11px] text-text-faint">
             {fmtWhen(alert.created_at)}
             {acked && (
@@ -101,8 +142,15 @@ export default function HealthAlertsPanel() {
   const [showAcked, setShowAcked] = useState(false);
   const [offset, setOffset] = useState(0);
   const [ackingId, setAckingId] = useState(null);
+  // ── STALE-RESPONSE GUARD ────────────────────────────────────────────────
+  // Every request that resolves used to win, whatever order they arrived in.
+  // Refresh (slow, page 1) then Next (fast, page 2) and the slow page-1 answer
+  // lands last, repainting page 1 while the pager still reads "26–50". Only the
+  // answer to the LATEST request may touch state.
+  const seqRef = useRef(0);
 
   const load = useCallback(async (nextOffset = offset, includeAcked = showAcked) => {
+    const seq = ++seqRef.current;
     setLoading(true);
     setError('');
     try {
@@ -111,14 +159,19 @@ export default function HealthAlertsPanel() {
       // someone". The default view is the second one.
       if (!includeAcked) params.acked = 'false';
       const res = await api.get('/health-alerts', { params });
-      setData(res.data?.data || null);
+      if (seq !== seqRef.current) return null; // superseded — drop it
+      const payload = res.data?.data || null;
+      setData(payload);
+      return payload;
     } catch (e) {
+      if (seq !== seqRef.current) return null;
       // A monitoring panel that fails silently is worse than no panel: it reads
       // as "all clear". Say the read failed, and never render the empty state.
       setError(e.response?.data?.error?.code || e.response?.data?.error || 'Could not load alerts');
       setData(null);
+      return null;
     } finally {
-      setLoading(false);
+      if (seq === seqRef.current) setLoading(false);
     }
   }, [offset, showAcked]);
 
@@ -129,7 +182,15 @@ export default function HealthAlertsPanel() {
     setError('');
     try {
       await api.post(`/health-alerts/${alert.id}/ack`);
-      await load(offset, showAcked);
+      const payload = await load(offset, showAcked);
+      // ── OFFSET CLAMP ───────────────────────────────────────────────────
+      // In the default (unacked-only) view, acking removes the row from the
+      // result set. Ack the last item on page 3 and page 3 no longer exists —
+      // the panel showed an empty list with a Previous button and read as
+      // "all clear" while 50 unacked alerts sat on pages 1 and 2. Step back.
+      if (payload && payload.items.length === 0 && offset > 0) {
+        setOffset(Math.max(0, offset - PAGE_SIZE));
+      }
     } catch (e) {
       setError(e.response?.data?.error?.code || 'Could not acknowledge that alert');
     } finally {
