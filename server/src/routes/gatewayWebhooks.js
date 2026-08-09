@@ -22,6 +22,7 @@ import {
 } from '../services/checkoutSettle.js';
 import * as stripeGw from '../services/gateways/stripe.js';
 import * as whopGw from '../services/gateways/whop.js';
+import { reflectRefundToShopify } from '../services/shopifyRefund.js';
 import { startMoneySweeps } from '../services/moneySweeps.js';
 // TRACKING-LANE HOOK (feat/tracking-attribution): fire the deterministic
 // Purchase conversion (event_id = pur_<session_id>) on a base settle. Idempotent
@@ -553,6 +554,17 @@ router.post('/whop', async (req, res) => {
              WHERE id = $1 AND session_id = $2 AND status = 'settled'`,
             [upRow, target.id]
           );
+        }
+        // Reflect a BASE refund into the mirrored Shopify order so the Orders
+        // view (Shopify-backed) shows it as refunded and returns_today updates.
+        // The money is already back at the gateway; this is books-only. Fire-
+        // and-forget so it never delays the webhook ACK (matches voidSessionRefund
+        // above); it is idempotent per (session, ref) and fails CLOSED to
+        // needs_reconcile. Upsell reversals and disputes are out of scope here —
+        // an upsell isn't its own Shopify order, and a dispute is a bank hold,
+        // not a merchant refund.
+        if (isWhopRefund && !isWhopDispute && !isUpsellReversal) {
+          reflectRefundToShopify({ sessionId: target.id, ref, amount }).catch(() => {});
         }
       }
       await markProcessed('whop', webhookId, isWhopDispute ? 'dispute_applied' : `refund_${r.ok ? 'applied' : r.error}`);
