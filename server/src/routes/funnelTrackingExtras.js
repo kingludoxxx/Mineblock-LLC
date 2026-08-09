@@ -374,14 +374,11 @@ router.get('/:id/tracking/custom', authed, async (req, res) => {
 // trusted-operator posture as page head_html / settings.custom_head_code). The
 // controls are the funnels permission above and the 32KB-per-field cap.
 //
-// TODO(tracking-render-wiring): STORAGE ONLY — nothing reads this table yet, so
-// a saved snippet does NOT reach a public page. The admin UI carries a
-// "Saved, but not live yet" notice for exactly this reason (client
-// sections.jsx CustomTrackingSection, same marker). To close the loop:
-// funnelPublic.js:125 joins lb_tracking_custom_code onto the funnel row, and
-// funnelRender.js emits it at :1600-1602 alongside the existing
-// settings.custom_head_code / custom_body_end_code injections (:2856 / :2888).
-// When that ships, drop the client notice and flip the copy to present tense.
+// RENDER WIRING (integrator, live): funnelPublic's loader LEFT JOINs
+// lb_tracking_custom_code onto the funnel row as `tracking_custom_code`, and
+// funnelRender emits both fields via readCustomCode() appended to the
+// settings head/body extras — AFTER settings.custom_head_code, so a consent
+// manager in Advanced → Scripts initializes before pixel base code saved here.
 router.put('/:id/tracking/custom', authed, async (req, res) => {
   try {
     await ensureTrackingExtrasTables();

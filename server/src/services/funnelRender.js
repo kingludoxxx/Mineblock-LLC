@@ -32,6 +32,7 @@
 // single injection point the tracking lane touches in this file — see its use
 // in renderPageHtml() below. No other edits here belong to the tracking lane.
 import { trackingHeadScript } from './trackingRuntime.js';
+import { readCustomCode } from './trackingCustomCode.js';
 
 const isPlainObject = (v) =>
   v != null && typeof v === 'object' && !Array.isArray(v);
@@ -1598,8 +1599,16 @@ export function renderPageHtml(page, funnel, pagesById) {
   // head/body code, checkout enhancements). With an empty/absent settings
   // blob BOTH helpers return '' and the document stays byte-identical.
   const fnlSettings = funnelSettingsOf(funnel);
-  const settingsHeadExtras = funnelSettingsHead(fnlSettings);
-  const settingsBodyExtras = funnelSettingsBodyEnd(fnlSettings, page);
+  // CUSTOM TRACKING SNIPPETS (lb_tracking_custom_code, joined onto the funnel
+  // row by funnelPublic's loader as `tracking_custom_code`). Emitted verbatim
+  // AFTER the settings' custom head/body code, so a consent manager placed in
+  // Advanced → Scripts initializes before any pixel base code pasted here.
+  // Both fields emit '' when absent — pages stay byte-identical without them.
+  const trkCode = readCustomCode(funnel?.tracking_custom_code);
+  const settingsHeadExtras = funnelSettingsHead(fnlSettings)
+    + (trkCode.head_html ? '\n' + trkCode.head_html : '');
+  const settingsBodyExtras = funnelSettingsBodyEnd(fnlSettings, page)
+    + (trkCode.body_html ? '\n' + trkCode.body_html : '');
 
   return `<!DOCTYPE html>
 <html lang="en">

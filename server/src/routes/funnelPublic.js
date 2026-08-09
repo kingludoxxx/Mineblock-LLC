@@ -26,6 +26,7 @@ import { pgQuery } from '../db/pg.js';
 import { verifyAccessToken } from '../utils/jwt.js';
 import { renderPageHtml } from '../services/funnelRender.js';
 import { ensureTables, getEnabledRedirects, pickRedirect } from './funnels.js';
+import { ensureTrackingExtrasTables } from './funnelTrackingExtras.js';
 import { resolvePageSplit, recordView } from '../services/splitDelivery.js';
 
 const router = Router();
@@ -117,12 +118,22 @@ async function servePage(req, res, resolvePage) {
       return notFound(res);
     }
     await ensureTables();
+    // The loader query LEFT JOINs lb_tracking_custom_code — on a fresh DB that
+    // table must exist BEFORE the first public serve or the join throws and
+    // takes serving down with it. Promise-cached, zero steady-state cost.
+    await ensureTrackingExtrasTables();
     const funnelSlug = String(req.params.funnelSlug || '');
     // Funnel slugs are [a-z0-9-]+ by construction — anything else can't exist,
     // so short-circuit to 404 (also defuses traversal/unicode/null probes).
     if (!/^[a-z0-9-]+$/.test(funnelSlug)) return notFound(res);
     const funnels = await pgQuery(
-      `SELECT * FROM funnels WHERE slug = $1 AND archived = FALSE`,
+      // Custom tracking snippets ride the funnel row (tracking_custom_code) so
+      // the renderer can emit them without a second query; LEFT JOIN keeps a
+      // funnel with no snippet row serving unchanged (column arrives NULL).
+      `SELECT f.*, tcc.code AS tracking_custom_code
+         FROM funnels f
+         LEFT JOIN lb_tracking_custom_code tcc ON tcc.funnel_id = f.id
+        WHERE f.slug = $1 AND f.archived = FALSE`,
       [funnelSlug]
     );
     const funnel = funnels[0];

@@ -1554,36 +1554,14 @@ export function CustomTrackingSection({ funnel }) {
       <div>
         <h3 className="text-base font-semibold text-text-primary">Custom Tracking Code</h3>
         <p className="mt-1 text-sm text-text-muted">
-          Raw tracking snippets for <span className="text-text-primary font-medium">every page</span> of
-          this funnel. Stored and validated verbatim — nothing is rewritten or sanitized,
+          Raw tracking snippets injected into <span className="text-text-primary font-medium">every page</span> of
+          this funnel. Stored and emitted verbatim — nothing is rewritten or sanitized,
           so a tag that works elsewhere will work here. 32KB per field.
         </p>
         <p className="mt-1.5 text-xs text-text-faint">
-          For non-tracking code use Advanced → Scripts; for one page, use that page’s
-          own head / body escape hatches in the builder.
-        </p>
-      </div>
-
-      {/*
-        TODO(tracking-render-wiring): NOT-YET-LIVE notice — DELETE THIS BLOCK, and
-        flip the tense of the copy above and of both CodeField hints below
-        ("Will be injected" → "Injected"), when the integrator wires the public
-        renderer to emit these snippets. That wiring is
-        services/funnelRender.js (funnelSettingsHead :2835 / funnelSettingsBodyEnd
-        :2872, consumed at :1600-1602) reading lb_tracking_custom_code, which
-        funnelPublic.js:125 must join in. Until it lands, saving here changes
-        nothing about what a visitor's browser executes, and the panel must say
-        so — an operator who pastes a Meta base pixel, sees a green "Saved" and
-        this copy would otherwise believe their tags are live while zero tags
-        render.
-      */}
-      <div className="rounded-lg border border-dashed border-amber-500/30 bg-amber-500/5 px-4 py-3">
-        <p className="text-sm text-amber-400/90 font-medium">Saved, but not live yet</p>
-        <p className="mt-1 text-xs text-amber-400/70">
-          These snippets are stored and validated now, but they are
-          {' '}<span className="font-medium">not yet emitted on public pages</span> — the renderer
-          wiring lands with the tracking phase. Nothing you save here affects a live visitor
-          until then. To ship a tag today, use Advanced → Scripts.
+          Emitted after Advanced → Scripts’ head/body code, so a consent manager there
+          initializes before pixel base code pasted here. For non-tracking code use
+          Advanced → Scripts; for one page, use that page’s own escape hatches in the builder.
         </p>
       </div>
 
@@ -1593,14 +1571,14 @@ export function CustomTrackingSection({ funnel }) {
         <>
           <CodeField
             label="Head snippet"
-            hint="Will be injected at the end of <head> — pixel base codes, tag managers, consent tools."
+            hint="Injected at the end of <head> — pixel base codes, tag managers, consent tools."
             value={form.head}
             onChange={(v) => setForm((f) => ({ ...f, head: v }))}
             placeholder={'<script>…</script>\n<noscript>…</noscript>'}
           />
           <CodeField
             label="Body snippet"
-            hint="Will be injected just before </body> — deferred tags, <noscript> fallbacks."
+            hint="Injected just before </body> — deferred tags, <noscript> fallbacks."
             value={form.body}
             onChange={(v) => setForm((f) => ({ ...f, body: v }))}
             placeholder={'<noscript><img src="…"/></noscript>'}
