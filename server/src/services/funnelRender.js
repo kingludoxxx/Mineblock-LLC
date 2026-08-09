@@ -1428,6 +1428,7 @@ main>[data-blk-id='ckt_whop'] .lb-checkout-fallback{display:none;} /* replaced b
 .ckt-promo{display:flex;gap:8px;margin:10px 0 4px;}
 .ckt-promo .ckt-input{flex:1;}
 .ckt-promo-apply{border:1px solid #d4d4d4;background:#f1f1f1;color:#555;border-radius:8px;padding:0 18px;font-weight:600;cursor:pointer;}
+.ckt-promo-note{font-size:12.5px;margin:2px 0 6px;}
 /* Mobile: single column, order summary first */
 @media (max-width:900px){
   main{grid-template-columns:1fr;column-gap:0;padding:20px 16px 48px;}
@@ -1576,6 +1577,84 @@ const CKT_TEMPLATE_JS = `(function(){
       if(tries>240){clearInterval(timer);}
     }catch(e){if(tries>240){clearInterval(timer);}}
   },250);
+})();
+/* PROMO CODE — a Shopify discount code applied to THIS session. The code is
+   validated and priced SERVER-SIDE (the client only ever sends the string);
+   on success the summary re-renders with the new totals and the payment
+   session is RE-MINTED at the new amount (the charge amount is baked into
+   the payment session, so a fresh session + fresh frame is mandatory). Same
+   clean-remount rules as the embed runtime: shallow clone, loader markers
+   stripped, new generation id. Plain string logic only - this file is
+   emitted through a template literal. */
+(function(){
+  function q2(sel){return document.querySelector(sel);}
+  function sid2(){try{return (window.__fos_checkout.session||{}).session_id||'';}catch(e){return '';}}
+  function cur2(){try{return (window.__fos_checkout.session||{}).currency||'USD';}catch(e){return 'USD';}}
+  function money2(n){try{return new Intl.NumberFormat(undefined,{style:'currency',currency:cur2()}).format(Number(n));}catch(e){return 'USD '+Number(n||0).toFixed(2);}}
+  var applyBtn=q2('.ckt-promo-apply');
+  var input=q2(".ckt-promo input[name='promo']");
+  if(!applyBtn||!input){return;}
+  var note=document.createElement('div');note.className='ckt-promo-note';note.hidden=true;
+  function attachNote(){var wrap=q2('.ckt-promo');if(wrap&&wrap.parentNode&&note.parentNode!==wrap.parentNode){wrap.parentNode.insertBefore(note,wrap.nextSibling);}}
+  function msg2(t,bad){attachNote();note.hidden=false;note.textContent=t;note.style.color=bad?'#b91c1c':'#15803d';}
+  function reason2(code){
+    if(code==='code_not_found'){return 'That code does not exist.';}
+    if(code==='code_expired'){return 'That code has expired.';}
+    if(code==='code_not_started'){return 'That code is not active yet.';}
+    if(code==='code_usage_exhausted'){return 'That code has reached its usage limit.';}
+    if(code&&code.indexOf('code_min_subtotal:')===0){return 'Order minimum for this code: $'+code.split(':')[1];}
+    if(code==='code_not_supported'){return 'That code cannot be used on this checkout.';}
+    if(code==='discount_unavailable'){return 'Could not check the code right now - try again.';}
+    return 'That code could not be applied.';
+  }
+  function updateSummary2(totals){
+    try{
+      var box=q2('.ckt-summary [data-fos-order-summary]');if(!box){return;}
+      var totalRow=box.querySelector('.fos-os-total');if(!totalRow){return;}
+      var extras=box.querySelectorAll('.ckt-os-extra');
+      for(var i=0;i<extras.length;i++){extras[i].parentNode.removeChild(extras[i]);}
+      function mkrow(label,value){var d=document.createElement('div');d.className='fos-os-row ckt-os-extra';var a=document.createElement('span');a.textContent=label;var b=document.createElement('span');b.textContent=value;d.appendChild(a);d.appendChild(b);return d;}
+      if(totals.subtotal!=null){box.insertBefore(mkrow('Subtotal',money2(totals.subtotal)),totalRow);}
+      if(totals.discount!=null&&Number(totals.discount)>0){box.insertBefore(mkrow('Savings','-'+money2(totals.discount)),totalRow);}
+      var spans=totalRow.getElementsByTagName('span');
+      if(spans&&spans.length>=2){var usd=spans[1].querySelector('.ckt-usd');spans[1].textContent='';if(usd){spans[1].appendChild(usd);}spans[1].appendChild(document.createTextNode(money2(totals.total)));}
+      try{window.__fos_checkout.session.totals=totals;}catch(e){}
+    }catch(e){}
+  }
+  var promoSeq=0;
+  function remintFrame2(){
+    var s=sid2();if(!s){return;}
+    fetch('/api/v1/checkout/public/whop/create-session',{method:'POST',headers:{'Content-Type':'application/json'},credentials:'same-origin',body:JSON.stringify({session_id:s})})
+    .then(function(r){return r.json();}).then(function(j){
+      var ch=j&&j.data&&j.data.whop_session_id;if(!ch){return;}
+      var mount=q2('[data-fos-whop-mount]');if(!mount||!mount.parentNode){return;}
+      var fresh=mount.cloneNode(false);
+      fresh.removeAttribute('data-whop-checkout-mounted');
+      fresh.removeAttribute('data-whop-checkout-identifier');
+      promoSeq+=1;fresh.id='puure-checkout-promo'+promoSeq;
+      fresh.setAttribute('data-whop-checkout-session',ch);
+      mount.parentNode.replaceChild(fresh,mount);
+    }).catch(function(){});
+  }
+  function submitCode(){
+    var s=sid2();if(!s){msg2('Checkout is still loading - try again in a second.',true);return;}
+    var code=String(input.value||'').trim();
+    applyBtn.disabled=true;var prev=applyBtn.textContent;applyBtn.textContent='...';
+    fetch('/api/v1/checkout/public/session/'+encodeURIComponent(s)+'/discount',{method:'POST',headers:{'Content-Type':'application/json'},credentials:'same-origin',body:JSON.stringify({code:code})})
+    .then(function(r){return r.json().then(function(j){return {st:r.status,j:j};}).catch(function(){return {st:r.status,j:null};});})
+    .then(function(res){
+      applyBtn.disabled=false;applyBtn.textContent=prev;
+      if(res.st!==200||!res.j||!res.j.success){msg2(reason2(res.j&&res.j.error&&res.j.error.code),true);return;}
+      var d=res.j.data;
+      if(d.discount_code){msg2('Code '+d.discount_code+' applied - you saved '+money2(d.discount_amount),false);}
+      else{msg2('Code removed.',false);}
+      updateSummary2(d.totals);
+      remintFrame2();
+    })
+    .catch(function(){applyBtn.disabled=false;applyBtn.textContent=prev;msg2('Could not check that code - try again.',true);});
+  }
+  applyBtn.addEventListener('click',submitCode);
+  input.addEventListener('keydown',function(ev){if(ev.key==='Enter'){ev.preventDefault();submitCode();}});
 })();`;
 
 // ---------------------------------------------------------------------------

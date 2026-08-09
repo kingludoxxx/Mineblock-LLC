@@ -188,6 +188,10 @@ async function createTables() {
   // create-session, returned ONLY as an HttpOnly cookie, and never appears in a
   // URL, a beacon or a log. Only its SHA-256 is stored.
   await pgQuery(`ALTER TABLE co_sessions ADD COLUMN IF NOT EXISTS confirm_token_hash TEXT`);
+  // Shopify discount code applied to this session (server-validated against
+  // the store's price rules; the amount is OUR computation, never the client's).
+  await pgQuery(`ALTER TABLE co_sessions ADD COLUMN IF NOT EXISTS discount_code TEXT`);
+  await pgQuery(`ALTER TABLE co_sessions ADD COLUMN IF NOT EXISTS discount_amount NUMERIC(12,2) NOT NULL DEFAULT 0`);
   await pgQuery(`ALTER TABLE co_upsell_charges ADD COLUMN IF NOT EXISTS gateway_payment_id TEXT`);
   await pgQuery(`ALTER TABLE co_upsell_charges ADD COLUMN IF NOT EXISTS error TEXT`);
   await pgQuery(`

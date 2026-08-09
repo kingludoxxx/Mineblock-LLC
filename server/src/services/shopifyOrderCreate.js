@@ -123,13 +123,16 @@ function buildOrderPayload(session, order, { idempotencyKey }) {
   const total = round2(order.total ?? session.total);
   const shipAmt = round2(session.shipping || 0);
   const taxAmt = round2(session.tax || 0);
+  const discAmt = round2(session.discount_amount || 0);
   // The line-derived total MUST equal the amount we book as paid, else Shopify
   // resolves the order to partially_paid/over-paid. Reconcile the snapshot's
-  // components against the authoritative charged total and fail CLOSED (park
-  // needs_review) on any drift rather than post a mispriced order.
-  const composedTotal = round2(lineSubtotal + shipAmt + taxAmt);
+  // components — including a server-validated discount, which Shopify will
+  // subtract via discount_codes — against the authoritative charged total and
+  // fail CLOSED (park needs_review) on any drift rather than post a mispriced
+  // order.
+  const composedTotal = round2(lineSubtotal + shipAmt + taxAmt - discAmt);
   if (Math.abs(composedTotal - total) > 0.01) {
-    return { error: `total_composition_mismatch:lines+ship+tax=${composedTotal}!=charged=${total}` };
+    return { error: `total_composition_mismatch:lines+ship+tax-discount=${composedTotal}!=charged=${total}` };
   }
   const gatewayRef = String(session.gateway_session_id || '').slice(0, 120);
   const gatewayName = String(session.gateway || order.gateway || 'puure');
@@ -175,6 +178,13 @@ function buildOrderPayload(session, order, { idempotencyKey }) {
     line_items: lineItems,
     // Shipping/tax carried as explicit lines so Shopify's computed total_price
     // == the charged transaction amount (fully paid), not partially_paid.
+    // A session discount rides as a real discount_codes entry (fixed amount =
+    // OUR validated computation), so store reporting attributes the code AND
+    // the computed total still reconciles: lines + shipping − discount = the
+    // charged transaction amount.
+    ...(Number(session.discount_amount) > 0 && session.discount_code
+      ? { discount_codes: [{ code: String(session.discount_code).slice(0, 64), amount: round2(Number(session.discount_amount)).toFixed(2), type: 'fixed_amount' }] }
+      : {}),
     ...(shipAmt > 0 ? { shipping_lines: [{ title: 'Shipping', price: shipAmt.toFixed(2), code: 'puure-checkout' }] } : {}),
     ...(taxAmt > 0 ? { tax_lines: [{ title: 'Tax', price: taxAmt.toFixed(2), rate: 0 }], total_tax: taxAmt.toFixed(2) } : {}),
     transactions: [{

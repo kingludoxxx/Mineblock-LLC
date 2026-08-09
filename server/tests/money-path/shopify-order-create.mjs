@@ -50,7 +50,8 @@ function computeOrder(o) {
   }
   const shipSum = (o.shipping_lines || []).reduce((s, l) => s + num(l.price), 0);
   const taxSum = (o.tax_lines || []).reduce((s, l) => s + num(l.price), 0);
-  const totalPrice = Math.round((lineSum + shipSum + taxSum) * 100) / 100;
+  const discSum = (o.discount_codes || []).reduce((s, d) => s + num(d.amount), 0);
+  const totalPrice = Math.round((lineSum + shipSum + taxSum - discSum) * 100) / 100;
   const paid = (o.transactions || [])
     .filter((t) => ['sale', 'capture'].includes(t.kind) && t.status === 'success')
     .reduce((s, t) => s + num(t.amount), 0);
@@ -442,6 +443,29 @@ const settleArgs = (id, payId) => ({
   check('T16 shipping stays the shipping address', o.shipping_address?.address1 === 'Ship St 1' && o.shipping_address?.city === 'Roma', JSON.stringify(o.shipping_address));
   check('T16 billing is the DISTINCT billing address (not shipping)', o.billing_address?.address1 === 'Bill Ave 9' && o.billing_address?.city === 'Napoli', JSON.stringify(o.billing_address));
   check('T16 billing name is the payer', o.billing_address?.first_name === 'Bill' && o.billing_address?.last_name === 'Payer', JSON.stringify(o.billing_address));
+}
+
+// ══ TEST 17 — a session discount rides as discount_codes and RECONCILES ══
+{
+  mock.mode = 'ok'; mock.calls.length = 0;
+  const id = await seedSession({ id: 'co_disc', total: 25, customerOverride: {
+    email: 'd@puure.co', first_name: 'Di', last_name: 'Scount',
+    shipping: { address1: 'D St 1', city: 'Roma', state: 'RM', zip: '00100', country: 'IT' },
+  } });
+  await sql`UPDATE co_sessions SET
+    line_items = ${sql.json([{ variant_id: '58222941077807', quantity: 1, price: 30, currency: 'USD' }])},
+    subtotal = 30, shipping = 0, tax = 0,
+    discount_code = 'WELCOME5', discount_amount = 5, total = 25
+    WHERE id = ${id}`;
+  const rdisc = await settleSessionPaid({ sessionId: id, gateway: 'whop', gatewayId: 'pay_disc', idempotencyKey: 'wh_pay_disc', amount: 25, currency: 'USD' });
+  console.log('  T17 settle result:', JSON.stringify(rdisc), 'creates:', mock.calls.length);
+  const [sess17] = await sql`SELECT status, needs_review_reason, total, discount_amount FROM co_sessions WHERE id = ${id}`;
+  console.log('  T17 session:', JSON.stringify(sess17));
+  const o = mock.calls.length ? mock.calls[mock.calls.length - 1].body : {};
+  const rec = mock.orders[mock.orders.length - 1];
+  check('T17 discount_codes on the order', o.discount_codes?.[0]?.code === 'WELCOME5' && o.discount_codes?.[0]?.amount === '5.00', JSON.stringify(o.discount_codes));
+  check('T17 computed total reconciles to the CHARGED amount (25.00)', rec?.total_price === '25.00' && o.transactions?.[0]?.amount === '25.00', JSON.stringify({ t: rec?.total_price, tx: o.transactions?.[0]?.amount }));
+  check('T17 financial_status fully paid', rec?.financial_status === 'paid', JSON.stringify(rec?.financial_status));
 }
 
 console.log(`\nRESULT: ${pass} passed, ${fail} failed`);

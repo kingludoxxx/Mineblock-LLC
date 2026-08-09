@@ -25,6 +25,7 @@ import {
 // SPLIT-LANE HOOK: exposure denominators are recorded fail-open at session
 // mint (page scope) and at the upsell decision point (offer scope).
 import { resolveArm } from '../services/splitResolver.js';
+import { validateDiscountCode } from '../services/checkoutDiscount.js';
 import { recordExposure } from '../services/splitCredits.js';
 
 // Write the exposure denominator. Every failure is swallowed: a split outage
@@ -1109,6 +1110,70 @@ router.get('/upsell/offer', async (req, res) => {
 // token as the charge path, so a leaked session id cannot rewrite someone
 // else's delivery address, and refused once the session is settled: an address
 // change after payment must go through support, not a public endpoint.
+// POST /session/:id/discount — apply (or clear, code:'') a Shopify discount
+// code to an UNSETTLED session. The code is validated against the store's
+// price rules and the amount is computed SERVER-SIDE (see checkoutDiscount.js
+// — the client can never name a number). Gated by the same HttpOnly
+// confirmation token as the charge path and refused once settled. The client
+// re-mints the Whop payment session afterwards so the frame charges the new
+// total — the charge amount always comes from co_sessions.total at mint time.
+router.post('/session/:id/discount', async (req, res) => {
+  try {
+    if (!(await rateLimit(req, res, 'session-discount', 30))) return;
+    await ensureCheckoutTables();
+    const id = String(req.params.id || '').slice(0, 80);
+    const rows = await pgQuery(
+      `SELECT id, status, subtotal, shipping, tax, currency, confirm_token_hash
+       FROM co_sessions WHERE id = $1`, [id]
+    );
+    if (!rows.length) return res.status(404).json({ success: false, error: { code: 'session_not_found' } });
+    const s = rows[0];
+    if (s.confirm_token_hash
+      && !digestsMatch(hashToken(confirmTokenFrom(req)), s.confirm_token_hash)) {
+      return res.status(403).json({ success: false, error: { code: 'confirmation_required' } });
+    }
+    if (s.status !== 'processing') {
+      return res.status(409).json({ success: false, error: { code: 'session_not_editable' } });
+    }
+    const rawCode = String(req.body?.code ?? '').trim();
+    const subtotal = Number(s.subtotal);
+    let code = null;
+    let amount = 0;
+    if (rawCode) {
+      let v;
+      try {
+        v = await validateDiscountCode(rawCode, { subtotal });
+      } catch (err) {
+        // Transport trouble — retryable, never a silent full-price surprise.
+        return res.status(503).json({ success: false, error: { code: 'discount_unavailable' } });
+      }
+      if (!v.ok) {
+        return res.status(422).json({ success: false, error: { code: v.reason } });
+      }
+      code = v.code;
+      amount = v.amount;
+    }
+    const total = round2(Math.max(0, subtotal - amount) + Number(s.shipping) + Number(s.tax));
+    await pgQuery(
+      `UPDATE co_sessions
+         SET discount_code = $2, discount_amount = $3, total = $4, updated_at = NOW()
+       WHERE id = $1 AND status = 'processing'`,
+      [id, code, amount, total]
+    );
+    return res.json({
+      success: true,
+      data: {
+        discount_code: code,
+        discount_amount: amount,
+        totals: { subtotal, shipping: Number(s.shipping), tax: Number(s.tax), discount: amount, total },
+      },
+    });
+  } catch (err) {
+    console.error('[checkout] session discount failed:', err.message);
+    return res.status(500).json({ success: false, error: { code: 'internal_error' } });
+  }
+});
+
 router.post('/session/:id/customer', async (req, res) => {
   try {
     if (!(await rateLimit(req, res, 'session-customer', 60))) return;
@@ -1144,7 +1209,8 @@ router.get('/session/:id', async (req, res) => {
     if (!(await rateLimit(req, res, 'get-session', 60))) return;
     await ensureCheckoutTables();
     const rows = await pgQuery(
-      `SELECT id, status, line_items, subtotal, shipping, tax, total, currency, created_at
+      `SELECT id, status, line_items, subtotal, shipping, tax, total, currency, created_at,
+              discount_code, discount_amount
        FROM co_sessions WHERE id = $1`,
       [String(req.params.id || '').slice(0, 80)]
     );
@@ -1168,8 +1234,10 @@ router.get('/session/:id', async (req, res) => {
           subtotal: Number(s.subtotal),
           shipping: Number(s.shipping),
           tax: Number(s.tax),
+          discount: Number(s.discount_amount || 0),
           total: Number(s.total),
         },
+        discount_code: s.discount_code || null,
         currency: s.currency,
         created_at: s.created_at,
       },
