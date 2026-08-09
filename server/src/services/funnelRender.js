@@ -199,7 +199,7 @@ function renderBlockInner(block) {
         `<div class='lb-checkout fos-checkout' data-fos-checkout data-fos-gateway='whop'>` +
         `<div class='lb-checkout-summary fos-order-summary' data-fos-order-summary>` +
         `<div class='fos-os-empty'>Preparing your order…</div></div>` +
-        `<div class='lb-whop-wait' data-fos-whop-wait>Enter your email above to load the secure payment form.</div>` +`<div class='lb-whop-mount' data-fos-whop-mount></div>` +
+        `<div class='lb-whop-wait' data-fos-whop-wait>Enter your email and delivery address above to load the secure payment form.</div>` +`<div class='lb-whop-mount' data-fos-whop-mount></div>` +
         `<div class='lb-checkout-error' data-fos-error${configured ? ' hidden' : ''}>` +
         `${esc(errInit)}</div>` +
         `<a class='lb-btn lb-checkout-fallback' data-fos-fallback rel='noopener noreferrer' ` +
@@ -898,13 +898,10 @@ function mountEmbed(root,embed){try{var mount=root.querySelector('[data-fos-whop
 mount.setAttribute('data-whop-checkout-theme','light');
 mount.setAttribute('data-whop-checkout-locale','en');
 mount.setAttribute('data-whop-checkout-hide-email','true');
-/* Address deliberately NOT hidden. Hiding a field we cannot populate is
-   what broke the first live order: the buyer cannot supply it, we cannot
-   inject it after mount (the embed stops answering the messaging API),
-   and the validation error is invisible. Email we CAN bake into the
-   iframe URL before creation; the delivery address is still empty at
-   that moment, so it stays visible and Whop collects it if it needs it.
-   Revisit only after a charge has actually succeeded. */
+/* Whop's billing block duplicates our Delivery section, so hide it — but
+   ONLY because we now bake the address into the iframe URL at creation
+   (see gating below). Hiding a field we could not populate is exactly
+   what made the first live order unsubmittable. */mount.setAttribute('data-whop-checkout-hide-address','true');
 mount.setAttribute('data-whop-checkout-hide-price','true');
 mount.setAttribute('data-whop-checkout-hide-tos','true');
 mount.setAttribute('data-whop-checkout-hide-submit-button','true');
@@ -919,29 +916,54 @@ if(!mount.id){mount.id='puure-checkout';}
    means we must not mount until we actually have one. */
 var placeholder=root.querySelector('[data-fos-whop-wait]');
 var mounted=false;
-function emailValue(){var el=document.querySelector('input[name="email"]');return el?String(el.value||'').trim():'';}
+function fieldValue(n){var el=document.querySelector('[name="'+n+'"]');return el?String(el.value||'').trim():'';}
+function emailValue(){return fieldValue('email');}
+/* Everything Whop's hidden billing block would have asked for, taken from the
+   Delivery section the buyer already filled. Baked into the iframe URL at
+   creation because the embed cannot be told anything after it mounts. */
+function billing(){
+  var name=(fieldValue('first_name')+' '+fieldValue('last_name')).trim();
+  return {name:name,line1:fieldValue('address1'),line2:fieldValue('address2'),
+          city:fieldValue('city'),state:fieldValue('state'),
+          postal:fieldValue('postal'),country:fieldValue('country')};}
+/* The address is REQUIRED once hidden — mounting without it recreates the
+   invisible-failure bug. Gate on the minimum Whop needs to authorise a card. */
+function billingReady(){var b=billing();return !!(b.name&&b.line1&&b.city&&b.postal&&b.country);}
+function applyPrefill(b,v){
+  mount.setAttribute('data-whop-checkout-prefill-email',v);
+  mount.setAttribute('data-whop-checkout-prefill-name',b.name);
+  mount.setAttribute('data-whop-checkout-prefill-address-line1',b.line1);
+  if(b.line2){mount.setAttribute('data-whop-checkout-prefill-address-line2',b.line2);}
+  mount.setAttribute('data-whop-checkout-prefill-address-city',b.city);
+  if(b.state){mount.setAttribute('data-whop-checkout-prefill-address-state',b.state);}
+  mount.setAttribute('data-whop-checkout-prefill-address-postal-code',b.postal);
+  mount.setAttribute('data-whop-checkout-prefill-address-country',b.country);}
+function prefillKey(){var b=billing();return emailValue()+'|'+b.name+'|'+b.line1+'|'+b.line2+'|'+b.city+'|'+b.state+'|'+b.postal+'|'+b.country;}
 /* No regex here on purpose: this runtime is emitted through a template
    literal, which eats the backslashes — /^[^@\\s]+.../ reached the browser
    as /^[^@s]+.../ and rejected every address containing the letter s,
    which is why the first live order never mounted a payment form.
    Plain string checks cannot be mangled by an escaping layer. */function valid(v){if(!v||v.indexOf(' ')!==-1)return false;var at=v.indexOf('@');if(at<1||at!==v.lastIndexOf('@'))return false;var dot=v.lastIndexOf('.');return dot>at+1&&dot<v.length-1;}
-function doMount(){var v=emailValue();if(mounted||!valid(v)){return;}mounted=true;
-  mount.setAttribute('data-whop-checkout-prefill-email',v);
+function doMount(){var v=emailValue();if(mounted||!valid(v)||!billingReady()){return;}mounted=true;
+  applyPrefill(billing(),v);
+  mount.setAttribute('data-fos-prefill-key',prefillKey());
   mount.setAttribute('data-whop-checkout-session',embed.whop_session_id);
   if(placeholder){placeholder.hidden=true;}
   loadWhopLoader();}
 /* If the buyer corrects the address after the form mounted, the baked-in value
    is stale - tear the frame down and rebuild it with the new one rather than
    charging a receipt to the wrong address. */
-function remount(){var v=emailValue();if(!mounted||!valid(v)){return;}
-  if(mount.getAttribute('data-whop-checkout-prefill-email')===v){return;}
+function remount(){var v=emailValue();if(!mounted||!valid(v)||!billingReady()){return;}
+  var k=prefillKey();if(mount.getAttribute('data-fos-prefill-key')===k){return;}
   mount.removeAttribute('data-whop-checkout-session');
-  mount.setAttribute('data-whop-checkout-prefill-email',v);
+  applyPrefill(billing(),v);
+  mount.setAttribute('data-fos-prefill-key',k);
   setTimeout(function(){mount.setAttribute('data-whop-checkout-session',embed.whop_session_id);},50);}
-var emEl=document.querySelector('input[name="email"]');
-if(emEl){emEl.addEventListener('blur',function(){mounted?remount():doMount();});
-  emEl.addEventListener('change',function(){mounted?remount():doMount();});
-  emEl.addEventListener('input',function(){if(!mounted){doMount();}});}
+['email','first_name','last_name','address1','address2','city','state','postal','country'].forEach(function(n){
+  var el=document.querySelector('[name="'+n+'"]');if(!el){return;}
+  el.addEventListener('blur',function(){mounted?remount():doMount();});
+  el.addEventListener('change',function(){mounted?remount():doMount();});
+  el.addEventListener('input',function(){if(!mounted){doMount();}});});
 doMount();
 var fb=root.querySelector('[data-fos-fallback]');if(fb&&embed.purchase_url){fb.setAttribute('href',embed.purchase_url);fb.hidden=false;}
 }catch(e){showError(root,'Could not initialize the payment form.');}}
