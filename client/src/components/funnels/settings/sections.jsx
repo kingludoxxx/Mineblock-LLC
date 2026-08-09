@@ -31,6 +31,10 @@ function setOrDelete(obj, key, value) {
   else obj[key] = v;
 }
 
+// The code-editor textarea style, shared by Scripts and Custom Tracking Code
+// so the two raw-code editors stay visually identical.
+const CODE_AREA_CLS = 'w-full px-3 py-2 text-sm bg-bg-elevated border border-border-default rounded-lg text-text-primary font-mono focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent resize-y';
+
 function SectionSaveBar({ onSave, saving, dirty, saved, err }) {
   return (
     <div className="space-y-2">
@@ -372,7 +376,7 @@ export function ScriptsSection({ funnel, onFunnelUpdated }) {
     } finally { setSaving(false); }
   };
 
-  const areaCls = 'w-full px-3 py-2 text-sm bg-bg-elevated border border-border-default rounded-lg text-text-primary font-mono focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent resize-y';
+  const areaCls = CODE_AREA_CLS;
 
   return (
     <div className="space-y-4 max-w-2xl">
@@ -1208,27 +1212,406 @@ export function HealthSection({ funnelId }) {
   );
 }
 
-// ── TRACKING scaffolds — remaining stubs for the tracking lane ──────────────
-// The Tracking DIRECTORY itself is now real (see ./TrackingSection.jsx, wired
-// to /api/v1/tracking-admin). These two panels stay scaffolds:
-//   GET  /api/v1/funnels/:id/tracking/health     -> per-pixel fire status
+// ── TRACKING HEALTH + CUSTOM TRACKING CODE ──────────────────────────────────
+// Both wired to routes/funnelTrackingExtras.js:
+//   GET     /api/v1/funnels/:id/tracking/health  -> per-pixel fire status
 //   GET/PUT /api/v1/funnels/:id/tracking/custom  -> { head_html, body_html }
-export function TrackingHealthSection() {
+// The Tracking DIRECTORY (network credentials) lives in ./TrackingSection.jsx.
+
+// Tone → pill classes, same palette as ./ui.jsx StatusPill. A local pill
+// because these statuses are tracking-health states, not gateway statuses, so
+// they are not in STATUS_PRESENTATION.
+const HEALTH_TONES = {
+  success: 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20',
+  warning: 'bg-amber-500/10 text-amber-400 border-amber-500/20',
+  danger: 'bg-red-500/10 text-red-400 border-red-500/20',
+  default: 'bg-bg-elevated text-text-muted border-border-default',
+};
+const HEALTH_DOTS = {
+  success: 'bg-emerald-400',
+  warning: 'bg-amber-400',
+  danger: 'bg-red-400',
+  default: 'bg-text-faint',
+};
+
+function HealthPill({ tone = 'default', label }) {
   return (
-    <ScaffoldPanel
-      title="Tracking Health"
-      description="Whether each configured pixel is firing correctly."
-      note="Coming with the tracking phase (tracking lane) — GET /api/v1/funnels/:id/tracking/health."
-    />
+    <span className={`inline-flex items-center gap-1.5 px-2 py-0.5 text-xs font-medium rounded-full border ${HEALTH_TONES[tone] || HEALTH_TONES.default}`}>
+      <span className={`w-1.5 h-1.5 rounded-full ${HEALTH_DOTS[tone] || HEALTH_DOTS.default}`} />
+      {label}
+    </span>
   );
 }
-export function CustomTrackingSection() {
+
+// A counter cell. Zero renders as a muted 0 — never as a dash, which would read
+// as "unknown" when we actually know the answer is none.
+function Stat({ label, value, tone }) {
+  const toneCls = tone && value > 0 ? { danger: 'text-red-400', warning: 'text-amber-400' }[tone] : 'text-text-primary';
   return (
-    <ScaffoldPanel
-      title="Custom Tracking Code"
-      description="Raw <head> / <body> tracking snippets injected into every funnel page."
-      note="Coming with the tracking phase (tracking lane) — GET/PUT /api/v1/funnels/:id/tracking/custom. For general (non-tracking) code, use Advanced → Scripts today."
-    />
+    <div>
+      <p className="text-[10px] uppercase tracking-wide text-text-faint">{label}</p>
+      <p className={`text-sm font-semibold ${value > 0 ? toneCls : 'text-text-muted'}`}>{value ?? 0}</p>
+    </div>
+  );
+}
+
+// Absolute local time — the operator is diagnosing a live outage and a fuzzy
+// "2 hours ago" is not good enough to line up against a campaign change.
+function whenText(iso) {
+  if (!iso) return 'never';
+  const t = Date.parse(iso);
+  if (!Number.isFinite(t)) return String(iso);
+  return new Date(t).toLocaleString();
+}
+
+function WindowCounts({ title, w }) {
+  return (
+    <div>
+      <p className="text-xs font-medium text-text-muted mb-1.5">{title}</p>
+      <div className="grid grid-cols-5 gap-2">
+        <Stat label="Sent" value={w?.sent} />
+        <Stat label="Failed" value={w?.failed} tone="danger" />
+        <Stat label="Skipped" value={w?.skipped} tone="warning" />
+        <Stat label="Deduped" value={w?.deduped} />
+        <Stat label="Queued" value={w?.queued} tone="warning" />
+      </div>
+    </div>
+  );
+}
+
+function PixelHealthCard({ p }) {
+  return (
+    <div className="rounded-lg border border-border-default bg-bg-card p-3.5 space-y-3">
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="text-sm font-medium text-text-primary">{p.label}</span>
+            {p.mode && (
+              <span className="inline-flex items-center px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide rounded border border-border-default bg-bg-elevated text-text-faint">
+                {p.mode}
+              </span>
+            )}
+          </div>
+          <p className="mt-0.5 text-xs text-text-faint font-mono truncate">
+            {p.id_field}: {p.pixel_id || '— not set —'}
+          </p>
+        </div>
+        <HealthPill tone={p.tone} label={p.status_label} />
+      </div>
+
+      <p className="text-xs text-text-muted">{p.reason}</p>
+
+      {/*
+        breaker.note is composed SERVER-SIDE (trackingHealth.breakerView) rather
+        than re-derived here. The old client-side version printed "N consecutive
+        failures — the breaker opens at 5" next to a 'closed' state whenever the
+        cooldown had lapsed with N >= 5, which reads as a contradiction. The
+        server names that third state (cooldown_lapsed) and owns the wording, so
+        there is exactly one place it can be wrong — and a harness can assert it.
+      */}
+      {p.breaker?.note && (
+        p.breaker.state === 'open' ? (
+          <div className="rounded-md border border-red-500/20 bg-red-500/10 px-2.5 py-1.5">
+            <p className="text-xs text-red-400">
+              {p.breaker.note}{p.breaker.open_until ? ` Retrying after ${whenText(p.breaker.open_until)}.` : ''}
+            </p>
+          </div>
+        ) : (
+          <p className="text-xs text-amber-400">{p.breaker.note}</p>
+        )
+      )}
+
+      <div className="grid sm:grid-cols-2 gap-3">
+        <WindowCounts title="Last 24 hours" w={p.windows?.h24} />
+        <WindowCounts title="Last 7 days" w={p.windows?.d7} />
+      </div>
+
+      <div className="grid sm:grid-cols-2 gap-x-4 gap-y-1 text-xs pt-1 border-t border-border-subtle">
+        <p className="text-text-faint">Last delivered: <span className="text-text-muted">{whenText(p.last_sent_at)}</span></p>
+        <p className="text-text-faint">Last failure: <span className="text-text-muted">{whenText(p.last_failed_at)}</span></p>
+        {p.queued_now > 0 && (
+          <p className="text-amber-400 sm:col-span-2">{p.queued_now} event{p.queued_now === 1 ? '' : 's'} waiting in the retry queue right now.</p>
+        )}
+        {p.last_error && (
+          <p className="text-text-faint sm:col-span-2 break-all">
+            Last error: <span className="font-mono text-red-400">{p.last_error}</span>
+          </p>
+        )}
+        {p.last_skip_reason && (
+          <p className="text-text-faint sm:col-span-2 break-all">
+            Most recent skip: <span className="font-mono text-text-muted">{p.last_skip_reason}</span>
+            <span className="text-text-faint"> — a skip is a declined event, not a delivery failure.</span>
+          </p>
+        )}
+      </div>
+    </div>
+  );
+}
+
+export function TrackingHealthSection({ funnel }) {
+  const funnelId = funnel?.id;
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [err, setErr] = useState('');
+
+  const load = useCallback(async () => {
+    if (!funnelId) return;
+    setLoading(true); setErr('');
+    try {
+      const res = await api.get(`/funnels/${funnelId}/tracking/health`);
+      setData(res.data?.data || null);
+    } catch (e) {
+      setErr(e.response?.data?.error?.code === 'internal_error'
+        ? 'Server error while reading tracking health — try again.'
+        : (e.response?.data?.error?.message || 'Could not load tracking health.'));
+      setData(null);
+    } finally { setLoading(false); }
+  }, [funnelId]);
+
+  useEffect(() => { load(); }, [load]);
+
+  const pixels = data?.pixels || [];
+
+  return (
+    <div className="space-y-4 max-w-3xl">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <h3 className="text-base font-semibold text-text-primary">Tracking Health</h3>
+          <p className="mt-1 text-sm text-text-muted">
+            Whether each configured pixel is actually firing, computed from real
+            delivery records — never from configuration alone.
+          </p>
+        </div>
+        <Button variant="secondary" onClick={load} loading={loading} className="shrink-0">
+          <RefreshCw className="w-4 h-4 mr-1.5" /> Refresh
+        </Button>
+      </div>
+
+      {err && <p className="text-sm text-danger">{err}</p>}
+
+      {loading && !data && <p className="text-sm text-text-muted">Loading…</p>}
+
+      {data && (
+        <>
+          <div className="flex items-center gap-3 flex-wrap">
+            <HealthPill
+              tone={data.overall === 'healthy' ? 'success' : (pixels[0]?.tone || 'default')}
+              label={data.overall_label}
+            />
+            <span className="text-xs text-text-faint">
+              Checked {whenText(data.generated_at)} · windows: {data.windows?.h24} and {data.windows?.d7}
+            </span>
+          </div>
+
+          {pixels.length === 0 ? (
+            <div className="rounded-lg border border-dashed border-border-default bg-bg-elevated/40 px-4 py-6 text-center space-y-1">
+              <p className="text-sm text-text-muted">No pixels are configured on this funnel.</p>
+              <p className="text-xs text-text-faint">
+                Add a network under Tracking to start delivering conversions — there is
+                nothing to report until then.
+              </p>
+            </div>
+          ) : (
+            <>
+              {/*
+                Two figures, two headings, on purpose. Everything under "last 24
+                hours" is a COUNT OF LOGGED EVENTS in that window; "in the retry
+                queue" is an INSTANTANEOUS depth with no window at all. They were
+                previously shown side by side under the 24h heading, which read
+                as "N events queued today" — a number that does not exist.
+              */}
+              <div className="rounded-lg border border-border-default bg-bg-card p-3.5 space-y-3">
+                <div>
+                  <p className="text-xs font-medium text-text-muted mb-2">All pixels · last 24 hours</p>
+                  <div className="grid grid-cols-5 gap-2">
+                    <Stat label="Sent" value={data.totals_24h?.sent} />
+                    <Stat label="Failed" value={data.totals_24h?.failed} tone="danger" />
+                    <Stat label="Skipped" value={data.totals_24h?.skipped} tone="warning" />
+                    <Stat label="Deduped" value={data.totals_24h?.deduped} />
+                    <Stat label="Queued" value={data.totals_24h?.queued} tone="warning" />
+                  </div>
+                </div>
+                <div className="pt-2.5 border-t border-border-subtle flex items-baseline justify-between gap-3">
+                  <div>
+                    <p className="text-xs font-medium text-text-muted">In the retry queue right now</p>
+                    <p className="text-[11px] text-text-faint">Live depth across all pixels — not a 24h count.</p>
+                  </div>
+                  <span className={`text-lg font-semibold ${data.queued_now > 0 ? 'text-amber-400' : 'text-text-muted'}`}>
+                    {data.queued_now ?? 0}
+                  </span>
+                </div>
+              </div>
+
+              <div className="space-y-3">
+                {pixels.map((p) => <PixelHealthCard key={p.kind} p={p} />)}
+              </div>
+            </>
+          )}
+
+          {(data.notes || []).map((n) => (
+            <div key={n.kind} className="rounded-lg border border-amber-500/20 bg-amber-500/5 px-3 py-2">
+              <p className="text-xs text-amber-400/90">
+                <AlertTriangle className="w-3.5 h-3.5 inline mr-1 -mt-0.5" />
+                {n.note}
+              </p>
+            </div>
+          ))}
+
+          {(data.unknown_kinds || []).length > 0 && (
+            <div className="rounded-lg border border-amber-500/20 bg-amber-500/5 px-3 py-2">
+              <p className="text-xs text-amber-400/90">
+                {data.unknown_kinds.map((u) => `${u.rows} row(s) of kind "${u.kind}"`).join(', ')} exist
+                but no adapter serves them — nothing is delivered for those.
+              </p>
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
+// ── CUSTOM TRACKING CODE ────────────────────────────────────────────────────
+// Raw head / body tracking snippets, stored verbatim (no sanitization — the
+// same trusted-operator posture as Scripts). Stored server-side in
+// lb_tracking_custom_code, NOT in funnels.settings: routes/funnels.js budgets
+// non-allow-listed settings keys at 32KB combined, which two 32KB snippets
+// would blow, breaking every other settings save.
+const CUSTOM_MAX_BYTES = 32 * 1024;
+const byteLen = (s) => new TextEncoder().encode(String(s ?? '')).length;
+
+function CodeField({ label, hint, value, onChange, placeholder }) {
+  const bytes = byteLen(value);
+  const over = bytes > CUSTOM_MAX_BYTES;
+  return (
+    <div className="space-y-1.5">
+      <div className="flex items-baseline justify-between gap-2">
+        <label className="block text-sm font-medium text-text-muted">{label}</label>
+        <span className={`text-[11px] font-mono ${over ? 'text-red-400' : 'text-text-faint'}`}>
+          {bytes.toLocaleString()} / {CUSTOM_MAX_BYTES.toLocaleString()} bytes
+        </span>
+      </div>
+      <p className="text-xs text-text-faint -mt-0.5">{hint}</p>
+      <textarea
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        rows={9}
+        spellCheck={false}
+        placeholder={placeholder}
+        className={CODE_AREA_CLS}
+      />
+    </div>
+  );
+}
+
+export function CustomTrackingSection({ funnel }) {
+  const funnelId = funnel?.id;
+  const [form, setForm] = useState({ head: '', body: '' });
+  const [initial, setInitial] = useState({ head: '', body: '' });
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+  const [err, setErr] = useState('');
+
+  const load = useCallback(async () => {
+    if (!funnelId) return;
+    setLoading(true); setErr('');
+    try {
+      const res = await api.get(`/funnels/${funnelId}/tracking/custom`);
+      const d = res.data?.data || {};
+      const next = { head: d.head_html || '', body: d.body_html || '' };
+      setForm(next); setInitial(next);
+    } catch (e) {
+      setErr(e.response?.data?.error?.message || 'Could not load the custom tracking code.');
+    } finally { setLoading(false); }
+  }, [funnelId]);
+
+  useEffect(() => { load(); }, [load]);
+
+  const dirty = form.head !== initial.head || form.body !== initial.body;
+  const tooBig = byteLen(form.head) > CUSTOM_MAX_BYTES || byteLen(form.body) > CUSTOM_MAX_BYTES;
+
+  const save = async () => {
+    setSaving(true); setErr('');
+    try {
+      // Always send BOTH fields: the server treats an absent field as "no
+      // change", so a cleared textarea must arrive as an explicit ''.
+      const res = await api.put(`/funnels/${funnelId}/tracking/custom`, {
+        head_html: form.head,
+        body_html: form.body,
+      });
+      const d = res.data?.data || {};
+      const next = { head: d.head_html || '', body: d.body_html || '' };
+      setForm(next); setInitial(next);
+      setSaved(true); setTimeout(() => setSaved(false), 2000);
+    } catch (e) {
+      setErr(e.response?.data?.error?.message || 'Failed to save.');
+    } finally { setSaving(false); }
+  };
+
+  return (
+    <div className="space-y-4 max-w-2xl">
+      <div>
+        <h3 className="text-base font-semibold text-text-primary">Custom Tracking Code</h3>
+        <p className="mt-1 text-sm text-text-muted">
+          Raw tracking snippets for <span className="text-text-primary font-medium">every page</span> of
+          this funnel. Stored and validated verbatim — nothing is rewritten or sanitized,
+          so a tag that works elsewhere will work here. 32KB per field.
+        </p>
+        <p className="mt-1.5 text-xs text-text-faint">
+          For non-tracking code use Advanced → Scripts; for one page, use that page’s
+          own head / body escape hatches in the builder.
+        </p>
+      </div>
+
+      {/*
+        TODO(tracking-render-wiring): NOT-YET-LIVE notice — DELETE THIS BLOCK, and
+        flip the tense of the copy above and of both CodeField hints below
+        ("Will be injected" → "Injected"), when the integrator wires the public
+        renderer to emit these snippets. That wiring is
+        services/funnelRender.js (funnelSettingsHead :2835 / funnelSettingsBodyEnd
+        :2872, consumed at :1600-1602) reading lb_tracking_custom_code, which
+        funnelPublic.js:125 must join in. Until it lands, saving here changes
+        nothing about what a visitor's browser executes, and the panel must say
+        so — an operator who pastes a Meta base pixel, sees a green "Saved" and
+        this copy would otherwise believe their tags are live while zero tags
+        render.
+      */}
+      <div className="rounded-lg border border-dashed border-amber-500/30 bg-amber-500/5 px-4 py-3">
+        <p className="text-sm text-amber-400/90 font-medium">Saved, but not live yet</p>
+        <p className="mt-1 text-xs text-amber-400/70">
+          These snippets are stored and validated now, but they are
+          {' '}<span className="font-medium">not yet emitted on public pages</span> — the renderer
+          wiring lands with the tracking phase. Nothing you save here affects a live visitor
+          until then. To ship a tag today, use Advanced → Scripts.
+        </p>
+      </div>
+
+      {loading ? (
+        <p className="text-sm text-text-muted">Loading…</p>
+      ) : (
+        <>
+          <CodeField
+            label="Head snippet"
+            hint="Will be injected at the end of <head> — pixel base codes, tag managers, consent tools."
+            value={form.head}
+            onChange={(v) => setForm((f) => ({ ...f, head: v }))}
+            placeholder={'<script>…</script>\n<noscript>…</noscript>'}
+          />
+          <CodeField
+            label="Body snippet"
+            hint="Will be injected just before </body> — deferred tags, <noscript> fallbacks."
+            value={form.body}
+            onChange={(v) => setForm((f) => ({ ...f, body: v }))}
+            placeholder={'<noscript><img src="…"/></noscript>'}
+          />
+          {tooBig && (
+            <p className="text-sm text-danger">One of the snippets is over the 32KB limit — trim it before saving.</p>
+          )}
+          <SectionSaveBar onSave={save} saving={saving} dirty={dirty && !tooBig} saved={saved} err={err} />
+        </>
+      )}
+    </div>
   );
 }
 
