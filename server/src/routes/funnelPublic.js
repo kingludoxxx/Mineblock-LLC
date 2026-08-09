@@ -36,7 +36,13 @@ router.use(
     max: 240,
     standardHeaders: true,
     legacyHeaders: false,
-    message: 'Too many requests',
+    // A 429 with no Cache-Control is heuristically cacheable by a shared cache
+    // — and a burst is exactly when you are paying for the traffic. Every other
+    // non-200 exit here sets no-store; the limiter needs its own handler to.
+    handler: (req, res) => {
+      res.set('Cache-Control', 'no-store');
+      res.status(429).type('text/plain').send('Too many requests');
+    },
   })
 );
 
@@ -138,7 +144,12 @@ async function servePage(req, res, resolvePage) {
         const hit = pickRedirect(redirects, relPath);
         if (hit) {
           const qs = rawQueryString(req);
-          let location = String(hit.to_path);
+          const rel = String(hit.to_path);
+          // Mirror funnelRender's toPublic(): keep the funnel prefix unless the
+          // request already arrived on a custom host rooted at the funnel.
+          const onCustomHost = Boolean(req.customDomainFunnelId);
+          const base = onCustomHost ? '' : `/f/${funnelSlug}`;
+          let location = rel === '/' ? (base || '/') : `${base}${rel}`;
           if (qs) location += (location.includes('?') ? '&' : '?') + qs;
           const code = Number(hit.code) === 302 ? 302 : 301;
           res.set('Cache-Control', 'no-store'); // non-200 stays no-store

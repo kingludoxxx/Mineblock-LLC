@@ -568,6 +568,22 @@ function validatePath(label, value) {
   return null;
 }
 
+
+// A redirect rule can take a whole funnel offline in two ways the path
+// validators do not catch. Both are cheap to refuse at write time and
+// impossible to diagnose from a browser redirect loop.
+//   • from_path === to_path  → an infinite 30x on that path.
+//   • from_path '/' + prefix → swallows EVERY path in the funnel.
+function validateRedirectRule({ fromPath, toPath, match }) {
+  if (String(fromPath) === String(toPath)) {
+    return 'from_path and to_path are identical — that redirects to itself forever';
+  }
+  if (match === 'prefix' && String(fromPath) === '/') {
+    return "a prefix rule on '/' would swallow every page in the funnel";
+  }
+  return null;
+}
+
 // Shared, pure resolver — exact beats longest-prefix; only enabled rows. A
 // prefix rule matches its own path exactly OR any deeper segment ('/p' covers
 // '/p' and '/p/x' but NOT '/products'). Exported so the public serving router
@@ -637,6 +653,11 @@ router.post('/:id/redirects', async (req, res) => {
     const match = body.match === undefined ? 'exact' : String(body.match);
     if (!REDIRECT_MATCHES.has(match))
       return res.status(400).json({ error: `match must be one of: ${[...REDIRECT_MATCHES].join(', ')}` });
+
+    const ruleErr = validateRedirectRule({
+      fromPath: body.from_path, toPath: body.to_path, match,
+    });
+    if (ruleErr) return res.status(400).json({ error: ruleErr });
 
     const code = body.code === undefined ? 301 : Number(body.code);
     if (!REDIRECT_CODES.has(code))
