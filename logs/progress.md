@@ -3035,6 +3035,79 @@ so a status added elsewhere cannot silently start emailing live recovery links
 (DECISION MADE). (4) no boot against the production .env — the root .env points at
 the live Render database and the list route runs CREATE TABLE and can hit live
 Shopify (DECISION MADE).
+TIMESTAMP: 2026-08-09 23:59
+TASK: AI Developer extras — parity with the reference tool (branch feat/ai-developer-extras)
+BUILT: Four extras on top of the AI Developer panel. (1) MODEL PICKER: the server
+already enforced an allowlist but did not expose it, so the panel hardcoded a
+copy; added GET /api/v1/ai-developer/models serving the list + default, and the
+panel now populates from it with the local list kept only as a fallback. (2)
+SCREENSHOTS: added a magic-number content-type sniff (PNG/JPEG/GIF/WEBP) that
+refuses a blob whose bytes contradict its declared media_type, since that string
+is relayed to Anthropic verbatim; caps moved to the brief's 4MB x 2. (3)
+ATTACHED-CONTEXT CHIPS: resolveAttachment derives the chip's type and excerpt
+from the page's REAL blocks so a spoofed `kind` cannot make the chip lie; the
+resolved value rides the system prompt, the done frame, the stored turn, and a
+per-message chip in the transcript; detaching is now reversible. (4) PERSISTED
+THREAD: new self-contained schema owner server/src/services/aiDeveloperSchema.js
+(ensureTables pattern) — table lb_ai_dev_chats, ONE ROW PER MESSAGE, bounded to
+the newest 50 by a prune in the same transaction as the insert; GET/DELETE
+/chat, both funnel-pinned; reads tolerate BOTH jsonb shapes. Image BYTES are
+never persisted, only a count.
+TESTED: Three new harnesses in server/tests/ai-developer/, all in-process.
+validation.mjs (130) covers the pure parts: allowlist membership, the sniffer,
+caps, resolveAttachment, thread bounding, both-shapes jsonb, and that nothing in
+the store path can carry image bytes. thread-routes.mjs (57) mounts the REAL
+router on embedded PG: round-trip, the 50-bound keeping the NEWEST 50, the
+cross-funnel 404 deleting NOTHING, archived-page 404, jsonb_typeof = object.
+chat-turn.mjs (44) drives a full SSE turn against a MOCK Anthropic server.
+EDGE CASES RUN (all pass): thread write throws mid-turn (table renamed away) —
+the turn still streams and still delivers its reply; thread read throws — clean
+500 that leaks no relation name, and the endpoint recovers with no wedged state;
+ANTHROPIC_API_KEY missing — clean 503; a refused model / mismatched image /
+off-page attachment costs ZERO Anthropic calls (the mock counts them); double
+DELETE returns 0 rather than erroring; null/empty/unstorable appends write
+nothing without throwing.
+OUTPUT: 130/130 + 57/57 + 44/44 = 231/231 new. Regressions all green:
+ai-ops-wiring 31/31, builder-model 181/181, page-versions 93/93, code-doc
+107/107, version-format 26/26, breakpoint-render 49/49, variant-search 94/94.
+vite build 0 errors (865ms, 2700 modules). eslint 0 errors 0 warnings on the
+panel and PageBuilderPage. Commits 20dcffd (server) + 21024ed (client), 6 files,
++1648/-49. None of funnelRender.js / checkoutPublic.js / funnels.js / app.js
+touched. git merge-tree against the ADVANCED main exits 0 — merges cleanly.
+DECISIONS:
+(1) DECISION MADE — image bytes are PASS-THROUGH ONLY, never persisted. The
+reference (lb_ai_developer_service._upload_images) uploads operator screenshots
+to object storage and stores their URLs; we store only image_count. The
+conservative choice: no new blob lifecycle, no retention question, no way for a
+stored thread to leak a screenshot. Cost: a rehydrated turn shows "N screenshots
+(not stored)" instead of thumbnails, which the panel says explicitly.
+(2) DECISION MADE — image caps set to the brief's 4MB x 2. Per-image ceiling is
+UP from 2MB (a loosening) but count is DOWN from 5, so the worst-case accepted
+payload FALLS from 10MB to 8MB. Flagged because raising any existing cap is a
+weakening in isolation.
+(3) DECISION MADE — ONE ROW PER MESSAGE rather than the reference's single doc
+with an embedded array. The bound becomes a DELETE in the insert's transaction,
+which removes the read-modify-write window where two concurrent turns each
+append to a stale copy and one is lost.
+(4) DECISION MADE — GET/DELETE /chat take page_id/funnel_id as QUERY params, not
+a body, so DELETE carries no body.
+(5) Not built: the reference's /chat/applied and /memory endpoints. Out of the
+brief's scope; noted rather than silently skipped.
+TWO DEFECTS FOUND BY EXECUTION, NOT REVIEW:
+(a) jsonb double-encoding. Under postgres.js, `$n::jsonb` on a JSON-text param
+sends the string ALREADY JSON-encoded, so the column held a jsonb STRING:
+jsonb_typeof answered 'string' and attachment->>'block_id' answered NULL — the
+chip would have silently lost its target on every read. Fixed to `$n::text::jsonb`
+(probed both forms directly: ::jsonb -> 'string', ::text::jsonb -> 'object').
+Worth recording: the FIRST harness run PASSED a byte-order comparison of the
+round-tripped attachment precisely BECAUSE a stored string round-trips
+byte-identically. Real jsonb reorders keys — the reorder is what exposed the bug,
+and the "passing" assertion had been masking it. The assertion is canonical now.
+(b) Model-allowlist coercion hole. The check ran on String(body.model), and
+String(['claude-fable-5']) is 'claude-fable-5' — as is the output of an object
+with a hand-written toString. Either would satisfy includes() and select a model
+the caller never legally named. Now requires typeof === 'string'. Coercion is
+not membership.
 STATUS: COMPLETE
 ---
 
@@ -3383,5 +3456,58 @@ builder-metrics/analytics-report-tz.mjs uses UTC midnight deliberately (it
 tests the tz seam) - left alone. Fixture instants pinned at ~10:00 report-tz
 rather than now-minus-24h-multiples so they also survive DST-transition days
 (DECISION MADE).
+TIMESTAMP: 2026-08-10 00:35
+TASK: AI Developer extras — review round F1-F8 (branch feat/ai-developer-extras)
+BUILT: Fixed all eight review findings. F1 (GATING): MAX_IMAGE_BYTES was not
+enforced — the size formula stripped '=' globally before measuring and the
+charset regex admitted '=' anywhere, so a PNG header + 20M '=' chars measured 24
+bytes and relayed ~21MB. Replaced with two independent defenses: '=' legal only
+as 0-2 trailing chars, and Buffer.byteLength(clean,'base64') for the size. F2:
+bare base64 now ADOPTS the sniffed type instead of assuming png then blaming the
+caller. F3: added a thread EPOCH (new table lb_ai_dev_threads) so a DELETE
+issued mid-stream wins over an in-flight turn's persist. F4: the same epoch row
+is locked FOR UPDATE by every append, which serializes appends per thread and
+makes the prune bound EXACT; corrected the false "can never outrun" header. F5:
+attachment memo keyed on id/type/index, not the block object. F6: restored the
+cap inside the setState updater plus a generation token for late FileReaders.
+F7: whitespace-only user turns refused server-side (assistant turns exempt so a
+rehydrated thread cannot wedge the panel). F8: documented the archival-orphan
+retention as an explicit decision in the schema header.
+TESTED: validation 155/155 (was 130), thread-routes 77/77 (was 57), chat-turn
+62/62 (was 44). New cases: the pure-padding repro, the interleaved form, an
+assertion that the mock never receives more than the cap, all four image types
+bare, and the exact DELETE-mid-stream sequence.
+OUTPUT: 294/294 across the three ai-developer harnesses. Regressions green —
+ai-ops-wiring 31/31, builder-model 181/181, page-versions 93/93. vite build 0
+errors (934ms). eslint 0 errors 0 warnings. Commit e14744c.
+DECISIONS:
+(1) F1 fixed with TWO independent defenses rather than one. The charset fix
+alone would stop the known input; byteLength alone would stop it too. Keeping
+both means the measurement does not depend on the charset check being right,
+which is exactly the coupling that produced the bug.
+(2) F7 refuses empty USER turns only. Refusing empty assistant turns too would
+be stricter but would let a rehydrated thread containing one empty reply wedge
+the panel out of ever sending again — a worse failure than the one being fixed.
+(3) F4 taken as advisory-lock-equivalent (row lock on the epoch row) rather than
+accept-and-document, because F3 required that lock anyway. One mechanism, two
+findings closed, and the contract asserted under real concurrency instead of
+documented as approximate.
+(4) F8 retention: no FK/cascade. Archiving is reversible here and a restored
+page getting its conversation back is expected; a cascade would make page
+deletion silently destroy history, and this module owns no page-delete path.
+Bounded at 50 rows, no image bytes, unreachable via the API.
+TWO DEFECTS FOUND BY MY OWN NEW TESTS, MID-FIX:
+(a) The F4 concurrency assertion FAILED on its first run — 58 rows, not 50.
+Cause: `SELECT ... FOR UPDATE` that matches NO ROW locks NOTHING, so on a thread
+whose epoch row did not exist yet the lock was a no-op. appendThread now creates
+the row itself rather than trusting a caller to have opened it. The guarantee
+must not depend on call order.
+(b) My own epoch test cleared P1 and thereby emptied the thread a LATER test
+asserted a count of, which failed as "cleared: 0, want 2". Cross-test state in a
+shared-DB harness is a real hazard; rewritten to use dedicated pages.
+MUTATION CHECK: removed `expectEpoch` from the route's persist call and re-ran —
+3 assertions failed showing exactly the original defect (the cleared thread came
+back with 2 ghost rows). The F3 test is load-bearing, not decorative. File
+restored and re-verified at 62/62.
 STATUS: COMPLETE
 ---
