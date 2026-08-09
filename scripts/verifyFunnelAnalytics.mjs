@@ -683,8 +683,23 @@ async function main() {
 
   hr('8b. split verdict + readiness + the ledger reconciliation');
   console.log(`  verdict: ${sr.verdict.status} — ${sr.verdict.headline}`);
-  eq(sr.verdict.status, 'winner', 'a clear winner is declared');
-  eq(sr.verdict.leader, 'b', 'arm b is the leader on net rev/visitor');
+  // ARM DELIVERY GATE: nothing in the serve path renders a different variant
+  // yet, so every arm shows the same page and any gap is noise. The API must
+  // REFUSE to name a winner until SPLIT_DELIVERY_WIRED flips — otherwise the
+  // significance engine eventually prints a confident winner from sampling
+  // error. (The engine's own math is asserted directly below.)
+  eq(sr.verdict.status, 'not_ready', 'API refuses a winner while arms are not served');
+  eq(sr.verdict.blocked_reason, 'arm_delivery_not_wired', 'the refusal names its reason');
+  eq(sr.verdict.leader, null, 'no leader is published while unscoreable');
+  {
+    // The underlying engine is unaffected — it still finds b on this data.
+    const raw = buildVerdict([
+      { arm_key: 'a', is_control: true, visitors: sr.arms.find(x => x.arm_key === 'a').visitors, orders: sr.arms.find(x => x.arm_key === 'a').orders, net_revenue: sr.arms.find(x => x.arm_key === 'a').net_revenue_sum, net_revenue_sum_squares: sr.arms.find(x => x.arm_key === 'a').net_revenue_sum_squares },
+      { arm_key: 'b', is_control: false, visitors: sr.arms.find(x => x.arm_key === 'b').visitors, orders: sr.arms.find(x => x.arm_key === 'b').orders, net_revenue: sr.arms.find(x => x.arm_key === 'b').net_revenue_sum, net_revenue_sum_squares: sr.arms.find(x => x.arm_key === 'b').net_revenue_sum_squares },
+    ]);
+    eq(raw.status, 'winner', 'engine itself still declares the winner (math intact)');
+    eq(raw.leader, 'b', 'engine leader is still b');
+  }
   eq(sr.verdict.sample.ready, true, 'both arms clear the sample floors');
   eq(sr.verdict.sample.comparisons, 1, 'Bonferroni comparisons = arms − 1');
   assert(sr.verdict.revenue.confidence > 0.95, `revenue confidence > 95% (got ${(sr.verdict.revenue.confidence * 100).toFixed(2)}%)`);
@@ -709,7 +724,7 @@ async function main() {
   const cc = sr3.verdict.perArm.c.revenue_confidence;
   console.log(`  per-arm rev confidence: b=${(cb * 100).toFixed(2)}%  c=${(cc * 100).toFixed(2)}%`);
   assert(cb !== cc, `arm b and arm c carry DIFFERENT confidences (${cb} vs ${cc})`);
-  eq(sr3.verdict.leader, 'b', 'the leader is b, not c');
+  eq(sr3.verdict.leader, null, 'multi-arm: no leader published while unscoreable');
   eq(sr3.verdict.perArm.c.significant && c3.rev_per_visitor > a3.rev_per_visitor, false,
     'the LOSING arm is never reported as a significant winner');
   // F8: `significant` must agree with the Bonferroni gate, not a flat 0.05.
