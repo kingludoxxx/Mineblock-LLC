@@ -600,8 +600,19 @@ function CanvasInner() {
     [centerPosition, deviceSize, setNodes, pushHistory, persistFlow]
   );
 
+  // In-flight guard for the DRAG path. The flyout's "Add to this funnel" button
+  // has its own busy state, but a drop had none: HTML5 drag-and-drop happily
+  // fires several drops in a row (and a fast operator can drag the same entry
+  // twice before the first POST answers), and each one is a page the server
+  // actually creates. A REF, not state — a state flag is not visible to a
+  // second drop dispatched in the same tick, which is exactly the case that
+  // duplicates.
+  const libraryDropBusy = useRef(false);
+
   const cloneLibraryEntryAt = useCallback(
     async (entryId, position) => {
+      if (libraryDropBusy.current) return;
+      libraryDropBusy.current = true;
       setError(null);
       try {
         const res = await api.post(`/page-library/${entryId}/clone`, { funnel_id: id });
@@ -609,6 +620,8 @@ function CanvasInner() {
       } catch (err) {
         const e = err.response?.data?.error;
         setError(e?.detail || e?.code || 'Failed to add that library page');
+      } finally {
+        libraryDropBusy.current = false;
       }
     },
     [id, onLibraryCloned]
@@ -699,7 +712,15 @@ function CanvasInner() {
         return;
       }
       const src = pages.find((p) => p.id === pageId);
-      if (src) duplicatePage(src, position);
+      if (!src) return;
+      // The same in-flight guard covers the duplicate branch: a double drop
+      // here creates two real pages just as surely as it does on the library
+      // branch. duplicatePage has no busy state of its own.
+      if (libraryDropBusy.current) return;
+      libraryDropBusy.current = true;
+      Promise.resolve(duplicatePage(src, position)).finally(() => {
+        libraryDropBusy.current = false;
+      });
     },
     [rf, pages, deviceSize, cloneLibraryEntryAt, duplicatePage]
   );

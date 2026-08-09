@@ -74,6 +74,9 @@ import {
   DESCRIPTION_MAX,
   CATEGORY_MAX,
   LIBRARY_MAX_ENTRIES,
+  LIBRARY_CAPACITY_LOCK_KEY,
+  TX_STATEMENT_TIMEOUT_MS,
+  SLUG_BASE_MAX,
   DEFAULT_CATEGORY,
 } from '../services/pageLibrarySchema.js';
 
@@ -84,15 +87,58 @@ const PAGE_SLUG_RE = /^\/$|^\/[a-z0-9-]+$/;
 const UNIQUE_VIOLATION = '23505';
 const LIST_LIMIT_DEFAULT = 100;
 const LIST_LIMIT_MAX = 200;
+// Bounded retries for a DERIVED slug that lost a race to a writer which does
+// NOT take our funnel lock (funnels.js POST /pages and its duplicate endpoint
+// both insert unlocked). Bounded, and the last failure is a 409 — never an
+// uncaught 23505 escaping as a 500.
+const SLUG_RETRY_ATTEMPTS = 3;
 
 const genId = (prefix) => `${prefix}_${randomBytes(7).toString('hex')}`;
 
-const slugify = (name) =>
+// Escape LIKE metacharacters so ?q=% cannot act as a wildcard. Same helper as
+// funnels.js:265 / customers.js / orders.js — copied rather than imported
+// because funnels.js does not export it and this lane may not edit it.
+const escapeLike = (s) => String(s).replace(/[\\%_]/g, '\\$&');
+
+// Slug body, capped at SLUG_BASE_MAX so that appending a '-N' ladder step or a
+// '-<4 hex>' retry suffix still fits the budget. Trailing dashes are re-stripped
+// AFTER the slice: the strip in the general slugify runs before its own slice,
+// so cutting mid-word can expose a new trailing '-' and yield '/foo--a1b2'.
+const slugBase = (name) =>
   String(name)
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, '-')
     .replace(/^-+|-+$/g, '')
-    .slice(0, 80);
+    .slice(0, SLUG_BASE_MAX)
+    .replace(/-+$/g, '');
+
+// Roll back a transaction while carrying a structured outcome back out.
+// postgres.js commits unless the callback throws, so an in-transaction refusal
+// has to travel as a throw or it would COMMIT the very write it is refusing.
+class TxAbort extends Error {
+  constructor(result) {
+    super('tx_abort');
+    this.name = 'TxAbort';
+    this.result = result;
+  }
+}
+
+// Run a transaction that may abort with a structured outcome. Any other error
+// propagates untouched — a real fault must never be mistaken for a refusal.
+async function runTx(fn) {
+  try {
+    return await client.begin(async (tx) => {
+      // review m5: bound the transaction on the same clock as pgQuery (8s)
+      // rather than inheriting the 15s connection-level cap. SET LOCAL reverts
+      // at transaction end and never leaks onto the pooled connection.
+      await tx.unsafe(`SET LOCAL statement_timeout = ${TX_STATEMENT_TIMEOUT_MS}`);
+      return await fn(tx);
+    });
+  } catch (err) {
+    if (err instanceof TxAbort) return err.result;
+    throw err;
+  }
+}
 
 // Structured errors, matching splitTests.js / funnelTransfer.js.
 const fail = (res, status, code, detail) =>
@@ -146,8 +192,14 @@ router.get('/', async (req, res) => {
     const where = [`archived = FALSE`];
     const params = [];
     if (q) {
-      params.push(`%${q}%`);
-      where.push(`(name ILIKE $${params.length} OR description ILIKE $${params.length})`);
+      // review m2: a raw q let '%' and '_' act as wildcards — searching for a
+      // literal '%' matched EVERY entry. escapeLike backslash-escapes the
+      // metacharacters and the explicit ESCAPE '\' names the escape character
+      // rather than relying on the (backslash) default.
+      params.push(`%${escapeLike(q)}%`);
+      where.push(
+        `(name ILIKE $${params.length} ESCAPE '\\' OR description ILIKE $${params.length} ESCAPE '\\')`
+      );
     }
     if (type) {
       params.push(type);
@@ -265,40 +317,39 @@ router.post('/', async (req, res) => {
     if (nameField.error) return fail(res, 400, nameField.error);
     const name = nameField.value || null;
 
-    // Capacity check BEFORE the copy. A refusal must not have written half an
-    // entry, and the count is over LIVE rows only — archiving an entry is what
-    // frees a slot.
-    const live = await pgQuery(
-      `SELECT COUNT(*)::int AS n FROM funnel_page_library WHERE archived = FALSE`
-    );
-    if ((live[0]?.n ?? 0) >= LIBRARY_MAX_ENTRIES) {
-      return fail(
-        res,
-        409,
-        'library_is_full',
-        `the library holds the maximum of ${LIBRARY_MAX_ENTRIES} entries — delete one before saving another`
-      );
-    }
-
     // ⚠️ Content column list #1 of 2 (the clone below is #2). A new content
     // column on funnel_pages must be added to BOTH or the library silently
     // drops it.
-    const rows = await pgQuery(
-      `INSERT INTO funnel_page_library
-         (id, name, description, category, type,
-          blocks, seo, custom_html, custom_css, custom_js, head_html, body_end_html,
-          source_funnel_id, source_page_id, source_title, created_by)
-       SELECT $1::text,
-              COALESCE($2::text, NULLIF(TRIM(title), ''), 'Untitled page'),
-              $3::text,
-              COALESCE(NULLIF($4::text, ''), $7::text),
-              type,
-              blocks, seo, custom_html, custom_css, custom_js, head_html, body_end_html,
-              funnel_id, id, title, $5::text
-         FROM funnel_pages
-        WHERE id = $6::text AND funnel_id = $8::text AND NOT archived
-       RETURNING *`,
-      [
+    const INSERT_SQL = `
+      INSERT INTO funnel_page_library
+        (id, name, description, category, type,
+         blocks, seo, custom_html, custom_css, custom_js, head_html, body_end_html,
+         source_funnel_id, source_page_id, source_title, created_by)
+      SELECT $1::text,
+             COALESCE($2::text, NULLIF(TRIM(title), ''), 'Untitled page'),
+             $3::text,
+             COALESCE(NULLIF($4::text, ''), $7::text),
+             type,
+             blocks, seo, custom_html, custom_css, custom_js, head_html, body_end_html,
+             funnel_id, id, title, $5::text
+        FROM funnel_pages
+       WHERE id = $6::text AND funnel_id = $8::text AND NOT archived
+      RETURNING *`;
+
+    // review m1: the capacity gate and the copy run in ONE transaction behind a
+    // transaction-scoped advisory lock. A bare count-then-insert measured
+    // 501/500 under three concurrent saves — every saver read N-1 from its own
+    // snapshot. Folding the count into the INSERT…SELECT as a subquery would
+    // NOT have fixed it (same snapshot); serializing is the only thing that
+    // does. The lock is released by COMMIT/ROLLBACK, including the abort paths.
+    const outcome = await runTx(async (tx) => {
+      await tx`SELECT pg_advisory_xact_lock(${LIBRARY_CAPACITY_LOCK_KEY}::bigint)`;
+
+      const live = await tx`
+        SELECT COUNT(*)::int AS n FROM funnel_page_library WHERE archived = FALSE`;
+      if ((live[0]?.n ?? 0) >= LIBRARY_MAX_ENTRIES) throw new TxAbort({ full: true });
+
+      const rows = await tx.unsafe(INSERT_SQL, [
         genId('fpl'),
         name,
         description.value,
@@ -307,22 +358,39 @@ router.post('/', async (req, res) => {
         pageId,
         DEFAULT_CATEGORY,
         funnelId,
-      ]
-    );
-    if (!rows.length) return fail(res, 404, 'page_not_found');
+      ]);
+      if (!rows.length) throw new TxAbort({ missing: true });
 
-    // The saved blocks came out of funnel_pages, which validates on WRITE — so
-    // this should never fire. It is here because "should never" is a claim
-    // about today's write paths, and an entry that fails validation is one the
-    // clone endpoint would refuse to instantiate later, silently, from the
-    // operator's point of view. Better to know at save time.
-    const blocksError = validateBlocks(rows[0].blocks);
-    if (blocksError) {
-      await pgQuery(`DELETE FROM funnel_page_library WHERE id = $1`, [rows[0].id]);
-      return fail(res, 422, 'source_page_blocks_are_invalid', blocksError);
+      // The saved blocks came out of funnel_pages, which validates on WRITE —
+      // so this should never fire. It is here because "should never" is a claim
+      // about today's write paths, and an entry that fails validation is one
+      // the clone endpoint would refuse to instantiate later, silently, from
+      // the operator's point of view. Better to know at save time.
+      //
+      // The refusal now travels as a TxAbort so the INSERT is ROLLED BACK
+      // rather than committed-then-deleted: the old compensating DELETE left a
+      // window in which a concurrent list could see an entry that was about to
+      // be rejected.
+      const blocksError = validateBlocks(rows[0].blocks);
+      if (blocksError) throw new TxAbort({ blocksError });
+
+      return { rows };
+    });
+
+    if (outcome.full) {
+      return fail(
+        res,
+        409,
+        'library_is_full',
+        `the library holds the maximum of ${LIBRARY_MAX_ENTRIES} entries — delete one before saving another`
+      );
+    }
+    if (outcome.missing) return fail(res, 404, 'page_not_found');
+    if (outcome.blocksError) {
+      return fail(res, 422, 'source_page_blocks_are_invalid', outcome.blocksError);
     }
 
-    return res.status(201).json({ success: true, data: rows[0] });
+    return res.status(201).json({ success: true, data: outcome.rows[0] });
   } catch (err) {
     console.error('[page-library] save failed:', err);
     return fail(res, 500, 'server_error');
@@ -386,6 +454,17 @@ router.patch('/:entryId', async (req, res) => {
 // DELETE /api/v1/page-library/:entryId — SOFT archive, matching every other
 // delete in this codebase (funnels, pages, redirects). The content stays on
 // disk; the flyout stops listing it and the slot is freed.
+//
+// ARCHIVED ROWS ARE NEVER RECLAIMED, and that is DELIBERATE (review nit) — but
+// it is a real, bounded liability worth naming rather than discovering:
+// LIBRARY_MAX_ENTRIES caps only the LIVE set, so an operator who repeatedly
+// saves and deletes 2MB checkout pages grows this table without limit. No
+// sweep is added here because a page library is exactly the kind of thing
+// someone deletes and then wants back, and a hard delete is unrecoverable while
+// a fat table is merely expensive. If the table does become a problem the fix
+// is a sweep that hard-deletes rows with archived = TRUE older than N days —
+// deliberately NOT wired up today, so that "it grows" is a decision on the
+// record rather than an oversight found later.
 // ---------------------------------------------------------------------------
 router.delete('/:entryId', async (req, res) => {
   try {
@@ -411,7 +490,7 @@ router.delete('/:entryId', async (req, res) => {
 // Instantiate a library entry as a NEW page in ANY funnel. Always a DRAFT.
 //
 // SLUG POSTURE — funnel-transfer's exactly, both halves:
-//   • DERIVED slug (no `slug` in the body): slugify(title || entry.name), then
+//   • DERIVED slug (no `slug` in the body): slugBase(title || entry.name), then
 //     a `-2`, `-3` ladder over the funnel's LIVE slugs. Never a silent
 //     overwrite; the response reports the slug that was actually taken.
 //   • PINNED slug (caller sent one): a collision is REFUSED with prose (409),
@@ -481,25 +560,10 @@ router.post('/:entryId/clone', async (req, res) => {
       }
     }
 
-    let slug = pinned;
-    if (slug === null) {
-      const base = slugify(title) || slugify(entry.type) || 'page';
-      const existing = await pgQuery(
-        `SELECT slug FROM funnel_pages WHERE funnel_id = $1 AND archived = FALSE`,
-        [funnelId]
-      );
-      const taken = new Set(existing.map((r) => r.slug));
-      slug = `/${base}`;
-      for (let n = 2; taken.has(slug); n += 1) slug = `/${base}-${n}`;
-      if (!PAGE_SLUG_RE.test(slug)) {
-        return fail(
-          res,
-          422,
-          'slug_could_not_be_derived',
-          'could not derive a valid slug from that title — pass an explicit slug'
-        );
-      }
-    }
+    // The slug base, capped so every derived form fits the budget BY
+    // CONSTRUCTION (see SLUG_BASE_MAX). Falls back to the page type, then to
+    // 'page', so a title of pure punctuation still yields a legal slug.
+    const base = slugBase(title) || slugBase(entry.type) || 'page';
 
     // ⚠️ Content column list #2 of 2 (the save above is #1).
     const INSERT_SQL = `
@@ -513,41 +577,118 @@ router.post('/:entryId/clone', async (req, res) => {
         FROM funnel_page_library
        WHERE id = $5::text AND archived = FALSE
       RETURNING *`;
-    const insertLocked = (pageId, pageSlug) =>
-      client.begin(async (tx) => {
-        await tx`SELECT id FROM funnels WHERE id = ${funnelId} FOR UPDATE`;
-        return tx.unsafe(INSERT_SQL, [pageId, funnelId, pageSlug, title, entry.id]);
+
+    // ONE transaction does all of it: lock the funnel, RE-CHECK that it is
+    // still live, resolve the slug, insert.
+    //
+    // review M1 / m3 — three things moved inside the lock:
+    //   • the ladder read. It used to run BEFORE the transaction, so the window
+    //     between "these slugs are taken" and the INSERT was wide open. Inside
+    //     the FOR UPDATE it is closed against every other clone into this
+    //     funnel, because they all serialize on the same funnel row.
+    //   • the archived re-check. The pre-flight SELECT above is advisory only;
+    //     `AND archived = FALSE` on the LOCKED select means a funnel archived
+    //     in between yields zero rows and the same 400 the pre-flight gives.
+    //   • the retry. `attempt` is threaded in so a losing race re-reads the
+    //     ladder under a freshly acquired lock instead of reusing a stale set.
+    const attemptInsert = (attempt) =>
+      runTx(async (tx) => {
+        const locked = await tx`
+          SELECT id FROM funnels WHERE id = ${funnelId} AND archived = FALSE FOR UPDATE`;
+        if (!locked.length) throw new TxAbort({ archivedFunnel: true });
+
+        let chosen = pinned;
+        if (chosen === null) {
+          if (attempt === 0) {
+            const existing = await tx`
+              SELECT slug FROM funnel_pages
+               WHERE funnel_id = ${funnelId} AND archived = FALSE`;
+            const taken = new Set(existing.map((r) => r.slug));
+            chosen = `/${base}`;
+            for (let n = 2; taken.has(chosen); n += 1) chosen = `/${base}-${n}`;
+          } else {
+            // A retry means an UNLOCKED writer (funnels.js POST /pages, or its
+            // duplicate endpoint) took the slug between our ladder and our
+            // insert. A random suffix converges faster than re-walking a ladder
+            // against a writer that is still moving. The base already reserves
+            // room for it, so the suffix cannot be truncated away — which is
+            // exactly the bug that made the old retry re-submit the SAME slug
+            // and let the second 23505 escape as a 500.
+            chosen = `/${base}-${randomBytes(2).toString('hex')}`;
+          }
+          if (!PAGE_SLUG_RE.test(chosen)) throw new TxAbort({ badSlug: true });
+        }
+
+        const rows = await tx.unsafe(INSERT_SQL, [
+          genId('fpg'), funnelId, chosen, title, entry.id,
+        ]);
+        // Zero rows means the entry was archived between the pre-flight read
+        // and this insert. A 2xx carrying no page would push a ghost node onto
+        // the canvas.
+        if (!rows.length) throw new TxAbort({ entryGone: true });
+        return { rows, chosen };
       });
 
-    let rows;
-    try {
-      rows = await insertLocked(genId('fpg'), slug);
-    } catch (err) {
-      if (err?.code !== UNIQUE_VIOLATION) throw err;
-      // A PINNED slug is never rewritten — that collision is the caller's to
-      // read. A DERIVED one raced another writer between the ladder read and
-      // the insert; retry once with a random suffix.
-      if (pinned !== null) {
-        return fail(
-          res,
-          409,
-          'slug_already_exists',
-          `the funnel already has a page at ${pinned} — choose another slug`
-        );
+    let outcome = null;
+    let lastConflict = null;
+    for (let attempt = 0; attempt < SLUG_RETRY_ATTEMPTS; attempt += 1) {
+      try {
+        outcome = await attemptInsert(attempt);
+        break;
+      } catch (err) {
+        if (err?.code !== UNIQUE_VIOLATION) throw err;
+        lastConflict = err;
+        // A PINNED slug is never rewritten — that collision is the caller's to
+        // read, and retrying it would only produce the same violation.
+        if (pinned !== null) {
+          return fail(
+            res,
+            409,
+            'slug_already_exists',
+            `the funnel already has a page at ${pinned} — choose another slug`
+          );
+        }
       }
-      const base = slugify(title) || 'page';
-      const retrySlug = `/${base}-${randomBytes(2).toString('hex')}`.slice(0, 81);
-      rows = await insertLocked(genId('fpg'), retrySlug);
     }
 
-    // Zero rows means the entry was archived between the read above and the
-    // insert. A 2xx carrying no page would push a ghost node onto the canvas.
-    if (!rows.length) return fail(res, 404, 'entry_not_found');
+    // Every attempt lost the race. That is a conflict, not a server fault —
+    // answering 500 here (which the old single un-wrapped retry did) told the
+    // operator the server was broken when the honest answer is "try again".
+    if (!outcome) {
+      console.warn(
+        '[page-library] clone exhausted %d slug attempts for funnel %s (last code %s)',
+        SLUG_RETRY_ATTEMPTS, funnelId, lastConflict?.code
+      );
+      return fail(
+        res,
+        409,
+        'slug_already_exists',
+        'could not find a free slug in this funnel — retry, or pass an explicit slug'
+      );
+    }
+
+    if (outcome.archivedFunnel) {
+      return fail(res, 400, 'funnel_is_archived', 'restore the funnel before cloning pages into it');
+    }
+    if (outcome.entryGone) return fail(res, 404, 'entry_not_found');
+    if (outcome.badSlug) {
+      return fail(
+        res,
+        422,
+        'slug_could_not_be_derived',
+        'could not derive a valid slug from that title — pass an explicit slug'
+      );
+    }
 
     return res.status(201).json({
       success: true,
-      data: rows[0],
-      meta: { library_entry_id: entry.id, slug_rewritten: rows[0].slug !== slug },
+      data: outcome.rows[0],
+      // `slug_rewritten` compares against the slug the FIRST attempt would have
+      // produced, so a retry suffix reads as a rewrite — which it is.
+      meta: {
+        library_entry_id: entry.id,
+        slug_rewritten: outcome.rows[0].slug !== (pinned ?? `/${base}`),
+      },
     });
   } catch (err) {
     console.error('[page-library] clone failed:', err);

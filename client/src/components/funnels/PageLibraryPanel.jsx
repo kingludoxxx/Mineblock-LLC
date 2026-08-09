@@ -85,21 +85,43 @@ function PageThumb({ page }) {
 // usePageThumbnail keys its cache and its effect on a STRING (funnel/page/ms),
 // not on object identity, so a fresh object costs nothing and memoizing it here
 // would only add a dependency list to get wrong.
+// review m7: THIS PREVIEW IS THE LIVE SOURCE PAGE, NOT THE SNAPSHOT, and the
+// UI has to say so. /page-thumbnails screenshots funnel_pages as it is right
+// now; the entry froze at save time. If the source page has since been edited
+// the two genuinely differ, and an unlabelled preview would quietly contradict
+// the "snapshot" promise the save modal makes.
+//
+// Chose the LABEL over hiding the image: the alternative — falling back to the
+// type icon when the source is newer — cannot actually be implemented from this
+// payload, because the list projection carries the entry's created_at but not
+// the source page's updated_at, so "is it newer" is not answerable here without
+// a second round trip per card. A small persistent "live" marker is honest,
+// costs nothing, and never claims freshness it cannot verify.
 function EntryThumb({ entry }) {
   const hasSource = Boolean(entry?.source_page_id && entry?.source_funnel_id);
   return (
-    <PageThumb
-      page={
-        hasSource
-          ? {
-              id: entry.source_page_id,
-              funnel_id: entry.source_funnel_id,
-              updated_at: entry.created_at,
-              type: entry.type,
-            }
-          : { type: entry?.type }
-      }
-    />
+    <div className="relative w-full h-full">
+      <PageThumb
+        page={
+          hasSource
+            ? {
+                id: entry.source_page_id,
+                funnel_id: entry.source_funnel_id,
+                updated_at: entry.created_at,
+                type: entry.type,
+              }
+            : { type: entry?.type }
+        }
+      />
+      {hasSource && (
+        <span
+          className="absolute bottom-0 inset-x-0 px-1 py-px bg-black/70 text-[7px] uppercase tracking-wider text-text-faint text-center leading-tight"
+          title="Preview of the SOURCE PAGE as it is now. The saved entry is a snapshot from when it was added and may differ."
+        >
+          live src
+        </span>
+      )}
+    </div>
   );
 }
 
@@ -289,6 +311,16 @@ function LibraryTab({ funnelId, onCloned, onError, reloadToken }) {
         <input
           value={q}
           onChange={(e) => setQ(e.target.value)}
+          // review m6: Escape in a field means "clear/leave this field", not
+          // "throw away the whole flyout". Without stopPropagation the panel's
+          // document-level key handler saw it and closed everything, losing the
+          // operator's filters and scroll position.
+          onKeyDown={(e) => {
+            if (e.key === 'Escape') {
+              e.stopPropagation();
+              if (q) setQ('');
+            }
+          }}
           placeholder="Search saved pages"
           className="w-full pl-7 pr-2 py-1.5 text-xs bg-bg-elevated border border-border-default rounded-md text-text-primary placeholder:text-text-faint focus:outline-none focus:border-border-strong"
         />
@@ -370,9 +402,17 @@ function LibraryTab({ funnelId, onCloned, onError, reloadToken }) {
                     value={renameDraft}
                     onChange={(ev) => setRenameDraft(ev.target.value)}
                     onBlur={() => commitRename(e)}
+                    // review m6: Escape cancels the RENAME, not the flyout.
+                    // React attaches its handlers at the root container, which
+                    // is below document in the bubble path, so stopping the
+                    // native event here does keep the panel's document-level
+                    // Escape listener from also firing.
                     onKeyDown={(ev) => {
                       if (ev.key === 'Enter') commitRename(e);
-                      if (ev.key === 'Escape') setRenaming(null);
+                      if (ev.key === 'Escape') {
+                        ev.stopPropagation();
+                        setRenaming(null);
+                      }
                     }}
                     className="w-full px-1.5 py-0.5 text-xs bg-bg-elevated border border-border-default rounded text-text-primary focus:outline-none focus:border-border-strong"
                   />

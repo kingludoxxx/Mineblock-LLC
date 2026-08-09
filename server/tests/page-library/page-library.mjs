@@ -56,8 +56,12 @@ Object.assign(process.env, {
 const { default: express } = await import('express');
 const { default: funnelsRoutes, ensureTables } = await import('../../src/routes/funnels.js');
 const { default: pageLibraryRoutes } = await import('../../src/routes/pageLibrary.js');
-const { LIBRARY_MAX_ENTRIES, DEFAULT_CATEGORY, NAME_MAX } =
+const { LIBRARY_MAX_ENTRIES, DEFAULT_CATEGORY, NAME_MAX, SLUG_BODY_MAX, SLUG_BASE_MAX } =
   await import('../../src/services/pageLibrarySchema.js');
+
+// The route's own slug grammar, restated here so the harness pins the CONTRACT
+// rather than importing whatever the route currently believes.
+const PAGE_SLUG_RE = /^\/$|^\/[a-z0-9-]+$/;
 
 const app = express();
 app.use(express.json({ limit: '10mb' }));
@@ -548,6 +552,225 @@ let E2 = null;
   await sql`UPDATE funnel_page_library SET archived = TRUE WHERE id = 'fpl_bulk_1'`;
   const ok2 = await lreq('POST', '/', { funnel_id: FA, page_id: P1, name: 'Now it fits' });
   ok(ok2.status === 201, 'T18 archiving one entry frees a slot', `${ok2.status} ${JSON.stringify(ok2.j)}`);
+}
+
+// ---------------------------------------------------------------------------
+// T19 (review M1, GATING) — the derived-slug retry under concurrency with a
+// LONG entry name.
+//
+// The bug: base was capped at 80 and the RETRY capped the JOINED string at 81,
+// so `/${base}-${hex}`.slice(0,81) truncated the random suffix straight back
+// off. The retry therefore re-submitted the slug that had just raised 23505,
+// and that second violation was outside any try → an uncaught 500. Reproduced
+// by the reviewer at 3/5 concurrent clones with a realistic long name.
+//
+// The bar: every concurrent clone answers 201 or 409. NEVER 500, never a
+// duplicate slug, never a slug over budget.
+// ---------------------------------------------------------------------------
+const LONG_NAME =
+  'Ultimate Black Friday Checkout Page For The Glow Serum Bundle With Free Shipping And Bump Offer';
+let LONG_ENTRY = null;
+{
+  // T18 deliberately left the library AT its ceiling. Everything below saves
+  // new entries, so hand the slots back first — otherwise the whole block
+  // 409s and every assertion under it reads as a bug in the code under test
+  // rather than in the fixture. (It did exactly that on the first run.)
+  await sql`DELETE FROM funnel_page_library WHERE id LIKE 'fpl_bulk_%'`;
+  const freed = (await sql`SELECT COUNT(*)::int AS n FROM funnel_page_library WHERE archived = FALSE`)[0].n;
+  ok(freed < LIBRARY_MAX_ENTRIES, 'T19 fixture: slots freed after the ceiling test', String(freed));
+
+  ok(LONG_NAME.length >= 90, 'T19 the probe name is 90+ chars', String(LONG_NAME.length));
+  const saved = await lreq('POST', '/', { funnel_id: FA, page_id: P1, name: LONG_NAME });
+  ok(saved.status === 201, 'T19 seed: long-named entry saved', `${saved.status} ${JSON.stringify(saved.j)}`);
+  LONG_ENTRY = saved.j?.data?.id;
+
+  const fd = await freq('POST', '/', { name: 'Lib D', slug: 'lib-harness-d' });
+  const FD = fd.j?.data?.id;
+  ok(fd.status === 201, 'T19 seed: fresh empty target funnel', String(fd.status));
+
+  const N = 5;
+  const results = await Promise.all(
+    Array.from({ length: N }, () => lreq('POST', `/${LONG_ENTRY}/clone`, { funnel_id: FD }))
+  );
+  const codes = results.map((r) => r.status);
+  ok(!codes.includes(500), 'T19 NO 500 under 5 concurrent clones of a long name', codes.join(','));
+  ok(codes.every((c) => c === 201 || c === 409),
+    'T19 every concurrent clone is a 201 or a 409', codes.join(','));
+
+  const created = results.filter((r) => r.status === 201).map((r) => r.j?.data);
+  ok(created.length >= 1, 'T19 at least one clone landed', String(created.length));
+  const slugs = created.map((p) => p.slug);
+  ok(new Set(slugs).size === slugs.length, 'T19 every landed slug is DISTINCT', slugs.join(' '));
+  ok(slugs.every((s) => PAGE_SLUG_RE.test(s)), 'T19 every landed slug is legal', slugs.join(' '));
+  ok(slugs.every((s) => s.length <= 1 + SLUG_BODY_MAX),
+    'T19 every landed slug fits the budget', slugs.map((s) => `${s}=${s.length}`).join(' '));
+  ok(slugs.every((s) => !/--$|-$/.test(s)),
+    'T19 no slug ends in a dangling dash', slugs.join(' '));
+
+  // The DB is the authority on how many pages actually exist, not the responses.
+  const rows = await sql`SELECT slug FROM funnel_pages WHERE funnel_id = ${FD} AND archived = FALSE`;
+  ok(rows.length === created.length,
+    'T19 the DB holds exactly as many pages as reported 201', `${rows.length} vs ${created.length}`);
+  const homes = await sql`SELECT COUNT(*)::int AS n FROM funnel_pages
+                           WHERE funnel_id = ${FD} AND is_home = TRUE AND archived = FALSE`;
+  ok(homes[0].n === 1,
+    'T19 exactly ONE home page survives 5 concurrent clones into an EMPTY funnel', String(homes[0].n));
+}
+
+// ---------------------------------------------------------------------------
+// T20 (review M1) — the slug budget is a property of the BASE, provable
+// without a race. A 200-char title must still leave room for a '-<4 hex>'
+// retry suffix; capping the joined string is what silently removed it.
+// ---------------------------------------------------------------------------
+{
+  const fe = await freq('POST', '/', { name: 'Lib E', slug: 'lib-harness-e' });
+  const FE = fe.j?.data?.id;
+  const title = 'a'.repeat(200);
+  const r = await lreq('POST', `/${LONG_ENTRY}/clone`, { funnel_id: FE, title });
+  ok(r.status === 201, 'T20 a 200-char title clones', `${r.status} ${JSON.stringify(r.j)}`);
+  const slug = r.j?.data?.slug || '';
+  ok(slug.length <= 1 + SLUG_BASE_MAX,
+    'T20 the derived slug is capped at the BASE budget, leaving suffix room',
+    `${slug.length} (base max ${SLUG_BASE_MAX})`);
+  ok(slug.length + 5 <= 1 + SLUG_BODY_MAX,
+    'T20 a "-abcd" retry suffix still fits inside the full budget', String(slug.length + 5));
+  ok(PAGE_SLUG_RE.test(slug), 'T20 the capped slug is still legal', slug);
+
+  // Ladder steps must also stay inside the budget.
+  const r2 = await lreq('POST', `/${LONG_ENTRY}/clone`, { funnel_id: FE, title });
+  ok(r2.status === 201 && r2.j?.data?.slug === `${slug}-2`,
+    'T20 the ladder appends to the capped base', `${r2.status} ${r2.j?.data?.slug}`);
+  ok(r2.j?.data?.slug.length <= 1 + SLUG_BODY_MAX,
+    'T20 the ladder step is inside the full budget', String(r2.j?.data?.slug.length));
+  ok(r2.j?.meta?.slug_rewritten === true,
+    'T20 a ladder step reports itself as a rewrite', JSON.stringify(r2.j?.meta));
+}
+
+// ---------------------------------------------------------------------------
+// T21 (review m3) — archived-funnel TOCTOU. The pre-flight archived check is
+// advisory; the guarantee is `AND archived = FALSE` on the LOCKED select. Race
+// a clone against the archive itself and assert the invariant that matters: a
+// page never lands in a funnel that is archived once the dust settles.
+// ---------------------------------------------------------------------------
+{
+  let violations = 0;
+  const codes = [];
+  for (let i = 0; i < 6; i += 1) {
+    const f = await freq('POST', '/', { name: `Race ${i}`, slug: `lib-race-${i}` });
+    const FR = f.j?.data?.id;
+    const [cloneRes] = await Promise.all([
+      lreq('POST', `/${LONG_ENTRY}/clone`, { funnel_id: FR }),
+      freq('POST', `/${FR}/archive`, { archived: true }),
+    ]);
+    codes.push(cloneRes.status);
+    const funnelRow = await sql`SELECT archived FROM funnels WHERE id = ${FR}`;
+    const pageRows = await sql`SELECT id FROM funnel_pages WHERE funnel_id = ${FR} AND archived = FALSE`;
+    if (funnelRow[0]?.archived === true && pageRows.length > 0 && cloneRes.status === 201) {
+      // A 201 that lands in a funnel the archive already committed is the
+      // TOCTOU. (A 201 that WON the race is fine — the archive then ran after.)
+      violations += 1;
+    }
+    if (cloneRes.status === 500) violations += 1;
+  }
+  ok(violations === 0,
+    'T21 no clone/archive interleaving produces a 500 or an orphaned page', String(violations));
+  ok(codes.every((c) => c === 201 || c === 400),
+    'T21 every raced clone is a 201 or the archived-funnel 400', codes.join(','));
+}
+
+// ---------------------------------------------------------------------------
+// T22 (review m2) — ?q= must not be a wildcard injection. Before escapeLike a
+// literal '%' matched EVERY row, which made the search box silently useless
+// for names that contain one.
+// ---------------------------------------------------------------------------
+{
+  const f = await freq('POST', '/', { name: 'Like F', slug: 'lib-harness-f' });
+  const FF = f.j?.data?.id;
+  const p = await freq('POST', `/${FF}/pages`, { title: 'Pct', slug: '/pct', type: 'generic' });
+  const PF = p.j?.data?.id;
+  const a = await lreq('POST', '/', { funnel_id: FF, page_id: PF, name: 'Save 50% today' });
+  const b = await lreq('POST', '/', { funnel_id: FF, page_id: PF, name: 'under_score name' });
+  const c = await lreq('POST', '/', { funnel_id: FF, page_id: PF, name: 'plain name' });
+  ok(a.status === 201 && b.status === 201 && c.status === 201,
+    'T22 seed: three probe entries', `${a.status}/${b.status}/${c.status}`);
+
+  const pct = await lreq('GET', `/?q=${encodeURIComponent('50%')}`);
+  ok(pct.status === 200 && pct.j?.data?.total === 1
+    && pct.j.data.entries[0].name === 'Save 50% today',
+    "T22 a literal '%' matches only the entry containing it, not everything",
+    `${pct.status} total=${pct.j?.data?.total}`);
+
+  const bare = await lreq('GET', `/?q=${encodeURIComponent('%')}`);
+  ok(bare.j?.data?.total === 1,
+    "T22 a bare '%' is a LITERAL, not a match-all wildcard", String(bare.j?.data?.total));
+
+  const under = await lreq('GET', `/?q=${encodeURIComponent('under_score')}`);
+  ok(under.j?.data?.total === 1 && under.j.data.entries[0].name === 'under_score name',
+    "T22 '_' matches a literal underscore", String(under.j?.data?.total));
+  const underWild = await lreq('GET', `/?q=${encodeURIComponent('under_')}`);
+  ok(underWild.j?.data?.total === 1,
+    "T22 '_' does not act as a single-character wildcard", String(underWild.j?.data?.total));
+
+  const backslash = await lreq('GET', `/?q=${encodeURIComponent('\\')}`);
+  ok(backslash.status === 200,
+    'T22 a lone backslash is a valid search, not a 500 (the escape char itself)',
+    String(backslash.status));
+}
+
+// ---------------------------------------------------------------------------
+// T23 (review m1) — the capacity gate under concurrency. A count-then-insert
+// let three concurrent savers all read N-1 and all insert (measured 501/500).
+// The gate now runs inside a transaction behind an advisory lock.
+// ---------------------------------------------------------------------------
+{
+  // Drive the LIVE count to exactly the ceiling minus one, so there is room for
+  // exactly ONE of the three concurrent saves.
+  const live = (await sql`SELECT COUNT(*)::int AS n FROM funnel_page_library WHERE archived = FALSE`)[0].n;
+  const target = LIBRARY_MAX_ENTRIES - 1;
+  if (live > target) {
+    await sql`UPDATE funnel_page_library SET archived = TRUE
+               WHERE id IN (SELECT id FROM funnel_page_library WHERE archived = FALSE
+                            ORDER BY id LIMIT ${live - target})`;
+  } else if (live < target) {
+    await sql`INSERT INTO funnel_page_library (id, name, type)
+              SELECT 'fpl_fill_' || g, 'Fill ' || g, 'generic'
+                FROM generate_series(1, ${target - live}) g`;
+  }
+  const atLine = (await sql`SELECT COUNT(*)::int AS n FROM funnel_page_library WHERE archived = FALSE`)[0].n;
+  ok(atLine === target, 'T23 seeded to exactly one slot free', `${atLine} of ${LIBRARY_MAX_ENTRIES}`);
+
+  const results = await Promise.all([
+    lreq('POST', '/', { funnel_id: FA, page_id: P1, name: 'Concurrent A' }),
+    lreq('POST', '/', { funnel_id: FA, page_id: P1, name: 'Concurrent B' }),
+    lreq('POST', '/', { funnel_id: FA, page_id: P1, name: 'Concurrent C' }),
+  ]);
+  const codes = results.map((r) => r.status);
+  const created = codes.filter((c) => c === 201).length;
+  const refused = codes.filter((c) => c === 409).length;
+  ok(created === 1, 'T23 exactly ONE of three concurrent saves takes the last slot', codes.join(','));
+  ok(refused === 2, 'T23 the other two are refused with 409, not silently written', codes.join(','));
+  ok(!codes.includes(500), 'T23 no 500 under concurrent saves', codes.join(','));
+
+  const after = (await sql`SELECT COUNT(*)::int AS n FROM funnel_page_library WHERE archived = FALSE`)[0].n;
+  ok(after === LIBRARY_MAX_ENTRIES,
+    'T23 the live count lands ON the ceiling, never over it', `${after} of ${LIBRARY_MAX_ENTRIES}`);
+  ok(after <= LIBRARY_MAX_ENTRIES,
+    'T23 the ceiling is never breached (the 501/500 the review measured)', String(after));
+}
+
+// ---------------------------------------------------------------------------
+// T24 — a refused save (capacity) ROLLS BACK rather than committing and
+// compensating. The blocks-validation refusal takes the same path.
+// ---------------------------------------------------------------------------
+{
+  const before = (await sql`SELECT COUNT(*)::int AS n FROM funnel_page_library`)[0].n;
+  const r = await lreq('POST', '/', { funnel_id: FA, page_id: P1, name: 'Should not exist' });
+  ok(r.status === 409, 'T24 the library is still full', String(r.status));
+  const after = (await sql`SELECT COUNT(*)::int AS n FROM funnel_page_library`)[0].n;
+  ok(before === after, 'T24 the refusal left NO row behind, archived or otherwise',
+    `${before} → ${after}`);
+  const ghost = await sql`SELECT id FROM funnel_page_library WHERE name = 'Should not exist'`;
+  ok(ghost.length === 0, 'T24 not even an archived ghost row', JSON.stringify(ghost));
 }
 
 // ---------------------------------------------------------------------------
