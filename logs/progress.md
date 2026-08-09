@@ -2556,3 +2556,61 @@ key on a NEW block would put a value behind the headline field that the
 operator cannot see in the inspector (DECISION MADE).
 STATUS: COMPLETE
 ---
+
+---
+TIMESTAMP: 2026-08-09 22:55
+TASK: Clone-a-page "From Shopify" tab (feat/clone-from-shopify)
+BUILT: New read-only Shopify Admin proxy server/src/routes/shopifyPages.js
+mounted at /api/v1/shopify-pages (authenticate + funnels:access), plus the
+client tab client/src/components/funnels/shopify/ShopifyTab.jsx wired into
+ClonePageModal.jsx (the tab is no longer disabled). GET /list walks Admin
+REST pages.json with Link-header cursor paging (4-hop / 500-row cap, and it
+REPORTS `truncated` rather than silently clipping), returning
+{id,title,handle,updated_at,published,summary,is_theme_built,live_url} —
+body_html is summarised server-side and never forwarded. POST /import
+validates page_id (digits or a Page gid — it feeds a REST path), fetches the
+page, and runs pageClone.js's OWN scanHtml() on the body_html wrapped in a
+<body> element, with originalUrl=live_url, so the result is the
+byte-identical {sections,stats} shape /page-clone/scan returns and the modal
+reuses its existing picker and /page-clone/create. Credentials are read from
+env at call time and travel in X-Shopify-Access-Token only; 8s
+AbortController budget; redirect:'error'. Failure taxonomy mirrors
+shopifyVariants.js: 503 shopify_not_configured / shopify_auth_error
+(retryable:false) vs shopify_unavailable (retryable:true), 429 rate_limited
+(retryable:true), 422 theme_built for a page whose editor body has under 200
+chars of visible text. INPUT_MAX / ESCAPE_HATCH_MAX were exported from
+pageClone.js so the 413 thresholds are one number, not two.
+TESTED: new harness server/tests/clone-page/shopify-import.mjs 213/213
+(list happy path + limit cap; cursor paging and truncation honesty; empty
+store vs outage; 9 list failure classes incl. 401/403 as non-retryable;
+missing/malformed config incl. a store value carrying a path; a real fetched
+page flowing through the REAL scan pipeline asserted on section output,
+script/pixel/comment removal, surviving inline <style>, and CDN
+src/srcset/href absolutization; 7 page_id refusals incl. a dot-segment
+traversal attempt; 5 theme-built shapes; malformed 200s, non-string
+body_html, unbalanced markup, >10MB source and >2MB cleaned output; malformed
+JSON body; rate limit; the 8s abort; redirect:'error'). Regressions:
+clone-page scan-create 92/92, builder variant-search 94/94 (identical to the
+pre-change baseline). Real mount verified by booting routes/index.js — both
+paths answer 401, not 404. eslint on both touched client files: 0 errors.
+cd client && npx vite build: exit 0.
+OUTPUT: 213/213 + 92/92 + 94/94; build exit 0; eslint exit 0.
+DECISIONS: (1) The reference tool's Playwright "visual clone" fallback for
+theme-built pages was DROPPED — pageClone.js's stated invariant is that it
+never fetches a URL, so there is no SSRF surface by construction; we return
+an actionable 422 with the live URL instead (DECISION MADE). (2) Admin REST
+is the only transport, not GraphQL-with-REST-fallback: the Admin GraphQL
+`pages` connection does not exist on this repo's default SHOPIFY_API_VERSION
+(2024-01), and a fallback leg that can never be exercised is not a fallback
+(DECISION MADE). (3) The reference fires one import call per visible card to
+build previews; we compute `summary` and `is_theme_built` at LIST time, so
+the picker makes one Admin call, not N (DECISION MADE). (4) The reference
+passes source_url:null and leaves relative Shopify CDN paths broken; we
+absolutize against live_url through the existing rewriter (DECISION MADE).
+(5) This worktree is a worktree of Mineblock-LLC, not Puure-integrator as the
+brief stated — worktree isolation forbids operating on the other checkout, so
+the branch and commit landed here; the two repos are forks and every file the
+brief named exists here identically (DECISION MADE — needs a port to
+Puure-integrator if that was the intended target).
+STATUS: COMPLETE
+---

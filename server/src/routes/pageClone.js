@@ -22,8 +22,11 @@ const router = Router();
 router.use(authenticate, requirePermission('funnels', 'access'));
 
 // Same caps as the funnels router: 2MB is what a page write may carry.
-const INPUT_MAX = 10 * 1024 * 1024; // 10MB raw input to /scan
-const ESCAPE_HATCH_MAX = 2 * 1024 * 1024; // 2MB total cleaned output
+// Exported because the Shopify import route (routes/shopifyPages.js) feeds
+// the SAME scanHtml pipeline and must answer 413 at the SAME thresholds — a
+// second copy of these numbers would drift.
+export const INPUT_MAX = 10 * 1024 * 1024; // 10MB raw input to /scan
+export const ESCAPE_HATCH_MAX = 2 * 1024 * 1024; // 2MB total cleaned output
 const CSS_MAX = 512 * 1024; // 512KB optional CSS overlay (applied on top)
 const PAGE_SLUG_RE = /^\/$|^\/[a-z0-9-]+$/;
 const UNIQUE_VIOLATION = '23505';

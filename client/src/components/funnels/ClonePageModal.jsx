@@ -8,8 +8,10 @@
 // to absolutize relative image/link paths — the server never fetches it.
 //
 // "Generate with AI" is live (AiGenerateTab — brief in, streamed sections
-// out, creation through the same /page-clone/create). "From Shopify" stays a
-// visible-but-disabled tab.
+// out, creation through the same /page-clone/create). "From Shopify" is live
+// too (ShopifyTab — pick an Online Store page; the server runs the SAME scan
+// pipeline on its body_html and hands back the same { sections, stats }, so
+// the picker and /page-clone/create below are shared verbatim).
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   X, ClipboardPaste, FileUp, Sparkles, ShoppingBag, ScanLine,
@@ -19,12 +21,13 @@ import api from '../../services/api';
 import Button from '../ui/Button';
 import { formatHtml, formatCss, highlightHtml, highlightCss } from './codeFormat';
 import AiGenerateTab from './ai-generate/AiGenerateTab';
+import ShopifyTab from './shopify/ShopifyTab';
 
 const TABS = [
   { value: 'paste', label: 'Paste code', icon: ClipboardPaste },
   { value: 'file', label: 'Import file', icon: FileUp },
   { value: 'ai', label: 'Generate with AI', icon: Sparkles },
-  { value: 'shopify', label: 'From Shopify', icon: ShoppingBag, disabled: true },
+  { value: 'shopify', label: 'From Shopify', icon: ShoppingBag },
 ];
 
 // Token colors for the paste-pane highlighter (light panes, GitHub-light-ish).
@@ -247,6 +250,27 @@ export default function ClonePageModal({ open, onClose, funnelId, onCreated }) {
     }
   }, [scanning, tab, pasteHtml, pasteCss, file, originalUrl]);
 
+  // The Shopify tab's import answers the SAME { sections, stats } payload as
+  // /page-clone/scan — it runs the same server-side pipeline — so it lands in
+  // the same picker state below. One code path, not a parallel one. The only
+  // extra is `page.title`: body_html carries no <title>, so the Shopify page
+  // title is the honest default (the paste path keeps using stats.title).
+  //
+  // Returns a message string on refusal, NEVER setError: this modal renders
+  // `error` only in the paste/file body and in the picker, so a message set
+  // from here while the Shopify tab is mounted would be invisible. The tab
+  // owns its own error surface, so the tab is told.
+  const adoptShopifyScan = useCallback((data) => {
+    const sections = data?.sections || [];
+    if (!sections.length) {
+      return 'The scan found no content sections in that page — try the Paste code tab.';
+    }
+    setResult(data);
+    setSelected(new Set(sections.map((s) => s.index)));
+    setTitle(data.page?.title || data.stats?.title || 'Cloned page');
+    return null;
+  }, []);
+
   const toggleSection = useCallback((idx) => {
     setSelected((prev) => {
       const next = new Set(prev);
@@ -303,14 +327,18 @@ export default function ClonePageModal({ open, onClose, funnelId, onCreated }) {
         <div className="shrink-0 flex items-start justify-between px-5 py-3.5 border-b border-border-subtle">
           <div className="min-w-0">
             <h2 className="text-base font-semibold text-text-primary">
-              {tab === 'ai' && !result
-                ? 'Generate with AI — describe the page'
-                : 'Clone a page — paste code or import a file'}
+              {result || (tab !== 'ai' && tab !== 'shopify')
+                ? 'Clone a page — paste code or import a file'
+                : tab === 'ai'
+                  ? 'Generate with AI — describe the page'
+                  : 'Clone from Shopify — pick a page from your store'}
             </h2>
             <p className="mt-0.5 text-xs text-text-faint">
-              {tab === 'ai' && !result
-                ? 'Claude designs the architecture, writes each section live, and leaves image slots as placeholders.'
-                : 'Scan strips junk scripts & tracking pixels (Meta, Google, ...), the source title & meta — then splits it into sections.'}
+              {result || (tab !== 'ai' && tab !== 'shopify')
+                ? 'Scan strips junk scripts & tracking pixels (Meta, Google, ...), the source title & meta — then splits it into sections.'
+                : tab === 'ai'
+                  ? 'Claude designs the architecture, writes each section live, and leaves image slots as placeholders.'
+                  : 'Your Online Store pages, read straight from the Shopify Admin API — the picked one runs through the same scan.'}
             </p>
           </div>
           <button
@@ -328,19 +356,6 @@ export default function ClonePageModal({ open, onClose, funnelId, onCreated }) {
             <div className="shrink-0 flex gap-1 px-5 pt-2 border-b border-border-subtle">
               {TABS.map((t) => {
                 const Icon = t.icon;
-                if (t.disabled) {
-                  return (
-                    <span
-                      key={t.value}
-                      className="inline-flex items-center gap-1.5 px-3 py-2 text-sm font-medium border-b-2 -mb-px border-transparent text-text-faint opacity-50 cursor-not-allowed"
-                      title="Coming soon"
-                    >
-                      <Icon className="w-3.5 h-3.5" />
-                      {t.label}
-                      <span className="px-1 py-0.5 rounded bg-bg-elevated text-[9px] uppercase">soon</span>
-                    </span>
-                  );
-                }
                 return (
                   <button
                     key={t.value}
@@ -360,6 +375,8 @@ export default function ClonePageModal({ open, onClose, funnelId, onCreated }) {
 
             {tab === 'ai' ? (
               <AiGenerateTab funnelId={funnelId} onCreated={onCreated} onClose={onClose} />
+            ) : tab === 'shopify' ? (
+              <ShopifyTab onScanned={adoptShopifyScan} onClose={onClose} />
             ) : (
             <>
             {/* ── Input body ────────────────────────────────────── */}
