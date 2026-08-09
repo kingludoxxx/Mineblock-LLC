@@ -35,8 +35,10 @@ const check = (name, ok, extra = '') => {
   else { fail++; console.log(`FAIL  ${name}  ${extra}`); }
 };
 
+// type:'checkout' — review fix #1 gates the checkout-enhancement emissions to
+// checkout-shaped pages (type 'checkout' or a whop_checkout block).
 const page = {
-  id: 'fpg_t1', slug: '/', title: 'Test page', status: 'published',
+  id: 'fpg_t1', slug: '/', title: 'Test page', status: 'published', type: 'checkout',
   blocks: [
     { type: 'heading', props: { text: 'Hello', level: 2 } },
     { type: 'html', props: { html: "<div class='ckt-field'><input name='address1'></div><div class='ckt-field ckt-phone'><span class='ckt-phone-prefix'>\u{1F1FA}\u{1F1F8} +1</span><input name='phone' type='tel'></div>" } },
@@ -92,6 +94,37 @@ const fullSettings = {
   const gm = scripts.find((s) => s.includes('__fosPlacesInit')) || '';
   const ip = scripts.find((s) => s.includes('lb-intl-dial')) || '';
   check('new runtimes contain no backslash/backtick/${', ![gm, ip].some((s) => /[\\`]|\$\{/.test(s)));
+
+  // Review fix #2 (structural — no DOM lib available offline): the state
+  // field has its own setter that CLEARS on a non-matching option.
+  check('fix2: gmaps script clears the state select on a country miss',
+    gm.includes('function setStateField(val)') && gm.includes("el.value=match?val:''") && gm.includes('setStateField(pick('));
+  // Review fix #3 (structural): a recognized dial prefix is stripped and
+  // re-prefixed with the currently selected dial; unrecognized + is left.
+  check('fix3: intl script strips a recognized dial prefix before re-prefixing',
+    ip.includes('if(known===dial){return;}') && ip.includes('v=v.slice(known.length)') && ip.includes('if(!known){return;}'));
+}
+
+// ── 2b. page-type gate (review fix #1) ──────────────────────────────────────
+{
+  const leadPage = { ...page, id: 'fpg_lead', type: 'lead' };
+  const html = NEW.renderPageHtml(leadPage, { ...funnelBare, settings: fullSettings }, { fpg_lead: leadPage });
+  check('gate: non-checkout page emits NO gmaps/intl scripts',
+    !html.includes('lb-gmaps-autocomplete') && !html.includes('lb-intl-phone'));
+  check('gate: the Maps key does NOT appear anywhere in a non-checkout page',
+    !html.includes('AIzaSyTESTKEY-123_abc'));
+  check('gate: fonts/colors/head/body code STILL emit funnel-wide on that page',
+    html.includes('lb-funnel-font') && html.includes('lb-brand-colors')
+    && html.includes('window.__fnl_head=1') && html.includes('window.__fnl_body=1'));
+
+  // A generic page carrying a whop_checkout block is checkout-shaped too.
+  const blockPage = {
+    ...page, id: 'fpg_blk', type: 'generic',
+    blocks: [...page.blocks, { type: 'whop_checkout', props: {} }],
+  };
+  const html2 = NEW.renderPageHtml(blockPage, { ...funnelBare, settings: fullSettings }, { fpg_blk: blockPage });
+  check('gate: generic page WITH whop_checkout block emits both scripts',
+    html2.includes('lb-gmaps-autocomplete') && html2.includes('lb-intl-phone'));
 }
 
 // ── 3. hostile settings values cannot escape ────────────────────────────────
@@ -138,6 +171,43 @@ const fullSettings = {
   check('non-boolean truthy toggles emit nothing (strict === true)', !truthy.includes('lb-gmaps-autocomplete') && !truthy.includes('lb-intl-phone'));
   const ws = NEW.renderPageHtml(page, { ...funnelBare, settings: { checkout: { address_autocomplete: true, maps_api_key: '   ' } } }, pagesById);
   check('whitespace-only key emits nothing', !ws.includes('lb-gmaps-autocomplete'));
+}
+
+// ── 5. ALL 8 seed templates × 4 empty-settings states stay byte-identical ──
+// (the reviewer's independent 32/32 probe, folded into the shipped harness —
+// the same template blocks are fed to the merge-base renderer and this one)
+{
+  const TEMPLATES = {
+    checkout: NEW.checkoutPageTemplate,
+    upsell: NEW.upsellPageTemplate,
+    thankyou: NEW.thankYouPageTemplate,
+    downsell: NEW.downsellPageTemplate,
+    optin: NEW.optinPageTemplate,
+    storefront: NEW.storefrontPageTemplate,
+    quiz: NEW.quizPageTemplate,
+    lead: NEW.advertorialPageTemplate,
+  };
+  let identical = 0, total = 0;
+  const diffs = [];
+  for (const [type, tplFn] of Object.entries(TEMPLATES)) {
+    const tpl = tplFn();
+    const p = {
+      id: `fpg_${type}`, slug: '/', title: type, status: 'published', type,
+      blocks: tpl.blocks, custom_css: tpl.custom_css || '', custom_js: tpl.custom_js || '',
+      custom_html: '', head_html: '', body_end_html: '', seo: {},
+    };
+    const byId = { [p.id]: p };
+    const oldHtml = OLD.renderPageHtml(p, funnelBare, byId);
+    for (const [label, settings] of [['absent', undefined], ['empty', {}], ['null', null], ['non-object', 'nope']]) {
+      total++;
+      const f = { ...funnelBare };
+      if (settings !== undefined) f.settings = settings;
+      if (NEW.renderPageHtml(p, f, byId) === oldHtml) identical++;
+      else diffs.push(`${type}/${label}`);
+    }
+  }
+  check(`all 8 templates × 4 settings states byte-identical (${identical}/${total})`,
+    identical === 32 && total === 32, diffs.join(', '));
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

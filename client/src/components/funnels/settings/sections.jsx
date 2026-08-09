@@ -15,7 +15,7 @@
 // wrote in the meantime.
 import { useCallback, useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { ExternalLink, RefreshCw, Globe, CheckCircle2, AlertTriangle } from 'lucide-react';
+import { RefreshCw, Globe, CheckCircle2, AlertTriangle, ChevronDown, ChevronUp, Trash2 } from 'lucide-react';
 import api from '../../../services/api';
 import Button from '../../ui/Button';
 import Input from '../../ui/Input';
@@ -410,38 +410,376 @@ export function ScriptsSection({ funnel, onFunnelUpdated }) {
   );
 }
 
-// ── DOMAINS — deep-link to the existing Domain Hub surface ──────────────────
-export function DomainsSection({ funnel }) {
+// ── DOMAINS — full in-modal tab over the existing Domain Hub endpoints ──────
+// Endpoints reused verbatim (routes/domainHub.js — {data} envelopes, {error}
+// codes): POST /domain-hub/attach · GET /domain-hub/list?funnel_id= ·
+// POST /domain-hub/:domain/verify · GET /domain-hub/:domain/records ·
+// DELETE /domain-hub/:domain {confirm} — plus PATCH /funnels/:id
+// {custom_domain} for the primary radio.
+//
+// MODEL MAPPING (DECISION MADE): our host routing serves the funnel root on
+// EVERY connected lb_domains host simultaneously (hostRouting rewrites '/' →
+// /f/<slug> per host) — there is no exclusive "owns /" switch to flip. The
+// reference's radio therefore maps to the funnel's PRIMARY domain, persisted
+// to funnels.custom_domain (validated server-side against this funnel's
+// attached domains; Default URL = NULL). It is a designation (primary /
+// canonical URL, Health display), not a serving change. No per-domain
+// "account" affordance — our model has none (registrar creds are platform-
+// level), so it is omitted per spec.
+const DOMAIN_STATUS = {
+  connected: { label: 'Connected', cls: 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20', ssl: 'SSL: issued' },
+  verifying: { label: 'Verifying', cls: 'bg-accent-muted text-accent-text border-accent/20', ssl: 'SSL: issuing — DNS resolves, certificate in flight' },
+  pending_dns: { label: 'Pending DNS', cls: 'bg-amber-500/10 text-amber-400 border-amber-500/20', ssl: 'Waiting for DNS to point at us' },
+  error: { label: 'Error', cls: 'bg-red-500/10 text-red-400 border-red-500/20', ssl: 'Needs attention' },
+};
+
+function DomainChip({ status }) {
+  const s = DOMAIN_STATUS[status] || { label: status || 'Unknown', cls: 'bg-bg-elevated text-text-muted border-border-default' };
   return (
-    <div className="space-y-4 max-w-lg">
+    <span className={`inline-flex items-center px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide rounded-full border ${s.cls}`}>
+      {s.label}
+    </span>
+  );
+}
+
+const DOMAIN_ERR = {
+  domain_attached_to_other_funnel: 'This domain is already attached to another funnel — detach it there first.',
+  funnel_not_found: 'Funnel not found.',
+  confirm_must_match_domain: 'Type the exact domain to confirm.',
+  domain_not_found: 'Domain not found.',
+};
+const domainErr = (code) => DOMAIN_ERR[code] || (code ? `Failed (${code})` : 'Request failed');
+
+function RecordsView({ data }) {
+  if (data === 'loading') return <p className="text-xs text-text-muted px-3 py-2">Loading records…</p>;
+  if (!data || !Array.isArray(data.required)) return <p className="text-xs text-danger px-3 py-2">Could not load records.</p>;
+  const obs = data.observed || {};
+  const obsLine = (label, arr) =>
+    Array.isArray(arr) && arr.length ? (
+      <div><span className="text-text-faint">{label}:</span> <span className="font-mono">{arr.join(', ')}</span></div>
+    ) : null;
+  return (
+    <div className="space-y-2 px-3 py-2">
+      <table className="w-full text-xs">
+        <thead className="text-text-faint uppercase tracking-wide">
+          <tr><th className="text-left py-1 pr-2">Type</th><th className="text-left py-1 pr-2">Name</th><th className="text-left py-1">Value</th></tr>
+        </thead>
+        <tbody>
+          {data.required.map((r, i) => (
+            <tr key={i} className="border-t border-border-subtle align-top">
+              <td className="py-1.5 pr-2 font-mono text-text-primary">{r.type}</td>
+              <td className="py-1.5 pr-2 font-mono text-text-primary">{r.name}</td>
+              <td className="py-1.5">
+                <span className="font-mono text-text-primary break-all">{r.value}</span>
+                {r.note && <div className="text-text-faint mt-0.5">{r.note}</div>}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      <div className="text-xs text-text-muted space-y-0.5 border-t border-border-subtle pt-2">
+        <div className="text-text-faint uppercase tracking-wide text-[10px]">DNS currently answers</div>
+        {obsLine('CNAME', obs.cname)}
+        {obsLine('A', obs.a)}
+        {obsLine('AAAA', obs.aaaa)}
+        {!((obs.cname || []).length || (obs.a || []).length || (obs.aaaa || []).length) && (
+          <div className="text-text-faint">No records observed yet (or the lookup failed — try again).</div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+export function DomainsSection({ funnel, onFunnelUpdated }) {
+  const [rows, setRows] = useState(null);
+  const [listErr, setListErr] = useState('');
+  const [open, setOpen] = useState(true);
+  const [connectInput, setConnectInput] = useState('');
+  const [connecting, setConnecting] = useState(false);
+  const [connectErr, setConnectErr] = useState('');
+  const [connectResult, setConnectResult] = useState(null); // attach response data
+  const [busyDomain, setBusyDomain] = useState('');   // verify/radio/detach in flight
+  const [verifyFlash, setVerifyFlash] = useState({}); // domain → text
+  const [records, setRecords] = useState({});         // domain → 'loading' | data
+  const [recordsOpen, setRecordsOpen] = useState({}); // domain → bool
+  const [detachArm, setDetachArm] = useState('');     // domain being confirmed
+  const [detachText, setDetachText] = useState('');
+  const [detachErr, setDetachErr] = useState('');
+  const [primaryErr, setPrimaryErr] = useState('');
+
+  const load = useCallback(async () => {
+    setListErr('');
+    try {
+      const res = await api.get(`/domain-hub/list`, { params: { funnel_id: funnel.id } });
+      setRows(Array.isArray(res.data?.data) ? res.data.data : []);
+    } catch (e) {
+      setListErr(domainErr(e.response?.data?.error));
+      setRows([]);
+    }
+  }, [funnel.id]);
+
+  useEffect(() => { load(); }, [load]);
+
+  const connect = async () => {
+    const domain = connectInput.trim().toLowerCase();
+    if (!domain) return;
+    setConnecting(true); setConnectErr(''); setConnectResult(null);
+    try {
+      const res = await api.post(`/domain-hub/attach`, { domain, funnel_id: funnel.id, auto_dns: true });
+      setConnectResult(res.data?.data || null);
+      setConnectInput('');
+      await load();
+    } catch (e) {
+      setConnectErr(domainErr(e.response?.data?.error));
+    } finally { setConnecting(false); }
+  };
+
+  const verify = async (domain) => {
+    setBusyDomain(domain);
+    setVerifyFlash((f) => ({ ...f, [domain]: '' }));
+    try {
+      const res = await api.post(`/domain-hub/${encodeURIComponent(domain)}/verify`);
+      const row = res.data?.data;
+      if (row) {
+        setRows((rs) => (rs || []).map((r) => (r.domain === domain ? row : r)));
+        const s = DOMAIN_STATUS[row.status];
+        setVerifyFlash((f) => ({ ...f, [domain]: `Checked — ${s ? s.label.toLowerCase() : row.status}${row.error_detail ? `: ${row.error_detail}` : ''}` }));
+      }
+    } catch (e) {
+      setVerifyFlash((f) => ({ ...f, [domain]: domainErr(e.response?.data?.error) }));
+    } finally { setBusyDomain(''); }
+  };
+
+  const toggleRecords = async (domain) => {
+    const opening = !recordsOpen[domain];
+    setRecordsOpen((o) => ({ ...o, [domain]: opening }));
+    if (opening && !records[domain]) {
+      setRecords((r) => ({ ...r, [domain]: 'loading' }));
+      try {
+        const res = await api.get(`/domain-hub/${encodeURIComponent(domain)}/records`);
+        setRecords((r) => ({ ...r, [domain]: res.data?.data || null }));
+      } catch {
+        setRecords((r) => ({ ...r, [domain]: null }));
+      }
+    }
+  };
+
+  const setPrimary = async (domain) => { // domain or null (Default URL)
+    setBusyDomain(domain || '__default');
+    setPrimaryErr('');
+    try {
+      const res = await api.patch(`/funnels/${funnel.id}`, { custom_domain: domain });
+      onFunnelUpdated?.(res.data?.data || null);
+    } catch (e) {
+      setPrimaryErr(e.response?.data?.error || 'Failed to set the primary domain');
+    } finally { setBusyDomain(''); }
+  };
+
+  const detach = async (domain) => {
+    setBusyDomain(domain); setDetachErr('');
+    try {
+      await api.delete(`/domain-hub/${encodeURIComponent(domain)}`, { data: { confirm: detachText.trim().toLowerCase() } });
+      setDetachArm(''); setDetachText('');
+      if (funnel?.custom_domain === domain) {
+        // Server cleared the dangling pointer; refresh the parent's copy.
+        try { const res = await api.get(`/funnels/${funnel.id}`); onFunnelUpdated?.(res.data?.data?.funnel || null); } catch { /* non-fatal */ }
+      }
+      await load();
+    } catch (e) {
+      setDetachErr(domainErr(e.response?.data?.error));
+    } finally { setBusyDomain(''); }
+  };
+
+  const primary = funnel?.custom_domain || null;
+
+  return (
+    <div className="space-y-5 max-w-2xl">
       <div>
         <h3 className="text-base font-semibold text-text-primary">Domains</h3>
-        <p className="mt-1 text-sm text-text-muted">Custom domains for this funnel are managed in the Domain Hub.</p>
+        <p className="mt-1 text-sm text-text-muted">Custom domains this funnel serves on.</p>
       </div>
+
+      {/* Connect a domain you already own */}
       <div className="rounded-xl border border-border-default bg-bg-card p-4 space-y-3">
-        <div className="flex items-center gap-3">
-          <Globe className="w-5 h-5 text-text-muted shrink-0" />
-          <div className="min-w-0">
-            {funnel?.custom_domain ? (
-              <>
-                <div className="text-sm font-medium text-text-primary font-mono truncate">{funnel.custom_domain}</div>
-                <div className="text-xs text-text-faint">Attached to this funnel</div>
-              </>
-            ) : (
-              <>
-                <div className="text-sm font-medium text-text-primary">No custom domain attached</div>
-                <div className="text-xs text-text-faint">Serving on <span className="font-mono">/f/{funnel?.slug}</span></div>
-              </>
-            )}
-          </div>
+        <h4 className="text-sm font-semibold text-text-primary">Connect a domain you already own</h4>
+        <div className="flex items-center gap-2">
+          <input
+            value={connectInput}
+            onChange={(e) => setConnectInput(e.target.value)}
+            onKeyDown={(e) => { if (e.key === 'Enter') connect(); }}
+            placeholder="example.com"
+            spellCheck={false}
+            autoComplete="off"
+            className="flex-1 px-3 py-2 text-sm bg-bg-elevated border border-border-default rounded-lg text-text-primary font-mono focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent"
+          />
+          <button
+            onClick={connect}
+            disabled={connecting || !connectInput.trim()}
+            className="px-4 py-2 text-sm font-medium rounded-lg bg-emerald-600 text-white hover:bg-emerald-500 disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer transition-colors"
+          >
+            {connecting ? 'Connecting…' : 'Connect'}
+          </button>
         </div>
-        <Link
-          to="/domains"
-          className="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm rounded-lg border border-border-default bg-bg-elevated text-text-primary hover:bg-bg-hover transition-colors"
-        >
-          Open Domain Hub <ExternalLink className="w-3.5 h-3.5" />
-        </Link>
+        <p className="text-xs text-text-faint">
+          Keep your existing nameservers and DNS — just add the record(s) shown after
+          connecting at your registrar: a subdomain needs one CNAME; an apex domain an
+          A record (plus a www CNAME). If your DNS is on Cloudflare and a token is
+          configured, the records are created for you automatically. SSL is issued
+          automatically by our host once DNS resolves — usually within minutes.
+        </p>
+        {connectErr && <p className="text-sm text-danger">{connectErr}</p>}
+        {connectResult && (
+          <div className="rounded-lg border border-border-subtle bg-bg-elevated/40">
+            <p className="text-xs text-text-muted px-3 pt-2">
+              {connectResult.resumed ? 'Already attached — resumed.' : 'Attached.'}{' '}
+              {connectResult.cloudflare?.auto?.ok
+                ? 'Cloudflare created the DNS records automatically.'
+                : 'Create these records at your registrar:'}
+              {connectResult.provider && connectResult.provider !== 'unknown' && (
+                <span className="text-text-faint"> (detected DNS provider: {connectResult.provider})</span>
+              )}
+            </p>
+            <RecordsView data={{ required: connectResult.records, observed: {} }} />
+          </div>
+        )}
       </div>
+
+      {/* Active domains */}
+      <div className="rounded-xl border border-border-default bg-bg-card">
+        <button
+          onClick={() => setOpen((o) => !o)}
+          className="w-full flex items-center justify-between px-4 py-3 cursor-pointer text-left"
+        >
+          <div>
+            <h4 className="text-sm font-semibold text-text-primary">Active domains</h4>
+            <p className="text-xs text-text-faint">
+              Every domain this funnel serves on — each connected domain serves this
+              funnel from its root. The selected one is the funnel’s primary URL.
+            </p>
+          </div>
+          {open ? <ChevronUp className="w-4 h-4 text-text-faint shrink-0" /> : <ChevronDown className="w-4 h-4 text-text-faint shrink-0" />}
+        </button>
+        {open && (
+          <div className="border-t border-border-subtle divide-y divide-border-subtle">
+            {/* Default URL row */}
+            <div className="flex items-center gap-3 px-4 py-3">
+              <input
+                type="radio"
+                name="primary-domain"
+                checked={!primary}
+                onChange={() => setPrimary(null)}
+                disabled={busyDomain === '__default'}
+                className="accent-[var(--color-accent,#10b981)] cursor-pointer"
+              />
+              <Globe className="w-4 h-4 text-text-faint shrink-0" />
+              <div className="min-w-0 flex-1">
+                <div className="text-sm font-mono text-text-primary truncate">/f/{funnel?.slug}</div>
+                <div className="text-xs text-text-faint">Default URL — always serves</div>
+              </div>
+              {!primary && (
+                <span className="text-[10px] uppercase tracking-wide text-accent-text border border-accent/20 rounded px-1.5 py-0.5 shrink-0">Primary</span>
+              )}
+            </div>
+
+            {rows === null ? (
+              <p className="text-sm text-text-muted px-4 py-3">Loading…</p>
+            ) : rows.length === 0 ? (
+              <p className="text-sm text-text-muted px-4 py-3">No custom domains attached yet.</p>
+            ) : rows.map((r) => {
+              const st = DOMAIN_STATUS[r.status] || null;
+              const recData = records[r.domain];
+              const nRecords = recData && recData !== 'loading' && Array.isArray(recData.required) ? recData.required.length : null;
+              return (
+                <div key={r.domain} className="px-4 py-3 space-y-2">
+                  <div className="flex items-center gap-3">
+                    <input
+                      type="radio"
+                      name="primary-domain"
+                      checked={primary === r.domain}
+                      onChange={() => setPrimary(r.domain)}
+                      disabled={busyDomain === r.domain}
+                      className="accent-[var(--color-accent,#10b981)] cursor-pointer"
+                      title="Make this the funnel’s primary URL"
+                    />
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-2 min-w-0">
+                        <span className="text-sm font-mono text-text-primary truncate">{r.domain}</span>
+                        <DomainChip status={r.status} />
+                        {primary === r.domain && (
+                          <span className="text-[10px] uppercase tracking-wide text-accent-text border border-accent/20 rounded px-1.5 py-0.5 shrink-0">Primary</span>
+                        )}
+                      </div>
+                      <div className="text-xs text-text-faint truncate">
+                        {r.dns_provider && r.dns_provider !== 'unknown' ? `${r.dns_provider} · ` : ''}
+                        {r.status === 'error' ? (r.error_detail || st?.ssl || 'Needs attention') : (st?.ssl || r.status)}
+                        {nRecords != null ? ` · ${nRecords} DNS record${nRecords === 1 ? '' : 's'}` : ''}
+                      </div>
+                    </div>
+                    <button
+                      onClick={() => verify(r.domain)}
+                      disabled={busyDomain === r.domain}
+                      className="text-xs px-2.5 py-1.5 rounded-lg border border-border-default bg-bg-elevated text-text-primary hover:bg-bg-hover disabled:opacity-50 cursor-pointer shrink-0 transition-colors"
+                    >
+                      {busyDomain === r.domain ? 'Checking…' : 'Verify DNS'}
+                    </button>
+                    <button
+                      onClick={() => { setDetachArm(detachArm === r.domain ? '' : r.domain); setDetachText(''); setDetachErr(''); }}
+                      className="p-1.5 rounded-lg text-text-faint hover:text-danger hover:bg-bg-hover cursor-pointer shrink-0 transition-colors"
+                      title="Detach this domain"
+                    >
+                      <Trash2 className="w-4 h-4" />
+                    </button>
+                  </div>
+                  {verifyFlash[r.domain] && <p className="text-xs text-text-muted pl-7">{verifyFlash[r.domain]}</p>}
+                  {detachArm === r.domain && (
+                    <div className="pl-7 space-y-1.5">
+                      <p className="text-xs text-text-muted">
+                        Detaching takes this host offline{r.status === 'connected' ? ' immediately' : ''}. Type the domain to confirm:
+                      </p>
+                      <div className="flex items-center gap-2">
+                        <input
+                          value={detachText}
+                          onChange={(e) => setDetachText(e.target.value)}
+                          placeholder={r.domain}
+                          spellCheck={false}
+                          className="flex-1 px-2.5 py-1.5 text-xs bg-bg-elevated border border-border-default rounded-lg text-text-primary font-mono focus:outline-none focus:ring-2 focus:ring-accent/40"
+                        />
+                        <button
+                          onClick={() => detach(r.domain)}
+                          disabled={busyDomain === r.domain || detachText.trim().toLowerCase() !== r.domain}
+                          className="text-xs px-2.5 py-1.5 rounded-lg bg-red-600 text-white hover:bg-red-500 disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer transition-colors"
+                        >
+                          Detach
+                        </button>
+                      </div>
+                      {detachErr && <p className="text-xs text-danger">{detachErr}</p>}
+                    </div>
+                  )}
+                  {/* DNS records footer row */}
+                  <button
+                    onClick={() => toggleRecords(r.domain)}
+                    className="pl-7 flex items-center gap-1 text-xs text-text-muted hover:text-text-primary cursor-pointer"
+                  >
+                    {recordsOpen[r.domain] ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />} DNS records
+                  </button>
+                  {recordsOpen[r.domain] && (
+                    <div className="ml-7 rounded-lg border border-border-subtle bg-bg-elevated/40">
+                      <RecordsView data={recData} />
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+      {primaryErr && <p className="text-sm text-danger">{primaryErr}</p>}
+      {listErr && <p className="text-sm text-danger">{listErr}</p>}
+
+      <p className="text-xs text-text-faint">
+        Buy new domains and manage the WHOIS contact in the{' '}
+        <Link to="/domains" className="text-accent-text hover:underline">Domain Hub</Link>.
+      </p>
     </div>
   );
 }

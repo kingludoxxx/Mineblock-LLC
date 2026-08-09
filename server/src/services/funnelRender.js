@@ -1250,7 +1250,7 @@ export function renderPageHtml(page, funnel, pagesById) {
   // blob BOTH helpers return '' and the document stays byte-identical.
   const fnlSettings = funnelSettingsOf(funnel);
   const settingsHeadExtras = funnelSettingsHead(fnlSettings);
-  const settingsBodyExtras = funnelSettingsBodyEnd(fnlSettings);
+  const settingsBodyExtras = funnelSettingsBodyEnd(fnlSettings, page);
 
   return `<!DOCTYPE html>
 <html lang="en">
@@ -2514,18 +2514,25 @@ export function funnelSettingsHead(settings) {
 }
 
 // Body-end emissions: the two checkout-enhancement runtimes (each emitted only
-// when its toggle is on) and the funnel-level body-end code escape hatch.
-export function funnelSettingsBodyEnd(settings) {
+// when its toggle is on AND the page is checkout-shaped — review fix #1: a
+// funnel-wide emission shipped the Maps key in the source of every
+// advertorial/optin/thank-you; now only pages that can actually use the
+// enhancements carry them) and the funnel-level body-end code escape hatch
+// (which stays funnel-wide by design).
+export function funnelSettingsBodyEnd(settings, page) {
   let out = '';
   try {
     if (!isPlainObject(settings)) return '';
+    const pageBlocks = Array.isArray((page || {}).blocks) ? page.blocks : [];
+    const isCheckoutPage = (page || {}).type === 'checkout'
+      || pageBlocks.some((b) => isPlainObject(b) && b.type === 'whop_checkout');
     const co = isPlainObject(settings.checkout) ? settings.checkout : {};
-    if (co.address_autocomplete === true) {
+    if (co.address_autocomplete === true && isCheckoutPage) {
       const key = typeof co.maps_api_key === 'string' ? co.maps_api_key.trim() : '';
       // No key stored → emit nothing; the plain inputs keep working (fail-open).
       if (key) out += '\n' + googleAddressScript(key);
     }
-    if (co.intl_phone === true) {
+    if (co.intl_phone === true && isCheckoutPage) {
       out += '\n' + intlPhoneScript();
     }
     if (typeof settings.custom_body_end_code === 'string' && settings.custom_body_end_code) {
@@ -2582,6 +2589,18 @@ function googleAddressScript(key) {
     'el.value=val;',
     'fire(el);',
     '}',
+    'function setStateField(val){',
+    "var el=document.querySelector('[name=state]');",
+    'if(!el){return;}',
+    "if(el.tagName==='SELECT'){",
+    'var match=false;',
+    'if(val){for(var m=0;m<el.options.length;m++){if(el.options[m].value===val){match=true;break;}}}',
+    "el.value=match?val:'';",
+    '}else{',
+    "el.value=val?String(val):'';",
+    '}',
+    'fire(el);',
+    '}',
     "var num=pick('street_number',false);",
     "var route=pick('route',false);",
     "var line1=num&&route?num+' '+route:(route||num);",
@@ -2589,7 +2608,7 @@ function googleAddressScript(key) {
     "setField('address1',line1);",
     "var city=pick('locality',false)||pick('postal_town',false)||pick('sublocality_level_1',false);",
     "setField('city',city);",
-    "setField('state',pick('administrative_area_level_1',true));",
+    "setStateField(pick('administrative_area_level_1',true));",
     "setField('postal',pick('postal_code',false));",
     "setField('country',pick('country',true));",
     '}catch(e){}});',
@@ -2610,7 +2629,10 @@ function googleAddressScript(key) {
 // before [name=phone] — replacing the checkout template's static 🇺🇸 +1 chip
 // when present — updates the input's placeholder with a per-country example,
 // and on blur prefixes the dial code into the value (dispatching input+change
-// so the template's own session sync picks it up). Values here are a server
+// so the template's own session sync picks it up). A value already carrying
+// a RECOGNIZED dial prefix (one of the 32 below) is re-prefixed when the
+// selected country changes (review fix #3); an unrecognized + prefix is the
+// buyer's own international number and is left alone. Values here are a server
 // constant with a JSON-safe charset (no quotes/backslashes/angle brackets),
 // so JSON.stringify embeds them without generating a single escape.
 const INTL_PHONE_COUNTRIES = [
@@ -2696,12 +2718,25 @@ function intlPhoneScript() {
     'applyPlaceholder();',
     "input.addEventListener('blur',function(){try{",
     "var v=String(input.value||'');",
+    "while(v.charAt(0)===' '){v=v.slice(1);}",
     "var compact='';",
     "for(var i=0;i<v.length;i++){if(v.charAt(i)!==' '){compact=compact+v.charAt(i);}}",
     'if(!compact){return;}',
-    "if(compact.charAt(0)==='+'){return;}",
     'var opt=current();if(!opt){return;}',
-    "input.value=opt.getAttribute('data-dial')+' '+v;",
+    "var dial=opt.getAttribute('data-dial');",
+    "if(v.charAt(0)==='+'){",
+    "var known='';",
+    'for(var i=0;i<LIST.length;i++){',
+    'var d=LIST[i][2];',
+    'if(v.indexOf(d)===0&&d.length>known.length){known=d;}',
+    '}',
+    'if(!known){return;}',
+    'if(known===dial){return;}',
+    'v=v.slice(known.length);',
+    "while(v.charAt(0)===' '){v=v.slice(1);}",
+    'if(!v){return;}',
+    '}',
+    "input.value=dial+' '+v;",
     "try{input.dispatchEvent(new Event('input',{bubbles:true}));}catch(e){}",
     "try{input.dispatchEvent(new Event('change',{bubbles:true}));}catch(e){}",
     '}catch(e){}});',

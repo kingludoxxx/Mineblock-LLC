@@ -231,7 +231,9 @@ const SETTINGS_MAX_BYTES = 32 * 1024; // 32KB for the structured remainder
 export function validateFunnelSettings(settings) {
   if (!isPlainObject(settings)) return 'settings must be an object';
   const protoErr = scanValue(settings, 0);
-  if (protoErr) return `settings: ${protoErr}`;
+  // scanValue is shared with blocks and words its messages accordingly —
+  // reword the subject so a settings error never says 'blocks' (review #4).
+  if (protoErr) return protoErr.replace(/^blocks/, 'settings');
   for (const field of SETTINGS_CODE_FIELDS) {
     if (settings[field] !== undefined) {
       if (typeof settings[field] !== 'string')
@@ -378,7 +380,7 @@ router.get('/:id', async (req, res) => {
   }
 });
 
-// PATCH /api/v1/funnels/:id — { name?, slug?, status?, default_page_id?, seo?, settings? }
+// PATCH /api/v1/funnels/:id — { name?, slug?, status?, default_page_id?, seo?, settings?, custom_domain? }
 router.patch('/:id', async (req, res) => {
   try {
     await ensureTables();
@@ -459,6 +461,34 @@ router.patch('/:id', async (req, res) => {
       sets.push(`settings = $${i}`);
       params.push(body.settings); // raw object — postgres.js serializes JSONB
       i += 1;
+    }
+    if (body.custom_domain !== undefined) {
+      // FUNNEL-SETTINGS Domains tab: `custom_domain` marks this funnel's
+      // PRIMARY domain (the radio in the Domains tab). It is a designation,
+      // not a serving switch — host routing serves the funnel root on EVERY
+      // connected lb_domains host regardless (services/domainHub/hostRouting).
+      // null clears (Default URL); a string must be a domain actually attached
+      // to THIS funnel, so the pointer can never dangle at write time.
+      if (body.custom_domain === null) {
+        sets.push(`custom_domain = NULL`);
+      } else {
+        const cd = String(body.custom_domain).trim().toLowerCase();
+        let attached = [];
+        try {
+          attached = await pgQuery(
+            `SELECT domain FROM lb_domains WHERE domain = $1 AND funnel_id = $2`,
+            [cd, req.params.id]
+          );
+        } catch (err) {
+          if (err?.code !== '42P01') throw err; // lb_domains not created yet → not attached
+        }
+        if (!attached.length) {
+          return res.status(400).json({ error: 'custom_domain must be a domain attached to this funnel' });
+        }
+        sets.push(`custom_domain = $${i}`);
+        params.push(cd);
+        i += 1;
+      }
     }
     if (!sets.length) return res.status(400).json({ error: 'No fields to update' });
 

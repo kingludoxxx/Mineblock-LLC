@@ -71,7 +71,7 @@ export default function FunnelSettingsModal({ open, onClose, funnel, initialSect
     switch (section) {
       case 'general': return <GeneralSection funnel={funnel} onFunnelUpdated={onFunnelUpdated} />;
       case 'fonts': return <FontsSection funnel={funnel} onFunnelUpdated={onFunnelUpdated} />;
-      case 'domains': return <DomainsSection funnel={funnel} />;
+      case 'domains': return <DomainsSection funnel={funnel} onFunnelUpdated={onFunnelUpdated} />;
       case 'payments': return <PaymentsSection funnelId={funnelId} />;
       case 'products': return <ProductsSection />;
       case 'shipping': return <ShippingSection />;

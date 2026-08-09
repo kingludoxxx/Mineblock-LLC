@@ -61,6 +61,11 @@ check('unit: valid object passes', validateFunnelSettings({ brand_colors: { prim
 check('unit: non-object refused', validateFunnelSettings([1, 2]) !== null && validateFunnelSettings('x') !== null);
 check('unit: proto key refused', validateFunnelSettings(JSON.parse('{"a":{"__proto__":{"x":1}}}')) !== null);
 check('unit: constructor key refused', validateFunnelSettings(JSON.parse('{"constructor":1}')) !== null);
+{
+  // Review fix #4: the settings-path message must speak about settings, not blocks.
+  const msg = String(validateFunnelSettings(JSON.parse('{"a":{"__proto__":{"x":1}}}')));
+  check('unit: proto-key message says "settings", never "blocks"', msg.startsWith('settings') && !msg.includes('blocks'), msg);
+}
 check('unit: 32KB structured bound', validateFunnelSettings({ big: 'x'.repeat(33 * 1024) }) !== null);
 check('unit: code field rides the 2MB cap, not 32KB', validateFunnelSettings({ custom_head_code: 'x'.repeat(100 * 1024) }) === null);
 check('unit: code field over 2MB refused', validateFunnelSettings({ custom_head_code: 'x'.repeat(2 * 1024 * 1024 + 1) }) !== null);
@@ -100,6 +105,8 @@ const SETTINGS = {
 {
   const r = await req('PATCH', `/${FID}`, '{"settings":{"a":{"__proto__":{"polluted":1}}}}');
   check('route: proto-key settings → 400', r.status === 400, JSON.stringify(r));
+  check('route: proto-key error wording says "settings", never "blocks"',
+    String(r.j?.error || '').startsWith('settings') && !String(r.j?.error || '').includes('blocks'), JSON.stringify(r.j));
 }
 {
   const r = await req('PATCH', `/${FID}`, { settings: { big: 'x'.repeat(33 * 1024) } });
@@ -122,7 +129,8 @@ const SETTINGS = {
 // ── integration: the STORED row drives the renderer's gated emissions ───────
 {
   const rows = await sql`SELECT * FROM funnels WHERE id = ${FID}`;
-  const page = { id: 'fpg_h', slug: '/', title: 'H', status: 'published', blocks: [], seo: {} };
+  // type:'checkout' — the checkout-enhancement emissions are page-type-gated.
+  const page = { id: 'fpg_h', slug: '/', title: 'H', status: 'published', type: 'checkout', blocks: [], seo: {} };
   const html = renderPageHtml(page, rows[0], { fpg_h: page });
   check('integration: stored settings emit gmaps + intl + font + colors',
     html.includes('lb-gmaps-autocomplete') && html.includes('lb-intl-phone')
