@@ -110,6 +110,15 @@ function emptyCounts() {
 // scheme, a query string or control characters into a route.
 export const HANDLE_RE = /^[a-z0-9][a-z0-9-]{0,63}$/;
 
+// Segments the platform already owns. A split handle that shadows one of these
+// either never receives traffic (the platform route wins) or, worse, shadows
+// the platform route — and either way the operator's link silently does
+// something other than what the setup modal promises. Refused at write time so
+// the collision is a 422 the operator can read, not a mystery in production.
+export const RESERVED_HANDLES = new Set([
+  'api', 'f', 'app', 'admin', 'login', 'assets', 'static', 'checkout', 'www',
+]);
+
 /**
  * Normalise an operator-typed handle. Accepts a leading '/', lowercases, and
  * REJECTS anything that is not a clean single segment (it never silently
@@ -124,7 +133,33 @@ export function normHandle(raw) {
   v = v.toLowerCase();
   if (v === '') return { handle: null };
   if (!HANDLE_RE.test(v)) return { error: 'invalid_handle' };
+  if (RESERVED_HANDLES.has(v)) return { error: 'handle_reserved' };
   return { handle: v };
+}
+
+/**
+ * Does this handle collide with a live PAGE slug on the same funnel?
+ *
+ * A page slug is stored as '/foo'; a split handle is served at '/foo' too. Both
+ * are currently accepted independently, so `handle: 'shadow'` and a page
+ * `/shadow` can coexist and the serve layer would have to pick one — a coin
+ * flip decided by route order, months after the operator set it up. Checked at
+ * write time instead.
+ *
+ * @returns {Promise<boolean>} true when a live page already owns that path.
+ */
+export async function handleCollidesWithPageSlug(
+  { funnelId, handle },
+  { query = pgQuery } = {}
+) {
+  if (!handle || !funnelId) return false;
+  const rows = await query(
+    `SELECT 1 FROM funnel_pages
+     WHERE funnel_id = $1 AND NOT archived AND slug = $2
+     LIMIT 1`,
+    [String(funnelId).slice(0, 120), `/${handle}`]
+  );
+  return rows.length > 0;
 }
 
 // A domain is a host, never a URL. Same argument as the handle: bounded so it

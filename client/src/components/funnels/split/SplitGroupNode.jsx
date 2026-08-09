@@ -17,6 +17,13 @@
 //     is there because a per-arm number on a canvas card is exactly the thing
 //     an operator reads as a result. These tiles are unwindowed and carry no
 //     significance test; the verdict lives in the results modal.
+//
+//  The third tile is ORDERS, not CTR. The reference tool shows CTR, but neither
+//  source can produce one: the split ledger has never seen a click, and the
+//  analytics service's `submit_rate` is `visitors > 0 ? 1 : null` by
+//  construction — a constant that would paint "100.0% CTR" on every arm
+//  forever. Orders is a real number both sources agree on, so the tile carries
+//  a measurement instead of an artefact.
 import { memo } from 'react';
 import { BarChart3, Settings, SlidersHorizontal, Shuffle, Eye } from 'lucide-react';
 import { DASH } from './splitApi';
@@ -106,7 +113,7 @@ function SplitGroupNodeInner({ data, selected }) {
             {/* Footer metrics */}
             <div className="mt-1.5 grid grid-cols-3 border-t border-border-subtle divide-x divide-[rgba(255,255,255,0.06)]">
               <Tile label="Visitors" value={arm.visitors} />
-              <Tile label="CTR" value={arm.ctr} />
+              <Tile label="Orders" value={arm.orders} />
               <Tile label="CVR" value={arm.cvr} />
             </div>
           </div>

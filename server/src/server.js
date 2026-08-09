@@ -44,6 +44,7 @@ async function runMigrations() {
 
     const migrationsDir = path.resolve(__dirname, '../migrations');
     const files = fs.readdirSync(migrationsDir).filter(f => f.endsWith('.sql')).sort();
+    const skipped = [];
 
     for (const file of files) {
       if (executed.has(file)) continue;
@@ -57,8 +58,32 @@ async function runMigrations() {
         logger.info(`Migration complete: ${file}`);
       } catch (err) {
         await client.query('ROLLBACK');
+        // 42P01 = undefined_table. Several legacy migrations are DATA fixes
+        // (UPDATE/DELETE/ALTER) against tables this app creates LAZILY at
+        // first request (e.g. brief_pipeline_*), never via a migration. On a
+        // fresh database those tables do not exist yet, so the statement threw
+        // and — because the whole run is sequential — every LATER migration was
+        // skipped, including the permission grants this dashboard needs. The
+        // result was a server that booted "healthy" with an empty schema.
+        // Skipping is safe for exactly this class: with no table there is no
+        // data to fix, and the lazy creator builds the CURRENT shape.
+        // 42703 = undefined_column, same story for a column added lazily.
+        // GUARD: only ever skip a migration that creates NO schema of its own.
+        // If a file contains CREATE TABLE/INDEX/TYPE or ADD COLUMN, a failure
+        // is a genuine schema problem and must still halt the run — masking
+        // that is exactly how this repo ended up booting on an empty database.
+        const isDataOnly = !/\b(CREATE\s+(TABLE|INDEX|UNIQUE\s+INDEX|TYPE|SCHEMA)|ADD\s+COLUMN)\b/i.test(sql);
+        if ((err.code === '42P01' || err.code === '42703') && isDataOnly) {
+          skipped.push({ file, reason: err.message });
+          logger.warn(`Migration SKIPPED (data-only fix against a lazily-created object): ${file} — ${err.message}`);
+          await client.query('INSERT INTO _migrations (filename) VALUES ($1)', [file]);
+          continue;
+        }
         throw err;
       }
+    }
+    if (skipped.length) {
+      logger.warn(`${skipped.length} migration(s) skipped as no-ops on this database: ${skipped.map((s) => s.file).join(', ')}`);
     }
   } finally {
     client.release();
@@ -136,14 +161,39 @@ const start = async () => {
     logger.warn(`Redis connection failed: ${err.message}. Continuing without Redis.`);
   }
 
-  // 4. Run migrations & seeds
+  // 4. Run migrations & seeds.
+  // Seeds are deliberately OUTSIDE the migration try: they were previously in
+  // the same block, so one failing migration also skipped role/superadmin
+  // seeding and produced a running server with no way to log in.
+  let migrationsOk = true;
   try {
     await runMigrations();
     logger.info('Migrations complete');
+  } catch (err) {
+    migrationsOk = false;
+    // A half-migrated schema is a silent data-integrity hazard: the app boots,
+    // the health check goes green, and features whose tables/permissions live
+    // in the skipped migrations fail at runtime with confusing errors. In
+    // production that must stop the deploy; locally, warn and continue so a
+    // developer can still work against a partial DB.
+    logger.error(`MIGRATIONS FAILED: ${err.message}`);
+    logger.error('SCHEMA IS INCOMPLETE — features whose tables or permissions live in the '
+      + 'skipped migrations will fail at runtime. Fix the migration and redeploy.');
+    // Refusing to boot is the *correct* posture for a half-migrated schema, but
+    // it is opt-in (STRICT_MIGRATIONS=1): this catch also sees transient errors
+    // (a DB connection blip at migration time), and turning those into a failed
+    // deploy would be a worse outage than the one it prevents. Enable it once
+    // the migration set is known clean on the target database.
+    if (process.env.STRICT_MIGRATIONS === '1') {
+      logger.error('STRICT_MIGRATIONS=1 — refusing to start.');
+      process.exit(1);
+    }
+  }
+  try {
     await runSeeds();
     logger.info('Seeds complete');
   } catch (err) {
-    logger.warn(`Database setup issue: ${err.message}. Starting server anyway.`);
+    logger.warn(`Seed issue: ${err.message}${migrationsOk ? '' : ' (expected — migrations failed)'}`);
   }
 
   // 5. Start HTTP server

@@ -20,9 +20,12 @@ import AbandonedCheckoutsPage from './pages/orders/AbandonedCheckoutsPage';
 import CustomersPage from './pages/customers/CustomersPage';
 import CustomerDetailPage from './pages/customers/CustomerDetailPage';
 import FunnelsPage from './pages/funnels/FunnelsPage';
+import DomainHubPage from './pages/domains/DomainHubPage'; // DOMAIN-HUB LANE: single additive import
 import FunnelCanvasPage from './pages/funnels/FunnelCanvasPage';
 import FunnelPageEditorPage from './pages/funnels/FunnelPageEditorPage';
 import PageBuilderPage from './pages/funnels/builder/PageBuilderPage';
+// INTEGRATION HOOK (analytics lane) — additive import
+import FunnelAnalyticsPage from './pages/analytics/FunnelAnalyticsPage';
 import Settings from './pages/Settings';
 import NotFound from './pages/NotFound';
 import SupplierPublicSheet from './pages/public/SupplierPublicSheet';
@@ -127,10 +130,13 @@ export default function App() {
           <Route path="customers" element={<PageGate permission="customers:access"><CustomersPage /></PageGate>} />
           <Route path="customers/:email" element={<PageGate permission="customers:access"><CustomerDetailPage /></PageGate>} />
           <Route path="abandoned" element={<PageGate permission="orders:access"><AbandonedCheckoutsPage /></PageGate>} />
+          <Route path="domains" element={<PageGate permission="funnels:access"><DomainHubPage /></PageGate>} /> {/* DOMAIN-HUB LANE: single additive route line */}
           <Route path="funnels" element={<PageGate permission="funnels:access"><FunnelsPage /></PageGate>} />
           <Route path="funnels/:id" element={<PageGate permission="funnels:access"><FunnelCanvasPage /></PageGate>} />
           <Route path="funnels/:id/pages/:pageId" element={<PageGate permission="funnels:access"><FunnelPageEditorPage /></PageGate>} />
           <Route path="funnels/:id/pages/:pageId/builder" element={<PageGate permission="funnels:access"><PageBuilderPage /></PageGate>} />
+          {/* INTEGRATION HOOK (analytics lane) — ONE additive route line */}
+          <Route path="funnel-analytics" element={<PageGate permission="funnels:access"><FunnelAnalyticsPage /></PageGate>} />
 
           {/* Intel */}
           <Route path="meta" element={<PageGate permission="meta-ads:access"><MetaPage /></PageGate>} />

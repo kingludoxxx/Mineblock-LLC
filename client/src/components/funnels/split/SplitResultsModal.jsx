@@ -106,10 +106,25 @@ export default function SplitResultsModal({ open, onClose, test }) {
           <VerdictBanner
             available={state.available}
             verdict={verdict}
-            columns={columns}
-            from={state.data?.from || range.from}
-            to={state.data?.to || range.to}
+            from={state.data?.window?.from || range.from}
+            to={state.data?.window?.to || range.to}
           />
+
+          {/* ── Degraded-source strip ─────────────────────────── */}
+          {/* The service reports a partial read rather than throwing. A number
+              computed from a source that degraded is not the same number, and
+              the operator has to be told WHICH source before trusting it. */}
+          {state.available && state.data?.degraded && (
+            <div className="flex items-start gap-2 px-3 py-2 rounded-lg border border-amber-500/20 bg-amber-500/10">
+              <AlertTriangle className="w-4 h-4 mt-0.5 shrink-0 text-amber-400" />
+              <p className="text-xs text-amber-300/90">
+                Some sources degraded while computing this window
+                {state.data.warnings?.length
+                  ? <span className="font-mono"> ({state.data.warnings.map((w) => (typeof w === 'string' ? w : w?.source || 'unknown')).join(', ')})</span>
+                  : null}. Figures drawn from them are understated, not zero.
+              </p>
+            </div>
+          )}
 
           {/* ── Metrics-unavailable banner ────────────────────── */}
           {!state.available && !state.loading && (
@@ -178,41 +193,56 @@ export default function SplitResultsModal({ open, onClose, test }) {
 }
 
 // ── Verdict ────────────────────────────────────────────────────────────────
-function VerdictBanner({ available, verdict, columns, from, to }) {
-  const winner = columns.find((c) => c.key && c.key === verdict.winner_arm_key);
-  let headline;
-  if (!available) headline = 'Not enough data yet';
-  else if (verdict.headline) headline = verdict.headline;
-  else if (verdict.status === 'winner' && winner) headline = `${winner.letter} wins`;
-  else if (verdict.status === 'insufficient_data') headline = 'Not enough data yet';
-  else headline = 'No winner yet — the arms are too close';
+//
+// THE SERVICE'S HEADLINE IS THE WHOLE VERDICT. analyticsStats.buildVerdict
+// returns complete prose for every status — including the confidence figure and
+// the required sample — so this renders it and stops.
+//
+// It used to compose a second "body" sentence underneath. `verdict.body` does
+// not exist on the merged endpoint, so that fallback fired UNCONDITIONALLY and
+// printed "no arm beats the control" directly beneath a headline announcing a
+// winner at 100% confidence. Two contradictory sentences in one banner is worse
+// than one terse one: the operator cannot tell which to believe. The only text
+// added now is a caveat that is TRUE ALONGSIDE every status, never instead of
+// one.
+const STATUS_TONE = {
+  winner: { border: 'border-emerald-500/25', bg: 'bg-emerald-500/[0.07]', icon: 'text-emerald-400' },
+  no_winner: { border: 'border-border-default', bg: 'bg-bg-elevated/50', icon: 'text-text-faint' },
+  not_ready: { border: 'border-amber-500/20', bg: 'bg-amber-500/[0.07]', icon: 'text-amber-400' },
+  no_data: { border: 'border-border-default', bg: 'bg-bg-elevated/50', icon: 'text-text-faint' },
+  insufficient_arms: { border: 'border-border-default', bg: 'bg-bg-elevated/50', icon: 'text-text-faint' },
+  // Kept so an unknown/legacy status still renders in a neutral skin rather
+  // than crashing on an undefined lookup.
+  unavailable: { border: 'border-border-default', bg: 'bg-bg-elevated/50', icon: 'text-text-faint' },
+};
 
-  let body = verdict.body;
-  if (!body && available) {
-    const sig = num(verdict.significance);
-    const need = num(verdict.required_sample_per_arm);
-    body = [
-      'Both arms cleared the sample floor, but no arm beats the control on revenue per visitor',
-      sig !== undefined ? ` at ${sig.toFixed(2)}% significance` : '',
-      '.',
-      need !== undefined
-        ? ` Proving the gap currently showing would take about ${Math.round(need).toLocaleString('en-US')} visitors per arm.`
-        : '',
-    ].join('');
-  }
-  if (!body) {
-    body = 'No experiment metrics were returned for this window, so no verdict can be drawn yet.';
-  }
+function VerdictBanner({ available, verdict, from, to }) {
+  const status = available ? (verdict.status || 'no_winner') : 'unavailable';
+  const tone = STATUS_TONE[status] || STATUS_TONE.unavailable;
+
+  const headline = available
+    ? (verdict.headline || 'No verdict was returned for this window.')
+    : 'No verdict yet — experiment metrics are unavailable';
+
+  // The ONE caveat that is true next to any status the service can return.
+  // `sized_on_observed_effect` is the service's own flag saying the projected
+  // sample was sized on the gap seen so far, which is noisy at low traffic.
+  const caveat = available && verdict.sample?.sized_on_observed_effect && verdict.requiredSamplePerArm
+    ? 'The projected sample is sized on the gap observed so far — at low traffic that gap is mostly noise, so treat it as a floor, not a forecast.'
+    : (!available
+      ? 'No experiment metrics were returned for this window, so no verdict can be drawn.'
+      : null);
 
   return (
-    <div className="rounded-xl border border-emerald-500/20 bg-emerald-500/[0.07] px-4 py-3">
+    <div className={`rounded-xl border px-4 py-3 ${tone.border} ${tone.bg}`}>
       <div className="flex items-start gap-2.5">
-        <TrendingUp className="w-4.5 h-4.5 mt-0.5 shrink-0 text-emerald-400" />
+        <TrendingUp className={`w-4 h-4 mt-0.5 shrink-0 ${tone.icon}`} />
         <div className="min-w-0">
           <div className="text-sm font-semibold text-text-primary">{headline}</div>
-          <p className="mt-1 text-xs text-text-muted leading-relaxed">{body}</p>
+          {caveat && <p className="mt-1 text-xs text-text-muted leading-relaxed">{caveat}</p>}
           <p className="mt-1.5 text-[11px] text-text-faint font-mono">
             Window {from || DASH} → {to || DASH}
+            {available && verdict.status ? ` · ${verdict.status}` : ''}
           </p>
         </div>
       </div>
@@ -225,25 +255,54 @@ function VerdictBanner({ available, verdict, columns, from, to }) {
 // walks the funnel top-down (visitors → submits → orders), then money
 // pre-upsell → post-upsell, then nets refunds out, and only then reduces
 // everything to the one number the ranking uses (revenue per visitor).
+//
+// Every field name below was read off the MERGED service, not guessed. Two
+// sub-lines the reference tool shows (`today · N in window`, `of N
+// attributable`) have no source on this endpoint and are GONE rather than
+// rendered from an invented number.
 const ROWS = [
-  { key: 'visitors', label: 'Visitors', fmt: (m) => fmtInt(m.visitors) },
+  {
+    key: 'visitors',
+    label: 'Visitors',
+    fmt: (m) => fmtInt(m.visitors),
+    // The service is explicit that this is a checkout-mint count, not page
+    // traffic. Saying so once, here, stops the number being read as sessions.
+    sub: () => 'reached checkout',
+  },
   {
     key: 'submits',
     label: 'Submits',
     fmt: (m) => fmtInt(m.submits),
-    sub: (m) => (m.submits_today === undefined && m.submits === undefined
-      ? null
-      : `today · ${fmtInt(m.submits_today)} in window`),
+    // On this endpoint a submit IS the exposure event, so the column always
+    // equals Visitors. Labelling that is the honest move: an operator reading
+    // two identical columns will otherwise assume one of them is broken.
+    sub: (m) => (m.submits === undefined ? null : 'same event as visitors'),
   },
   {
     key: 'submit_rate',
     label: 'Submit rate',
-    fmt: (m) => fmtPct(m.submit_rate),
-    sub: (m) => (m.submit_attributable === undefined ? null : `of ${fmtInt(m.submit_attributable)} attributable`),
+    // submit_rate is `visitors > 0 ? 1 : null` by construction — a constant,
+    // not a measurement. Rendering "100.00%" would advertise a perfect submit
+    // rate. Shown as not-measured while it is degenerate, and rendered for
+    // real the moment the service starts returning a genuine rate.
+    fmt: (m) => (isDegenerateSubmitRate(m) ? DASH : fmtPct(m.submit_rate)),
+    sub: (m) => (isDegenerateSubmitRate(m) ? 'not measured — no submit event' : null),
   },
   { key: 'orders', label: 'Orders', fmt: (m) => fmtInt(m.orders) },
-  { key: 'conv_rate', label: 'Conv. rate', fmt: (m) => fmtPct(m.conv_rate) },
-  { key: 'aov_pre_upsell', label: 'AOV pre-upsell', fmt: (m) => fmtMoney(m.aov_pre_upsell) },
+  {
+    key: 'cvr',
+    label: 'Conv. rate',
+    fmt: (m) => fmtPct(m.cvr),
+    // The service withholds a rate under its sample floor. That is a decision,
+    // not a gap, and it reads as one.
+    sub: (m) => (m.cvr_withheld ? 'withheld — under sample floor' : null),
+  },
+  {
+    key: 'aov_pre_upsell',
+    label: 'AOV pre-upsell',
+    fmt: (m) => fmtMoney(m.aov_pre_upsell),
+    sub: (m) => (m.aov_pre_upsell === undefined && m.aov_reason ? String(m.aov_reason).replace(/_/g, ' ') : null),
+  },
   {
     key: 'upsell_legs',
     label: 'Upsell sales (legs)',
@@ -257,8 +316,9 @@ const ROWS = [
     sub: (m) => (m.upsell_refunded === undefined ? null : `${fmtMoney(m.upsell_refunded)} refunded`),
   },
   { key: 'aov_post_upsell', label: 'AOV post-upsell', fmt: (m) => fmtMoney(m.aov_post_upsell), highlight: true },
-  { key: 'revenue', label: 'Revenue', fmt: (m) => fmtMoney(m.revenue) },
-  // A refund is money leaving. It is rendered NEGATIVE and red even when the
+  // The service has no single `revenue` field: gross_revenue = base + upsell.
+  { key: 'gross_revenue', label: 'Revenue', fmt: (m) => fmtMoney(m.gross_revenue) },
+  // A refund is money leaving. It is rendered NEGATIVE and red even though the
   // API reports it as a positive magnitude — a refund shown as a positive
   // number in a revenue table reads as income.
   {
@@ -270,15 +330,30 @@ const ROWS = [
   { key: 'net_revenue', label: 'Net revenue', fmt: (m) => fmtMoney(m.net_revenue) },
   { key: 'rev_per_visitor', label: 'Rev / visitor', fmt: (m) => fmtMoney(m.rev_per_visitor), highlight: true },
   {
-    key: 'vs_control_pct',
+    key: 'vs_control_rpv_pct',
     label: 'vs control',
+    // ALREADY a percent from the service — it must not cross fracToPct.
     // The control is the baseline: it has nothing to compare itself to, so the
     // cell is a dash, NOT 0.00% (which would read as "flat against itself").
-    fmt: (m, col) => (col.is_control ? DASH : fmtPct(m.vs_control_pct, { signed: true })),
-    tone: (m, col) => (col.is_control ? null : (num(m.vs_control_pct) < 0 ? 'neg' : null)),
+    fmt: (m, col) => (col.is_control ? DASH : fmtPct(m.vs_control_rpv_pct, { signed: true })),
+    tone: (m, col) => (col.is_control ? null : (num(m.vs_control_rpv_pct) < 0 ? 'neg' : null)),
   },
-  { key: 'confidence', label: 'Confidence', fmt: (m) => fmtPct(m.confidence) },
+  {
+    key: 'confidence',
+    label: 'Confidence',
+    // From verdict.perArm[arm_key].revenue_confidence, already converted from a
+    // fraction to a percent exactly once in splitApi.normalizeMetrics.
+    fmt: (m, col) => (col.is_control ? DASH : fmtPct(m.confidence)),
+    sub: (m, col) => (col.is_control || m.significant === undefined ? null : (m.significant ? 'significant' : 'not significant')),
+  },
 ];
+
+// submit_rate is degenerate when it is exactly 100% and equals the visitor
+// count — the service's `visitors > 0 ? 1 : null` identity.
+function isDegenerateSubmitRate(m) {
+  const r = num(m.submit_rate);
+  return r === undefined || (Math.abs(r - 100) < 1e-9 && m.submits === m.visitors);
+}
 
 function MetricsTable({ columns }) {
   return (

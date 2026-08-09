@@ -1916,7 +1916,65 @@ TESTED: Own stack (puure_builder DB on embedded PG :5433, API :4025 FUNNEL_PUBLI
 OUTPUT: All checks green. Found+fixed by execution: undo/redo computed inside React state updater never scheduled the autosave (UI reverted, server kept stale state) — rewrote useHistory to synchronous ref-based stacks; re-verified undo AND redo persist.
 DECISIONS: Renderer-placeholder types (stripe/nmi/express checkout, product, order_bump, shipping_method, form, quiz_embed, checkout_template) OMITTED from palette rather than grayed out — editor must not insert unrenderable types. "Checkout Template" palette item omitted (seed only exists at page-create time server-side). AI Developer / AI-generate = disabled stubs. Complex list props (faq items, rows, line_items) edited as validated JSON sub-fields.
 STATUS: COMPLETE
+TIMESTAMP: 2026-08-09 01:58
+TASK: Funnel page types (feat/page-types) — Thank You, Downsell, Opt-in, Storefront, Quiz, Advertorial + countdown runtime
+BUILT: 6 new seed templates + 4 new XSS-safe block renderers (order_confirmation, optin_form, storefront_grid, quiz_steps) + 4 conditional runtimes (thank-you session fill via EXISTING GET /session/:id, optin submit, quiz steps, countdown tick) in funnelRender.js (purely additive, 0 deletions); PAGE_SEED_TEMPLATES switch in funnels.js; NEW routes/optinPublic.js (leads intake: honeypot, 10/min rate limit, origin allow-list) + services/optinLeads.js (optin_leads DDL). Downsell = upsell_offer block + existing /upsell/* endpoints, zero new money code.
+TESTED: server/tests/page-types/page-types.mjs — 81 checks (real authed page-create route per type, serve 200 per type, hostile-prop XSS probes on every new block, downsell double-click exactly-once vs mock Whop, optin honeypot/rate-limit/origin/bounds, session snapshot edge cases). Browser click-through (Playwright): optin submit advance + lead row, quiz 3-step + sessionStorage + no answers in URL + finish advance, countdown tick + expired text — 9/9. Regressions: shopify-order-create 56/56, upsell-page 49/49. 12 screenshots desktop+mobile.
+OUTPUT: 81 passed 0 failed; 9/9 click-through; regressions green; screenshots in scratchpad shots/.
+DECISIONS: DECISION MADE — used existing enum value 'thankyou' (not 'thank_you'); seeded advertorial under existing 'lead' type instead of adding an 'advertorial' enum; added 'optin'+'storefront' to PAGE_TYPES; advertorial quote uses own html block because the native testimonial renderer hardcodes an em-dash (ban on Puure buyer copy); downsell CSS carries .lb-upsell-status[hidden]{display:none} fix (upsell template has the same pre-existing bug — spawned follow-up task).
+TIMESTAMP: 2026-08-09 02:05
+TASK: Domain Hub lane — buy/attach/manage custom domains per funnel (feat/domain-hub)
+BUILT: lb_domains + domain_events + whois-contact schema; attach/verify/detach state
+machine (pending_dns → verifying → connected | error, bounded retries, idempotent
+Render registration); node:dns provider detection + required-records engine; optional
+Cloudflare auto-DNS; Namecheap registrar adapter (XML, POST body, confirm-gated
+purchase) + cloudflare stub; background verify sweep (moneySweeps pattern);
+resolveCustomHost + customDomainMiddleware (30s cached, fail-open, documented hook —
+NOT wired); routes/domainHub.js (authed funnels:access); DomainHubPage UI (5 tabs).
+TESTED: test-domain-hub.mjs — 93 assertions on embedded PG :5433 (db puure_domains),
+app :4026, mocked Render/Namecheap/Cloudflare via env base seams, injected DNS
+resolver. Edge cases: DNS resolver outage, Render 500 + recovery, retry exhaustion,
+double-attach, double-purchase, detach with failed unregister. vite build green.
+UI verified in browser against demo backend (all tabs + modals screenshotted).
+OUTPUT: 93 passed, 0 failed. Render create called exactly once across repeated
+verifies; purchase refused without confirm/creds; homoglyph + own-host domains 400.
+DECISIONS: connected-without-Render-creds allowed in local/dev but logged as
+degraded; domain unique 1:1 to funnel (friend's tool allows multi-funnel hosts —
+simplified); logs/progress.md append is the only shared-file write beyond the two
+flagged App.jsx/Sidebar lines.
+STATUS: COMPLETE (module-only; integration hooks documented, wired at merge)
+---
 
+---
+TIMESTAMP: 2026-08-09 02:40
+TASK: Domain Hub lane — review hardening (pre-auth host DoS + prod degraded-connect)
+BUILT: (1) hostRouting.js — isPlausibleHost() syntactic gate runs BEFORE any DB
+round-trip and before any cache insert (must contain '.', /^[a-z0-9.-]+$/, <=253,
+no leading/trailing '-' or '.', labels 1..63 and not hyphen-edged); split the single
+shared cache into positiveCache (cap 1000, connected rows) + negativeCache (cap 500)
+so junk churn can never evict a real domain; added setHostQueryRunner/hostCacheStats
+seams. (2) attachService.js — NODE_ENV=production && !renderConfigured() no longer
+flips to connected: holds at 'verifying' with error_detail 'render_not_configured…'
+(Render's apex IP is shared across all Render customers, so DNS-pointing alone is not
+ownership) and logs loudly; non-production degraded behaviour unchanged and audited.
+(3) UI — a reason on a non-error status renders yellow, not red. (4) header note: a
+non-GET/HEAD request to a page-relative path on a custom host is deliberately not
+rewritten (funnel forms post to /api/*, a passthrough prefix).
+TESTED: test-domain-hub.mjs extended 93 → 127 assertions. New: 19 isPlausibleHost
+unit cases; 10k distinct junk Hosts through resolveCustomHost with an injected
+counting query runner; 700 plausible-unknown hosts to prove the negative path still
+queries and stays capped; prod-without-creds / prod-with-creds / non-prod matrix.
+UI re-verified in browser (verifying+reason row renders yellow, distinct from error).
+OUTPUT: 127 passed, 0 failed. 10k junk Hosts → queries=0 and cache {positive:1,
+negative:0}; connected domain still served from cache afterwards. 700 plausible
+misses → queries=1400 (2/miss: exact + www sibling, pre-existing semantics),
+negative cache <=500, positive entry survived. Prod without Render creds → status
+verifying + 'render_not_configured…', host resolves to null; with creds → connected,
+error_detail cleared; non-prod → connected (degraded) + audit event. vite build green.
+DECISIONS: 2 queries per plausible miss left as-is (apex/www resolution is required
+behaviour); the assertion, not the code, was corrected after it first failed at 1400.
+STATUS: COMPLETE
+---
 ---
 TIMESTAMP: 2026-08-09 02:40
 TASK: Split-test OPERATOR UI (setup modal + canvas A/B node + results modal)
@@ -1924,4 +1982,12 @@ BUILT: Operator surface on top of the already-merged split engine. Server (lane-
 TESTED: Own stack — embedded PG :5433 db puure_splitui, API :4028 FUNNEL_PUBLIC_ENABLED=1, Vite :5273. Seeded a funnel with 6 pages and a 2-arm page-scope test, then wrote REAL ledger rows through the split services (240 exposures, 52 credits, 4 refund voids). `npx vite build` green twice. Browser E2E: canvas group node, setup modal (handle+domain persist, weight edit + 80% warning, entry switch persisted and reflected on the canvas, ineligible pages greyed WITH reasons, import-existing-page and duplicate-a-page both added arms, Edit navigated to the builder route, 4 previews resolved to /f/<slug><path>?preview=1), results modal with the analytics endpoint ABSENT (404 -> "Metrics unavailable", every cell an em dash) and with a stubbed contract response (all 15 rows, highlighted AOV-post-upsell and Rev/visitor, red negative refunds, -77.90% red vs control, em dash for the control column). 37/37 adversarial API checks passed (hostile handles, domains, arm keys; 409 handle collision; same handle allowed on a different funnel; 8 concurrent entry moves leaving exactly one entry; archived-entry promotion; single-arm refusal; negative weight degrading to 0; 401/404 paths). XSS: hostile page title and a handle injected DIRECTLY into the DB render inert — zero injected img/script nodes in the DOM.
 OUTPUT: Ledger census identical before and after every operator action: credit=52, exposure=240, void=4. Flow autosave proven load-bearing by execution — payload of 7 page ids (4 of them hidden arms) -> 200; the same payload with one split id appended -> 400 "does not reference a page of this funnel".
 DECISIONS: DECISION MADE — is_entry is a NEW column, not a reuse of is_control (control is the statistical baseline the vs-control column reads; entry is a serving fact; overloading would move the baseline mid-experiment). DECISION MADE — weights that do not sum to 100 WARN, never reject, preserving the engine's "serve time never rejects" invariant. DECISION MADE — split group nodes are canvas-only and their positions are not persisted, because funnels.js validateFlow (another lane's file) rejects non-page node ids. DECISION MADE — the canvas tiles fall back to the lifetime ledger when the analytics overlay 404s and leave CTR blank rather than substituting a different rate.
+STATUS: COMPLETE
+---
+TIMESTAMP: 2026-08-09 04:05
+TASK: Split-test operator UI — REVIEW ROUND 2 (merge origin/main + 4 blockers)
+BUILT: Merged origin/main (2a992d1, brings the funnel-analytics lane) and fixed everything the review found. B1: the merged endpoint answers TOP-LEVEL (funnelAnalytics.js `send()` is `res.json(result)`), so `res.data.data` was undefined and every call degraded to "no metrics" — added readEnvelope() which accepts both shapes, and re-mapped the whole normalizer against the REAL fields (test/window/arms/totals/verdict/ledger/disclosure/meta/warnings/degraded; cvr not conv_rate; vs_control_rpv_pct not vs_control_pct; gross_revenue not revenue; confidence from verdict.perArm[armKey].revenue_confidence; submits_today/submit_attributable deleted, not invented). B1b: funnelAnalytics `rate()` and analyticsStats `confidence` are FRACTIONS — added fracToPct() as the single conversion boundary plus assertPercentScale() as an executable invariant, and left vs_control_rpv_pct alone because the service already multiplies it by 100. B2: verdict.body does not exist upstream, so the hardcoded fallback body rendered unconditionally and contradicted the headline — now the service's complete-prose headline renders alone, with tone mappings for all five real statuses (winner/no_winner/not_ready/no_data/insufficient_arms) and a caveat that is only ever true alongside, never instead. B3: PATCH could leave ZERO live controls, after which analyticsStats falls back to the WORST arm by RPV as baseline — unsetting the last control and archiving the control are now 422 control_required, archiving the last live arm is 422 last_live_arm, and a new atomic POST /:id/arms/:armId/control is the only supported way to move the baseline. B4: `SELECT ... FROM lb_split_arms WHERE test_id=$1 FOR UPDATE` locked N tuples in plan order and deadlocked — both endpoints now lock the parent lb_split_tests row instead. Also: reserved handles (api,f,app,admin,login,assets,static,checkout,www) refused, handles that shadow a live page slug refused with 409, and the canvas CTR tile replaced by ORDERS (the overlay's submit_rate is `visitors>0?1:null`, a constant that would have painted a permanent 100%).
+TESTED: Round-2 harness 39/39 and the round-1 harness re-run 37/37, both against the live API on :4028. Seeded 1,800 REAL co_sessions + 181 co_upsell_charges + lb_touches so the merged endpoint returns real numbers, producing a genuine `winner` verdict (revenue_confidence 1.0) and a genuine `not_ready` one. Browser E2E against the REAL endpoint, no stub: canvas tiles 913/81/8.9% and 887/158/17.8%; results modal Conv. rate 8.87%/17.81%, vs control +170.20%, Confidence 100.00% significant, Refunded -$178.00/-$990.00 red, control column em dash. Degradation re-verified for a 404 and for a 200 carrying an unrecognised shape. 12 concurrent entry moves, 12 concurrent control moves and a 16-request mixed storm all returned ZERO 500s. vite build green.
+OUTPUT: 39 passed 0 failed; 37 passed 0 failed. Ledger census unchanged end to end — credit=472, exposure=2040, void=4, md5 131989bebbbb9116fccdc474f0c432bd — every row written by the seeders, none by any admin or UI action.
+DECISIONS: DECISION MADE — archiving the CONTROL is REFUSED while archiving the ENTRY auto-promotes. The asymmetry is deliberate: an unanswered route costs traffic (promote), a silently moved baseline invalidates every vs-control number already published (refuse). DECISION MADE — fracToPct passes a value above 1.5 through unconverted and records it in scaleAnomalies, so an upstream switch to percent scale degrades to correct-but-logged instead of 9700%. DECISION MADE — Submit rate renders "not measured" only while it is degenerate (exactly 100% AND submits===visitors) and renders for real the moment the service returns a genuine rate.
 STATUS: COMPLETE

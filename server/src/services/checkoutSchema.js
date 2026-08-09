@@ -155,6 +155,13 @@ async function createTables() {
   // 'decline' for the decline marker — deterministic, so the unique index is
   // the concurrency guard for double-clicks and replays. The gateway's own
   // payment id lives here:
+  // Charge-authorization secret for the 1-click upsell. The session id travels
+  // in `?s=` (address bar, beacons, access logs, the ad platform's CAPI payload)
+  // and therefore CANNOT authorize a charge on its own — a leaked id let anyone
+  // force-charge the buyer's saved card once per offer. This token is minted at
+  // create-session, returned ONLY as an HttpOnly cookie, and never appears in a
+  // URL, a beacon or a log. Only its SHA-256 is stored.
+  await pgQuery(`ALTER TABLE co_sessions ADD COLUMN IF NOT EXISTS confirm_token_hash TEXT`);
   await pgQuery(`ALTER TABLE co_upsell_charges ADD COLUMN IF NOT EXISTS gateway_payment_id TEXT`);
   await pgQuery(`ALTER TABLE co_upsell_charges ADD COLUMN IF NOT EXISTS error TEXT`);
   await pgQuery(`

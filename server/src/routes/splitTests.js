@@ -20,7 +20,9 @@ import { authenticate } from '../middleware/auth.js';
 import { requirePermission } from '../middleware/rbac.js';
 import { ensureSplitTables } from '../services/splitTestSchema.js';
 import { readResults } from '../services/splitCredits.js';
-import { listArmEligiblePages, normHandle, normDomain } from '../services/splitPages.js';
+import {
+  listArmEligiblePages, normHandle, normDomain, handleCollidesWithPageSlug,
+} from '../services/splitPages.js';
 
 const router = Router();
 router.use(authenticate, requirePermission('funnels', 'access'));
@@ -123,12 +125,19 @@ router.post('/', async (req, res) => {
     if (h.error) return res.status(422).json({ success: false, error: { code: h.error } });
     const d = normDomain(b.domain);
     if (d.error) return res.status(422).json({ success: false, error: { code: d.error } });
+    const funnelId = b.funnel_id ? s(b.funnel_id, 120) : null;
+    // A handle that shadows a live page slug on the same funnel is refused —
+    // both would serve at the same path and the winner would be decided by
+    // route order, not by the operator.
+    if (h.handle && funnelId && (await handleCollidesWithPageSlug({ funnelId, handle: h.handle }))) {
+      return res.status(409).json({ success: false, error: { code: 'handle_conflicts_page_slug' } });
+    }
 
     const testId = newId('lbsg');
     await pgQuery(
       `INSERT INTO lb_split_tests (id, funnel_id, name, scope, target_page_id, target_offer_id, handle, domain, enabled)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, COALESCE($9, TRUE))`,
-      [testId, b.funnel_id ? s(b.funnel_id, 120) : null, s(b.name, 200), scope,
+      [testId, funnelId, s(b.name, 200), scope,
         b.target_page_id ? s(b.target_page_id, 120) : null,
         b.target_offer_id ? s(b.target_offer_id, 120) : null,
         h.handle, d.domain,
@@ -234,6 +243,14 @@ router.patch('/:id', async (req, res) => {
     if (b.handle !== undefined) {
       const h = normHandle(b.handle);
       if (h.error) return res.status(422).json({ success: false, error: { code: h.error } });
+      if (h.handle) {
+        const owner = await pgQuery(`SELECT funnel_id FROM lb_split_tests WHERE id = $1`, [s(req.params.id, 120)]);
+        if (!owner.length) return res.status(404).json({ success: false, error: { code: 'not_found' } });
+        if (owner[0].funnel_id
+          && (await handleCollidesWithPageSlug({ funnelId: owner[0].funnel_id, handle: h.handle }))) {
+          return res.status(409).json({ success: false, error: { code: 'handle_conflicts_page_slug' } });
+        }
+      }
       sets.push(`handle = $${i++}`); vals.push(h.handle);
     }
     if (b.domain !== undefined) {
@@ -327,7 +344,23 @@ router.post('/:id/arms', async (req, res) => {
   }
 });
 
-// PATCH /:id/arms/:armId  — weight / control / archived.
+// PATCH /:id/arms/:armId  — weight / control / archived / page / order.
+//
+// THE BASELINE IS MONEY-MEANING, SO IT IS GUARDED IN BOTH DIRECTIONS.
+// analyticsStats.buildVerdict resolves the control as
+//   rows.find(r => r.is_control) || ranked[ranked.length - 1]
+// — i.e. with ZERO live controls the WORST arm by revenue per visitor silently
+// becomes the baseline, which flips every vs-control number and can flip the
+// verdict itself. is_entry was made a separate flag precisely so a serving
+// change could not move the baseline; leaving is_control able to reach zero
+// would have re-opened the same hole from the other side. So:
+//   • a patch that would leave zero live controls is REFUSED (control_required);
+//   • archiving the live control is REFUSED (move the control first);
+//   • archiving the LAST live arm is REFUSED (last_live_arm) — it would leave
+//     the split route with nothing behind it;
+//   • moving the control between arms goes through POST .../control, which does
+//     it atomically (the two guards above make a two-step PATCH move impossible
+//     on purpose — there is no window in which the baseline is undefined).
 router.patch('/:id/arms/:armId', async (req, res) => {
   try {
     await ensureSplitTables();
@@ -354,16 +387,44 @@ router.patch('/:id/arms/:armId', async (req, res) => {
       return res.status(422).json({ success: false, error: { code: 'use_entry_endpoint' } });
     }
     if (!sets.length) return res.status(422).json({ success: false, error: { code: 'nothing_to_update' } });
+
+    const testId = s(req.params.id, 120);
+    const armId = s(req.params.armId, 120);
     // Flipping an arm TO control while another live arm already holds it is
-    // rejected (mirror of the create-path rule) — unset the old control first.
+    // rejected (mirror of the create-path rule) — use POST .../control instead.
     if (b.is_control === true) {
       const ctrl = await pgQuery(
         `SELECT 1 FROM lb_split_arms WHERE test_id = $1 AND is_control AND NOT archived AND id <> $2`,
-        [s(req.params.id, 120), s(req.params.armId, 120)]
+        [testId, armId]
       );
       if (ctrl.length) return res.status(422).json({ success: false, error: { code: 'multiple_control_arms' } });
     }
-    vals.push(s(req.params.armId, 120), s(req.params.id, 120));
+    // ── The baseline guards ────────────────────────────────────────────────
+    const wouldUnsetControl = b.is_control === false;
+    const wouldArchive = b.archived === true;
+    if (wouldUnsetControl || wouldArchive) {
+      const live = await pgQuery(
+        `SELECT id, is_control FROM lb_split_arms WHERE test_id = $1 AND NOT archived`,
+        [testId]
+      );
+      const target = live.find((a) => a.id === armId);
+      // Only guard when the row is currently a LIVE arm — patching an already
+      // archived arm cannot change how many live controls exist.
+      if (target) {
+        if (wouldArchive && live.length <= 1) {
+          return res.status(422).json({ success: false, error: { code: 'last_live_arm' } });
+        }
+        if (target.is_control) {
+          if (wouldArchive) {
+            return res.status(422).json({ success: false, error: { code: 'control_required' } });
+          }
+          if (wouldUnsetControl && !live.some((a) => a.is_control && a.id !== armId)) {
+            return res.status(422).json({ success: false, error: { code: 'control_required' } });
+          }
+        }
+      }
+    }
+    vals.push(armId, testId);
     const rows = await pgQuery(
       `UPDATE lb_split_arms SET ${sets.join(', ')} WHERE id = $${i++} AND test_id = $${i} RETURNING id, is_entry, archived`,
       vals
@@ -408,11 +469,18 @@ router.post('/:id/arms/:armId/entry', async (req, res) => {
     const armId = s(req.params.armId, 120);
     const result = await pgDb.begin(async (tx) => {
       const q = (text, params = []) => tx.unsafe(text, params);
-      // Lock the test's arms so two concurrent entry moves serialize. Without
-      // this, both could clear and both could set — and the partial unique
-      // index would reject the loser with a 500 instead of a clean order.
+      // LOCK THE PARENT TEST ROW, NOT THE ARM ROWS.
+      // `SELECT ... FROM lb_split_arms WHERE test_id = $1 FOR UPDATE` locks N
+      // tuples in whatever order the plan returns them, so two concurrent moves
+      // on the same test can grab them in opposite orders and deadlock —
+      // measured: 12 concurrent moves produced 6 × HTTP 500 (Postgres 40P01).
+      // A single parent row has no ordering to disagree about, so the moves
+      // serialize cleanly. The child rows still cannot be modified
+      // concurrently, because every writer takes this same lock first.
+      const test = await q(`SELECT id FROM lb_split_tests WHERE id = $1 FOR UPDATE`, [testId]);
+      if (!test.length) return { error: 'not_found' };
       const arms = await q(
-        `SELECT id, is_entry, archived FROM lb_split_arms WHERE test_id = $1 FOR UPDATE`,
+        `SELECT id, is_entry, archived FROM lb_split_arms WHERE test_id = $1`,
         [testId]
       );
       const target = arms.find((a) => a.id === armId);
@@ -430,6 +498,50 @@ router.post('/:id/arms/:armId/entry', async (req, res) => {
     return res.json({ success: true, data: result });
   } catch (err) {
     console.error('[splitTests] set entry failed:', err);
+    return res.status(500).json({ success: false, error: { code: 'server_error' } });
+  }
+});
+
+// POST /:id/arms/:armId/control  — move the STATISTICAL BASELINE to this arm.
+//
+// The only supported way to change the control, and it is atomic for the same
+// reason the entry move is: the baseline must never be observable as zero arms
+// (buildVerdict would fall back to the WORST arm by revenue per visitor) nor as
+// two arms (ambiguous). One transaction, parent-row lock, clear-then-set.
+//
+// ⚠️ THIS CHANGES WHAT EVERY PUBLISHED vs-control NUMBER MEANS. It is a
+// deliberate, explicit operator act with its own endpoint precisely so it can
+// never happen as a side effect of archiving an arm or of moving the entry.
+// Writes NOTHING to the ledger.
+router.post('/:id/arms/:armId/control', async (req, res) => {
+  try {
+    await ensureSplitTables();
+    const testId = s(req.params.id, 120);
+    const armId = s(req.params.armId, 120);
+    const result = await pgDb.begin(async (tx) => {
+      const q = (text, params = []) => tx.unsafe(text, params);
+      const test = await q(`SELECT id FROM lb_split_tests WHERE id = $1 FOR UPDATE`, [testId]);
+      if (!test.length) return { error: 'not_found' };
+      const arms = await q(
+        `SELECT id, is_control, archived FROM lb_split_arms WHERE test_id = $1`,
+        [testId]
+      );
+      const target = arms.find((a) => a.id === armId);
+      if (!target) return { error: 'not_found' };
+      // An archived arm takes no NEW traffic, so its sample can only shrink
+      // relative to the others — a frozen baseline every live arm is measured
+      // against. Refused for the same reason an archived arm cannot be entry.
+      if (target.archived) return { error: 'arm_archived' };
+      await q(`UPDATE lb_split_arms SET is_control = FALSE WHERE test_id = $1 AND is_control AND id <> $2`, [testId, armId]);
+      await q(`UPDATE lb_split_arms SET is_control = TRUE WHERE id = $1`, [armId]);
+      await q(`UPDATE lb_split_tests SET updated_at = NOW() WHERE id = $1`, [testId]);
+      return { id: armId };
+    });
+    if (result.error === 'not_found') return res.status(404).json({ success: false, error: { code: 'not_found' } });
+    if (result.error) return res.status(422).json({ success: false, error: { code: result.error } });
+    return res.json({ success: true, data: result });
+  } catch (err) {
+    console.error('[splitTests] set control failed:', err);
     return res.status(500).json({ success: false, error: { code: 'server_error' } });
   }
 });

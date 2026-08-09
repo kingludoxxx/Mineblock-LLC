@@ -21,10 +21,16 @@ import {
 
 const ERROR_COPY = {
   invalid_handle: 'Handle must be lowercase letters, numbers and dashes (max 64).',
-  invalid_domain: 'That does not look like a domain name.',
+  handle_reserved: 'That handle is reserved by the platform — pick another one.',
   handle_exists: 'Another live split on this funnel already owns that handle.',
+  handle_conflicts_page_slug: 'A page on this funnel already serves at that path — the split and the page cannot both own it.',
+  invalid_domain: 'That does not look like a domain name.',
   arm_key_exists: 'An arm with that key already exists.',
   multiple_control_arms: 'Another arm is already the control.',
+  // Reachable from the API, not from this modal today — but if the modal ever
+  // grows an archive/control control, the operator gets a sentence, not a code.
+  control_required: 'Every split needs one control arm — move the control to another arm first.',
+  last_live_arm: 'This is the last live arm — archiving it would leave the split route with nothing behind it.',
   arm_archived: 'That arm is archived — restore it before making it the entry.',
   not_found: 'That test or arm no longer exists — reloading.',
 };

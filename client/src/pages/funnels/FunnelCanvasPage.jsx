@@ -110,7 +110,7 @@ function CanvasInner() {
   const [creating, setCreating] = useState(false);
   // ---- Split tests (A/B groups on this funnel) ----
   const [splits, setSplits] = useState([]);
-  const [splitTiles, setSplitTiles] = useState({}); // testId -> { armKey: {visitors, ctr, cvr} }
+  const [splitTiles, setSplitTiles] = useState({}); // testId -> { armKey: {visitors, orders, cvr} }
   const [splitSetupId, setSplitSetupId] = useState(null);
   const [splitResultsId, setSplitResultsId] = useState(null);
 
@@ -169,11 +169,13 @@ function CanvasInner() {
   }, [id]);
 
   // ---- Split tests + their canvas tiles -----------------------------------
-  // The tiles PREFER the analytics overlay (windowed, with a CTR) and fall
-  // back to the split ledger's own lifetime figures. The fallback deliberately
-  // leaves CTR blank rather than substituting a different rate: the ledger
-  // records exposures and credited conversions, it has never seen a click, and
-  // a CVR wearing a CTR label is worse than an empty tile.
+  // Visitors / Orders / CVR, preferring the analytics overlay (windowed) and
+  // falling back to the split ledger's lifetime figures.
+  //
+  // The third tile is NOT CTR. Neither source can measure one — the ledger has
+  // never seen a click, and the overlay's `submit_rate` is a constant 1 by
+  // construction, which would render as a permanent "100.0%". Orders is a real
+  // number in both sources, so the tile says something true in both modes.
   const loadSplits = useCallback(async () => {
     let tests = [];
     try {
@@ -189,10 +191,12 @@ function CanvasInner() {
       tests.map(async (t) => {
         const overlay = await fetchSplitMetrics(t.id);
         if (overlay.available) {
+          // normalizeMetrics has already converted `cvr` from a fraction to a
+          // percent exactly once — it must NOT be scaled again here.
           return [t.id, Object.fromEntries((overlay.data.arms || []).map((a) => [a.arm_key, {
             visitors: a.visitors === undefined ? undefined : fmtInt(a.visitors),
-            ctr: a.submit_rate === undefined ? undefined : fmtPct(a.submit_rate, { digits: 1 }),
-            cvr: a.conv_rate === undefined ? undefined : fmtPct(a.conv_rate, { digits: 1 }),
+            orders: a.orders === undefined ? undefined : fmtInt(a.orders),
+            cvr: a.cvr === undefined ? undefined : fmtPct(a.cvr, { digits: 1 }),
           }]))];
         }
         try {
@@ -202,7 +206,7 @@ function CanvasInner() {
             const conv = Number(a.conversions) || 0;
             return [a.arm_key, {
               visitors: fmtInt(exp),
-              ctr: undefined, // the ledger has no click event — see above
+              orders: fmtInt(conv),
               cvr: exp > 0 ? fmtPct((conv / exp) * 100, { digits: 1 }) : undefined,
             }];
           }))];
@@ -268,7 +272,7 @@ function CanvasInner() {
                 title: p?.title,
                 slug: p?.slug,
                 visitors: m.visitors,
-                ctr: m.ctr,
+                orders: m.orders,
                 cvr: m.cvr,
               };
             }),
