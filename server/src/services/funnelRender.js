@@ -1409,8 +1409,14 @@ const CKT_TEMPLATE_JS = `(function(){
       if(window.wco&&typeof window.wco.submit==='function'&&mount&&mount.getAttribute('data-whop-checkout-session')){
         btn.disabled=true;var prev=btn.textContent;btn.textContent='Processing\u2026';
         var settled=false;
+        /* showError()/root live in the RUNTIME script's scope, not this one —
+           calling them from here threw a ReferenceError and the buyer got a
+           silently re-enabled button with no explanation. Talk to the error
+           node directly. */
+        var say=function(msg){try{var e=document.querySelector('[data-fos-error]');
+          if(e){e.hidden=false;e.textContent=msg;e.scrollIntoView({behavior:'smooth',block:'center'});}}catch(e2){}};
         var done=function(msg){if(settled){return;}settled=true;btn.disabled=false;btn.textContent=prev;
-          if(msg){showError(root,msg);}};
+          if(msg){say(msg);}};
         /* wco.submit is FIRE-AND-FORGET: it postMessages 'submit' into the frame
            and resolves undefined. The outcome arrives as 'complete' or
            'payment-error' events on the mount. A card that fails the embed's OWN
