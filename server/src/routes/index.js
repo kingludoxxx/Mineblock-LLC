@@ -85,12 +85,8 @@ const mountRoutes = (app) => {
   // import always lands a DRAFT with no domain, in one transaction).
   app.use('/api/v1/funnel-transfer', funnelTransferRoutes);
   app.use('/api/v1/funnel-costs', funnelCostsRoutes); // COGS / per-funnel P&L (authed, funnels permission; on-read engine, append-only rates)
-  // MEDIA LIBRARY: image store for the builder (authed, funnels permission; archive-only, no DELETE).
-  // media routes are mounted in app.js (ahead of the global body parser).   // insert at app.js:92, i.e.
-  //                                            // directly after the optin
-  //                                            // mount and BEFORE // Body parsing
-  // then delete this mount. Until that lands, the 7mb cap is documentation.
-  app.use('/api/v1/media', mediaRoutes);
+  // MEDIA LIBRARY routes are mounted in app.js, AHEAD of the global body
+  // parser, so the router's own 7mb cap is real (see app.js media mount).
 };
 
 export default mountRoutes;
