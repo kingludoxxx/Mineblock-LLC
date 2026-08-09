@@ -261,10 +261,15 @@ router.get('/', async (req, res) => {
     );
     const rows = await pgQuery(
       `SELECT f.*,
-              COALESCE(p.n, 0)::int AS pages_count
+              COALESCE(p.n, 0)::int AS pages_count,
+              COALESCE(p.page_types, '[]'::jsonb) AS page_types
        FROM funnels f
        LEFT JOIN (
-         SELECT funnel_id, COUNT(*) AS n
+         SELECT funnel_id, COUNT(*) AS n,
+                jsonb_agg(
+                  jsonb_build_object('id', id, 'type', type, 'title', title, 'is_home', is_home)
+                  ORDER BY is_home DESC, slug ASC
+                ) AS page_types
          FROM funnel_pages WHERE archived = FALSE GROUP BY funnel_id
        ) p ON p.funnel_id = f.id
        WHERE ${where.join(' AND ')}

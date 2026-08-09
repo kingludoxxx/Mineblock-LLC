@@ -27,6 +27,8 @@ import {
   getFunnelOverview,
   getPageMetrics,
   getSplitResults,
+  getFunnelsOverviewBatch,
+  getFunnelLive,
   parseWindow,
   ANALYTICS_METRIC_DEFINITIONS,
 } from '../services/funnelAnalytics.js';
@@ -77,6 +79,40 @@ const win = (req) => ({ from: req.query.from, to: req.query.to });
 router.get('/funnel/:funnelId/overview', async (req, res, next) => {
   try {
     send(res, await getFunnelOverview({ funnelId: req.params.funnelId, ...win(req) }));
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
+ * GET /funnels/overview?from&to — THE FUNNELS-LIST METRICS FEED.
+ * One row per non-archived funnel: {funnel_id, visitors, orders, cvr, ctr,
+ * gross_revenue, net_revenue, refunded, aov_pre_upsell, aov_post_upsell}.
+ * Money predicates mirror the per-funnel overview byte-for-byte (see the
+ * service); `ctr` carries the same proxy labelling contract as everywhere
+ * else. Null still means "could not measure", never zero.
+ *
+ * NOTE ON ROUTING: this MUST be registered before nothing in particular —
+ * '/funnels' and '/funnels/overview' are distinct exact paths in Express —
+ * but it lives next to '/funnels' so the two list-shaped reads stay together.
+ */
+router.get('/funnels/overview', async (req, res, next) => {
+  try {
+    send(res, await getFunnelsOverviewBatch(win(req)));
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
+ * GET /funnel/:funnelId/live — THE CANVAS LIVE CHIP FEED.
+ * {live, unique_today}: distinct visitors in the last 5 minutes / since UTC
+ * midnight, from lb_touches. Sits on the existing (funnel_id, ts DESC) index;
+ * no DDL here (trackingSchema.js owns lb_touches).
+ */
+router.get('/funnel/:funnelId/live', async (req, res, next) => {
+  try {
+    send(res, await getFunnelLive({ funnelId: req.params.funnelId }));
   } catch (err) {
     next(err);
   }

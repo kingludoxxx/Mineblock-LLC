@@ -1332,6 +1332,295 @@ export async function getSplitResults(
   };
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// BATCH ROLLUP + LIVE COUNTER (additive — the Funnels-list metrics view and
+// the canvas live chip). READ-ONLY like everything else in this file.
+// ═══════════════════════════════════════════════════════════════════════════
+
+/**
+ * GET-/funnels/overview backing: one metric row per NON-ARCHIVED funnel, in
+ * ONE pass per source instead of N× getFunnelOverview (which is ~8 queries per
+ * funnel on a max-2 pool — 25 funnels would be 200 sequential queries).
+ *
+ * The money predicates MIRROR the per-funnel overview EXACTLY:
+ *   • orders/base revenue: MONEY_MOVED_SQL, windowed on paid_at
+ *   • upsell legs at ('settled','refunded') — a partial refund must not
+ *     delete the leg (see the header block)
+ *   • upsell reversals from the void ledger, deduped on
+ *     (session, charge, refund_key) with MAX(-value)
+ *   • base refunds from refunds[], windowed on the entry's own date, with
+ *     Whop upsell duplicates excluded via refund_key
+ * The only difference is GROUP BY s.funnel_id instead of s.page_id.
+ *
+ * ctr here is the FUNNEL-level step-through/submit proxy (same labelling
+ * contract as per-page ctr: `ctr_is_proxy` is always true):
+ *   step_through = distinct vids that touched ≥2 DISTINCT pages ÷ visitors
+ *   submit_rate  = distinct submit vids ÷ visitors
+ *   ctr = max of the two — a lower bound, never an over-report.
+ */
+export async function getFunnelsOverviewBatch({ from, to } = {}, { query = analyticsQuery } = {}) {
+  const w = parseWindow({ from, to });
+  if (!w.ok) return { error: w.error };
+
+  const warnings = [];
+
+  // The row skeleton: every non-archived funnel appears, even with zero data.
+  const funnels = await safeRead('funnels', warnings, () =>
+    query(
+      `SELECT id, slug, name, status, created_at, updated_at
+       FROM funnels WHERE NOT archived ORDER BY updated_at DESC LIMIT 200`
+    ), []);
+  const ids = funnels.map((f) => f.id);
+  if (!ids.length) {
+    return {
+      window: { from: w.from, to: w.to, days: w.days, basis: 'UTC half-open [from, to+1d)' },
+      funnels: [],
+      warnings,
+      degraded: warnings.length > 0,
+    };
+  }
+
+  // ── Traffic (its own failure domain) ──
+  const traffic = await safeRead('lb_touches', warnings, () =>
+    query(
+      `WITH pv AS (
+         SELECT funnel_id, vid, COUNT(DISTINCT page_id) AS pages_touched
+         FROM lb_touches
+         WHERE funnel_id = ANY($1) AND ts >= $2 AND ts < $3
+         GROUP BY funnel_id, vid
+       )
+       SELECT funnel_id,
+              COUNT(*)::bigint                                    AS visitors,
+              COUNT(*) FILTER (WHERE pages_touched > 1)::bigint   AS advanced_visitors
+       FROM pv GROUP BY funnel_id`,
+      [ids, w.fromTs, w.toTs]
+    ), null);
+
+  // ── Money (co_* — its own failure domain, one safeRead for the group so a
+  //    partial money picture is never published) ──
+  const moneyData = await safeRead('co_sessions', warnings, async () => {
+    const orders = await query(
+      `SELECT s.funnel_id,
+              COUNT(*)::bigint                   AS orders,
+              COALESCE(SUM(s.total), 0)          AS base_revenue,
+              COUNT(DISTINCT s.currency)::bigint AS currency_count,
+              MIN(s.currency)                    AS currency
+       FROM co_sessions s
+       WHERE s.funnel_id = ANY($1) AND s.paid_at >= $2 AND s.paid_at < $3
+         AND ${MONEY_MOVED_SQL}
+       GROUP BY s.funnel_id`,
+      [ids, w.fromTs, w.toTs]
+    );
+    const submits = await query(
+      `SELECT s.funnel_id,
+              COUNT(*)::bigint AS submits,
+              COUNT(DISTINCT s.vid) FILTER (WHERE s.vid IS NOT NULL AND s.vid <> '')::bigint
+                AS submit_visitors
+       FROM co_sessions s
+       WHERE s.funnel_id = ANY($1) AND s.created_at >= $2 AND s.created_at < $3
+       GROUP BY s.funnel_id`,
+      [ids, w.fromTs, w.toTs]
+    );
+    const upsells = await query(
+      `SELECT s.funnel_id,
+              COALESCE(SUM(c.amount) FILTER (WHERE c.status IN ('settled','refunded')), 0)
+                AS upsell_revenue
+       FROM co_upsell_charges c
+       JOIN co_sessions s ON s.id = c.session_id
+       WHERE s.funnel_id = ANY($1) AND s.paid_at >= $2 AND s.paid_at < $3
+         AND ${MONEY_MOVED_SQL}
+       GROUP BY s.funnel_id`,
+      [ids, w.fromTs, w.toTs]
+    );
+    const [reg] = await query(`SELECT to_regclass('public.lb_split_credits') IS NOT NULL AS present`);
+    const hasLedger = Boolean(reg?.present);
+    const upsellRefunds = hasLedger
+      ? await query(
+          `WITH v AS (
+             SELECT session_id, charge_id, refund_key,
+                    MAX(-value) AS amt, MIN(created_at) AS ts
+             FROM lb_split_credits
+             WHERE kind = 'void'
+             GROUP BY session_id, charge_id, refund_key
+           )
+           SELECT s.funnel_id, COALESCE(SUM(v.amt), 0) AS upsell_refunded
+           FROM v
+           JOIN co_upsell_charges c ON c.id = v.charge_id AND c.session_id = v.session_id
+           JOIN co_sessions s        ON s.id = v.session_id
+           WHERE s.funnel_id = ANY($1) AND ${MONEY_MOVED_SQL}
+             AND v.ts >= $2 AND v.ts < $3
+           GROUP BY s.funnel_id`,
+          [ids, w.fromTs, w.toTs]
+        )
+      : [];
+    const dedupeClause = hasLedger
+      ? `AND NOT EXISTS (
+           SELECT 1 FROM lb_split_credits v
+           JOIN co_upsell_charges uc ON uc.id = v.charge_id AND uc.session_id = v.session_id
+           WHERE v.kind = 'void' AND v.session_id = s.id AND v.refund_key = r->>'id'
+         )`
+      : '';
+    const refunds = await query(
+      `SELECT s.funnel_id,
+              COALESCE(SUM((r->>'amount')::numeric), 0) AS base_refunded
+       FROM co_sessions s
+       CROSS JOIN LATERAL jsonb_array_elements(s.refunds) r
+       WHERE s.funnel_id = ANY($1)
+         AND ${MONEY_MOVED_SQL}
+         AND r->>'at' ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}'
+         AND r->>'amount' ~ '^-?[0-9]+(\\.[0-9]+)?$'
+         AND (r->>'at')::timestamptz >= $2
+         AND (r->>'at')::timestamptz <  $3
+         ${dedupeClause}
+       GROUP BY s.funnel_id`,
+      [ids, w.fromTs, w.toTs]
+    );
+    return { orders, submits, upsells, upsellRefunds, refunds, hasLedger };
+  }, null);
+
+  const byId = (rows) => new Map((rows || []).map((r) => [r.funnel_id, r]));
+  const tMap = traffic ? byId(traffic) : null;
+  const oMap = moneyData ? byId(moneyData.orders) : null;
+  const sMap = moneyData ? byId(moneyData.submits) : null;
+  const uMap = moneyData ? byId(moneyData.upsells) : null;
+  const urMap = moneyData ? byId(moneyData.upsellRefunds) : null;
+  const rMap = moneyData ? byId(moneyData.refunds) : null;
+
+  const rows = funnels.map((f) => {
+    const t = tMap ? tMap.get(f.id) || { visitors: 0, advanced_visitors: 0 } : null;
+    const o = oMap ? oMap.get(f.id) || {} : null;
+    const s = sMap ? sMap.get(f.id) || {} : null;
+    const u = uMap ? uMap.get(f.id) || {} : null;
+    const ur = urMap ? urMap.get(f.id) || {} : null;
+    const rr = rMap ? rMap.get(f.id) || {} : null;
+
+    const trackingOk = t !== null;
+    const moneyOk = o !== null;
+
+    const visitorsRaw = trackingOk ? int(t.visitors) : null;
+    const advanced = trackingOk ? int(t.advanced_visitors) : null;
+    const orders = moneyOk ? int(o.orders) : null;
+    const submitVisitors = moneyOk ? int(s.submit_visitors) : null;
+
+    const baseRevenue = moneyOk ? money(o.base_revenue) : null;
+    const upsellRevenue = moneyOk ? money(u.upsell_revenue) : null;
+    const grossRevenue = moneyOk ? money(num(baseRevenue) + num(upsellRevenue)) : null;
+    const refunded = moneyOk ? money(num(rr.base_refunded) + num(ur.upsell_refunded)) : null;
+    const netRevenue = moneyOk ? money(num(grossRevenue) - num(refunded)) : null;
+
+    // Same clamp as the per-funnel totals: you cannot buy without visiting.
+    const visitors = trackingOk ? Math.max(visitorsRaw, int(orders)) : null;
+
+    const cvr = trackingOk && moneyOk ? rate(orders, Math.max(visitors, orders)) : null;
+
+    // Funnel-level CTR proxy (labelled, lower bound) — withheld below the floor.
+    let ctr = null;
+    let ctrBasis = 'no_data';
+    if (trackingOk && visitors >= MIN_RATE_SAMPLE) {
+      const st = rate(advanced, visitors) ?? 0;
+      const su = moneyOk ? (rate(submitVisitors, visitors) ?? 0) : 0;
+      if (st >= su) {
+        ctr = st;
+        ctrBasis = 'step_through_proxy';
+      } else {
+        ctr = su;
+        ctrBasis = 'checkout_submit_proxy';
+      }
+    } else if (trackingOk) {
+      ctrBasis = 'sample_below_floor';
+    }
+
+    let aovPost = null;
+    let aovPre = null;
+    if (moneyOk && orders > 0) {
+      aovPost = money(netRevenue / orders);
+      const pre = netRevenue / orders - num(upsellRevenue) / orders;
+      if (pre >= 0) aovPre = money(pre);
+    }
+
+    return {
+      funnel_id: f.id,
+      slug: f.slug,
+      name: f.name,
+      status: f.status,
+      created_at: f.created_at,
+      updated_at: f.updated_at,
+      visitors,
+      orders,
+      cvr,
+      ctr,
+      ctr_is_proxy: true,
+      ctr_basis: ctrBasis,
+      gross_revenue: grossRevenue,
+      net_revenue: netRevenue,
+      refunded,
+      aov_pre_upsell: aovPre,
+      aov_post_upsell: aovPost,
+      currency: moneyOk ? (o.currency ?? null) : null,
+      mixed_currency: moneyOk ? int(o.currency_count) > 1 : null,
+    };
+  });
+
+  return {
+    window: { from: w.from, to: w.to, days: w.days, basis: 'UTC half-open [from, to+1d)' },
+    funnels: rows,
+    meta: {
+      money_predicate: "paid_at IS NOT NULL AND status IN ('paid','refunded')",
+      ctr_note:
+        'CTR is a labelled PROXY (funnel-level): max(step-through across pages, ' +
+        'checkout-submit rate) — a LOWER BOUND, never a measured click-through.',
+      archived_excluded: true,
+    },
+    warnings,
+    degraded: warnings.length > 0,
+  };
+}
+
+/**
+ * Live counter for the canvas chip.
+ *   live         = COUNT(DISTINCT vid) in the last 5 minutes
+ *   unique_today = COUNT(DISTINCT vid) since UTC midnight
+ * Both reads sit on the existing idx_lb_touches_funnel (funnel_id, ts DESC)
+ * index — no new index is created here (the DDL belongs to trackingSchema.js;
+ * the existing composite covers both range scans).
+ *
+ * The two counts are INDEPENDENT scans on purpose: a touch at 23:58 UTC is
+ * "live" at 00:01 but not "today", so nesting one filter inside the other
+ * would undercount `live` across the midnight boundary.
+ */
+export async function getFunnelLive({ funnelId } = {}, { query = analyticsQuery } = {}) {
+  const fid = idOf(funnelId, 64);
+  if (!fid) return { error: 'invalid_funnel_id' };
+
+  const warnings = [];
+  const row = await safeRead('lb_touches', warnings, async () => {
+    const [r] = await query(
+      `SELECT
+         (SELECT COUNT(DISTINCT vid) FROM lb_touches
+          WHERE funnel_id = $1 AND ts >= NOW() - INTERVAL '5 minutes')::bigint AS live,
+         (SELECT COUNT(DISTINCT vid) FROM lb_touches
+          WHERE funnel_id = $1
+            AND ts >= date_trunc('day', NOW() AT TIME ZONE 'utc') AT TIME ZONE 'utc')::bigint
+           AS unique_today`,
+      [fid]
+    );
+    return r;
+  }, null);
+
+  return {
+    funnel_id: fid,
+    live: row ? int(row.live) : null,
+    unique_today: row ? int(row.unique_today) : null,
+    as_of: new Date().toISOString(),
+    basis: {
+      live: 'distinct lb_touches.vid, last 5 minutes',
+      unique_today: 'distinct lb_touches.vid since UTC midnight',
+    },
+    warnings,
+    degraded: warnings.length > 0,
+  };
+}
+
 export const ANALYTICS_METRIC_DEFINITIONS = Object.freeze({
   money_moved: "co_sessions.paid_at IS NOT NULL AND status IN ('paid','refunded')",
   visitors: 'COUNT(DISTINCT lb_touches.vid) for that page_id in the window',
