@@ -53,16 +53,25 @@ function shopifyCreds() {
 
 const VARIANT_SEARCH_QUERY = `
 query variantSearch($q: String!, $first: Int!) {
-  productVariants(first: $first, query: $q) {
+  products(first: $first, query: $q) {
     edges {
       node {
         id
         title
-        price
-        sku
-        availableForSale
-        image { url }
-        product { id title status featuredImage { url } }
+        status
+        featuredImage { url }
+        variants(first: 10) {
+          edges {
+            node {
+              id
+              title
+              price
+              sku
+              availableForSale
+              image { url }
+            }
+          }
+        }
       }
     }
   }
@@ -86,8 +95,20 @@ export function numericVariantId(gid) {
  * the whole box becomes one literal term.
  */
 export function buildSearchQuery(raw) {
-  const term = String(raw || '').trim().slice(0, Q_MAX).replace(/[\\"]/g, '\\$&');
-  return `"${term}"`;
+  // LIVE-PASS FIX: a quoted bare term against productVariants(query:) searches
+  // VARIANT titles ("Default Title") — real product names never matched. We
+  // now search PRODUCTS with per-term wildcards on the default field (title),
+  // which is what an operator typing "cream" means. Operator characters that
+  // are Shopify search OPERATORS are stripped so the box stays literal terms.
+  const terms = String(raw || '')
+    .trim()
+    .slice(0, Q_MAX)
+    .replace(/[\\"':()*]/g, ' ')
+    .split(/\s+/)
+    .filter(Boolean)
+    .slice(0, 5);
+  if (!terms.length) return '""';
+  return terms.map((t) => `*${t}*`).join(' ');
 }
 
 /**
@@ -101,23 +122,31 @@ export function mapVariantNodes(edges) {
   for (const edge of Array.isArray(edges) ? edges : []) {
     const n = edge && typeof edge === 'object' ? edge.node : null;
     if (!n || typeof n !== 'object') continue;
-    const variantId = numericVariantId(n.id);
-    if (!variantId) continue;
-    const product = n.product && typeof n.product === 'object' ? n.product : {};
-    out.push({
-      variant_id: variantId,
-      title: n.title == null ? '' : String(n.title),
-      product_title: product.title == null ? '' : String(product.title),
-      price: n.price == null ? '' : String(n.price),
-      image:
-        (n.image && typeof n.image === 'object' && n.image.url ? String(n.image.url) : '') ||
-        (product.featuredImage && typeof product.featuredImage === 'object' && product.featuredImage.url
-          ? String(product.featuredImage.url)
-          : ''),
-      sku: n.sku == null ? '' : String(n.sku),
-      available: n.availableForSale === true,
-      product_status: product.status == null ? '' : String(product.status),
-    });
+    // Product-level edges (see VARIANT_SEARCH_QUERY): flatten each product's
+    // variants into the SAME wire shape the picker always consumed.
+    const product = n;
+    const vEdges = product.variants && typeof product.variants === 'object'
+      ? product.variants.edges : null;
+    for (const vEdge of Array.isArray(vEdges) ? vEdges : []) {
+      const v = vEdge && typeof vEdge === 'object' ? vEdge.node : null;
+      if (!v || typeof v !== 'object') continue;
+      const variantId = numericVariantId(v.id);
+      if (!variantId) continue;
+      out.push({
+        variant_id: variantId,
+        title: v.title == null ? '' : String(v.title),
+        product_title: product.title == null ? '' : String(product.title),
+        price: v.price == null ? '' : String(v.price),
+        image:
+          (v.image && typeof v.image === 'object' && v.image.url ? String(v.image.url) : '') ||
+          (product.featuredImage && typeof product.featuredImage === 'object' && product.featuredImage.url
+            ? String(product.featuredImage.url)
+            : ''),
+        sku: v.sku == null ? '' : String(v.sku),
+        available: v.availableForSale === true,
+        product_status: product.status == null ? '' : String(product.status),
+      });
+    }
   }
   return out;
 }
@@ -208,7 +237,7 @@ export async function searchHandler(req, res) {
 
   try {
     const data = await postGraphql(VARIANT_SEARCH_QUERY, { q: buildSearchQuery(raw), first });
-    const variants = mapVariantNodes(data?.productVariants?.edges);
+    const variants = mapVariantNodes(data?.products?.edges).slice(0, first);
     return res.json({ success: true, data: { variants } });
   } catch (err) {
     if (err instanceof ShopifyUnavailableError) {

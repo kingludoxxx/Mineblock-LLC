@@ -41,17 +41,21 @@ eq(numericVariantId('gid://shopify/ProductVariant/abc'), '', 'numericVariantId: 
 
 // Search-operator smuggling: a term with Shopify query syntax must stay ONE
 // literal term, not silently change which products are searched.
-eq(buildSearchQuery('glow'), '"glow"', 'buildSearchQuery: plain term quoted');
-eq(buildSearchQuery('status:draft'), '"status:draft"', 'buildSearchQuery: a colon operator stays inside the quotes');
-eq(buildSearchQuery('a"b'), '"a\\"b"', 'buildSearchQuery: an embedded quote is escaped, cannot break out');
-eq(buildSearchQuery('a\\b'), '"a\\\\b"', 'buildSearchQuery: a backslash is escaped');
+eq(buildSearchQuery('glow'), '*glow*', 'buildSearchQuery: plain term becomes a wildcard product search');
+eq(buildSearchQuery('status:draft'), '*status* *draft*', 'buildSearchQuery: a colon operator is stripped — the box stays literal terms');
+eq(buildSearchQuery('a"b'), '*a* *b*', 'buildSearchQuery: an embedded quote is stripped, cannot break out');
+eq(buildSearchQuery('a\\b'), '*a* *b*', 'buildSearchQuery: a backslash is stripped');
 ok(buildSearchQuery('x'.repeat(500)).length < 200, 'buildSearchQuery: an over-long term is capped');
 eq(buildSearchQuery(null), '""', 'buildSearchQuery: null → empty quoted term, no throw');
 
 {
   const edges = [
-    { node: { id: 'gid://shopify/ProductVariant/1', title: 'Small', price: '19.00', sku: 'S1', availableForSale: true, image: { url: 'i1' }, product: { title: 'Kit', status: 'ACTIVE' } } },
-    { node: { id: 'gid://shopify/ProductVariant/2', title: null, price: null, product: { featuredImage: { url: 'p2' } } } },
+    { node: { id: 'gid://shopify/Product/10', title: 'Kit', status: 'ACTIVE', variants: { edges: [
+      { node: { id: 'gid://shopify/ProductVariant/1', title: 'Small', price: '19.00', sku: 'S1', availableForSale: true, image: { url: 'i1' } } },
+    ] } } },
+    { node: { id: 'gid://shopify/Product/11', featuredImage: { url: 'p2' }, variants: { edges: [
+      { node: { id: 'gid://shopify/ProductVariant/2', title: null, price: null } },
+    ] } } },
   ];
   const out = mapVariantNodes(edges);
   eq(out.length, 2, 'map: both variants mapped');
@@ -66,8 +70,10 @@ eq(buildSearchQuery(null), '""', 'buildSearchQuery: null → empty quoted term, 
   // offered as a choice at all.
   const out = mapVariantNodes([
     null, {}, { node: null }, { node: 'str' },
-    { node: { id: 'gid://shopify/Product/9' } },
-    { node: { id: 'gid://shopify/ProductVariant/7', product: null } },
+    { node: { id: 'gid://shopify/Product/9' } }, // product without variants → nothing offered
+    { node: { id: 'gid://shopify/Product/9', variants: { edges: [ null, { node: 'str' },
+      { node: { id: 'gid://shopify/Product/8' } },
+      { node: { id: 'gid://shopify/ProductVariant/7' } } ] } } },
   ]);
   eq(out.length, 1, 'map: every malformed node dropped, the one good node survives');
   eq(out[0].variant_id, '7', 'map: and it is the right one');
@@ -142,8 +148,10 @@ const get = async (path) => {
     seenHeaders = opts.headers;
     seenVars = JSON.parse(opts.body).variables;
     return jsonResponse({
-      data: { productVariants: { edges: [
-        { node: { id: 'gid://shopify/ProductVariant/55', title: 'One', price: '9.99', product: { title: 'Thing' } } },
+      data: { products: { edges: [
+        { node: { id: 'gid://shopify/Product/50', title: 'Thing', variants: { edges: [
+          { node: { id: 'gid://shopify/ProductVariant/55', title: 'One', price: '9.99' } },
+        ] } } },
       ] } },
     });
   };
@@ -172,7 +180,7 @@ const get = async (path) => {
 
 // ---- EMPTY CATALOG vs OUTAGE ---------------------------------------------
 {
-  fetchImpl = async () => jsonResponse({ data: { productVariants: { edges: [] } } });
+  fetchImpl = async () => jsonResponse({ data: { products: { edges: [] } } });
   const r = await get('/stub/search?q=nothing');
   eq(r.status, 200, 'empty: a genuinely empty result is 200');
   eq(r.body.data.variants, [], 'empty: with an empty array — a POSITIVE claim about the catalog');
@@ -187,7 +195,7 @@ const get = async (path) => {
     ['HTTP 502 bad gateway', async () => jsonResponse({}, 502), 'shopify_unavailable'],
     ['HTTP 429 throttle', async () => jsonResponse({}, 429), 'shopify_unavailable'],
     ['unparseable body', async () => ({ ok: true, status: 200, json: async () => { throw new Error('bad json'); } }), 'shopify_unavailable'],
-    ['GraphQL errors in a 200', async () => jsonResponse({ errors: [{ message: 'throttled' }], data: { productVariants: { edges: [] } } }), 'shopify_unavailable'],
+    ['GraphQL errors in a 200', async () => jsonResponse({ errors: [{ message: 'throttled' }], data: { products: { edges: [] } } }), 'shopify_unavailable'],
   ];
   for (const [label, impl, code] of cases) {
     fetchImpl = impl;
@@ -246,7 +254,7 @@ const get = async (path) => {
 // ---- F12: purchasability is surfaced, not hidden --------------------------
 {
   fetchImpl = async () => jsonResponse({
-    data: { productVariants: { edges: [
+    data: { products: { edges: [
       { node: { id: 'gid://shopify/ProductVariant/1', title: 'A', price: '9', availableForSale: true, product: { title: 'Live', status: 'ACTIVE' } } },
       { node: { id: 'gid://shopify/ProductVariant/2', title: 'B', price: '9', availableForSale: true, product: { title: 'Hidden', status: 'DRAFT' } } },
       { node: { id: 'gid://shopify/ProductVariant/3', title: 'C', price: '9', availableForSale: false, product: { title: 'Gone', status: 'ARCHIVED' } } },
@@ -264,7 +272,7 @@ const get = async (path) => {
   eq(SEARCH_RATE_MAX, 30, 'F10: the cap is 30 searches');
   eq(SEARCH_RATE_WINDOW_SEC, 60, 'F10: per 60 seconds');
   let calls = 0;
-  fetchImpl = async () => { calls += 1; return jsonResponse({ data: { productVariants: { edges: [] } } }); };
+  fetchImpl = async () => { calls += 1; return jsonResponse({ data: { products: { edges: [] } } }); };
   let limited = null;
   for (let i = 0; i < SEARCH_RATE_MAX + 6; i += 1) {
     const r = await get(`/stub/search?q=hammer&as=rl_user`);
