@@ -37,6 +37,7 @@ import integrationsRoutes from './integrations.js';
 import liveViewRoutes from './liveView.js';
 import funnelTransferRoutes from './funnelTransfer.js';
 import funnelCostsRoutes from './funnelCosts.js';
+import funnelMetricsRoutes from './funnelMetrics.js';
 
 const mountRoutes = (app) => {
   app.use('/api/v1/users', userRoutes);
@@ -85,6 +86,9 @@ const mountRoutes = (app) => {
   // import always lands a DRAFT with no domain, in one transaction).
   app.use('/api/v1/funnel-transfer', funnelTransferRoutes);
   app.use('/api/v1/funnel-costs', funnelCostsRoutes); // COGS / per-funnel P&L (authed, funnels permission; on-read engine, append-only rates)
+  // METRICS ENGINE — the one query API + presets + dashboard composite (authed,
+  // funnels permission; read-only, isolated analytics pool, REPORT_TZ buckets).
+  app.use('/api/v1/funnel-metrics', funnelMetricsRoutes);
   // MEDIA LIBRARY routes are mounted in app.js, AHEAD of the global body
   // parser, so the router's own 7mb cap is real (see app.js media mount).
 };
