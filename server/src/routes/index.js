@@ -35,6 +35,7 @@ import aiDeveloperRoutes from './aiDeveloper.js';
 import integrationsRoutes from './integrations.js';
 import liveViewRoutes from './liveView.js';
 import funnelTransferRoutes from './funnelTransfer.js';
+import funnelCostsRoutes from './funnelCosts.js';
 
 const mountRoutes = (app) => {
   app.use('/api/v1/users', userRoutes);
@@ -81,6 +82,7 @@ const mountRoutes = (app) => {
   // Funnel export/import — portable JSON envelope (authed, funnels permission;
   // import always lands a DRAFT with no domain, in one transaction).
   app.use('/api/v1/funnel-transfer', funnelTransferRoutes);
+  app.use('/api/v1/funnel-costs', funnelCostsRoutes); // COGS / per-funnel P&L (authed, funnels permission; on-read engine, append-only rates)
 };
 
 export default mountRoutes;
