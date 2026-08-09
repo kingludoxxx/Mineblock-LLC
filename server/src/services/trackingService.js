@@ -207,7 +207,7 @@ export async function fireUpsellPurchaseConversion(sessionId, chargeRowId, value
 // 'cl_pur_<session>' and can never pre-claim (suppress) the real webhook
 // Purchase. Browser-native pixels that need the pur_ id for platform-side
 // dedupe fire it client-side; the SERVER ledger namespace stays partitioned.
-export async function relayBrowserEvent({ funnelId, eventName, eventId, identity = {}, customData = {}, consent = 'granted', eventSourceUrl = '' }) {
+export async function relayBrowserEvent({ funnelId, eventName, eventId, identity = {}, customData = {}, consent = 'granted', eventSourceUrl = '', vid = '' }) {
   if (!ALLOWED_CLIENT_EVENTS.has(eventName)) return { ok: false, reason: 'event_not_allowed' };
   try {
     await ensureTrackingTables();
@@ -224,6 +224,8 @@ export async function relayBrowserEvent({ funnelId, eventName, eventId, identity
         funnelId, pixel: px, eventName, eventId: namespacedId,
         userData: user_data, idk, customData,
         source: 'relay', eventSourceUrl,
+        // Visitor-scoped GA4 client id (server-read cookie, never client-named)
+        vid,
       });
       results.push(r);
     }

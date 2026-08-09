@@ -199,6 +199,9 @@ router.post('/collect', async (req, res) => {
       identity, customData,
       consent: granted ? 'granted' : 'denied',
       eventSourceUrl: String(b.url || '').slice(0, 500),
+      // Server-read visitor id → GA4 client_id seed (visitor-scoped, not
+      // forgeable via the body; empty when the cookie is absent/invalid).
+      vid: isValidVid(String(req.cookies?._fos_vid || '')) ? String(req.cookies._fos_vid) : '',
     });
     return res.json({ ok: true, fired: r.fired || 0 });
   } catch (err) {
