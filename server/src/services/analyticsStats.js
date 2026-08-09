@@ -190,6 +190,43 @@ export function varianceFromSums(n, sum, sumSquares) {
   return num > 0 ? num / (N - 1) : 0;
 }
 
+// ── THE ONE CONFIDENCE FORMATTER, SHARED BY EVERY PROSE BUILDER ────────────
+//
+// A confidence of exactly 100% is a claim no finite experiment can make, and
+// there are THREE independent roads to printing one:
+//
+//   1. this file's zero-variance branch caps at 0.9999 — and `(0.9999 *
+//      100).toFixed(1)` is the string "100.0";
+//   2. splitStats caps at the same 0.9999 and hit the same rounding;
+//   3. an ordinary large-sample p-value of 4e-9 makes `1 - p` round to 1.
+//
+// Both headline builders (buildVerdict below, and splitStats' winner headline)
+// independently wrote `(conf * 100).toFixed(1)` and both produced "100.0%
+// confidence" in the largest string on the panel — directly contradicting the
+// ">99.99%" the cells beneath them render. Two builders, one bug, fixed once:
+// this is the ONLY place a confidence becomes a string, so they cannot diverge
+// again.
+//
+// The rule is expressed in terms of what will be DISPLAYED, not the underlying
+// value: whenever the number would round to 100 (or past it) at the requested
+// precision, the BOUND is rendered instead. That catches 0.9999 at 1dp, which a
+// naive `>= 1` check does not.
+export const CONFIDENCE_DISPLAY_CAP_PCT = 99.99;
+export function formatConfidencePct(confidence, digits = 1) {
+  // null/undefined/'' must NOT reach Number(): `Number(null)` is 0, which is
+  // finite, so a WITHHELD confidence would render as a confident "0.0%" — the
+  // null-vs-zero confusion this whole area exists to prevent, reintroduced in
+  // the formatter. Caught by the harness.
+  if (confidence === null || confidence === undefined || confidence === '') return null;
+  const n = Number(confidence);
+  if (!Number.isFinite(n)) return null;
+  const pct = n * 100;
+  if (pct >= 100 || Number(pct.toFixed(digits)) >= 100) {
+    return `>${CONFIDENCE_DISPLAY_CAP_PCT}%`;
+  }
+  return `${pct.toFixed(digits)}%`;
+}
+
 const DEGENERATE = (reason) => ({
   confidence: 0.5,
   significant_uncorrected: false,
@@ -554,7 +591,7 @@ export function buildVerdict(arms) {
       headline:
         `${challenger.arm_key} is ${dir} ${control.arm_key} on net revenue per visitor` +
         (pct === null ? '' : ` by ${pct}%`) +
-        ` — ${(revenue.confidence * 100).toFixed(1)}% confidence.`,
+        ` — ${formatConfidencePct(revenue.confidence)} confidence.`,
       leader: challenger.arm_key,
       control: control.arm_key,
       conversion,

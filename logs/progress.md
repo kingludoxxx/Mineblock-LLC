@@ -3471,6 +3471,69 @@ costs one extra Admin call per import, but ONLY while /shop.json is actually
 failing, and it stays inside the rate limiter — chosen over shrinking the
 failure TTL globally, which would have restored the per-request fan-out on the
 list that the memo exists to prevent (DECISION MADE).
+TIMESTAMP: 2026-08-10 00:20
+TASK: Split-test statistics layer (feat/split-statistics)
+BUILT: A pure statistics service (server/src/services/splitStats.js) plus an
+additive extension of splitCredits.readResults and a readiness/significance
+panel in the split results UI. The service does NOT re-derive any math: a grep
+before writing found server/src/services/analyticsStats.js already shipping the
+pooled two-proportion z-test, Welch's t with an exact Student-t tail via the
+regularized incomplete beta, varianceFromSums, both sample-size formulas and
+buildVerdict, consumed by funnelAnalytics for the WINDOWED endpoint. splitStats
+imports those primitives and adds only what the split lane lacked: per-arm
+readiness in DELTAS ("needs 240 more visitors"), incremental lift in MONEY
+(rpv_delta, per_1000_visitors, earned_so_far), time_to_decision_days (ported
+from funnel-os lb_split_incremental_service; zero hits in this repo before now),
+and a withholding contract that returns status 'insufficient_data' with prose
+and a NULL p-value in three named states. readResults gained arms[].stats and a
+top-level verdict/floors/method with every pre-existing raw key unchanged in
+name, type and value. The client got a lifetime-fed readiness panel that renders
+even when the windowed analytics overlay 404s, and a winner badge gated on
+readiness through a pure exported predicate.
+TESTED: New harness server/tests/split/statistics.mjs — 257/257. Known-answer
+cases with every derivation written out: normal CDF at exact/table points;
+Student-t at four t-table 5% critical values (3.182446/df3, 2.262157/df9,
+2.228139/df10, 2.085963/df20); two-proportion z hand-computed to z=2.10270,
+p=0.035488; Welch t hand-computed to t=0.97828, df=194.156, p=0.3291;
+required-N 686/arm (proportions) and 63/arm (means). Property cases: swap
+symmetry, 10x scale (rates hold, confidence rises, required-N scale-free),
+A==B never significant at four scales, required-N monotone in 1/delta^2,
+readiness outranking significance, the three withheld states, totality under 11
+hostile inputs (NaN, numeric strings, negatives, conversions>denominator,
+Infinity, n=1). Contract cases against real Postgres: raw counts survive, exactly
+ONE key added per arm, per-session moments, refunds netting into the variance.
+Client-boundary cases running the REAL splitApi.js: the 100x conversion in both
+directions, null->undefined never 0, a 12-row winner-badge truth table, eight
+transport failures, and the real service output through the real client reader.
+Regressions all identical to the pre-change baseline: verifySplitTesting 48/48,
+verifySplitUiGuards 25/25, split-delivery 33/33, verifyFunnelAnalytics 212
+passed/1 failed (the SAME pre-existing DST failure, present before any change).
+vite build exit 0. eslint on touched files: 2 errors, both pre-existing and
+unchanged, 0 added (baseline measured on the stashed tree).
+OUTPUT: 257/257 new; 48/48, 25/25, 33/33, 212+1 regressions; VITE_EXIT=0.
+Two real bugs were caught BY EXECUTION rather than by reading: (1) incrementalLift
+read `orders` while the ledger spells it `conversions`, so every ledger-fed
+caller had a real cvr_delta of 0.03 reported as 0.00 — a genuine difference
+rendered as "no difference"; (2) the harness's own api stub bound at module load
+and captured undefined, so all eight transport scenarios passed their
+"never throws" assertion while every reason was wrong.
+DECISIONS: (1) Compose analyticsStats rather than write a second engine — two
+implementations of one number would put two confidences for one test on screen
+the first time they disagreed by an ulp. (2) TWO floors, deliberately different:
+MIN_STATS_SAMPLE (30) gates whether a p-value is PRINTED, SPLIT_MIN_VISITORS_PER_ARM
+(300) gates whether a WINNER may be named; collapsing them would either hide the
+number until 300 or print one at n=3. (3) Moments are PER SESSION, not per leg —
+the unit of observation must be the unit of randomisation, and per-leg counting
+understates variance and manufactures confidence. (4) The denominator is
+`exposures`, not `visitors`: the money moments are summed over exposure sessions,
+and mixing populations would make the t statistic describe neither. (5) Archived
+arms STAY in the comparison — excluding them would make the same ledger score
+differently before and after an operator retires a loser. Cost accepted and
+documented. (6) A missing control is REPORTED as 'no_control', never silently
+substituted; buildVerdict's fallback to the worst arm by RPV would flip every
+vs-control number. (7) The two pre-existing eslint errors in SplitResultsModal
+were left alone: rewriting live data-loading behaviour with no harness over it,
+to satisfy a rule the repo violates 147 times, is the worse trade.
 STATUS: COMPLETE
 ---
 
@@ -3618,6 +3681,80 @@ fixed during the round (effects were queued per render pass rather than per
 commit, which double-created a ResizeObserver on mount).
 (4) Server still untouched. This lane remains client/src/pages/live/** +
 server/tests/live-view/** + logs/progress.md.
+TIMESTAMP: 2026-08-10 02:05
+TASK: Split-test statistics — review fix round + reference-tool parity
+BUILT: Two rounds on feat/split-statistics. (1) FIX ROUND M1-M5 + minors.
+M1: the statistics floor gated on EVERY arm, so a fresh arm — or an archived
+zero-traffic arm, which readResults returns on essentially every concluded test
+— nulled every figure on a 20,000-exposure test while the windowed banner above
+still named a winner. The comparison family is now scoped: arms at/above
+MIN_STATS_SAMPLE qualify and are compared, counted in the Bonferroni correction
+and subject to the readiness floors; arms below it get stats_status
+'insufficient', keep their readiness block, and are reported in
+verdict.pending_arms. A sub-floor CONTROL withholds under its own reason. M2:
+p is published no lower than 1e-6 and confidence no higher than 0.9999 (with
+p_value_floored declared), and fmtPct caps confidence display — "100.0%
+confidence" was reachable two different ways. Significance is still judged on
+the TRUE p, so the floor cannot move a verdict. M3: the green "significant"
+label is gated on readiness via a pure predicate, and the sample_small /
+normal_approx_weak / floored-p hedges now render (they were shipped and
+displayed nowhere). M4: the stats denominator is `exposures` end-to-end —
+two different numbers were both called "visitors" on one screen. M5:
+time_to_decision_days was dead; wired from ledger timestamps
+(first->last exposure, span floored at one day) with the window choice and its
+bias documented. Minors: orders/conversions honoured at the entry point with an
+explicit first-positive convention; rev_per_exposure withheld under the same
+floor as cvr; prose matched to the shape it describes; the orphan projection
+sentence removed from the winner state; funnelAnalytics passes withStats:false
+so the windowed hot path stops computing a second verdict nothing reads.
+(2) PARITY ROUND: audited the reference layout first and found the verdict
+banner, the delivery-epoch honesty note, the created-date sub-line and the
+window picker ALREADY present and correct — not rebuilt. Added a day-by-day
+table (new readDailySeries, joined on the exposure row's day so numerator and
+denominator describe one cohort), a page-all-time table labelled "not a
+verdict", a per-arm Sample row derived from the service's own floors, a
+Conv. confidence row, 4-decimal rev/visitor, a method footnote, and real
+per-arm opt-in submits attributed by arm page with three guards that REFUSE
+with a reason rather than degrading to zeros.
+TESTED: server/tests/split/statistics.mjs 362/362 (from 257 at review time).
+New: P9 multi-arm scoping (the exact regression shape — a 12-exposure arm now
+changes neither winner, comparison count nor corrected alpha; a 120-exposure
+arm is THIN and still blocks; a third qualifying arm does tighten alpha), P10
+display floor + proof it moves no verdict, P11 total ranked comparator, P12 one
+floor for both rates, P13 prose/shape agreement, P14 time-to-decision wired and
+monotone in the rate, P15 both input spellings byte-identical, C8 rate read from
+the ledger checked against the identity days=(required-held)*arms/rate, C9
+withStats:false byte-identical minus `stats`, C10 daily series shape, C11
+submits real-or-refused, B6 formatter shapes, B7 a STRUCTURAL check against the
+shipped JSX that every confidence cell opts into the display cap and the
+vs-control cell does not. Regressions all identical to baseline:
+verifySplitTesting 48/48, verifySplitUiGuards 25/25, split-delivery 33/33,
+verifyFunnelAnalytics 212 passed/1 failed (the same pre-existing DST failure,
+measured before any change). vite build exit 0; eslint 2 pre-existing errors,
+0 added, 0 warnings.
+OUTPUT: 362/362; 48/48; 25/25; 33/33; 212+1; VITE_EXIT=0. Two more bugs caught
+BY EXECUTION: (a) my first fmtPct cap applied to MAGNITUDE and silently
+corrupted "-100%" — an arm that earned nothing, real data — to "-99.99%";
+(b) the C8 estimate assertion I hand-wrote assumed required=300 when the
+observed-effect sizing returns 804, so the assertion was wrong, not the code.
+DECISIONS: (1) The cap is OPT-IN, not opt-out — confidence is bounded at 100 by
+definition, lifts are not, and defaulting to capped is what corrupted -100%.
+(2) Daily rates are NOT withheld below the stats floor: the denominator prints
+beside every cell and nothing in the verdict reads the series, so it is a shape
+reading rather than a verdict input. (3) The exposure-rate window is
+first->last exposure, NOT first->now (a paused test would decay toward "needs
+400 more days") and NOT a trailing 7d (a younger test would divide by a span it
+never lived through); the known optimistic bias is documented and
+required_sample_per_arm is always shown beside it. (4) LANE BOUNDARY HELD: the
+reference's windowed Submits sub-lines need funnelAnalytics.js, an analytics-lane
+file; per CLAUDE.md section 5 I did not make that change unilaterally and
+flagged it instead. The withStats:false edit there is a performance fix to an
+existing call, not a feature. (5) NO BROWSER VERIFICATION ATTEMPTED: the running
+preview server serves /Users/ludo against production puure-dashboard.onrender.com
+— a different project from this worktree and a live revenue surface — so it
+cannot verify this code and driving it would breach the live-page rule. The UI
+is verified by build, lint, 39 executable assertions over the real client module,
+and the B7 structural check against the shipped JSX.
 STATUS: COMPLETE
 ---
 
@@ -3680,5 +3817,61 @@ revenue_today sums co_sessions.total across currencies with no GROUP BY. On a
 single-currency store it is correct; on a multi-currency store it is a mixed sum
 presented as one number. The client now declines to label it, which is the most
 this lane can honestly do. Worth a server-side follow-up.
+TIMESTAMP: 2026-08-10 03:40
+TASK: Split-test statistics — final gate (GATING 1/2 + 2 small + 1 deferred)
+BUILT: GATING 1: both headline builders (splitStats' winner headline and
+analyticsStats.buildVerdict's) independently wrote (conf*100).toFixed(1), and
+(0.9999*100).toFixed(1) is the string "100.0" — so the largest string on the
+panel claimed flat certainty directly above cells reading ">99.99%", in both the
+lifetime panel and the windowed banner of the same modal. Replaced with one
+shared formatConfidencePct in analyticsStats (the module both already import),
+which is now the only place a confidence becomes a string. The rule is stated in
+terms of the DISPLAYED value — whenever it would round to 100 at the requested
+precision, the bound renders — because a naive >=1 check misses 0.9999 at 1dp,
+the exact value both caps produce. GATING 2: the day-by-day query keyed
+exposures to the exposure day and money to the credit row's own day; those
+normally agree but diverge on an explicit day override, a retry re-credit, a
+void's own date or a rebuilt rollup, splitting a cohort into a false measured
+zero on one day and a hidden dash on the next. The money CTE now joins back to
+the session's exposure row for both day and arm (1:1 by rule 1). SMALL: the
+not_ready body is per-arm accurate instead of asserting both floors against
+every thin arm; Bonferroni narration explains the corrected bar, and narrates
+the transition when a caller supplies previousComparisons. DEFERRED: the
+two-denominators residual documented in-code at the point the second denominator
+is produced, with where the fix belongs (the windowed payload, analytics lane).
+TESTED: statistics.mjs 398/398 (362 before this round, +36). P16 drives BOTH
+server-side builders to the capped value and asserts the rendered string, with
+positive controls on each (an ordinary winner at 97.1% must still print a
+numeric confidence — without that the assertions would pass on a builder that
+had stopped printing confidence at all). P17 asserts arm a is not told to get
+exposures and arm b is not told to get orders, that 3 arms state the corrected
+bar, that 2 arms invent no sentence, and that supplied history narrates the
+tightening. C12 is the reviewer's fixture: two arms with identical lifetime
+figures differing only in credit-day stamp; it asserts the lag is genuinely
+present before asserting one day cell on the exposure day with byte-identical
+shapes. Regressions all identical to baseline: verifySplitTesting 48/48,
+verifySplitUiGuards 25/25, split-delivery 33/33, verifyFunnelAnalytics 212
+passed/1 failed (the same pre-existing DST failure, unchanged by the
+analyticsStats edit). vite build exit 0; eslint 2 pre-existing errors, 0 added,
+0 warnings.
+OUTPUT: 398/398; 48/48; 25/25; 33/33; 212+1; VITE_EXIT=0. Two more bugs caught
+BY EXECUTION: (a) formatConfidencePct(null) returned "0.0%" because Number(null)
+is 0 and finite — a withheld confidence would have rendered as a confident zero,
+the null-vs-0 confusion reintroduced inside the formatter written to fix a
+different honesty bug; (b) two of my own new assertions were arithmetically
+wrong (a positive-control fixture that was not actually a winner, and
+1000/50 asserted as 2.00 rather than 20.00) — the code was right both times.
+DECISIONS: (1) The shared formatter lives in analyticsStats rather than
+splitStats because splitStats already imports from it and the reverse would
+invert the dependency. (2) The display rule is expressed on the FORMATTED value,
+not the raw one, so it cannot be defeated by a change of precision. (3) The FULL
+OUTER JOIN is kept in the daily query even though the cohort key makes the money
+side unable to invent a day: a credit whose exposure row was lost must surface
+as a visible anomaly rather than be silently dropped by an inner join.
+(4) Bonferroni narration takes two forms because the module is pure and has no
+memory; with one comparison no sentence is invented at all. (5) The
+two-denominators reconciliation was NOT built — it joins two lanes' data and
+belongs on the analytics-lane payload; CLAUDE.md section 5 says coordinate
+rather than cross, so it is documented in-code instead.
 STATUS: COMPLETE
 ---

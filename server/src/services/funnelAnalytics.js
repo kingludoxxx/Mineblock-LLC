@@ -1314,7 +1314,20 @@ export async function getSplitResults(
   // this arm's sessions, in-window).
   let ledger = null;
   if (typeof readLedger === 'function') {
-    ledger = await safeRead('split_ledger', warnings, () => readLedger({ testId: tid }, { query }), null);
+    // `withStats: false` — THIS CALL PATH READS THE RAW COUNTS ONLY.
+    //
+    // readResults grew a lifetime statistics block (splitStats.js). This
+    // endpoint is the WINDOWED one: it computes its own verdict from
+    // buildVerdict a few lines below, and the lifetime verdict it would get
+    // here is never rendered. Leaving it on made every windowed page-load pay
+    // for a second per-session moments aggregate, an exposure-rate aggregate
+    // and a whole second verdict — and worse, it put a SECOND, differently
+    // scoped verdict inside a payload whose consumers already read
+    // `verdict` as this endpoint's own.
+    ledger = await safeRead(
+      'split_ledger', warnings,
+      () => readLedger({ testId: tid }, { query, withStats: false }), null
+    );
   }
 
   const totals = arms.reduce(
