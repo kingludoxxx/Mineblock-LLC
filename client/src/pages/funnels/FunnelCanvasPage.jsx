@@ -34,6 +34,7 @@ import {
   Loader2,
   Globe,
   Pencil,
+  Code,
   Trash2,
   Home,
   Copy as CopyIcon,
@@ -130,7 +131,9 @@ function CanvasInner() {
 
   const saveTimer = useRef(null);
   const history = useRef({ stack: [], index: -1 });
-  const [histVersion, setHistVersion] = useState(0);
+  // The COUNTER is never read — bumping it is how the undo/redo buttons get a
+  // re-render after a mutation on the history ref.
+  const [, setHistVersion] = useState(0);
 
   // ---- Node action handlers (stable via refs so node.data stays cheap) ----
   const actionsRef = useRef({});
@@ -148,7 +151,6 @@ function CanvasInner() {
 
       const layout = f?.flow_layout || { nodes: [], edges: [] };
       const posById = new Map((layout.nodes || []).map((n) => [n.id, n]));
-      let autoX = 80;
       const rfNodes = pgs.map((p, i) => {
         const saved = posById.get(p.id);
         const position = saved
@@ -408,7 +410,7 @@ function CanvasInner() {
         try {
           await api.patch(`/funnels/${id}/flow`, buildPayload());
           setSaveState('saved');
-        } catch (err) {
+        } catch {
           setSaveState('error');
           // Reconcile: pull authoritative state back from the server.
           load();
@@ -625,28 +627,48 @@ function CanvasInner() {
     [id]
   );
 
-  const editPage = useCallback((page) => navigate(`/app/funnels/${id}/pages/${page.id}`), [navigate, id]);
+  // FINDING A. "Edit page" opens the VISUAL BUILDER. It used to open the
+  // slice-3 JSON form, which is why the builder had no entry point from this
+  // screen at all — it was reachable only by typing the /builder URL. The JSON
+  // form is still useful (page type, is_home, raw blocks) so it keeps its own
+  // clearly-labelled action rather than being deleted.
+  const editPage = useCallback(
+    (page) => navigate(`/app/funnels/${id}/pages/${page.id}/builder`),
+    [navigate, id]
+  );
+  const editPageJson = useCallback(
+    (page) => navigate(`/app/funnels/${id}/pages/${page.id}`),
+    [navigate, id]
+  );
 
   // Wire the stable action handlers into node.data once.
   actionsRef.current = {
     funnelSlug: funnel?.slug, // F7: node cards show the page's public URL
     onEdit: editPage,
-    onCode: editPage,
-    onSettings: editPage,
+    onCode: editPageJson,
+    onSettings: editPageJson,
     onAnalytics: () => {},
     onPreview: previewPage,
     onDuplicate: duplicatePage,
     onDelete: deletePage,
     onSplitTest: (page) => setSplitQuickPage(page),
   };
+  // FINDING A. Double-clicking a page node opens its builder — the gesture
+  // everyone tries first on a canvas. Split GROUP nodes are skipped: they are
+  // not a page and have no builder.
+  const onNodeDoubleClick = useCallback((_e, node) => {
+    if (!node || isSplitNode(node)) return;
+    const page = node.data?.page;
+    if (page?.id) editPage(page);
+  }, [editPage]);
+
   useEffect(() => {
     // Page actions belong to page nodes only — a split group node carries its
     // OWN handlers (onSetup/onResults) and must not have them shadowed.
     setNodes((nds) =>
       nds.map((n) => (isSplitNode(n) ? n : { ...n, data: { ...n.data, ...actionsRef.current } }))
     );
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [editPage, previewPage, duplicatePage, deletePage, setNodes, funnel?.slug]);
+  }, [editPage, editPageJson, previewPage, duplicatePage, deletePage, setNodes, funnel?.slug]);
 
   // ---- Publish + rename ----
   const publish = useCallback(async () => {
@@ -938,6 +960,7 @@ function CanvasInner() {
               onEdgesChange={onEdgesChange}
               onConnect={onConnect}
               onNodeDragStop={onNodeDragStop}
+              onNodeDoubleClick={onNodeDoubleClick}
               onEdgesDelete={onEdgesDelete}
               onMove={onMove}
               nodeTypes={nodeTypes}
@@ -977,18 +1000,25 @@ function CanvasInner() {
                     { k: 'S', icon: Smartphone },
                     { k: 'M', icon: Tablet },
                     { k: 'L', icon: Monitor },
-                  ].map(({ k, icon: Icon }) => (
-                    <button
-                      key={k}
-                      onClick={() => setDeviceSize(k)}
-                      className={`p-1.5 rounded-md cursor-pointer transition-colors ${
-                        deviceSize === k ? 'bg-bg-hover text-accent-text' : 'text-text-muted hover:text-text-primary hover:bg-bg-hover'
-                      }`}
-                      title={`${k} card size`}
-                    >
-                      <Icon className="w-4 h-4" />
-                    </button>
-                  ))}
+                  ].map((d) => {
+                    // Bound as a local rather than renamed in the destructure:
+                    // no-unused-vars applies argsIgnorePattern (not
+                    // varsIgnorePattern) to a renamed param, so `icon: Icon`
+                    // reads as an unused argument even though the JSX uses it.
+                    const Icon = d.icon;
+                    return (
+                      <button
+                        key={d.k}
+                        onClick={() => setDeviceSize(d.k)}
+                        className={`p-1.5 rounded-md cursor-pointer transition-colors ${
+                          deviceSize === d.k ? 'bg-bg-hover text-accent-text' : 'text-text-muted hover:text-text-primary hover:bg-bg-hover'
+                        }`}
+                        title={`${d.k} card size`}
+                      >
+                        <Icon className="w-4 h-4" />
+                      </button>
+                    );
+                  })}
                 </div>
               </Panel>
 
@@ -1006,6 +1036,7 @@ function CanvasInner() {
         <PagesListTab
           pages={pages}
           onEdit={editPage}
+          onEditJson={editPageJson}
           onPreview={previewPage}
           onDuplicate={duplicatePage}
           onDelete={deletePage}
@@ -1061,7 +1092,9 @@ function CanvasInner() {
   );
 }
 
-function PagesListTab({ pages, onEdit, onPreview, onDuplicate, onDelete }) {
+// FINDING A. "Edit page" is the PRIMARY action and opens the visual builder;
+// the JSON form keeps its own button, labelled as such.
+function PagesListTab({ pages, onEdit, onEditJson, onPreview, onDuplicate, onDelete }) {
   return (
     <div className="flex-1 overflow-auto p-6">
       <div className="bg-bg-card border border-border-default rounded-xl overflow-hidden">
@@ -1106,8 +1139,15 @@ function PagesListTab({ pages, onEdit, onPreview, onDuplicate, onDelete }) {
                       <button onClick={() => onDuplicate(p)} className="p-1.5 rounded-md text-text-muted hover:text-text-primary hover:bg-bg-hover cursor-pointer" title="Duplicate">
                         <CopyIcon className="w-4 h-4" />
                       </button>
-                      <button onClick={() => onEdit(p)} className="p-1.5 rounded-md text-text-muted hover:text-text-primary hover:bg-bg-hover cursor-pointer" title="Edit page">
-                        <Pencil className="w-4 h-4" />
+                      <button onClick={() => onEditJson(p)} className="p-1.5 rounded-md text-text-muted hover:text-text-primary hover:bg-bg-hover cursor-pointer" title="Edit JSON — page type, home flag and the raw blocks array">
+                        <Code className="w-4 h-4" />
+                      </button>
+                      <button
+                        onClick={() => onEdit(p)}
+                        className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs font-medium bg-accent/15 text-accent hover:bg-accent/25 cursor-pointer"
+                        title="Open the visual page builder"
+                      >
+                        <Pencil className="w-3.5 h-3.5" /> Edit page
                       </button>
                       <button onClick={() => onDelete(p)} className="p-1.5 rounded-md text-text-muted hover:text-danger hover:bg-bg-hover cursor-pointer" title="Archive page">
                         <Trash2 className="w-4 h-4" />

@@ -17,10 +17,10 @@
 //
 // props.style is applied on the public page by the server's blockStyleWrap()
 // (sanitized) and mirrored on the canvas via styleUtils.styleToCanvas().
-// props.mobile_styles is honored on the CANVAS today; the public renderer
-// needs the media-query emitter documented in the delivery report (only the
-// integrator edits funnelRender.js).
-import { useEffect, useRef, useState } from 'react';
+// props.mobile_styles is honored in BOTH places: the canvas applies it at the
+// mobile device preview, and funnelRender.js emits it as a
+// `@media (max-width:767px)` rule from the same sanitizer.
+import { useState } from 'react';
 import { Trash2, Copy, ShieldAlert, AlertTriangle, Info } from 'lucide-react';
 import { BLOCK_DEFS } from './blockRegistry';
 import {
@@ -36,45 +36,68 @@ const inputCls =
 const labelCls = 'block text-[10px] uppercase tracking-wider text-text-faint mb-1';
 
 // JSON sub-structure editor: local text state so half-typed JSON never
-// clobbers the block; commits only when the text parses. Resyncs from the
-// outside value (undo/redo, reorder) whenever the field is not focused.
+// clobbers the block.
+//
+// F13. Commits on BLUR, not on every parseable keystroke. Committing per
+// keystroke meant every intermediate state that happened to parse was a real
+// edit — a history entry AND an autosave — so trimming a `line_items` array
+// PATCHed the half-deleted version to the server before the operator had
+// finished retyping it, and undo had to be pressed once per character.
+//
+// The outside re-sync (undo/redo, reorder, restore) is adjusted DURING RENDER
+// rather than in an effect — the same pattern PageSettings uses for the slug.
+// An effect would render once with the stale text and then immediately
+// re-render, which is the cascading render react-hooks/set-state-in-effect
+// exists to catch. `edited` is "the operator has uncommitted text", so a
+// resync never overwrites work in progress.
 function JsonField({ value, onCommit }) {
-  const [text, setText] = useState(() => JSON.stringify(value ?? null, null, 2));
+  const serialized = JSON.stringify(value ?? null, null, 2);
+  const [text, setText] = useState(serialized);
+  const [lastSeen, setLastSeen] = useState(serialized);
+  const [edited, setEdited] = useState(false);
   const [err, setErr] = useState(null);
-  const focusedRef = useRef(false);
 
-  useEffect(() => {
-    if (!focusedRef.current) {
-      setText(JSON.stringify(value ?? null, null, 2));
-      setErr(null);
-    }
-  }, [value]);
+  if (serialized !== lastSeen) {
+    setLastSeen(serialized);
+    if (!edited) { setText(serialized); setErr(null); }
+  }
 
-  const onChange = (t) => {
-    setText(t);
+  // Invalid JSON is NOT discarded on blur — the operator keeps every character
+  // and the message says the block was left alone. Reverting would throw away
+  // work whose only sin is being mid-edit.
+  const commit = () => {
+    if (!edited) return;
+    let parsed;
     try {
-      const parsed = JSON.parse(t);
-      setErr(null);
-      onCommit(parsed);
+      parsed = JSON.parse(text);
     } catch (e) {
-      setErr(`Invalid JSON: ${e.message}`);
+      setErr(`Invalid JSON — the block was not changed: ${e.message}`);
+      return;
     }
+    setErr(null);
+    setEdited(false);
+    const canonical = JSON.stringify(parsed ?? null, null, 2);
+    setText(canonical);
+    if (canonical !== serialized) onCommit(parsed);
   };
 
   return (
     <div>
       <textarea
         value={text}
-        onChange={(e) => onChange(e.target.value)}
-        onFocus={() => { focusedRef.current = true; }}
-        onBlur={() => {
-          focusedRef.current = false;
-          if (err) { setText(JSON.stringify(value ?? null, null, 2)); setErr(null); }
+        onChange={(e) => { setText(e.target.value); setEdited(true); setErr(null); }}
+        onBlur={commit}
+        onKeyDown={(e) => {
+          // ⌘/Ctrl+Enter commits without leaving the field.
+          if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') { e.preventDefault(); commit(); }
         }}
         spellCheck={false}
         rows={5}
         className={`${inputCls} font-mono text-xs leading-relaxed resize-y`}
       />
+      {edited && !err && (
+        <div className="mt-1 text-[11px] text-amber-400/90">Click away or press ⌘↵ to apply</div>
+      )}
       {err && <div className="mt-1 text-xs text-danger">{err}</div>}
     </div>
   );
@@ -538,7 +561,7 @@ function BlockProps({ block, onProp, onDelete, onDuplicate }) {
             <p className="mt-1 text-[11px] text-text-faint leading-relaxed">
               Renames this block in the outline and adds a <code className="font-mono">data-blk-name</code> hook —
               target it in CSS with <code className="font-mono">[data-blk-name=&apos;…&apos;]</code>.
-              {' '}On the canvas today; the published page needs the matching one-liner in the renderer.
+              {' '}The published page emits the same attribute, so the selector matches here and there.
             </p>
           </div>
 
@@ -679,12 +702,13 @@ function PageSettings({ meta, onMeta, funnel, blocksCount, saveError }) {
             <p className="mt-1.5 flex items-start gap-1.5 text-[11px] text-danger leading-snug">
               <AlertTriangle className="w-3 h-3 mt-0.5 shrink-0" />
               Another page in this funnel already uses this slug, so the server refused the change and your
-              previous slug is still live. Pick a different one — the save retries by itself.
+              previous slug is still live. Pick a different one and press Enter — the refused slug is NOT
+              retried on its own, which is what keeps your other edits saving normally.
             </p>
           ) : (
             <p className="mt-1 text-[11px] text-text-faint leading-snug">
               Must be unique inside this funnel. If it collides the server refuses the save and keeps the
-              old slug — nothing is silently renamed.
+              old slug — nothing is silently renamed, and the rest of your edits still save.
             </p>
           )}
         </div>

@@ -254,7 +254,9 @@ export default function AIDeveloperPanel({
   }, [input, busy, pendingImages, items, pageId, funnelId, model, attachment, onApplyOps, startPolling]);
 
   // ---- "Use it" on a finished job ------------------------------------------
-  const useAsset = useCallback((job) => {
+  // NOT named useAsset — a `use`-prefixed const reads as a hook to the linter
+  // (rules-of-hooks) and to the next reader, and this is an event handler.
+  const applyAsset = useCallback((job) => {
     if (!job.url || busy) return;
     const target = attachment
       ? `the attached ${attachment.kind} block (${attachment.block_id})`
@@ -314,9 +316,13 @@ export default function AIDeveloperPanel({
   const empty = items.length === 0 && !busy;
   const modelLabel = useMemo(() => MODELS.find((m) => m.id === model)?.label || model, [model]);
 
+  // Docks on the LEFT of the canvas (the reference tool's layout), so the
+  // divider is the RIGHT border. The builder renders it IN PLACE OF the
+  // Elements/Outline rail rather than beside it — three fixed rails plus a
+  // fixed inspector left the canvas nothing to live in.
   return (
     <div
-      className="w-[380px] shrink-0 h-full flex flex-col bg-[#0d1117] border-l border-zinc-800 text-zinc-100"
+      className="w-[380px] shrink-0 h-full flex flex-col bg-[#0d1117] border-r border-zinc-800 text-zinc-100"
       onDrop={onDrop}
       onDragOver={(e) => e.preventDefault()}
     >
@@ -467,7 +473,7 @@ export default function AIDeveloperPanel({
                           <img src={it.url} alt={it.prompt} className="w-full rounded-lg border border-zinc-700 max-h-44 object-cover" />
                         )}
                         <button
-                          onClick={() => useAsset(it)}
+                          onClick={() => applyAsset(it)}
                           disabled={busy}
                           className="mt-2 w-full text-[11.5px] font-semibold px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white cursor-pointer disabled:opacity-50"
                         >
