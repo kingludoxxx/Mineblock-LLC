@@ -713,49 +713,92 @@ const BLOCK_STYLE_LEN_KEYS = [
   ['padding', 'padding'],
 ];
 
+// BREAKPOINT slice (additive): the declaration builder, factored OUT of
+// blockStyleWrap so the base bag (props.style, emitted inline) and the mobile
+// bag (props.mobile_styles, emitted in a media query) are sanitized and
+// clamped by the SAME code. Two copies of this logic would drift, and a key
+// that is clamped on desktop but not on mobile is a hole, not a nuisance.
+//
+// text_align / justify_content are ENUM keys: they are checked against a
+// closed set rather than metachar-stripped, because a closed set cannot be
+// escaped out of. justify_content also emits display:flex — a justify value
+// on a non-flex box is inert, and the builder's canvas mirrors this exactly.
+const BLOCK_TEXT_ALIGNS = new Set(['left', 'center', 'right', 'justify']);
+const BLOCK_JUSTIFY = new Set(['flex-start', 'center', 'flex-end', 'space-between', 'space-around', 'space-evenly']);
+
+// CSS COMMENT OPENERS ARE A RULE-SWALLOWING VECTOR. In an inline style
+// attribute a stray '/*' only spoils that one attribute; in the stylesheet
+// blockMobileCss builds, an unterminated '/*' comments out EVERY LATER RULE
+// in the sheet — one block's typo silently deletes every other block's mobile
+// styling. Both delimiters are removed, repeatedly, so a crafted value like
+// '/*/*' cannot leave a live opener behind after a single pass.
+//
+// The delimiters are removed, NOT the characters '/' and '*': a bare slash is
+// legitimate in values this bag actually carries — rgb(0 0 0 / 50%) is the
+// modern alpha syntax and url(/img/x.png) is a valid background — and
+// stripping it would silently drop those declarations on the existing inline
+// path as well as the new one.
+function stripCssComments(v) {
+  let out = v;
+  for (;;) {
+    const next = out.replace(/\/\*|\*\//g, '');
+    if (next === out) return out;
+    out = next;
+  }
+}
+
+export function blockStyleDecls(rawStyle) {
+  const s = isPlainObject(rawStyle) ? rawStyle : null;
+  if (!s) return [];
+  // Metachar strip (NOT escape) — see the 'section' case comment.
+  const cssv = (v, max) =>
+    stripCssComments(String(v).slice(0, max).replace(/["'`;{}<>\\]/g, '')).trim();
+  const decls = [];
+  for (const [key, cssName] of BLOCK_STYLE_LEN_KEYS) {
+    if (s[key] != null && String(s[key]).trim() !== '') {
+      const v = cssv(s[key], 60);
+      if (v) decls.push(`${cssName}:${v}`);
+    }
+  }
+  const z = parseInt(s.z_index, 10);
+  if (Number.isFinite(z)) {
+    // position:relative so z-index actually participates in stacking.
+    decls.push(`position:relative;z-index:${Math.max(-9999, Math.min(z, 9999))}`);
+  }
+  if (s.bg != null && String(s.bg).trim() !== '') {
+    const v = cssv(s.bg, 300);
+    if (v) decls.push(`background:${v}`);
+  }
+  if (s.text_color != null && String(s.text_color).trim() !== '') {
+    const v = cssv(s.text_color, 60);
+    if (v) decls.push(`color:${v}`);
+  }
+  if (s.font_family != null && String(s.font_family).trim() !== '') {
+    const v = cssv(s.font_family, 120);
+    if (v) decls.push(`font-family:${v}`);
+  }
+  if (s.font_weight != null && String(s.font_weight).trim() !== '') {
+    const v = cssv(s.font_weight, 12);
+    if (v) decls.push(`font-weight:${v}`);
+  }
+  const fs = Number(s.font_size);
+  if (Number.isFinite(fs)) decls.push(`font-size:${Math.max(4, Math.min(fs, 300))}px`);
+  const lh = Number(s.line_height);
+  if (Number.isFinite(lh)) decls.push(`line-height:${Math.max(0.1, Math.min(lh, 10))}`);
+  const ls = Number(s.letter_spacing);
+  if (Number.isFinite(ls)) decls.push(`letter-spacing:${Math.max(-50, Math.min(ls, 100))}px`);
+  if (BLOCK_TEXT_ALIGNS.has(s.text_align)) decls.push(`text-align:${s.text_align}`);
+  if (BLOCK_JUSTIFY.has(s.justify_content)) decls.push(`display:flex;justify-content:${s.justify_content}`);
+  return decls;
+}
+
 export function blockStyleWrap(rawProps) {
   const none = { styleAttr: '', classes: '' };
   try {
     const p = isPlainObject(rawProps) ? rawProps : {};
     const s = isPlainObject(p.style) ? p.style : null;
     if (!s) return none;
-    // Metachar strip (NOT escape) — see the 'section' case comment.
-    const cssv = (v, max) =>
-      String(v).slice(0, max).replace(/["'`;{}<>\\]/g, '').trim();
-    const decls = [];
-    for (const [key, cssName] of BLOCK_STYLE_LEN_KEYS) {
-      if (s[key] != null && String(s[key]).trim() !== '') {
-        const v = cssv(s[key], 60);
-        if (v) decls.push(`${cssName}:${v}`);
-      }
-    }
-    const z = parseInt(s.z_index, 10);
-    if (Number.isFinite(z)) {
-      // position:relative so z-index actually participates in stacking.
-      decls.push(`position:relative;z-index:${Math.max(-9999, Math.min(z, 9999))}`);
-    }
-    if (s.bg != null && String(s.bg).trim() !== '') {
-      const v = cssv(s.bg, 300);
-      if (v) decls.push(`background:${v}`);
-    }
-    if (s.text_color != null && String(s.text_color).trim() !== '') {
-      const v = cssv(s.text_color, 60);
-      if (v) decls.push(`color:${v}`);
-    }
-    if (s.font_family != null && String(s.font_family).trim() !== '') {
-      const v = cssv(s.font_family, 120);
-      if (v) decls.push(`font-family:${v}`);
-    }
-    if (s.font_weight != null && String(s.font_weight).trim() !== '') {
-      const v = cssv(s.font_weight, 12);
-      if (v) decls.push(`font-weight:${v}`);
-    }
-    const fs = Number(s.font_size);
-    if (Number.isFinite(fs)) decls.push(`font-size:${Math.max(4, Math.min(fs, 300))}px`);
-    const lh = Number(s.line_height);
-    if (Number.isFinite(lh)) decls.push(`line-height:${Math.max(0.1, Math.min(lh, 10))}`);
-    const ls = Number(s.letter_spacing);
-    if (Number.isFinite(ls)) decls.push(`letter-spacing:${Math.max(-50, Math.min(ls, 100))}px`);
+    const decls = blockStyleDecls(s);
 
     const classes = [];
     if (s.css_class != null && String(s.css_class).trim() !== '') {
@@ -777,6 +820,81 @@ export function blockStyleWrap(rawProps) {
     // Fail open, like every other block path — a hostile style object must
     // degrade to "no styling", never break the serve.
     return none;
+  }
+}
+
+// BREAKPOINT slice (additive): per-block MOBILE overrides.
+//
+// props.mobile_styles carries the same keys as props.style and applies below
+// MOBILE_MAX_PX. It CANNOT ride the wrapper's style attribute — a style
+// attribute has no media context — so it is emitted as a page-level <style>
+// keyed on the data-blk-id the wrapper already carries.
+//
+// !important is LOAD-BEARING, not decoration: blockStyleWrap puts the base
+// bag in an INLINE style attribute, and an inline declaration outranks every
+// selector in the cascade. Without !important the mobile rule would parse,
+// match, and lose — silently — on exactly the blocks that have a base style,
+// which is all of the ones anyone bothers to override.
+//
+// …which is also why a mobile override must never emit `display`. The theme
+// hides blocks with .lb-hide-mobile{display:none!important}; an emitted
+// display:flex!important would be an important declaration of the SAME
+// property, and (once specificity is equalised) the later rule wins. A block
+// the operator explicitly hid on mobile would come back purely because they
+// also set a justify preset on it. Two belts are worn here: this filter, and
+// the theme rule raised to [data-blk-id].lb-hide-mobile so it outranks a
+// single-attribute selector even if a display ever does get through.
+//
+// The id is allow-listed, not escaped: an id outside [A-Za-z0-9_-] is SKIPPED
+// rather than sanitized, so nothing a block can carry can close the selector
+// and inject rules of its own.
+export const MOBILE_MAX_PX = 767; // same boundary as THEME_CSS's .lb-hide-mobile
+const BLOCK_ID_CSS_RE = /^[A-Za-z0-9_-]{1,64}$/;
+
+export function blockMobileCss(blocks) {
+  try {
+    const list = Array.isArray(blocks) ? blocks : [];
+    const rules = [];
+    for (const b of list) {
+      if (!isPlainObject(b)) continue;
+      const bid = String((b || {}).id || '');
+      if (!BLOCK_ID_CSS_RE.test(bid)) continue;
+      const props = isPlainObject(b.props) ? b.props : {};
+      const base = isPlainObject(props.style) ? props.style : {};
+      const decls = blockStyleDecls(props.mobile_styles);
+      if (!decls.length) continue;
+      // One decl string may itself hold two declarations (z-index carries
+      // position:relative; justify carries display:flex) — split, then mark
+      // each, so a compound value cannot smuggle an unmarked half through.
+      let parts = decls
+        .join(';')
+        .split(';')
+        .map((one) => one.trim())
+        .filter(Boolean);
+      if (base.hide_mobile === true) {
+        // The operator asked for this block to be GONE below the breakpoint.
+        // Nothing in the mobile bag may resurrect it.
+        parts = parts.filter((one) => !/^display\s*:/i.test(one));
+      }
+      if (!parts.length) continue;
+      const important = parts.map((one) => `${one} !important`).join(';');
+      rules.push(`[data-blk-id='${bid}']{${important}}`);
+    }
+    if (!rules.length) return '';
+    // The raised visibility rule is re-stated HERE rather than in THEME_CSS.
+    // Raising it in the theme would add bytes to the head of every page ever
+    // served, including the overwhelming majority that carry no overrides at
+    // all — and byte-identity for those pages is a property the render
+    // harness enforces. Emitted inside this sheet it costs nothing until a
+    // page actually has an override to guard against, and at
+    // [data-blk-id].lb-hide-mobile it outranks the single-attribute selectors
+    // above by specificity, so order cannot decide it either.
+    const guard = `[data-blk-id].lb-hide-mobile{display:none !important}`;
+    return `@media (max-width:${MOBILE_MAX_PX}px){${rules.join('')}${guard}}`;
+  } catch {
+    // Fail open, exactly like blockStyleWrap: a hostile override degrades to
+    // "no mobile styling", never to a broken serve.
+    return '';
   }
 }
 
@@ -1380,6 +1498,11 @@ export function renderPageHtml(page, funnel, pagesById) {
     blocksHtml = `<!-- blocks render failed: ${esc(String(err?.message || err))} -->`;
   }
 
+  // BREAKPOINT slice (additive): per-block mobile overrides need a media
+  // query, which a style attribute cannot express — so they ride a page-level
+  // <style>. Empty string when no block carries mobile_styles.
+  const mobileCss = blockMobileCss(blocks);
+
   const pageCss = String((page || {}).custom_css || '');
   const pageJs = String((page || {}).custom_js || '');
   const customHtml = String((page || {}).custom_html || '');
@@ -1445,7 +1568,8 @@ ${favicon ? `<link rel="icon" href="${esc(favicon)}"/>` : '<link rel="icon" href
 <meta property="og:title" content="${esc(title)}" />
 <meta property="og:description" content="${esc(desc)}" />
 ${og ? `<meta property="og:image" content="${esc(og)}"/>` : ''}
-<style>${THEME_CSS}</style>
+<style>${THEME_CSS}</style>${mobileCss ? `
+<style id="lb-blk-mobile">${mobileCss}</style>` : ''}
 ${pageCss ? `<style id="lb-page-css">${pageCss}</style>` : ''}
 ${flowScript}
 ${headHtml}${settingsHeadExtras}
