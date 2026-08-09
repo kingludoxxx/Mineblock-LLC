@@ -243,9 +243,11 @@ export async function refundPayment(creds, { paymentId, amount = null, reason = 
   if (!creds?.api_key || !creds?.company_id) return { ok: false, error: 'not_configured' };
   const pid = String(paymentId || '').trim();
   if (!pid) return { ok: false, error: 'missing_payment_id' };
+  // Whop's /refund rejects a free-text `reason` ("Invalid value for parameter
+  // 'reason'") and refunds fine without one — verified against the live API on
+  // the first real order. Amount omitted = full refund.
   const body = {};
   if (amount != null && Number.isFinite(Number(amount))) body.amount = Number(amount);
-  if (reason) body.reason = String(reason).slice(0, 200);
   const res = await whopFetch(creds.api_key, 'POST', `/payments/${encodeURIComponent(pid)}/refund`, {
     body,
     sandbox: creds.sandbox,
