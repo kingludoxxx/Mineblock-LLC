@@ -609,19 +609,38 @@ function renderBlockInner(block) {
     //    storefront_grid — no money math happens here and nothing below can
     //    feed the charge. Real amounts stay server-side on the whop money path.
     case 'order_bump': {
-      // Bordered offer card: checkbox + label + price from props. The checkbox
-      // is display-only for now — wiring a bump into the charge is a later
-      // slice; this block deliberately carries NO charging logic.
-      const label = esc(
-        String(p.label || 'Yes! Add this one-time offer to my order')
+      // Bordered offer card: checkbox + headline + price + description.
+      // DISPLAY fields (headline/offer_name/color/description) are authored in
+      // the builder's Content tab; the CHARGE is wired separately (variant_id
+      // below + the checkout runtime + POST /session/:id/bump) — display
+      // strings never feed money math.
+      const offerName = String(p.offer_name || '').trim();
+      // Headline: authored → auto from the offer name (no price server-side —
+      // the charge price is authoritative at toggle time) → legacy label.
+      const headline = esc(
+        String(p.headline || '').trim()
+          || (offerName ? `Yes, I want the ${offerName}!` : '')
+          || String(p.label || 'Yes! Add this one-time offer to my order')
       );
       const price =
         p.price != null && String(p.price).trim()
           ? `<span class='lb-bump-price' style='font-weight:700;color:#111827;white-space:nowrap'>${esc(String(p.price))}</span>`
           : '';
+      // Offer-name color: strict hex or the default ink — never raw CSS.
+      const nameColor = /^#[0-9a-fA-F]{3,8}$/.test(String(p.offer_name_color || ''))
+        ? String(p.offer_name_color) : '#111827';
+      // Description allows EXACTLY <b> and <u>: escape everything, then
+      // restore only the four literal tokens — nothing else can re-enter.
+      const descRaw = String(p.description || '').trim();
+      const descSafe = esc(descRaw)
+        .split('&lt;b&gt;').join('<b>').split('&lt;/b&gt;').join('</b>')
+        .split('&lt;u&gt;').join('<u>').split('&lt;/u&gt;').join('</u>');
+      const namePrefix = offerName
+        ? `<strong style='color:${nameColor}'>${esc(offerName)}:</strong> `
+        : '';
       const bumpDesc =
-        p.description != null && String(p.description).trim()
-          ? `<p class='lb-bump-desc' style='margin:8px 0 0 28px;color:#6b7280;font-size:0.9rem'>${esc(String(p.description))}</p>`
+        descRaw || offerName
+          ? `<p class='lb-bump-desc' style='margin:8px 0 0 28px;color:#6b7280;font-size:0.9rem'>${namePrefix}${descSafe}</p>`
           : '';
       const checked = p.checked === true ? " checked='checked'" : '';
       // Charge wiring: the checkout runtime only arms bumps that carry a
@@ -636,7 +655,7 @@ function renderBlockInner(block) {
         `<div class='lb-order-bump'${bumpRef} style='border:2px dashed #f59e0b;border-radius:12px;background:#fffbeb;padding:16px 18px;margin:16px 0'>` +
         `<label style='display:flex;align-items:flex-start;gap:10px;cursor:pointer'>` +
         `<input type='checkbox' class='lb-bump-check'${checked} style='margin-top:3px;width:18px;height:18px;accent-color:#f59e0b'/>` +
-        `<span class='lb-bump-label' data-el='label' style='flex:1;font-weight:600;color:#111827'>${label}</span>` +
+        `<span class='lb-bump-label' data-el='label' style='flex:1;font-weight:600;color:#111827'>${headline}</span>` +
         price +
         `</label>` +
         bumpDesc +
