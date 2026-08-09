@@ -434,7 +434,14 @@ router.post('/whop', async (req, res) => {
     if (!raw || !event || typeof event !== 'object') {
       return res.status(400).json({ success: false, error: { code: 'bad_payload' } });
     }
-    const eventType = event.type || '';
+    // Whop's event name: `type` is what the reference implementation and our
+    // adapter both assume, and a signed probe against production confirms that
+    // spelling routes correctly. Accept `action`/`event` too — gateways rename
+    // this field across API versions, and the failure mode is the worst one
+    // available here: a VALID signed payment silently answered 200 "ignored",
+    // money captured at Whop with no order and nothing flagged. Tolerance is
+    // free; being wrong is a charged customer with no order.
+    const eventType = event.type || event.action || event.event || '';
     const data = event.data && typeof event.data === 'object' ? event.data : {};
     const metadata = data.metadata && typeof data.metadata === 'object' ? data.metadata : {};
     const webhookId = req.get('webhook-id') || '';
