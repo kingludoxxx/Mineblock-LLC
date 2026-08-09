@@ -605,6 +605,87 @@ async function resolveRedirectUrl(req, session) {
   }
 }
 
+// ── Recovery-link resume (abandoned-checkout emails land here) ──────────────
+// PUBLIC by necessity; the HMAC token is the credential. Contract (see
+// routes/abandonedCheckouts.js header): NEVER re-open a settled cart, NEVER
+// mint a gateway session, NEVER mutate session status or extend token life.
+// Every failure mode — forged, expired, malformed, vanished row — answers the
+// SAME 302 to the site root, so the endpoint confirms nothing to a prober.
+router.get('/resume/:token', async (req, res) => {
+  const home = '/';
+  try {
+    if (!(await rateLimit(req, res, 'resume', 60))) return;
+    await ensureCheckoutTables();
+    const { verifyRecoveryToken } = await import('../services/abandonedRecovery.js');
+    const claims = verifyRecoveryToken(String(req.params.token || ''));
+    if (!claims) return res.redirect(302, home);
+
+    if (claims.source === 'shopify') {
+      const rows = await pgQuery(
+        `SELECT recovery_url FROM crm_abandoned_checkouts WHERE checkout_id = $1`,
+        [String(claims.ref)]
+      );
+      const url = rows.length ? String(rows[0].recovery_url || '') : '';
+      return res.redirect(302, /^https:\/\//.test(url) ? url : home);
+    }
+
+    // funnel source
+    const rows = await pgQuery(
+      `SELECT id, funnel_id, page_id, status, paid_at FROM co_sessions WHERE id = $1`,
+      [String(claims.ref)]
+    );
+    if (!rows.length) return res.redirect(302, home);
+    const session = rows[0];
+    const settled = ['paid', 'deposit_paid', 'refunded'].includes(String(session.status))
+      || session.paid_at != null;
+    if (settled) {
+      // A settled cart NEVER re-opens (double-charge vector). Land on the
+      // thank-you page when resolvable, the site root otherwise.
+      const thanks = await resolveRedirectUrl(req, session);
+      return res.redirect(302, thanks || home);
+    }
+    const pageUrl = await resolveSessionPageUrl(req, session);
+    if (!pageUrl) return res.redirect(302, home);
+    // co_events trail — fire-and-forget, a log failure never blocks the buyer.
+    pgQuery(
+      `INSERT INTO co_events (session_id, kind, data) VALUES ($1, 'resume', $2)`,
+      [session.id, { via: 'recovery_link' }]
+    ).catch((err) => console.error('[checkout] resume event write failed (non-fatal):', err.message));
+    return res.redirect(302, pageUrl);
+  } catch (err) {
+    console.error('[checkout] resume failed (fail-open to home):', err.message);
+    return res.redirect(302, home);
+  }
+});
+
+// The session's OWN checkout page URL (resume lands the buyer back on the
+// form), carrying resume + co_session_id params per the recovery contract.
+async function resolveSessionPageUrl(req, session) {
+  try {
+    if (!session.funnel_id || !session.page_id) return '';
+    const [f] = await pgQuery(
+      `SELECT slug FROM funnels WHERE id = $1 AND NOT archived`, [session.funnel_id]
+    );
+    if (!f || !f.slug) return '';
+    const [p] = await pgQuery(
+      `SELECT slug FROM funnel_pages
+        WHERE id = $1 AND funnel_id = $2 AND NOT archived AND status = 'published'`,
+      [session.page_id, session.funnel_id]
+    );
+    if (!p) return '';
+    const proto = String(req.headers['x-forwarded-proto'] || req.protocol || 'https').split(',')[0].trim();
+    const host = String(req.headers['x-forwarded-host'] || req.get('host') || '').split(',')[0].trim();
+    if (!host) return '';
+    const slug = String(p.slug || '/');
+    const path = slug === '/' ? `/f/${f.slug}` : `/f/${f.slug}${slug.startsWith('/') ? slug : '/' + slug}`;
+    const ref = encodeURIComponent(session.id);
+    return `${proto}://${host}${path}?resume=${ref}&co_session_id=${ref}`;
+  } catch (e) {
+    console.error('[checkout] resume page resolve failed (non-fatal):', e.message);
+    return '';
+  }
+}
+
 router.post('/whop/create-session', async (req, res) => {
   try {
     if (!(await rateLimit(req, res, 'whop-create', 20))) return;
