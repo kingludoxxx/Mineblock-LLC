@@ -14,15 +14,16 @@
 // Exits non-zero on the first failure. No network, no DOM.
 import {
   buildFeeSettingsBody, buildInlineRateBody, buildInlineShipBody, computeCoverage,
-  computeMargin, EM_DASH, fmtMoney, fmtMoney0, fmtPct, fmtX, formatCost, matchesFilter,
-  parseCostInput, parseManualSpend, resolveFanOutTargets, resolveShip, rowCoverage,
-  uncostedRevenue,
+  computeMargin, EM_DASH, fmtMoney, fmtMoney0, fmtPct, fmtX, formatCost, hasShipMap,
+  matchesFilter, parseCostInput, parseManualSpend, resolveFanOutTargets, resolveShip,
+  rowCoverage, toFeeDraft, uncostedRevenue, utcDay,
 } from '../src/pages/costs/costTargets.js';
 
 import api from '../src/services/api.js';
 import {
   COSTS_ROUTES, GATEWAYS, costApiError, dailyOf, fetchPnlOverview, fetchVariants,
   manualOf, postDetect, postManualSpend, postRate, postSpendSync, rowsOf, sourcesOf,
+  unwrap,
 } from '../src/pages/costs/costsApi.js';
 
 let passed = 0;
@@ -97,16 +98,30 @@ eq('filter ignored shows ignored', matchesFilter(rows[2], 'ignored'), true);
 
 /* ── 6. rate bodies are SNAPSHOTS, and null survives to the wire ──────── */
 const row = { variant_id: '111', unit_cogs: 4.5, ship: { main: 2, upsell: null } };
-const cogsBody = buildInlineRateBody(row, null);
+const { body: cogsBody } = buildInlineRateBody(row, null);
 eq('clearing a cost sends null (never 0)', cogsBody.unit_cogs, null);
 eq('a cogs save carries the ship map forward', cogsBody.ship, { main: 2, upsell: null });
 ok('inline body pins no effective_from', !('effective_from' in cogsBody) && !('only_from_today' in cogsBody));
-const shipBody = buildInlineShipBody(row, 'upsell', 0);
+const { body: shipBody } = buildInlineShipBody(row, 'upsell', 0);
 eq('a ship save carries unit_cogs forward', shipBody.unit_cogs, 4.5);
 eq('an explicit ship 0 survives (known free leg)', shipBody.ship.upsell, 0);
-const shipClear = buildInlineShipBody({ ...row, unit_cogs: null }, 'main', null);
+const { body: shipClear } = buildInlineShipBody({ ...row, unit_cogs: null }, 'main', null);
 eq('unknown cogs stays null on a ship save', shipClear.unit_cogs, null);
 eq('clearing a ship leg sends null', shipClear.ship.main, null);
+
+/* ── 6b. THE SHIP WRITE-GUARD (contract v2 B4) ────────────────────────── */
+const noShipRow = { variant_id: '222', unit_cogs: 3 }; // ship map missing entirely
+eq('cogs save on a shipless row is REFUSED', buildInlineRateBody(noShipRow, 7),
+  { error: 'missing_ship_map' });
+eq('ship save on a shipless row is REFUSED', buildInlineShipBody(noShipRow, 'main', 4),
+  { error: 'missing_ship_map' });
+eq('null ship map is refused too', buildInlineRateBody({ variant_id: '2', ship: null }, 7),
+  { error: 'missing_ship_map' });
+ok('hasShipMap: {} IS a ship map (present, empty is the row truth)', hasShipMap({ ship: {} }));
+ok('hasShipMap: missing/null are not', !hasShipMap({}) && !hasShipMap({ ship: null }) && !hasShipMap(null));
+const { body: verbatim } = buildInlineRateBody({ variant_id: '3', unit_cogs: null, ship: { main: 4 } }, 9);
+eq('a row with ship {main:4} carries main:4 verbatim', verbatim.ship, { main: 4 });
+ok('refused bodies produce NO body key', !('body' in buildInlineRateBody(noShipRow, 7)));
 
 /* ── 7. fee settings: blank = inherit (null), never {0,0} ─────────────── */
 const feeDraft = {
@@ -135,6 +150,31 @@ eq('manual spend 0 is a real claim', parseManualSpend('0'), { value: 0, error: n
 eq('manual spend blank is refused', parseManualSpend('').error, 'empty');
 eq('manual spend negative refused', parseManualSpend('-3').error, 'negative');
 
+/* ── 8b. UTC day keys (contract v2 M7) — the 23:50Z fixture ───────────── */
+eq('23:50Z stays the SAME UTC day (CEST would say next-day)',
+  utcDay('2026-08-09T23:50:00Z'), '2026-08-09');
+eq('00:10Z stays the same UTC day', utcDay('2026-08-10T00:10:00Z'), '2026-08-10');
+eq('a +02:00 local instant converts to its UTC day',
+  utcDay('2026-08-10T01:30:00+02:00'), '2026-08-09');
+eq('utcDay of junk is empty, never a wrong day', utcDay('not-a-date'), '');
+eq('utcDay of a Date object works', utcDay(new Date('2026-01-01T23:59:59Z')), '2026-01-01');
+
+/* ── 8c. fee nested shape round-trip (contract v2 B5) ─────────────────── */
+const serverFees = {
+  default: { pct: 6, fixed: 0.3 },
+  gateways: { whop: null, stripe: { pct: 2.9, fixed: null }, paypal: { pct: 0, fixed: 0 }, nmi: null },
+  updated_at: '2026-08-09T10:00:00Z',
+};
+const roundTrip = buildFeeSettingsBody(toFeeDraft(serverFees, GATEWAYS), GATEWAYS);
+eq('GET → draft → PATCH round-trips the nested shape', roundTrip, {
+  default: { pct: 6, fixed: 0.3 },
+  gateways: { whop: null, stripe: { pct: 2.9, fixed: null }, paypal: { pct: 0, fixed: 0 }, nmi: null },
+});
+eq('toFeeDraft keeps a stored 0 visible as "0", null as blank',
+  toFeeDraft(serverFees, GATEWAYS).gateways.paypal, { pct: '0', fixed: '0' });
+eq('toFeeDraft of an empty payload seeds the defaults',
+  [toFeeDraft(null, GATEWAYS).pct, toFeeDraft(null, GATEWAYS).gateways.whop.pct], ['6', '']);
+
 /* ── 9. fan-out ───────────────────────────────────────────────────────── */
 const v1 = { variant_id: 'a', cost_item_id: 'g1', cogs_source: 'item', funnels: ['f1'], units_30d: 5, product_title: 'P', variant_title: 'A' };
 const v2 = { variant_id: 'b', cost_item_id: 'g1', cogs_source: 'variant', funnels: ['f2'], units_30d: 9, product_title: 'P', variant_title: 'B' };
@@ -152,20 +192,32 @@ const v3 = { ...v2, cogs_source: 'item' };
 const fanItemLive = resolveFanOutTargets({ row: v1, rows: [v1, v3], scope: 'item' });
 eq('item scope names cross-funnel reach', fanItemLive.crossFunnel, true);
 
-/* ── 10. costsApi request shaping (monkey-patched axios instance) ─────── */
+/* ── 10. the envelope unwrap (contract v2 B1) ─────────────────────────── */
+eq('unwrap peels {success,data}', unwrap({ data: { success: true, data: { items: [1] } } }), { items: [1] });
+eq('unwrap passes a bare body through', unwrap({ data: { items: [2] } }), { items: [2] });
+eq('unwrap of {success,data:null} yields the bare body (?? not ||)',
+  unwrap({ data: { success: true, data: null } }), { success: true, data: null });
+eq('unwrap tolerates an empty response', unwrap({ data: undefined }), undefined);
+eq('unwrap does NOT double-unwrap a payload that itself has data',
+  unwrap({ data: { success: true, data: { data: 'inner' } } }), { data: 'inner' });
+
+/* ── 10b. costsApi request shaping (monkey-patched axios instance) ────── */
 const calls = [];
 const record = (method) => (url, a, b) => {
   calls.push({ method, url, a, b });
-  return Promise.resolve({ data: { echoed: true } });
+  // The house envelope, exactly as the wire carries it — every fetcher must
+  // hand back the unwrapped payload.
+  return Promise.resolve({ data: { success: true, data: { echoed: true } } });
 };
 api.get = record('get');
 api.post = record('post');
 api.patch = record('patch');
 api.delete = record('delete');
 
-await fetchVariants({ limit: 500, coverage: 'needs_cost' });
+const variantsRes = await fetchVariants({ limit: 500, coverage: 'needs_cost' });
 eq('GET /variants path', calls.at(-1).url, '/funnel-costs/variants');
 eq('GET /variants params ride in config', calls.at(-1).a, { params: { limit: 500, coverage: 'needs_cost' } });
+eq('fetcher returns the UNWRAPPED payload', variantsRes, { echoed: true });
 
 await postRate({ scope: 'variant', variant_id: '9', unit_cogs: null, ship: { main: null } });
 eq('POST /rates path', calls.at(-1).url, '/funnel-costs/rates');
@@ -173,8 +225,10 @@ eq('POST /rates body keeps unit_cogs null on the wire', calls.at(-1).a.unit_cogs
 eq('POST /rates body keeps ship nulls', calls.at(-1).a.ship, { main: null });
 
 await postDetect(90);
+eq('POST /detect body is {} — NEVER null (B2)', calls.at(-1).a, {});
 eq('POST /detect carries days as a param', calls.at(-1).b, { params: { days: 90 } });
 await postDetect();
+eq('POST /detect body stays {} with days omitted', calls.at(-1).a, {});
 eq('POST /detect omits params when days omitted', calls.at(-1).b, undefined);
 
 await fetchPnlOverview({ start: '2026-07-01', end: '2026-07-31' });
@@ -187,21 +241,34 @@ eq('manual spend 0 survives to the wire', calls.at(-1).a.spend, 0);
 
 await postSpendSync();
 eq('POST /spend/sync path', calls.at(-1).url, '/funnel-costs/spend/sync');
+eq('POST /spend/sync body is {} — NEVER null (B2)', calls.at(-1).a, {});
 
 eq('route helper encodes variant ids', COSTS_ROUTES.rateHistory('gid/1'), '/funnel-costs/rates/history/gid%2F1');
 
-/* ── 11. tolerant readers + error mapping ─────────────────────────────── */
-eq('rowsOf array', rowsOf([1]), [1]);
-eq('rowsOf items', rowsOf({ items: [2] }), [2]);
-eq('rowsOf rows', rowsOf({ rows: [3] }), [3]);
+/* ── 11. payload readers + error-code mapping (contract v2 M2/M5) ─────── */
+eq('rowsOf items (contract)', rowsOf({ items: [2] }), [2]);
 eq('rowsOf junk → []', rowsOf({ nope: 1 }), []);
-eq('dailyOf daily|series|days', [dailyOf({ daily: [1] }), dailyOf({ series: [2] }), dailyOf({ days: [3] })], [[1], [2], [3]]);
-eq('manualOf manual_entries|manual', [manualOf({ manual_entries: [1] }), manualOf({ manual: [2] })], [[1], [2]]);
-eq('sourcesOf bare|wrapped', [sourcesOf([1]), sourcesOf({ sources: [2] })], [[1], [2]]);
-eq('costApiError maps machine codes', costApiError({ response: { data: { error: 'empty_rate' } } }),
+eq('dailyOf reads the contract key `daily`', dailyOf({ daily: [1] }), [1]);
+eq('dailyOf ignores non-contract keys', dailyOf({ series: [2] }), []);
+eq('manualOf reads `manual_entries`', manualOf({ manual_entries: [1] }), [1]);
+eq('sourcesOf reads {sources:[…]} (M2)', sourcesOf({ sources: [2] }), [2]);
+eq('sourcesOf of junk → []', sourcesOf([1]), []);
+eq('costApiError maps error.code through API_ERRORS',
+  costApiError({ response: { data: { success: false, error: { code: 'empty_rate' } } } }),
   'A rate has to set a cost or a shipping value — there is nothing to save.');
-eq('costApiError passes server text through', costApiError({ response: { data: { error: 'window too wide' } } }),
-  'window too wide');
+eq('costApiError maps the new v2 codes',
+  [costApiError({ response: { data: { error: { code: 'usd_only' } } } }),
+    costApiError({ response: { data: { error: { code: 'window_too_small' } } } })],
+  ['Only USD rates are supported in v1.', 'The detection window must be at least 30 days.']);
+eq('an UNKNOWN code gets generic prose, never the raw code',
+  costApiError({ response: { status: 422, data: { error: { code: 'brand_new_code' } } } }),
+  'The cost API rejected that.');
+eq('an ABSENT code gets generic prose',
+  costApiError({ response: { status: 500, data: {} } }),
+  'The cost API rejected that.');
+eq('a legacy string error field is NOT echoed to the operator',
+  costApiError({ response: { status: 400, data: { error: 'raw server text' } } }),
+  'The cost API rejected that.');
 eq('costApiError 403', costApiError({ response: { status: 403, data: {} } }),
   'You need funnels access to change costs.');
 eq('costApiError network fallback carries the cause',

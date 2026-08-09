@@ -362,6 +362,7 @@ export default function CostsPage() {
         canEdit={canEdit}
         onOpenChange={(v) => { if (!v) setRateRow(null); }}
         onSaved={() => load({ quiet: true })}
+        notify={notify}
       />
     </div>
   );

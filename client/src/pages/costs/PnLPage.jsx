@@ -118,6 +118,23 @@ function SpendStalenessBar({ status, syncing, onSync, canEdit }) {
   const meta = sources.find((s) => s.source === 'meta') || sources[0];
   if (!meta || !status?.at) return null;
 
+  // Contract v2 carries `configured` — an unconfigured source is its own
+  // honest state, not "stale".
+  if (meta.configured === false) {
+    return (
+      <div
+        className="rounded-lg border border-amber-500/30 bg-amber-500/5 px-3 py-2.5 flex items-center gap-2.5"
+        data-testid="pnl-spend-status"
+      >
+        <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0" />
+        <span className="text-[12px] text-amber-200/90">
+          <strong className="font-medium">Meta spend sync is not configured.</strong> The spend column only
+          carries manual entries until it is.
+        </span>
+      </div>
+    );
+  }
+
   const lastOk = meta.last_ok || meta.last_sync;
   const ageMs = lastOk ? status.at - new Date(lastOk).getTime() : Infinity;
   const stale = meta.stale ?? (ageMs >= STALE_MS);
@@ -210,7 +227,9 @@ function FunnelDrillIn({ fid, name, start, end, canEdit, onBack, notify }) {
   const totals = data?.totals || null;
 
   const togglePin = async (c) => {
-    const pinned = Boolean(c.pinned ?? (c.binding === 'pin'));
+    // Contract v2: the binding arrives as `bound_via: 'pin'|'derived'`.
+    const pinned = c.bound_via === 'pin';
+    const label = c.name || c.campaign_id;
     setPinBusy(c.campaign_id);
     try {
       await postCampaignMap({
@@ -219,8 +238,8 @@ function FunnelDrillIn({ fid, name, start, end, canEdit, onBack, notify }) {
         action: pinned ? 'unpin' : 'pin',
       });
       notify(pinned
-        ? `Unpinned ${c.campaign_name || c.campaign_id} — derived binding resumes.`
-        : `Pinned ${c.campaign_name || c.campaign_id} to this funnel.`);
+        ? `Unpinned ${label} — derived binding resumes.`
+        : `Pinned ${label} to this funnel.`);
       await load({ quiet: true });
     } catch (e) {
       notify(costApiError(e, 'Could not update the campaign pin'), true);
@@ -357,12 +376,26 @@ function FunnelDrillIn({ fid, name, start, end, canEdit, onBack, notify }) {
                 </thead>
                 <tbody>
                   {campaigns.map((c) => {
-                    const pinned = Boolean(c.pinned ?? (c.binding === 'pin'));
+                    const pinned = c.bound_via === 'pin';
                     return (
                       <tr key={c.campaign_id} className="border-b border-border-default/40 last:border-0">
                         <TD>
-                          <span className="text-xs text-text-primary">{c.campaign_name || c.campaign_id}</span>
-                          <span className="block text-[10px] text-text-faint tabular-nums">{c.campaign_id}</span>
+                          {/* Contract v2: the display name is `name` (m3). */}
+                          <span className="text-xs text-text-primary">{c.name || c.campaign_id}</span>
+                          <span className="block text-[10px] text-text-faint tabular-nums">
+                            {c.campaign_id}
+                            {c.sessions !== null && c.sessions !== undefined && (
+                              <> · {fmtInt(c.sessions)} session{Number(c.sessions) === 1 ? '' : 's'}</>
+                            )}
+                            {c.split && (
+                              <span
+                                className="ml-1 text-amber-400/90"
+                                title="This campaign's clicks convert on more than one funnel — its spend is split across them, so this row is a share, not the campaign total."
+                              >
+                                · split across funnels
+                              </span>
+                            )}
+                          </span>
                         </TD>
                         <TD right><Money v={c.spend} /></TD>
                         <TD>

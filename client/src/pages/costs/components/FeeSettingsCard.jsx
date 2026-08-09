@@ -16,24 +16,11 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Loader2, Percent, Wallet } from 'lucide-react';
 import { GATEWAYS, costApiError, fetchFeeSettings, patchFeeSettings } from '../costsApi';
-import { buildFeeSettingsBody, fmtMoney, fmtDateTime } from '../costTargets';
+import { buildFeeSettingsBody, fmtMoney, fmtDateTime, toFeeDraft } from '../costTargets';
 
-/** A stored number → an input string. `null` stays blank, `0` shows as "0". */
-const str = (v) => (v === null || v === undefined ? '' : String(v));
-
-function toDraft(data) {
-  const gw = data?.gateways || {};
-  return {
-    pct: str(data?.default?.pct ?? 6),
-    fixed: str(data?.default?.fixed ?? 0),
-    gateways: Object.fromEntries(GATEWAYS.map(({ key }) => [key, {
-      pct: str(gw[key]?.pct),
-      fixed: str(gw[key]?.fixed),
-    }])),
-    updated_at: data?.updated_at || null,
-    updated_by: data?.updated_by || '',
-  };
-}
+// Read side of the contract's nested shape lives in costTargets.toFeeDraft
+// (B5), where the harness round-trips it through buildFeeSettingsBody.
+const toDraft = (data) => toFeeDraft(data, GATEWAYS);
 
 const moneyInput = 'h-8 px-2 tabular-nums text-right text-xs bg-bg-elevated border border-border-default rounded-md text-text-primary disabled:opacity-50 focus:outline-none focus:ring-2 focus:ring-accent/40';
 

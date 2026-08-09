@@ -80,19 +80,26 @@ export function fmtDateTime(iso) {
   });
 }
 
-/** Local-calendar today, YYYY-MM-DD (matches DateRangePicker's day boundary). */
+/**
+ * ISO yyyy-mm-dd of an instant in UTC (contract v2 "Day keys": UTC on BOTH
+ * sides; same pattern as splitApi.utcDay). In CEST an instant at 23:50Z reads
+ * as local next-day — a local-calendar day key would start every window a day
+ * late and date every rate a day forward of the server's clock.
+ */
+export function utcDay(v) {
+  if (!v) return '';
+  const d = v instanceof Date ? v : new Date(v);
+  if (Number.isNaN(d.getTime())) return '';
+  return d.toISOString().slice(0, 10);
+}
+
+/** Today as a UTC day key (M7 — RateDrawer defaults, PnL window defaults). */
 export function todayIso() {
-  const d = new Date();
-  const m = String(d.getMonth() + 1).padStart(2, '0');
-  const day = String(d.getDate()).padStart(2, '0');
-  return `${d.getFullYear()}-${m}-${day}`;
+  return utcDay(new Date());
 }
 
 export function daysAgoIso(n) {
-  const d = new Date(Date.now() - n * 86_400_000);
-  const m = String(d.getMonth() + 1).padStart(2, '0');
-  const day = String(d.getDate()).padStart(2, '0');
-  return `${d.getFullYear()}-${m}-${day}`;
+  return utcDay(new Date(Date.now() - n * 86_400_000));
 }
 
 /* ── row semantics ─────────────────────────────────────────────────────── */
@@ -200,13 +207,15 @@ export function parseCostInput(raw, { knownFree = false } = {}) {
   return { value: n, error: null, cleared: false };
 }
 
-/** Human text for a `parseCostInput` error code. */
+/** Human text for a `parseCostInput` / rate-body error code. */
 export function costInputError(code) {
   return {
     negative: 'A cost cannot be negative.',
     not_a_number: 'Enter a number, or clear the field to mark it unknown.',
     zero_requires_known_free:
       'Use "known free" in the rate editor to record a real $0.00 — a blank field means unknown.',
+    missing_ship_map:
+      'This row arrived without its shipping data, so saving would wipe the stored shipping. Reload the page and try again.',
   }[code] || 'Invalid value.';
 }
 
@@ -337,42 +346,60 @@ export function resolveFanOutTargets({ row, rows = [], scope = 'variant' } = {})
 }
 
 /**
- * The POST body for an INLINE cogs save. Deliberately carries NO
- * `effective_from` / `only_from_today`: the server backdates a variant's FIRST
- * cost to its first sale (a first cost dated today reports nothing — every
- * historical report keeps showing 100% margin) and starts a later one today.
- * Pinning a date belongs to the RateDrawer, which shows the resolved date.
+ * THE SHIP WRITE-GUARD (contract v2 B4). A rate row is a complete SNAPSHOT:
+ * whatever ship map it carries is the whole truth for its day. A row that
+ * arrived WITHOUT a ship map (null/undefined — a partial payload, a stale
+ * tree, a defensive `{}` default) therefore must never be turned into a rate
+ * body: posting `ship: {}` wipes the variant's stored shipping to unknown,
+ * which the joint review proved on a live save. Both builders refuse instead.
+ */
+export function hasShipMap(row) {
+  return Boolean(row) && row.ship !== null && row.ship !== undefined && typeof row.ship === 'object';
+}
+
+/**
+ * The POST body for an INLINE cogs save → `{ body }` or `{ error }`.
+ * Deliberately carries NO `effective_from` / `only_from_today`: the server
+ * backdates a variant's FIRST cost to its first sale (a first cost dated
+ * today reports nothing — every historical report keeps showing 100% margin)
+ * and starts a later one today. Pinning a date belongs to the RateDrawer.
  *
- * The row's CURRENT shipping is carried forward deliberately: a rate row is a
- * complete SNAPSHOT, so omitting shipping here would wipe it while the
- * operator thought they were editing one number.
+ * The row's CURRENT shipping is carried forward VERBATIM (snapshot rule);
+ * a row without a ship map is refused, never defaulted to `{}`.
  */
 export function buildInlineRateBody(row, value) {
+  if (!hasShipMap(row)) return { error: 'missing_ship_map' };
   return {
-    scope: 'variant',
-    variant_id: String(row?.variant_id ?? ''),
-    unit_cogs: value,
-    ship: row?.ship || {},
-    currency: 'USD',
-    source: 'manual',
+    body: {
+      scope: 'variant',
+      variant_id: String(row?.variant_id ?? ''),
+      unit_cogs: value,
+      ship: { ...row.ship },
+      currency: 'USD',
+      source: 'manual',
+    },
   };
 }
 
 /**
- * The rate body for an inline SHIPPING edit. Carries the variant's current
- * unit_cogs forward for the same snapshot reason — saving shipping must never
- * silently un-know the cost that was already entered.
+ * The rate body for an inline SHIPPING edit → `{ body }` or `{ error }`.
+ * Carries the variant's current unit_cogs forward for the same snapshot
+ * reason — saving shipping must never silently un-know the cost that was
+ * already entered. Same write-guard as above.
  */
 export function buildInlineShipBody(row, context, value) {
-  const ship = { ...(row?.ship || {}) };
+  if (!hasShipMap(row)) return { error: 'missing_ship_map' };
+  const ship = { ...row.ship };
   ship[context] = value;
   return {
-    scope: 'variant',
-    variant_id: String(row?.variant_id ?? ''),
-    unit_cogs: row?.unit_cogs ?? null,
-    ship,
-    currency: 'USD',
-    source: 'manual',
+    body: {
+      scope: 'variant',
+      variant_id: String(row?.variant_id ?? ''),
+      unit_cogs: row?.unit_cogs ?? null,
+      ship,
+      currency: 'USD',
+      source: 'manual',
+    },
   };
 }
 
@@ -386,7 +413,29 @@ export function matchesFilter(row, filter) {
   return !ignored;
 }
 
-/* ── fee settings (mirrors PATCH /fee-settings) ────────────────────────── */
+/* ── fee settings (contract v2: nested {default:{pct,fixed}, gateways}) ── */
+
+/** A stored number → an input string. `null` stays blank, `0` shows as "0". */
+const numToStr = (v) => (v === null || v === undefined ? '' : String(v));
+
+/**
+ * GET /fee-settings payload → the card's editable draft. The read side of the
+ * nested contract shape; `buildFeeSettingsBody` is the write side, and the
+ * harness round-trips one through the other.
+ */
+export function toFeeDraft(data, gateways) {
+  const gw = data?.gateways || {};
+  return {
+    pct: numToStr(data?.default?.pct ?? 6),
+    fixed: numToStr(data?.default?.fixed ?? 0),
+    gateways: Object.fromEntries(gateways.map(({ key }) => [key, {
+      pct: numToStr(gw[key]?.pct),
+      fixed: numToStr(gw[key]?.fixed),
+    }])),
+    updated_at: data?.updated_at || null,
+    updated_by: data?.updated_by || '',
+  };
+}
 
 /**
  * Blank → null (inherit the default). A typed value → that number.

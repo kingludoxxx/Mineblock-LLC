@@ -18,7 +18,7 @@ import { useMemo, useState } from 'react';
 import { Check, ImageOff, Loader2, Pencil, X } from 'lucide-react';
 import Input from '../../../components/ui/Input';
 import {
-  EM_DASH, computeMargin, costInputError, formatCost, isIgnored, matchesFilter,
+  EM_DASH, costInputError, fmtInt, formatCost, isIgnored, matchesFilter,
   parseCostInput, paysShipping, primaryContext, resolveKind, resolveShip,
   rowCoverage, variantLabel,
 } from '../costTargets';
@@ -298,7 +298,9 @@ export default function VariantsGrid({
                 </td>
               </tr>
             ) : visible.map((row) => {
-              const margin = computeMargin(row);
+              // The server resolves margin_pct for today (contract v2 ROW is
+              // FLAT); null means withheld and renders a dash, never 100%.
+              const margin = row.margin_pct ?? null;
               const ships = paysShipping(row);
               const prim = primaryContext(row);
               return (
@@ -342,7 +344,8 @@ export default function VariantsGrid({
                   <td className="px-2 py-2 text-right"><FunnelsCell funnels={row.funnels} /></td>
 
                   <td className="px-2 py-2 text-right tabular-nums text-text-primary">
-                    {Number(row.units_30d || 0).toLocaleString()}
+                    {/* A count, but unknown ≠ 0 — null renders a dash (n3). */}
+                    {fmtInt(row.units_30d)}
                   </td>
 
                   <td className="px-2 py-2 text-right"><CostText value={row.price} muted /></td>
@@ -370,13 +373,13 @@ export default function VariantsGrid({
                   ))}
 
                   <td className="px-2 py-2 text-right">
-                    {margin === null
+                    {margin === null || !Number.isFinite(Number(margin))
                       ? (
                         <span className="text-text-faint" title="No cost entered — margin is unknown, not 100%">
                           {EM_DASH}
                         </span>
                       )
-                      : <span className="tabular-nums text-text-primary">{margin.toFixed(1)}%</span>}
+                      : <span className="tabular-nums text-text-primary">{Number(margin).toFixed(1)}%</span>}
                   </td>
 
                   <td className="px-2 py-2"><CoveragePill row={row} /></td>

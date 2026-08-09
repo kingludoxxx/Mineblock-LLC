@@ -21,8 +21,8 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { AlertTriangle, History, Loader2, X } from 'lucide-react';
 import {
-  CONTEXT_KEYS, EM_DASH, costInputError, fmtDateTime, formatCost, parseCostInput,
-  paysShipping, resolveFanOutTargets, resolveShip, todayIso, variantLabel,
+  CONTEXT_KEYS, EM_DASH, costInputError, fmtDateTime, formatCost, hasShipMap,
+  parseCostInput, paysShipping, resolveFanOutTargets, resolveShip, todayIso, variantLabel,
 } from '../costTargets';
 import { costApiError, fetchRateHistory, postRate, rowsOf } from '../costsApi';
 
@@ -81,7 +81,7 @@ const L = ({ children, htmlFor }) => (
   </label>
 );
 
-export default function RateDrawer({ open, row, rows = [], canEdit = false, onOpenChange, onSaved }) {
+export default function RateDrawer({ open, row, rows = [], canEdit = false, onOpenChange, onSaved, notify }) {
   const [scope, setScope] = useState('variant');
   const [cogsDraft, setCogsDraft] = useState('');
   const [knownFree, setKnownFree] = useState(false);
@@ -167,6 +167,12 @@ export default function RateDrawer({ open, row, rows = [], canEdit = false, onOp
   const restatesHistory = Boolean(effectiveFrom) && effectiveFrom < today;
 
   const buildBody = () => {
+    // THE SHIP WRITE-GUARD (contract v2 B4). The drafts were seeded from the
+    // row's ship map; a row that arrived WITHOUT one means the drafts carry
+    // nothing real, and posting them would snapshot the variant's shipping to
+    // all-unknown. Refuse — same rule as the inline builders.
+    if (!hasShipMap(row)) return { error: 'missing_ship_map' };
+
     const parsed = parseCostInput(cogsDraft, { knownFree });
     if (parsed.error) return { error: parsed.error };
 
@@ -206,7 +212,11 @@ export default function RateDrawer({ open, row, rows = [], canEdit = false, onOp
     setSaving(true);
     setErr(null);
     try {
-      await postRate(body);
+      // POST /rates answers { rate:{…} } (contract v2); the confirmation
+      // names the day the SERVER wrote, not the day the form showed.
+      const res = await postRate(body);
+      const from = res?.rate?.effective_from;
+      notify?.(from ? `Rate saved — applies from ${from}` : 'Rate saved');
       loadHistory();
       onSaved?.();
       onOpenChange?.(false);

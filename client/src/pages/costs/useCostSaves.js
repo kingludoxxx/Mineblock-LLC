@@ -22,7 +22,7 @@
 import { useCallback, useState } from 'react';
 
 import { costApiError, postRate } from './costsApi.js';
-import { buildInlineRateBody, buildInlineShipBody } from './costTargets.js';
+import { buildInlineRateBody, buildInlineShipBody, costInputError } from './costTargets.js';
 
 /**
  * @param {(variantId, patch) => void} applyPatch  patch every copy of the row
@@ -40,6 +40,10 @@ export default function useCostSaves({ applyPatch, reload, notify }) {
   const say = useCallback((msg, isError) => { notify?.(msg, Boolean(isError)); }, [notify]);
 
   const saveCogs = useCallback(async (row, value) => {
+    // The write-guard (B4) runs BEFORE the optimistic patch: a refused save
+    // must leave both the screen and the ledger untouched.
+    const { body, error } = buildInlineRateBody(row, value);
+    if (error) { say(costInputError(error), true); return; }
     setSavingId(row.variant_id);
     applyPatch(row.variant_id, (v) => ({
       ...v,
@@ -47,10 +51,10 @@ export default function useCostSaves({ applyPatch, reload, notify }) {
       cogs_source: value === null ? null : 'variant',
     }));
     try {
-      // The POST echoes the rate it wrote, so the message names the day the
-      // SERVER resolved rather than the day the grid assumed.
-      const saved = await postRate(buildInlineRateBody(row, value));
-      const from = saved?.effective_from;
+      // POST /rates answers { rate:{…} } (contract v2), so the message names
+      // the day the SERVER resolved rather than the day the grid assumed.
+      const saved = await postRate(body);
+      const from = saved?.rate?.effective_from;
       say(value === null
         ? 'Cost cleared to unknown'
         : (from ? `Cost saved — applies from ${from}` : 'Cost saved'));
@@ -63,14 +67,16 @@ export default function useCostSaves({ applyPatch, reload, notify }) {
   }, [applyPatch, reload, say]);
 
   const saveShip = useCallback(async (row, context, value) => {
+    const { body, error } = buildInlineShipBody(row, context, value);
+    if (error) { say(costInputError(error), true); return; }
     setSavingId(row.variant_id);
     applyPatch(row.variant_id, (v) => ({
       ...v,
       ship: { ...(v.ship || {}), [context]: value },
     }));
     try {
-      const saved = await postRate(buildInlineShipBody(row, context, value));
-      const from = saved?.effective_from;
+      const saved = await postRate(body);
+      const from = saved?.rate?.effective_from;
       say(value === null
         ? `${context} shipping cleared to unknown`
         : (from ? `Shipping saved — applies from ${from}` : 'Shipping saved'));

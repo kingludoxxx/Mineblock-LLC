@@ -6,10 +6,12 @@
 // the operator types 15, tabs, types 30, and the funnel gets costed in one
 // pass.
 //
-// EVERY NUMBER HERE IS THIS FUNNEL'S OWN. The server sends per-funnel units
-// and revenue (`by_funnel` split), never the variant's catalog total —
-// crediting a shared variant's total to each funnel counts the same money
-// twice. A variant wired on a funnel but never sold there reads 0.
+// EVERY NUMBER HERE IS THIS FUNNEL'S OWN. Per contract v2, each variant row
+// carries `own_revenue_30d` / `own_units_30d` — THIS funnel's split — beside
+// the catalog-wide `revenue_30d`/`units_30d`. This view renders the own_*
+// pair only: crediting a shared variant's catalog total to each funnel counts
+// the same money twice. A variant wired on a funnel but never sold there
+// reads 0.
 //
 // WHAT A ROW STILL SHARES: a cost is a property of the good, not the funnel —
 // one variant, one rate ledger. Where a variant is wired into more than one
@@ -18,7 +20,7 @@
 import { useMemo, useState } from 'react';
 import { ChevronDown, ChevronRight, Layers, Loader2 } from 'lucide-react';
 import {
-  EM_DASH, costInputError, fmtMoney, fmtMoney0, formatCost, parseCostInput, resolveShip,
+  EM_DASH, costInputError, fmtInt, fmtMoney, fmtMoney0, formatCost, parseCostInput, resolveShip,
 } from '../costTargets';
 import { Chip, Thumb } from './VariantsGrid';
 
@@ -107,8 +109,9 @@ function VariantRow({ row, canEdit, savingId, onSaveCogs, onSaveShip }) {
           )}
         </span>
       </td>
-      <td className="px-2 text-right tabular-nums text-text-primary">{row.units_30d ?? 0}</td>
-      <td className="px-2 text-right tabular-nums text-text-primary">{fmtMoney0(row.revenue_30d ?? 0)}</td>
+      {/* This funnel's OWN split (contract own_*); null is unknown, not 0. */}
+      <td className="px-2 text-right tabular-nums text-text-primary">{fmtInt(row.own_units_30d)}</td>
+      <td className="px-2 text-right tabular-nums text-text-primary">{fmtMoney0(row.own_revenue_30d)}</td>
       <td className="px-2 text-right tabular-nums text-text-muted">
         {row.price ? fmtMoney(row.price) : EM_DASH}
       </td>
@@ -144,8 +147,24 @@ function VariantRow({ row, canEdit, savingId, onSaveCogs, onSaveShip }) {
 function ProductRow({ product, canEdit, savingId, onSaveCogs, onSaveShip, defaultOpen }) {
   const [open, setOpen] = useState(Boolean(defaultOpen));
   const Caret = open ? ChevronDown : ChevronRight;
+  // `missing_count` is the contract's; the fallback derivation matches it.
   const missing = product.missing_count
     ?? (product.variants || []).filter((v) => v.unit_cogs === null || v.unit_cogs === undefined).length;
+  // The contract carries no product-level totals — sum THIS FUNNEL'S OWN
+  // splits from the variants. All-null stays null (unknown, not $0).
+  const ownSums = useMemo(() => {
+    let units = null;
+    let revenue = null;
+    for (const v of product.variants || []) {
+      if (v.own_units_30d !== null && v.own_units_30d !== undefined) {
+        units = (units ?? 0) + Number(v.own_units_30d);
+      }
+      if (v.own_revenue_30d !== null && v.own_revenue_30d !== undefined) {
+        revenue = (revenue ?? 0) + Number(v.own_revenue_30d);
+      }
+    }
+    return { units, revenue };
+  }, [product.variants]);
 
   return (
     <>
@@ -171,9 +190,9 @@ function ProductRow({ product, canEdit, savingId, onSaveCogs, onSaveShip, defaul
             {product.role && <Chip tone="neutral">{ROLE_LABEL[product.role] || product.role}</Chip>}
           </span>
         </td>
-        <td className="px-2 text-right tabular-nums text-text-primary">{product.units_30d ?? 0}</td>
+        <td className="px-2 text-right tabular-nums text-text-primary">{fmtInt(ownSums.units)}</td>
         <td className="px-2 text-right tabular-nums font-medium text-text-primary">
-          {fmtMoney0(product.revenue_30d ?? 0)}
+          {fmtMoney0(ownSums.revenue)}
         </td>
         <td className="px-2 text-right tabular-nums text-text-muted">
           {/* Avg price is THIS funnel's revenue ÷ units. Unknown when nothing
@@ -225,8 +244,9 @@ function FunnelGroup({ group, canEdit, savingId, onSaveCogs, onSaveShip, default
         >
           <Caret className="w-4 h-4 shrink-0 text-text-muted" />
           <Layers className="w-4 h-4 shrink-0 text-text-muted" />
+          {/* Contract v2: the funnel's display name is `name`. */}
           <span className="truncate font-medium text-[13.5px] text-text-primary">
-            {group.funnel_name || group.funnel_id}
+            {group.name || group.funnel_id}
           </span>
           <span className="text-[11.5px] text-text-muted shrink-0">
             · {products.length} product{products.length === 1 ? '' : 's'}
@@ -271,7 +291,7 @@ function FunnelGroup({ group, canEdit, savingId, onSaveCogs, onSaveShip, default
             <tbody>
               {products.map((p, i) => (
                 <ProductRow
-                  key={p.product_title || i}
+                  key={p.shopify_product_id || p.product_title || i}
                   product={p}
                   canEdit={canEdit}
                   savingId={savingId}
