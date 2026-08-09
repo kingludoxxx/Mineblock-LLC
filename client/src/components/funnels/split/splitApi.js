@@ -43,6 +43,8 @@
 //     verdict: {
 //       status: 'winner'|'no_winner'|'not_ready'|'no_data'|'insufficient_arms',
 //       headline,           // COMPLETE PROSE — render it, do not compose around it
+//       body?,              // present ONLY under the arm-delivery gate
+//       blocked_reason?,    // 'arm_delivery_not_wired' — the test is unscoreable
 //       leader, control, ranked: [],
 //       conversion, revenue, sample, requiredSamplePerArm,
 //       perArm: { [arm_key]: { conversion_confidence, revenue_confidence,
@@ -287,6 +289,17 @@ export function normalizeMetrics(raw) {
       // compose a second sentence around it (they contradicted each other).
       status: pick(v, 'status') || undefined,
       headline: pick(v, 'headline'),
+      // `body` EXISTS on the merged service, but only in one case: the
+      // arm-delivery gate. It is the service's own prose explaining that the
+      // numbers are real and the comparison is not — the single most important
+      // sentence this modal can show. It is rendered when present and NEVER
+      // composed when absent (composing one is what made the banner contradict
+      // its own headline).
+      body: pick(v, 'body'),
+      // Set when the service refuses to score the test at all. Today the only
+      // value is 'arm_delivery_not_wired': nothing in the serve path resolves
+      // an arm, so every visitor sees the same page and any gap is noise.
+      blocked_reason: pick(v, 'blocked_reason'),
       leader: pick(v, 'leader'),
       control: pick(v, 'control'),
       ranked: Array.isArray(pick(v, 'ranked')) ? pick(v, 'ranked') : [],

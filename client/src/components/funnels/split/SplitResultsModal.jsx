@@ -198,13 +198,21 @@ export default function SplitResultsModal({ open, onClose, test }) {
 // returns complete prose for every status — including the confidence figure and
 // the required sample — so this renders it and stops.
 //
-// It used to compose a second "body" sentence underneath. `verdict.body` does
-// not exist on the merged endpoint, so that fallback fired UNCONDITIONALLY and
-// printed "no arm beats the control" directly beneath a headline announcing a
-// winner at 100% confidence. Two contradictory sentences in one banner is worse
-// than one terse one: the operator cannot tell which to believe. The only text
-// added now is a caveat that is TRUE ALONGSIDE every status, never instead of
-// one.
+// It used to COMPOSE a second "body" sentence underneath from fields that did
+// not exist, so the fallback fired unconditionally and printed "no arm beats
+// the control" directly beneath a headline announcing a winner at 100%
+// confidence. Two contradictory sentences in one banner is worse than one terse
+// one: the operator cannot tell which to believe.
+//
+// The service DOES supply a `body` in exactly one case — the arm-delivery gate,
+// where it explains that the numbers are real but the comparison is not. That
+// body is rendered verbatim when present. Nothing is ever composed when it is
+// absent; the only text this file adds is a caveat that is TRUE ALONGSIDE a
+// status, never instead of one.
+//
+// BLOCKED beats status for tone. When `blocked_reason` is set the test is not
+// scoreable at all, which is a warning regardless of the status string the
+// service pairs it with.
 const STATUS_TONE = {
   winner: { border: 'border-emerald-500/25', bg: 'bg-emerald-500/[0.07]', icon: 'text-emerald-400' },
   no_winner: { border: 'border-border-default', bg: 'bg-bg-elevated/50', icon: 'text-text-faint' },
@@ -214,24 +222,30 @@ const STATUS_TONE = {
   // Kept so an unknown/legacy status still renders in a neutral skin rather
   // than crashing on an undefined lookup.
   unavailable: { border: 'border-border-default', bg: 'bg-bg-elevated/50', icon: 'text-text-faint' },
+  // `blocked_reason` set — the comparison itself is invalid. Never green.
+  blocked: { border: 'border-amber-500/30', bg: 'bg-amber-500/[0.09]', icon: 'text-amber-400' },
 };
 
 function VerdictBanner({ available, verdict, from, to }) {
   const status = available ? (verdict.status || 'no_winner') : 'unavailable';
-  const tone = STATUS_TONE[status] || STATUS_TONE.unavailable;
+  const blocked = available && Boolean(verdict.blocked_reason);
+  const tone = blocked ? STATUS_TONE.blocked : (STATUS_TONE[status] || STATUS_TONE.unavailable);
 
   const headline = available
     ? (verdict.headline || 'No verdict was returned for this window.')
     : 'No verdict yet — experiment metrics are unavailable';
 
-  // The ONE caveat that is true next to any status the service can return.
-  // `sized_on_observed_effect` is the service's own flag saying the projected
-  // sample was sized on the gap seen so far, which is noisy at low traffic.
-  const caveat = available && verdict.sample?.sized_on_observed_effect && verdict.requiredSamplePerArm
-    ? 'The projected sample is sized on the gap observed so far — at low traffic that gap is mostly noise, so treat it as a floor, not a forecast.'
-    : (!available
-      ? 'No experiment metrics were returned for this window, so no verdict can be drawn.'
-      : null);
+  // The service's own body, verbatim. Never a substitute of my own.
+  const serviceBody = available ? verdict.body : null;
+
+  // A caveat is only added when the service said nothing further itself, and
+  // only when it is true alongside the status shown.
+  let caveat = null;
+  if (!available) {
+    caveat = 'No experiment metrics were returned for this window, so no verdict can be drawn.';
+  } else if (!serviceBody && verdict.sample?.sized_on_observed_effect && verdict.requiredSamplePerArm) {
+    caveat = 'The projected sample is sized on the gap observed so far — at low traffic that gap is mostly noise, so treat it as a floor, not a forecast.';
+  }
 
   return (
     <div className={`rounded-xl border px-4 py-3 ${tone.border} ${tone.bg}`}>
@@ -239,10 +253,12 @@ function VerdictBanner({ available, verdict, from, to }) {
         <TrendingUp className={`w-4 h-4 mt-0.5 shrink-0 ${tone.icon}`} />
         <div className="min-w-0">
           <div className="text-sm font-semibold text-text-primary">{headline}</div>
+          {serviceBody && <p className="mt-1 text-xs text-text-muted leading-relaxed">{serviceBody}</p>}
           {caveat && <p className="mt-1 text-xs text-text-muted leading-relaxed">{caveat}</p>}
           <p className="mt-1.5 text-[11px] text-text-faint font-mono">
             Window {from || DASH} → {to || DASH}
             {available && verdict.status ? ` · ${verdict.status}` : ''}
+            {blocked ? ` · ${verdict.blocked_reason}` : ''}
           </p>
         </div>
       </div>
