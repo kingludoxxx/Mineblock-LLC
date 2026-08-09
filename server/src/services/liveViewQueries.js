@@ -92,6 +92,41 @@ const money = (v) => {
   return Number.isFinite(n) ? Math.round(n * 100) / 100 : 0;
 };
 
+// Shape the geo card from the raw geo read. THREE distinct states, never
+// collapsed: the read FAILED (null), the read succeeded but nothing is
+// captured yet (available:false + a reason that says WHY), or there are codes
+// (available:true + rows + coverage). Zero countries is not an error, and an
+// error is not zero countries.
+function geoCard(geo) {
+  if (!geo) {
+    return {
+      available: false,
+      reason: 'country breakdown could not be read this tick (see warnings)',
+      by_country: [],
+      coverage: null,
+    };
+  }
+  const coverage = {
+    resolved_visitors: geo.resolved,
+    total_visitors: geo.total,
+    // Tri-state, per the honesty rule: no visitors at all ⇒ null, never 0%.
+    resolved_pct: geo.total > 0 ? Math.round((geo.resolved / geo.total) * 1000) / 10 : null,
+  };
+  if (!geo.byCountry.length) {
+    return {
+      available: false,
+      reason: geo.total > 0
+        ? 'no country resolved for today\'s visitors yet — country is captured at write time only'
+          + ' (touches written before capture landed stay NULL and are never guessed), and the IPv4'
+          + ' lookup table cannot resolve an IPv6 visitor'
+        : 'no visitors today yet',
+      by_country: [],
+      coverage,
+    };
+  }
+  return { available: true, reason: null, by_country: geo.byCountry, coverage };
+}
+
 async function safeRead(label, warnings, fn, fallback) {
   try {
     return await fn();
@@ -186,6 +221,22 @@ const TOUCH_ROLLUP_SQL = `
   LEFT JOIN funnels f ON f.id = t.funnel_id
   WHERE t.ts >= LEAST(${UTC_MIDNIGHT}, NOW() - INTERVAL '${LIVE_WINDOW_MINUTES} minutes')
   GROUP BY GROUPING SETS ((t.funnel_id), ())`;
+
+// GEO (ANALYTICS LANE 5) — today's visitors per ISO country code, plus the
+// COVERAGE those codes were measured over. One GROUPING SETS pass on the same
+// idx_lb_touches_ts scan the rollup uses; the () row is the grand total.
+// `resolved` counts distinct vids that carry a country at all — publishing the
+// country rows without it would let a 3%-coverage sample read as a census.
+// NOTE a vid that touched from two countries counts in BOTH country rows, so
+// the rows can sum ABOVE `resolved`; the basis string says so.
+const TOUCH_GEO_SQL = `
+  SELECT t.country,
+         GROUPING(t.country) AS is_total,
+         COUNT(DISTINCT t.vid)::bigint AS visitors,
+         COUNT(DISTINCT t.vid) FILTER (WHERE t.country IS NOT NULL AND t.country <> '')::bigint AS resolved
+  FROM lb_touches t
+  WHERE t.ts >= ${UTC_MIDNIGHT}
+  GROUP BY GROUPING SETS ((t.country), ())`;
 
 const CO_EVENTS_TILES_SQL = `
   SELECT
@@ -284,6 +335,21 @@ export async function buildLiveSnapshot({ query = analyticsQuery, limit = DEFAUL
     return { totalRow, byFunnel };
   }, null);
 
+  const geo = await safeRead('lb_touches_geo', warnings, async () => {
+    const rows = await query(TOUCH_GEO_SQL);
+    const totalRow = rows.find((r) => Number(r.is_total) === 1) || null;
+    const byCountry = rows
+      .filter((r) => Number(r.is_total) !== 1 && r.country)
+      .map((r) => ({ country: String(r.country), visitors: int(r.visitors) }))
+      .sort((a, b) => b.visitors - a.visitors || a.country.localeCompare(b.country))
+      .slice(0, 50);
+    return {
+      byCountry,
+      resolved: totalRow ? int(totalRow.resolved) : 0,
+      total: totalRow ? int(totalRow.visitors) : 0,
+    };
+  }, null);
+
   const tiles = await readTodayTiles(query, warnings);
 
   // Recent events — the two sources drawn independently at the full limit,
@@ -314,11 +380,13 @@ export async function buildLiveSnapshot({ query = analyticsQuery, limit = DEFAUL
     revenue_today: tiles.revenue_today,
     by_funnel: rollup?.byFunnel || [],
     events,
-    // The honest replacement for the reference's globe. Never fabricate.
-    geo: {
-      available: false,
-      reason: 'no geo source: tracking stores salted IP hashes only and no edge geo headers are captured',
-    },
+    // Country capture landed in LANE 5 (lb_touches.country). Still never
+    // fabricated: available ONLY when a code was actually stored in-window,
+    // and always shipped WITH its coverage so a thin sample cannot read as a
+    // census. The globe itself stays unported — a country code is not a
+    // latitude, and inventing one would be the fabrication this card exists
+    // to avoid.
+    geo: geoCard(geo),
     basis: {
       live: `distinct lb_touches.vid, last ${LIVE_WINDOW_MINUTES} minutes`,
       unique_today: 'distinct lb_touches.vid since UTC midnight',
@@ -326,6 +394,10 @@ export async function buildLiveSnapshot({ query = analyticsQuery, limit = DEFAUL
         "SUM(co_sessions.total) where paid_at >= UTC midnight and status in ('paid','refunded')"
         + " + SUM(co_upsell_charges.amount) where created_at >= UTC midnight and status in ('settled','refunded')",
       events: 'lb_touches (views) + co_events (session_created/paid/upsell_settled)',
+      geo: 'distinct lb_touches.vid per lb_touches.country since UTC midnight'
+        + ' — a vid seen from two countries counts in both rows, so the rows can'
+        + ' sum above coverage.resolved_visitors; rows written before country'
+        + ' capture landed are NULL and are counted only in coverage.total_visitors',
     },
     warnings,
     degraded: warnings.length > 0,
