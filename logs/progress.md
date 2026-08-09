@@ -3108,6 +3108,54 @@ String(['claude-fable-5']) is 'claude-fable-5' — as is the output of an object
 with a hand-written toString. Either would satisfy includes() and select a model
 the caller never legally named. Now requires typeof === 'string'. Coercion is
 not membership.
+TIMESTAMP: 2026-08-10 00:05
+TASK: Live View presentation layer (feat/live-view-presentation)
+BUILT: The presentation half of /app/live-view, ported from funnel-os's liveview
+kit onto our existing SSE+snapshot data plane. Four deliverables: (1) LiveGlobe —
+a rotating orthographic globe on plain 2D canvas, with the paint routine
+extracted to globeRender.js; (2) PaymentToastStack + usePaymentToasts — capped,
+auto-dismissing toasts on purchase events with hidden-tab coalescing;
+(3) SaleAlertControls + useSaleAlerts + chaChing — mute/volume persisted to
+localStorage, chime synthesised with WebAudio (no binary asset); (4) RailCards +
+a rewritten EventRail using the reference's card hierarchy in our dark theme.
+All non-visual decisions were extracted into livePresentation.js as pure
+functions. Two generated data modules (countryCentroids.js, worldLand.js) with
+their generators committed.
+TESTED: Four node-runnable harnesses under server/tests/live-view/ —
+presentation.mjs 156/156 (pure logic), globe-render.mjs 32/32 (the paint routine
+driven against a recording fake 2D context), cha-ching.mjs 53/53 (AudioContext +
+listener lifecycle against browser stubs), run-render-smoke.mjs 66/66 (every
+component through react-dom/server). Edge cases covered: zero events, null/
+malformed geo payloads, degraded server reads, throwing localStorage, absent
+AudioContext, zero-size canvas, negative visitor counts, all-expired ripple
+batches, 50-event toast bursts, and dedupe-set eviction at the bound.
+OUTPUT: 307/307 harness assertions pass. eslint 0 across client/src/pages/live/
+(this also cleared 4 errors that were standing on the page before this lane).
+vite build succeeds; bundle 2,897.25 kB -> 2,957.24 kB raw (+59.99 kB,
++23.84 kB gzip) with no new npm dependency.
+DECISIONS:
+(1) DECISION MADE — server left strictly READ ONLY. Per-event geo does not exist
+on our wire (liveViewQueries.js selects neither lb_touches.country into a touch
+event nor any location for a purchase; co_sessions has no country column at
+all). Rather than add a field, the globe is driven from snapshot.geo.by_country,
+which is already on the wire, and arrivals are derived client-side from
+snapshot-to-snapshot RISES. A rise is a true statement; a pin per visitor would
+have been an invented coordinate.
+(2) DECISION MADE — no new dependency. The reference uses globe.gl (absent from
+our package.json) plus a CDN Earth texture and remote TopoJSON (ruled out by the
+brief). `three` IS present but a WebGL context per card is not worth it for this,
+so the globe is 2D canvas + bundled generated coordinates.
+(3) DECISION MADE — toast "product" degrades to funnel + page. line_items is
+never selected into a feed event, so naming a product would be a guess; the
+location line is wired but renders only if an event ever carries a country.
+(4) The globe paint was extracted from LiveGlobe's rAF closure into
+globeRender.js purely so a harness could execute it — it remains a hot loop
+issuing ctx calls directly, because a per-frame scene graph would be ~180k
+allocations/sec at 60fps.
+(5) NOTE FOR THE INTEGRATOR — `main` advanced from 36b57d5 to 7e2814d4 during
+this run (another lane merged; abandonedCheckouts/pageLibrary changes). This
+branch is based on 36b57d5 and touches only client/src/pages/live/** and
+server/tests/live-view/**, so the merge should be disjoint.
 STATUS: COMPLETE
 ---
 
@@ -3509,5 +3557,128 @@ MUTATION CHECK: removed `expectEpoch` from the route's persist call and re-ran �
 3 assertions failed showing exactly the original defect (the cleared thread came
 back with 2 ghost rows). The F3 test is load-bearing, not decorative. File
 restored and re-verified at 62/62.
+TIMESTAMP: 2026-08-10 01:40
+TASK: Live View presentation — review round (FIX-FIRST: F1, F2, F4, F5 gating; F3, F6, F7)
+BUILT: Fixes for all seven review findings, plus the harness class that could
+see the blocker.
+F1 (BLOCKER) — the globe never animated in production. LiveGlobe early-returns
+its empty state when there is nothing to plot, and on the FIRST commit there
+never is (the snapshot starts null), so no <canvas> existed; the rAF effect had
+`[]` deps and early-returned on the null ref, then never re-ran when the canvas
+appeared. Fixed by keying the effect on a mount counter bumped by callback refs
+(elements stay in refs — a DOM node is not state, and mutating canvas.width on a
+useState value trips react-hooks/immutability). It now re-arms on every canvas
+mount, including after empty -> populated -> empty -> populated.
+F2 — added server/tests/live-view/hookRuntime.jsx (a positional-hook React
+runtime: render -> attach/detach refs -> deps-gated effects) and globe-effect.jsx,
+which drives the REAL component through REAL commits with instrumented
+requestAnimationFrame/ResizeObserver/IntersectionObserver/canvas.
+F4 — money honesty on three paths: mixed-currency batches refuse a total and say
+"mixed currencies (USD, JPY, EUR)"; all-unpriced batches say "amounts
+unrecorded" instead of $0.00; a null currency renders a BARE number plus an
+explicit "currency not recorded" caption in both the toast and the rail.
+F5 — truncation is now disclosed ("top N of M countries") and trackArrivals
+replaced diffArrivals: stateful, so a country entering a truncated cut does not
+ripple its whole running total, a degraded read never forgets absent countries
+(50->12->50 is silent), a fall re-anchors downward for midnight rollover, and
+gains are capped at MAX_ARRIVAL_GAIN.
+F3 — pushBatch/fireMany: a reconnect's backfill is routed through the coalescing
+buffer, producing ONE summary toast and ONE chime instead of a wall. This also
+makes the previously-dead buffer path reachable, since useLiveFeed closes the
+stream while hidden.
+F6 — projectInto() writes into a reused scratch object (was ~250k allocations/sec
+at 60fps) and marker halos are cached at the origin and positioned by transform.
+F7 — clampVolume trims whitespace; initial audio state is 'locked' not 'idle';
+deriveGeoPoints docstring corrected to ASC (with the reason); unusable visitor
+counts are excluded and counted as `malformed` rather than plotted as zero;
+dispose() clears pending master-gain timers.
+TESTED: Five harnesses, 415 assertions total — presentation 201/201,
+globe-render 38/38, cha-ching 55/55, render-smoke 89/89, globe-effect 32/32.
+NEGATIVE CONTROL RUN TWICE: F1 was deliberately re-introduced (useRef + [] deps,
+then [] deps alone) and globe-effect FAILED 11 and 8 assertions respectively,
+including "0 frame(s) scheduled" and canvas width 0 want 640 — the exact
+blank-default-canvas artefact. Restored and re-verified green both times.
+OUTPUT: eslint 0 across client/src/pages/live/. vite build succeeds
+(2,960.39 kB / 746.32 kB gzip). Measured F6 result printed by the harness:
+2879 markers drawn across 30 frames -> 1 createRadialGradient call (was 1 per
+marker per frame).
+DECISIONS:
+(1) DECISION MADE — trackArrivals suppresses ripples for first-seen countries
+only WHILE the list is truncated. On a complete list a genuinely new country
+still ripples. We cannot distinguish "new" from "newly visible" under
+truncation, and inventing the difference invents traffic.
+(2) DECISION MADE — countries absent from a tick are NOT removed from the known
+map. That is what makes a degraded read recoverable in silence; the cost is that
+a country genuinely dropping to zero keeps its last value, which is invisible
+anyway since it is no longer plotted.
+(3) DECISION MADE — the hook runtime is deliberately NOT React: no concurrent
+mode, suspense, context, or child rendering. It reproduces exactly the
+commit-order semantics this bug class lives in. One fidelity bug was found and
+fixed during the round (effects were queued per render pass rather than per
+commit, which double-created a ResizeObserver on mount).
+(4) Server still untouched. This lane remains client/src/pages/live/** +
+server/tests/live-view/** + logs/progress.md.
+STATUS: COMPLETE
+---
+
+---
+TIMESTAMP: 2026-08-10 03:10
+TASK: Live View presentation — final review round (N1, N2 blocking; N3-N6)
+BUILT:
+N1 (BLOCKER, a regression from my own F4 fix) — the Revenue Today hero tile
+called fmtMoney(s.revenue_today) with no currency. Removing the USD default so a
+JPY sale stops reading as dollars left the board's BIGGEST money figure
+rendering a bare "12,345.60" with nothing to say what the unit was: it reads as
+dollars while claiming nothing. Extracted a RevenueTile component routing
+through fmtMoneyParts, captioned "currency not recorded" when the unit is
+unknown, "could not measure" when the value is null. Confirmed by reading the
+server: buildLiveSnapshot ships revenue_today as a bare SUM over
+co_sessions.total with NO currency field and NO GROUP BY currency, so on a
+multi-currency store that figure is already a mixed-currency sum. Reads
+`revenue_currency` opportunistically so the caption disappears for free if the
+server ever sends one.
+N2 (BLOCKER) — pushBatch passed hidden:true unconditionally for length>=2, so
+three purchases arriving in one live SSE frame while the operator was WATCHING
+rendered "3 payments while you were away" — a false statement about the person
+reading it. The away decision is now separate from the buffering decision:
+buffering is a rendering choice, `away` is a claim about the operator, taken
+from document.hidden or an explicit fromResync flag. Visible-tab batches still
+coalesce (the cap must hold) but read "3 payments just now".
+N3 — new harness server/tests/live-view/toast-batch.jsx driving the REAL hooks
+through the hook runtime: the visibility decision, pushBatch composition
+(1 event ordinary path, 2 verbatim, 40 -> one summary, re-delivery deduped,
+degenerate inputs), fireMany (25 events -> exactly 1 chime, keys still consumed,
+muted burns no keys, unarmed silent), and teardown incl. reset().
+N4 — trackArrivals docstring corrected: MAX_ARRIVAL_GAIN bounds the reported
+MAGNITUDE of one country's jump, NOT the ripple count (that is MAX_RIPPLES in
+LiveGlobe). The old wording claimed the wrong thing.
+N5 — the gradient headline is relabelled: the 200-country figure is a deliberate
+STRESS load, and the harness now also prints the honest live-board equivalent
+(~20-25 markers/frame => was ~1,200-1,500 gradients/sec, now 1).
+N6 — marker geometry pinned exactly: core radius 8, halo 27.2 (core * 3.4),
+origin-drawn, alphas 0.42/0.95 at depth 1, plus both sides of the 1/4px
+quantisation (near-identical sizes share one gradient, different sizes do not).
+TESTED: Six harnesses, 477 assertions — presentation 201/201, globe-render
+46/46, cha-ching 55/55, render-smoke 103/103, globe-effect 32/32, toast-batch
+40/40.
+NEGATIVE CONTROL for N2: `away` forced back to true; toast-batch failed exactly
+the intended assertion ("and away === FALSE — the operator was watching") at
+39/40. Restored and re-verified 40/40.
+OUTPUT: eslint 0 across client/src/pages/live/. vite build succeeds
+(2,960.85 kB / 746.46 kB gzip). git diff vs base over server/src,
+server/migrations, app.js, render.yaml and both package.json files is EMPTY.
+DECISIONS:
+(1) DECISION MADE — the revenue tile is captioned rather than defaulted. The
+alternative (assume the store currency) would restate a server-side
+mixed-currency sum as a single-currency figure, which is a bigger lie than the
+bare number.
+(2) DECISION MADE — a visible-tab batch still COALESCES rather than replaying
+per-event. The cap exists so a burst cannot blanket the page; only the WORDING
+was wrong, so only the wording changed.
+(3) NOTED, NOT FIXED (out of lane, server is read-only for this lane):
+revenue_today sums co_sessions.total across currencies with no GROUP BY. On a
+single-currency store it is correct; on a multi-currency store it is a mixed sum
+presented as one number. The client now declines to label it, which is the most
+this lane can honestly do. Worth a server-side follow-up.
 STATUS: COMPLETE
 ---
