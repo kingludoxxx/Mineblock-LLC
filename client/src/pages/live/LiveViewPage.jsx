@@ -90,6 +90,11 @@ function GeoCard({ geo }) {
   const covLine = cov && cov.resolved_pct != null
     ? `${showInt(cov.resolved_visitors)} of ${showInt(cov.total_visitors)} visitors today have a country (${cov.resolved_pct}%)`
     : null;
+  // A truncated list presented as a whole is the same lie as a sample
+  // presented as a census — say so when the server flags the cut.
+  const topLine = geo?.truncated
+    ? `Top ${rows.length} of ${showInt(geo.countries_total)} countries`
+    : null;
 
   if (!geo?.available || rows.length === 0) {
     return (
@@ -111,9 +116,14 @@ function GeoCard({ geo }) {
   const maxVisitors = Math.max(1, ...rows.map((r) => r.visitors || 0));
   return (
     <Card>
-      <div className="mb-3 flex items-center gap-2">
-        <Globe2 className="h-4 w-4 shrink-0 text-text-faint" />
-        <h2 className="text-sm font-semibold text-text-primary">Visitors by country</h2>
+      <div className="mb-3 flex items-baseline justify-between gap-2">
+        <div className="flex items-center gap-2">
+          <Globe2 className="h-4 w-4 shrink-0 text-text-faint" />
+          <h2 className="text-sm font-semibold text-text-primary">Visitors by country</h2>
+        </div>
+        {topLine && (
+          <span className="shrink-0 text-[11px] text-text-faint" data-testid="lv-geo-truncated">{topLine}</span>
+        )}
       </div>
       <ul className="space-y-2.5" data-testid="lv-geo-list">
         {rows.map((r) => (
@@ -136,7 +146,18 @@ function GeoCard({ geo }) {
           </li>
         ))}
       </ul>
-      {covLine && <p className="mt-3 text-[11px] leading-relaxed text-text-faint">{covLine}</p>}
+      {covLine && (
+        <p className="mt-3 text-[11px] leading-relaxed text-text-faint" data-testid="lv-geo-coverage">
+          {covLine}
+          {/* The server's own caveat (basis.geo), surfaced rather than left in
+              the payload: these rows can sum ABOVE the resolved count, because
+              a visitor seen from two countries is counted in both. Without this
+              the arithmetic looks broken — or worse, looks fine and misleads. */}
+          <span className="mt-0.5 block">
+            A visitor seen from two countries counts in both rows, so the rows can sum above that number.
+          </span>
+        </p>
+      )}
     </Card>
   );
 }

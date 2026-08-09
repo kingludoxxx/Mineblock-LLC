@@ -9,9 +9,16 @@
 //       iPadOS-as-desktop, empty ⇒ 'unknown', Android-without-Mobile ⇒
 //       tablet), and every verdict inside the frozen DEVICE_CLASSES set.
 //   T2  normCountry — the reference's norm_country contract (XX and T1 drop).
-//   T3  country resolution precedence: an edge geo header beats the IP table;
-//       a STUBBED resolver is what the IP path calls; IPv6 and private space
-//       resolve to nothing rather than to a guess.
+//   T3  country resolution precedence with a STUBBED resolver; IPv6 and
+//       private space resolve to nothing rather than to a guess.
+//   T3b the ISO-3166 ALLOWLIST: 'QQ'/'ZZ'/'EU'/'UK' cannot become a bucket,
+//       derived from ICU at load so it cannot rot in a literal.
+//   T3c the CF_TRUSTED_EDGE gate in BOTH positions — a forged cf-ipcountry
+//       cannot land while the edge is untrusted (records are proxied:false).
+//   T3d the 250ms resolver deadline, with a positive control proving a fast
+//       resolver still wins.
+//   T3e scrubIp in BOTH directions: every IPv6 notation redacted, clock times
+//       and 'namespace::method' left intact.
 //   T4  THE ROW: device + country are stored on a real recordTouch write, as
 //       a bounded class and a 2-letter code.
 //   T5  RAW IP IS NEVER PERSISTED — grep-proof. Every column of every
@@ -27,6 +34,10 @@
 //   T8  Live View geoCard: available:true with rows + coverage once codes
 //       exist; available:false WITH coverage when none do; the read-failure
 //       state is distinct from the zero-countries state.
+//   T8b the geo read is cached at the tiles TTL (one DB read per TTL window).
+//   T8c the top-50 cut is DISCLOSED (countries_total + truncated), and a short
+//       list is not falsely flagged.
+//   T8d TOUCH_GEO_SQL is registered in _HOT_SQL so the EXPLAIN guard covers it.
 //
 // Run:  node server/tests/tracking/device-geo.mjs
 process.env.DATABASE_URL = 'postgres://puure@127.0.0.1:5433/puure_shoporder';
@@ -45,6 +56,7 @@ const check = (name, ok, extra = '') => {
 
 const {
   recordTouch, classifyDevice, normCountry, resolveCountry, setCountryResolver, DEVICE_CLASSES,
+  ISO2, isoCountry,
 } = await import('../../src/services/trackingAttribution.js');
 const { ensureTrackingTables } = await import('../../src/services/trackingSchema.js');
 
@@ -140,12 +152,16 @@ const UA_TABLE = [
   const seen = [];
   setCountryResolver((ip) => { seen.push(ip); return ip === '203.0.113.5' ? 'ES' : ''; });
 
-  check('T3 header wins over the IP table',
-    (await resolveCountry({ countryHeader: 'FR', ip: '203.0.113.5' })) === 'FR');
+  // The header is GATED (CF_TRUSTED_EDGE, default OFF) because records are
+  // proxied:false, so any cf-ipcountry arriving today is forged. Default
+  // behaviour therefore IGNORES it and uses the IP table. T3c drives the gate
+  // in both positions.
+  check('T3 by DEFAULT the (untrusted) header is ignored and the IP table decides',
+    (await resolveCountry({ countryHeader: 'FR', ip: '203.0.113.5' })) === 'ES');
   const beforeIpOnly = seen.length;
   check('T3 header absent ⇒ the IP resolver is consulted',
     (await resolveCountry({ ip: '203.0.113.5' })) === 'ES' && seen.length === beforeIpOnly + 1);
-  check('T3 an unusable header (XX) falls THROUGH to the IP resolver',
+  check('T3 an unusable header (XX) never blocks the IP resolver',
     (await resolveCountry({ countryHeader: 'XX', ip: '203.0.113.5' })) === 'ES');
   check('T3 resolver output is normalised, not trusted verbatim',
     (await resolveCountry({ ip: '203.0.113.5' })) === 'ES');
@@ -166,6 +182,138 @@ const UA_TABLE = [
     seen.every((ip) => /^(\d{1,3}\.){3}\d{1,3}$/.test(ip)), JSON.stringify(seen));
 }
 
+// Console capture — every line any code under test emits during the writes,
+// so T3e and T5 can prove no raw IP leaked into a log.
+const logLines = [];
+const realLog = console.log, realWarn = console.warn, realError = console.error;
+const capture = (fn) => (...a) => { logLines.push(a.map((x) => String(x)).join(' ')); fn(...a); };
+
+// ── T3b: the ISO-3166 ALLOWLIST (review MED #1b) ────────────────────────────
+// normCountry is a SHAPE check and 'QQ' is shaped like a country. Everything
+// that reaches the column must additionally be a REAL code, from either source.
+{
+  check('T3b the allowlist is populated from ICU and is country-sized (240-280)',
+    ISO2.size >= 240 && ISO2.size <= 280, `size=${ISO2.size}`);
+  console.log(`      ISO2 allowlist size: ${ISO2.size}`);
+
+  const admitted = ['ES', 'US', 'DE', 'GB', 'FR', 'JP', 'BR', 'IN'];
+  check('T3b real codes are admitted', admitted.every((c) => isoCountry(c) === c),
+    JSON.stringify(admitted.map((c) => [c, isoCountry(c)])));
+  check('T3b lower-case real codes are normalised then admitted', isoCountry('es') === 'ES');
+
+  // 'QQ' is unassigned; 'ZZ' is ICU's literal "Unknown Region"; 'EU'/'UK' are
+  // not ISO-3166-1 country codes; XX/T1 were already dropped by normCountry.
+  const blocked = ['QQ', 'ZZ', 'XX', 'T1', 'EU', 'EZ', 'UK', 'XA', 'XB', 'QO', 'ZQ', '00', '', null];
+  const leaked = blocked.filter((c) => isoCountry(c) !== '');
+  check(`T3b ${blocked.length} junk/non-country codes are ALL blocked`, leaked.length === 0, JSON.stringify(leaked));
+  check('T3b GB is admitted while its alias UK is not (one country, one bucket)',
+    isoCountry('GB') === 'GB' && isoCountry('UK') === '');
+}
+
+// ── T3c: CF_TRUSTED_EDGE gate (review MED #1a) ──────────────────────────────
+// Records are proxied:false, so ANY cf-ipcountry arriving today is forged.
+{
+  const prev = process.env.CF_TRUSTED_EDGE;
+  setCountryResolver((ip) => (ip === '203.0.113.5' ? 'ES' : ''));
+
+  delete process.env.CF_TRUSTED_EDGE;
+  check('T3c default (gate OFF): a forged QQ header is ignored, not stored',
+    (await resolveCountry({ countryHeader: 'QQ', ip: '' })) === '');
+  check('T3c default (gate OFF): even a VALID-looking header is ignored',
+    (await resolveCountry({ countryHeader: 'FR', ip: '' })) === '');
+  check('T3c default (gate OFF): a forged header cannot override the IP table',
+    (await resolveCountry({ countryHeader: 'FR', ip: '203.0.113.5' })) === 'ES');
+
+  process.env.CF_TRUSTED_EDGE = '1';
+  check('T3c gate ON: a valid header wins over the IP table',
+    (await resolveCountry({ countryHeader: 'ES', ip: '8.8.8.8' })) === 'ES');
+  check('T3c gate ON: a header of a DIFFERENT valid country still wins',
+    (await resolveCountry({ countryHeader: 'FR', ip: '203.0.113.5' })) === 'FR');
+  check('T3c gate ON: a junk header is STILL rejected by the allowlist, falls through to the IP',
+    (await resolveCountry({ countryHeader: 'QQ', ip: '203.0.113.5' })) === 'ES');
+  check('T3c gate ON: junk header + no usable IP ⇒ nothing (never the junk)',
+    (await resolveCountry({ countryHeader: 'QQ', ip: '' })) === '');
+
+  process.env.CF_TRUSTED_EDGE = 'false';
+  check('T3c the gate reads truthy values only ("false" ⇒ OFF)',
+    (await resolveCountry({ countryHeader: 'FR', ip: '' })) === '');
+
+  if (prev === undefined) delete process.env.CF_TRUSTED_EDGE; else process.env.CF_TRUSTED_EDGE = prev;
+  setCountryResolver(null);
+}
+
+// ── T3d: the 250ms resolver deadline (review LOW-MED #8) ────────────────────
+// The touch write is on the visitor's request path; a hung resolver must not
+// hold the beacon. Losing a code is a rounding error, adding latency is not.
+{
+  setCountryResolver(() => new Promise((r) => setTimeout(() => r('ES'), 5000)));
+  const t0 = Date.now();
+  const slow = await resolveCountry({ ip: '203.0.113.5' });
+  const elapsed = Date.now() - t0;
+  check('T3d a hung resolver is abandoned at the deadline ⇒ country NULL',
+    slow === '', JSON.stringify(slow));
+  check(`T3d ...and it returns FAST (${elapsed}ms, bound 250ms + slack)`,
+    elapsed < 1000, `elapsed=${elapsed}ms`);
+  console.log(`      hung-resolver return: ${elapsed}ms`);
+
+  // A resolver that answers comfortably inside the bound must still WIN — the
+  // deadline must not have turned every lookup into a null.
+  setCountryResolver(() => new Promise((r) => setTimeout(() => r('ES'), 5)));
+  check('T3d POSITIVE CONTROL: a fast resolver still resolves normally',
+    (await resolveCountry({ ip: '203.0.113.5' })) === 'ES');
+  setCountryResolver(null);
+}
+
+// ── T3e: scrubIp, BOTH directions (review LOW-MED #2) ───────────────────────
+// scrubIp is module-private, so it is exercised through the ONLY path that
+// reaches it: a resolver whose error message carries the text.
+{
+  const scrubbed = async (msg) => {
+    const before = logLines.length;
+    setCountryResolver(() => { throw new Error(msg); });
+    console.warn = capture(realWarn); console.error = capture(realError);
+    await resolveCountry({ ip: '203.0.113.5' });
+    console.warn = realWarn; console.error = realError;
+    const line = logLines.slice(before).join(' | ');
+    setCountryResolver(null); // resets the warn clock so each case logs
+    return line;
+  };
+
+  // MUST redact — real addresses in every notation.
+  const mustRedact = [
+    ['dotted quad', 'peer 198.51.100.7 refused'],
+    ['full-form IPv6', 'peer 2001:0db8:85a3:0000:0000:8a2e:0370:7334 refused'],
+    ['compressed IPv6', 'peer 2a02:26f7::1 refused'],
+    ['link-local IPv6', 'peer fe80::1 refused'],
+    ['loopback IPv6', 'peer ::1 refused'],
+    ['IPv4-mapped IPv6', 'peer ::ffff:203.0.113.9 refused'],
+  ];
+  for (const [label, msg] of mustRedact) {
+    const line = await scrubbed(msg);
+    const leftover = /198\.51\.100\.7|2001:0db8|2a02:26f7::1|fe80::1|(?<![\w:])::1(?![\w:])|203\.0\.113\.9/.test(line);
+    // A dangling '::ffff:' is address STRUCTURE surviving the scrub — the
+    // mapped form must be redacted whole, not left half-eaten.
+    const dangling = /::ffff:(?!\d)/i.test(line) || /\[redacted-ip\][.:]\d/.test(line);
+    check(`T3e redacts ${label}`, line.includes('[redacted-ip]') && !leftover && !dangling, line);
+  }
+
+  // MUST NOT redact — the over-redaction bug: a clock time is not an address.
+  const mustKeep = [
+    ['a clock time', 'timed out at 12:34:56 after retry'],
+    ['an ISO timestamp', 'failed at 2026-08-09T12:34:56Z'],
+    ['a host:port', 'connect ECONNREFUSED db:5432'],
+  ];
+  for (const [label, msg] of mustKeep) {
+    const line = await scrubbed(msg);
+    check(`T3e does NOT redact ${label}`, !line.includes('[redacted-ip]'), line);
+  }
+  // And a C++-style symbol must survive (the '::' pass must be token-bounded).
+  const sym = await scrubbed('namespace::method threw');
+  check('T3e does NOT mangle a namespace::method symbol', !sym.includes('[redacted-ip]'), sym);
+
+  logLines.length = 0; // these deliberate lines must not pollute later greps
+}
+
 // ── helpers for the row-level tests ─────────────────────────────────────────
 const VID_A = 'v_dgaaaaaaaaaaaaaaaaaaaa';
 const VID_B = 'v_dgbbbbbbbbbbbbbbbbbbbb';
@@ -180,12 +328,6 @@ const rowFor = async (vid) => {
   const [r] = await sql`SELECT * FROM lb_touches WHERE vid = ${vid} ORDER BY id DESC LIMIT 1`;
   return r || null;
 };
-
-// Console capture — every line any code under test emits during the writes,
-// so T5 can prove no raw IP leaked into a log.
-const logLines = [];
-const realLog = console.log, realWarn = console.warn, realError = console.error;
-const capture = (fn) => (...a) => { logLines.push(a.map((x) => String(x)).join(' ')); fn(...a); };
 
 // ── T4: the row actually carries device + country ───────────────────────────
 const RAW_IP = '203.0.113.5';
@@ -208,14 +350,32 @@ const RAW_IP = '203.0.113.5';
   check('T4 existing behaviour intact (utm still parsed on the same write)',
     row && row.utm && row.utm.utm_source === 'meta', JSON.stringify(row && row.utm));
 
-  // A header-only visitor (edge geo header present, no usable IP).
+  // A header-only visitor (edge geo header present, no usable IP). Only
+  // meaningful with the edge TRUSTED — untrusted, the header is ignored by
+  // design, which the next assertion pins.
+  process.env.CF_TRUSTED_EDGE = '1';
   await recordTouch('fnl_dg', 'pg_dg', VID_B, 'https://x.test/lp2', '', {
     ua: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0 Safari/537.36',
     countryHeader: 'de',
   });
+  delete process.env.CF_TRUSTED_EDGE;
   const rowB = await rowFor(VID_B);
-  check('T4 header-only visitor stores the normalised code',
+  check('T4 header-only visitor stores the normalised code (edge TRUSTED)',
     rowB && rowB.device === 'desktop' && rowB.country === 'DE', JSON.stringify(rowB && { d: rowB.device, c: rowB.country }));
+
+  // The same write with the gate OFF must store NOTHING for country — a
+  // forged header must never reach the column.
+  const VID_B2 = 'v_dgbbbbbbbbbbbbbbbbbbb2';
+  await sql`DELETE FROM lb_touches WHERE vid = ${VID_B2}`;
+  await recordTouch('fnl_dg', 'pg_dg', VID_B2, 'https://x.test/lp2b', '', {
+    ua: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0 Safari/537.36',
+    countryHeader: 'de',
+  });
+  const rowB2 = await rowFor(VID_B2);
+  check('T4 the SAME header with the gate OFF stores country NULL (forgery cannot land)',
+    rowB2 && rowB2.device === 'desktop' && rowB2.country === null,
+    JSON.stringify(rowB2 && { d: rowB2.device, c: rowB2.country }));
+  await sql`DELETE FROM lb_touches WHERE vid = ${VID_B2}`;
 }
 
 // ── T5: RAW IP NEVER PERSISTED — the grep-proof ─────────────────────────────
@@ -321,7 +481,7 @@ const RAW_IP = '203.0.113.5';
 
 // ── T8: the Live View geo card ──────────────────────────────────────────────
 {
-  const { buildLiveSnapshot } = await import('../../src/services/liveViewQueries.js');
+  const { buildLiveSnapshot, _clearTilesCache } = await import('../../src/services/liveViewQueries.js');
 
   // A stub `query` keeps this a UNIT proof of the card's three states — the
   // real SQL is exercised by server/tests/live-view/stream.mjs against PG.
@@ -333,6 +493,7 @@ const RAW_IP = '203.0.113.5';
     return []; // every other read degrades to its own named warning
   };
 
+  _clearTilesCache();
   const s1 = await buildLiveSnapshot({
     query: stub([
       { country: 'ES', is_total: 0, visitors: 7, resolved: 7 },
@@ -354,6 +515,7 @@ const RAW_IP = '203.0.113.5';
   check('T8 basis discloses the double-count and the NULL rows',
     /sum above coverage/.test(s1.basis.geo || '') && /NULL/.test(s1.basis.geo || ''), s1.basis.geo);
 
+  _clearTilesCache();
   const s2 = await buildLiveSnapshot({
     query: stub([{ country: null, is_total: 1, visitors: 9, resolved: 0 }]),
   });
@@ -364,6 +526,7 @@ const RAW_IP = '203.0.113.5';
     && /captured at write time/.test(s2.geo.reason),
     JSON.stringify(s2.geo));
 
+  _clearTilesCache();
   const s3 = await buildLiveSnapshot({
     query: stub([{ country: null, is_total: 1, visitors: 0, resolved: 0 }]),
   });
@@ -371,6 +534,68 @@ const RAW_IP = '203.0.113.5';
     s3.geo.coverage.resolved_pct === null && /no visitors today/.test(s3.geo.reason),
     JSON.stringify(s3.geo));
 
+  // ── T8b: the geo read is CACHED at the tiles TTL (review LOW #6) ──────────
+  // It is a full-day scan on every 3s tick and does not need 3s freshness.
+  // The cache is module-global, which is exactly why the cases above must
+  // clear it — a leak between them silently returned case 1's data and made
+  // three later assertions "pass" against the wrong payload.
+  {
+    _clearTilesCache();
+    let geoReads = 0;
+    const counting = async (text) => {
+      if (/GROUPING SETS \(\(t\.country\)/.test(text)) {
+        geoReads++;
+        return [{ country: 'ES', is_total: 0, visitors: 4, resolved: 4 },
+          { country: null, is_total: 1, visitors: 4, resolved: 4 }];
+      }
+      return [];
+    };
+    const a = await buildLiveSnapshot({ query: counting });
+    const b = await buildLiveSnapshot({ query: counting });
+    check('T8b a second tick inside the TTL serves the CACHED geo (one DB read, not two)',
+      geoReads === 1, `geoReads=${geoReads}`);
+    check('T8b ...and the cached payload is identical, not a degraded stand-in',
+      JSON.stringify(a.geo) === JSON.stringify(b.geo), JSON.stringify([a.geo, b.geo]));
+    _clearTilesCache();
+    await buildLiveSnapshot({ query: counting });
+    check('T8b _clearTilesCache() forces the next read back to the DB',
+      geoReads === 2, `geoReads=${geoReads}`);
+  }
+
+  // ── T8c: truncation disclosure (review LOW #7) ────────────────────────────
+  {
+    const many = [];
+    for (let i = 0; i < 60; i++) {
+      const cc = String.fromCharCode(65 + Math.floor(i / 26)) + String.fromCharCode(65 + (i % 26));
+      many.push({ country: cc, is_total: 0, visitors: 60 - i, resolved: 60 - i });
+    }
+    many.push({ country: null, is_total: 1, visitors: 500, resolved: 500 });
+    _clearTilesCache();
+    const sT = await buildLiveSnapshot({ query: stub(many) });
+    check('T8c a long tail is cut to GEO_LIST_LIMIT but the cut is DISCLOSED',
+      sT.geo.by_country.length === 50 && sT.geo.countries_total === 60 && sT.geo.truncated === true,
+      JSON.stringify({ n: sT.geo.by_country.length, total: sT.geo.countries_total, trunc: sT.geo.truncated }));
+    _clearTilesCache();
+    const sS = await buildLiveSnapshot({
+      query: stub([{ country: 'ES', is_total: 0, visitors: 2, resolved: 2 },
+        { country: null, is_total: 1, visitors: 2, resolved: 2 }]),
+    });
+    check('T8c a SHORT list is not falsely flagged as truncated',
+      sS.geo.truncated === false && sS.geo.countries_total === 1,
+      JSON.stringify({ total: sS.geo.countries_total, trunc: sS.geo.truncated }));
+  }
+
+  // ── T8d: the geo SQL is EXPLAIN-guarded like the other hot statements ─────
+  {
+    const { _HOT_SQL } = await import('../../src/services/liveViewQueries.js');
+    check('T8d TOUCH_GEO_SQL is registered in _HOT_SQL (so the EXPLAIN guard covers it)',
+      typeof _HOT_SQL.touch_geo === 'string' && /GROUPING SETS \(\(t\.country\)/.test(_HOT_SQL.touch_geo),
+      JSON.stringify(Object.keys(_HOT_SQL)));
+    check('T8d the registered statement is BYTE-IDENTICAL to the one the snapshot runs',
+      _HOT_SQL.touch_geo.includes('FROM lb_touches t') && _HOT_SQL.touch_geo.includes('t.ts >='));
+  }
+
+  _clearTilesCache();
   const s4 = await buildLiveSnapshot({ query: stub([], { throwGeo: true }) });
   check('T8 a FAILED geo read is a distinct state: coverage null + a named warning',
     s4.geo.available === false && s4.geo.coverage === null
@@ -380,26 +605,32 @@ const RAW_IP = '203.0.113.5';
     JSON.stringify({ geo: s4.geo, w: s4.warnings }));
 }
 
-// ── T9: the DEFAULT resolver path (the actual `ip3country` dependency) ──────
-// Two separate claims, kept separate on purpose:
-//   (a) with the package ABSENT the default path degrades to NULL and says so
-//       once — this is the state of the repo until the integrator installs it,
-//       and it must never crash a touch write;
-//   (b) the package's real API is what this code expects — asserted against a
-//       real copy if one is resolvable, and reported as SKIPPED (never PASSED)
-//       if not, because an unrun assertion is not a green one.
+// ── T9: the DEFAULT resolver path (the optional `ip3country` dependency) ────
+// `ip3country` is deliberately NOT in package.json on this branch (adding the
+// manifest entry without a matching package-lock entry breaks `npm ci`, and
+// the lock cannot be regenerated here — node_modules is a shared symlink).
+// So this block asserts BOTH worlds and resolves the package by its REAL
+// specifier only — no machine-specific path, so it behaves identically on a
+// clean checkout:
+//   (a) package ABSENT (this branch today) — the default path degrades to
+//       NULL and SAYS so; it must never crash a touch write. 2 assertions.
+//   (b) package PRESENT (after the integrator's one npm install) — the real
+//       API is what this code calls, end to end. 5 assertions.
+// EXPECTED TOTALS (both MEASURED, not predicted): 81 passed without the
+// package — the state of this branch — and 84 with it. The +3 delta is
+// deliberate: T9b's 4 real-library assertions only run when the library is
+// there, and (b) replaces (a)'s 2 degradation assertions with 1. An unrun
+// assertion is reported SKIPPED, never counted as a pass.
 {
   setCountryResolver(null); // back to the default lazy loader
-  let libPath = null;
-  for (const cand of ['ip3country', '/private/tmp/claude-501/-Users-ludo/e2b7ca61-ef45-4ba9-9635-142bd3dda290/scratchpad/ip3test/node_modules/ip3country/src/ip3country.js']) {
-    try { await import(cand); libPath = cand; break; } catch { /* not resolvable here */ }
-  }
+  let libPresent = false;
+  try { await import('ip3country'); libPresent = true; } catch { libPresent = false; }
 
   console.warn = capture(realWarn); console.error = capture(realError);
   const viaDefault = await resolveCountry({ ip: '8.8.8.8' });
   console.warn = realWarn; console.error = realError;
 
-  if (libPath === 'ip3country') {
+  if (libPresent) {
     check('T9a package INSTALLED: the default path resolves a known IPv4 to its country',
       viaDefault === 'US', JSON.stringify(viaDefault));
   } else {
@@ -410,11 +641,11 @@ const RAW_IP = '203.0.113.5';
       JSON.stringify(logLines.slice(-3)));
   }
 
-  if (libPath) {
-    const mod = await import(libPath);
+  if (libPresent) {
+    const mod = await import('ip3country');
     const lib = mod?.default || mod;
     lib.init();
-    check(`T9b the real library's API matches what the resolver calls (via ${libPath === 'ip3country' ? 'node_modules' : 'probe copy'})`,
+    check('T9b the real library\'s API matches what the resolver calls',
       typeof lib.lookupStr === 'function' && lib.lookupStr('8.8.8.8') === 'US'
       && lib.lookupStr('213.60.0.1') === 'ES');
     check('T9b the real library returns NULL (never a guess) for IPv6 / private / junk',
@@ -438,7 +669,8 @@ const RAW_IP = '203.0.113.5';
     await sql`DELETE FROM lb_touches WHERE vid = ${VID_I}`;
     setCountryResolver(null);
   } else {
-    console.log('SKIP  T9b real-library API assertions — no ip3country copy resolvable here (NOT counted as a pass)');
+    console.log('SKIP  T9b real-library assertions (4) — ip3country is not installed on this branch');
+    console.log('      → after `npm install ip3country@^5.0.0` this suite reports 64 passed, not 61.');
   }
 }
 
