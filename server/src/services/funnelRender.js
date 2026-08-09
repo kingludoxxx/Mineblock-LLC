@@ -1359,8 +1359,11 @@ const CKT_TEMPLATE_JS = `(function(){
         for(var i=0;i<rows.length&&i<items.length;i++){
           var it=items[i]||{};
           var nameEl=rows[i].querySelector('.fos-os-name');
-          if(nameEl&&it.title&&String(it.title)!==String(it.product_title)&&!nameEl.querySelector('.ckt-os-sub')){
-            var sub=document.createElement('span');sub.className='ckt-os-sub';sub.textContent='bundle: '+String(it.title);nameEl.appendChild(sub);
+          /* 'Default Title' is Shopify's placeholder variant name for a product
+   that has no real variants — it is not a bundle and must never be
+   shown to a buyer as one. Only label a variant that actually names
+   something (e.g. 'MyPuure Device + 6 Months Supply of Lifting Oil'). */var vt=String(it.title||'').trim();var meaningful=vt&&vt.toLowerCase()!=='default title'&&vt!==String(it.product_title||'');if(nameEl&&meaningful&&!nameEl.querySelector('.ckt-os-sub')){
+            var sub=document.createElement('span');sub.className='ckt-os-sub';sub.textContent='bundle: '+vt;nameEl.appendChild(sub);
           }
           var img=it.image;
           if(img&&/^https?:\\/\\//i.test(String(img))){
