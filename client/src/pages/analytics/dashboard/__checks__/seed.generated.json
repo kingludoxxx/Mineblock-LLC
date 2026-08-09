@@ -1,0 +1,4459 @@
+{
+  "captured_at": "2026-08-09T18:53:07.866Z",
+  "captured_from": {
+    "metrics_commit": "3e42a8e",
+    "attribution_commit": "14ce8f9",
+    "report_tz": "Europe/Madrid",
+    "database": "puure_metrics_engine (Lane 1 engine harness fixture)"
+  },
+  "windows": {
+    "a": {
+      "start": "2026-07-11",
+      "end": "2026-08-09"
+    },
+    "b": {
+      "start": "2026-01-21",
+      "end": "2026-04-11"
+    }
+  },
+  "dashboard": {
+    "band": {
+      "live": 312,
+      "unique_today": 1000,
+      "today": {
+        "day": "2026-08-09",
+        "orders": 555,
+        "revenue": 41625,
+        "spend": 100,
+        "net": 22377.5
+      },
+      "yesterday": {
+        "day": "2026-08-08",
+        "orders": 555,
+        "revenue": 33275,
+        "spend": 100,
+        "net": 18686.4
+      },
+      "timezone": "Europe/Madrid",
+      "meta": {
+        "computed_ms": 858,
+        "rows_scanned": 1393,
+        "timezone": "Europe/Madrid",
+        "warnings": []
+      },
+      "in_window": true
+    },
+    "kpis": {
+      "orders": 16661,
+      "gross_sales": 917025,
+      "net_sales": 913660,
+      "refunds": 3365,
+      "sessions": 30022,
+      "conv_pct": 55.496,
+      "aov": 54.84,
+      "new_customers": 16660,
+      "returning_customers": 1,
+      "net_after_cogs": 504723.5,
+      "margin_pct": 55.2419,
+      "cost_coverage_pct": 99.9904,
+      "spend": 3150,
+      "roas": 290.05,
+      "cpa": 0.19,
+      "net_profit": 501573.5,
+      "previous": {
+        "orders": 16672,
+        "gross_sales": 916990,
+        "net_sales": 913655,
+        "refunds": 3335,
+        "sessions": 30000,
+        "conv_pct": 55.5733,
+        "aov": 54.8,
+        "new_customers": 16672,
+        "returning_customers": 0,
+        "net_after_cogs": 504365.6,
+        "margin_pct": 55.2031,
+        "cost_coverage_pct": 100,
+        "spend": 3000,
+        "roas": 304.55,
+        "cpa": 0.18,
+        "net_profit": 501365.6
+      },
+      "upsell_lines": {
+        "aov_post": 54.84,
+        "aov_pre": 49.83,
+        "upsell_revenue": 83360,
+        "take_rate": 104125,
+        "upsell_refunds": 25,
+        "orders": 16661,
+        "abandoned": 2
+      }
+    },
+    "series": [
+      {
+        "key": "2026-07-11",
+        "future": false,
+        "gross_sales": 19435,
+        "net_sales": 18880,
+        "orders": 555,
+        "sessions": 1000,
+        "conv_pct": 55.5
+      },
+      {
+        "key": "2026-07-12",
+        "future": false,
+        "gross_sales": 27750,
+        "net_sales": 27750,
+        "orders": 555,
+        "sessions": 1000,
+        "conv_pct": 55.5
+      },
+      {
+        "key": "2026-07-13",
+        "future": false,
+        "gross_sales": 47165,
+        "net_sales": 47165,
+        "orders": 555,
+        "sessions": 1000,
+        "conv_pct": 55.5
+      },
+      {
+        "key": "2026-07-14",
+        "future": false,
+        "gross_sales": 13875,
+        "net_sales": 13875,
+        "orders": 555,
+        "sessions": 1000,
+        "conv_pct": 55.5
+      },
+      {
+        "key": "2026-07-15",
+        "future": false,
+        "gross_sales": 33310,
+        "net_sales": 33310,
+        "orders": 555,
+        "sessions": 1000,
+        "conv_pct": 55.5
+      },
+      {
+        "key": "2026-07-16",
+        "future": false,
+        "gross_sales": 41625,
+        "net_sales": 41070,
+        "orders": 555,
+        "sessions": 1000,
+        "conv_pct": 55.5
+      },
+      {
+        "key": "2026-07-17",
+        "future": false,
+        "gross_sales": 19415,
+        "net_sales": 19415,
+        "orders": 555,
+        "sessions": 1000,
+        "conv_pct": 55.5
+      },
+      {
+        "key": "2026-07-18",
+        "future": false,
+        "gross_sales": 27750,
+        "net_sales": 27750,
+        "orders": 555,
+        "sessions": 1000,
+        "conv_pct": 55.5
+      },
+      {
+        "key": "2026-07-19",
+        "future": false,
+        "gross_sales": 47185,
+        "net_sales": 47185,
+        "orders": 555,
+        "sessions": 1000,
+        "conv_pct": 55.5
+      },
+      {
+        "key": "2026-07-20",
+        "future": false,
+        "gross_sales": 13875,
+        "net_sales": 13875,
+        "orders": 555,
+        "sessions": 1000,
+        "conv_pct": 55.5
+      },
+      {
+        "key": "2026-07-21",
+        "future": false,
+        "gross_sales": 33290,
+        "net_sales": 32735,
+        "orders": 555,
+        "sessions": 1000,
+        "conv_pct": 55.5
+      },
+      {
+        "key": "2026-07-22",
+        "future": false,
+        "gross_sales": 41625,
+        "net_sales": 41625,
+        "orders": 555,
+        "sessions": 1000,
+        "conv_pct": 55.5
+      },
+      {
+        "key": "2026-07-23",
+        "future": false,
+        "gross_sales": 19435,
+        "net_sales": 19435,
+        "orders": 555,
+        "sessions": 1000,
+        "conv_pct": 55.5
+      },
+      {
+        "key": "2026-07-24",
+        "future": false,
+        "gross_sales": 27750,
+        "net_sales": 27750,
+        "orders": 555,
+        "sessions": 1000,
+        "conv_pct": 55.5
+      },
+      {
+        "key": "2026-07-25",
+        "future": false,
+        "gross_sales": 47165,
+        "net_sales": 47165,
+        "orders": 555,
+        "sessions": 1000,
+        "conv_pct": 55.5
+      },
+      {
+        "key": "2026-07-26",
+        "future": false,
+        "gross_sales": 13875,
+        "net_sales": 13320,
+        "orders": 555,
+        "sessions": 1000,
+        "conv_pct": 55.5
+      },
+      {
+        "key": "2026-07-27",
+        "future": false,
+        "gross_sales": 33310,
+        "net_sales": 33310,
+        "orders": 555,
+        "sessions": 1000,
+        "conv_pct": 55.5
+      },
+      {
+        "key": "2026-07-28",
+        "future": false,
+        "gross_sales": 41625,
+        "net_sales": 41625,
+        "orders": 555,
+        "sessions": 1000,
+        "conv_pct": 55.5
+      },
+      {
+        "key": "2026-07-29",
+        "future": false,
+        "gross_sales": 19415,
+        "net_sales": 19415,
+        "orders": 555,
+        "sessions": 1000,
+        "conv_pct": 55.5
+      },
+      {
+        "key": "2026-07-30",
+        "future": false,
+        "gross_sales": 27750,
+        "net_sales": 27750,
+        "orders": 555,
+        "sessions": 1000,
+        "conv_pct": 55.5
+      },
+      {
+        "key": "2026-07-31",
+        "future": false,
+        "gross_sales": 47185,
+        "net_sales": 46630,
+        "orders": 555,
+        "sessions": 1000,
+        "conv_pct": 55.5
+      },
+      {
+        "key": "2026-08-01",
+        "future": false,
+        "gross_sales": 13875,
+        "net_sales": 13875,
+        "orders": 555,
+        "sessions": 1000,
+        "conv_pct": 55.5
+      },
+      {
+        "key": "2026-08-02",
+        "future": false,
+        "gross_sales": 33290,
+        "net_sales": 33290,
+        "orders": 555,
+        "sessions": 1000,
+        "conv_pct": 55.5
+      },
+      {
+        "key": "2026-08-03",
+        "future": false,
+        "gross_sales": 41625,
+        "net_sales": 41625,
+        "orders": 555,
+        "sessions": 1000,
+        "conv_pct": 55.5
+      },
+      {
+        "key": "2026-08-04",
+        "future": false,
+        "gross_sales": 19435,
+        "net_sales": 19435,
+        "orders": 555,
+        "sessions": 1000,
+        "conv_pct": 55.5
+      },
+      {
+        "key": "2026-08-05",
+        "future": false,
+        "gross_sales": 27860,
+        "net_sales": 27305,
+        "orders": 557,
+        "sessions": 1001,
+        "conv_pct": 55.6444
+      },
+      {
+        "key": "2026-08-06",
+        "future": false,
+        "gross_sales": 47665,
+        "net_sales": 47665,
+        "orders": 558,
+        "sessions": 1019,
+        "conv_pct": 54.7596
+      },
+      {
+        "key": "2026-08-07",
+        "future": false,
+        "gross_sales": 14530,
+        "net_sales": 14530,
+        "orders": 561,
+        "sessions": 1002,
+        "conv_pct": 55.988
+      },
+      {
+        "key": "2026-08-08",
+        "future": false,
+        "gross_sales": 33310,
+        "net_sales": 33275,
+        "orders": 555,
+        "sessions": 1000,
+        "conv_pct": 55.5
+      },
+      {
+        "key": "2026-08-09",
+        "future": false,
+        "gross_sales": 41625,
+        "net_sales": 41625,
+        "orders": 555,
+        "sessions": 1000,
+        "conv_pct": 55.5
+      }
+    ],
+    "prev_series": [
+      {
+        "key": "2026-06-11",
+        "future": false,
+        "gross_sales": 19460,
+        "net_sales": 18905,
+        "orders": 556,
+        "sessions": 1000,
+        "conv_pct": 55.6
+      },
+      {
+        "key": "2026-06-12",
+        "future": false,
+        "gross_sales": 27800,
+        "net_sales": 27800,
+        "orders": 556,
+        "sessions": 1000,
+        "conv_pct": 55.6
+      },
+      {
+        "key": "2026-06-13",
+        "future": false,
+        "gross_sales": 47260,
+        "net_sales": 47260,
+        "orders": 556,
+        "sessions": 1000,
+        "conv_pct": 55.6
+      },
+      {
+        "key": "2026-06-14",
+        "future": false,
+        "gross_sales": 13900,
+        "net_sales": 13900,
+        "orders": 556,
+        "sessions": 1000,
+        "conv_pct": 55.6
+      },
+      {
+        "key": "2026-06-15",
+        "future": false,
+        "gross_sales": 33360,
+        "net_sales": 33360,
+        "orders": 556,
+        "sessions": 1000,
+        "conv_pct": 55.6
+      },
+      {
+        "key": "2026-06-16",
+        "future": false,
+        "gross_sales": 41700,
+        "net_sales": 41145,
+        "orders": 556,
+        "sessions": 1000,
+        "conv_pct": 55.6
+      },
+      {
+        "key": "2026-06-17",
+        "future": false,
+        "gross_sales": 19460,
+        "net_sales": 19460,
+        "orders": 556,
+        "sessions": 1000,
+        "conv_pct": 55.6
+      },
+      {
+        "key": "2026-06-18",
+        "future": false,
+        "gross_sales": 27800,
+        "net_sales": 27800,
+        "orders": 556,
+        "sessions": 1000,
+        "conv_pct": 55.6
+      },
+      {
+        "key": "2026-06-19",
+        "future": false,
+        "gross_sales": 47260,
+        "net_sales": 47260,
+        "orders": 556,
+        "sessions": 1000,
+        "conv_pct": 55.6
+      },
+      {
+        "key": "2026-06-20",
+        "future": false,
+        "gross_sales": 13900,
+        "net_sales": 13900,
+        "orders": 556,
+        "sessions": 1000,
+        "conv_pct": 55.6
+      },
+      {
+        "key": "2026-06-21",
+        "future": false,
+        "gross_sales": 33360,
+        "net_sales": 32805,
+        "orders": 556,
+        "sessions": 1000,
+        "conv_pct": 55.6
+      },
+      {
+        "key": "2026-06-22",
+        "future": false,
+        "gross_sales": 41700,
+        "net_sales": 41700,
+        "orders": 556,
+        "sessions": 1000,
+        "conv_pct": 55.6
+      },
+      {
+        "key": "2026-06-23",
+        "future": false,
+        "gross_sales": 19460,
+        "net_sales": 19460,
+        "orders": 556,
+        "sessions": 1000,
+        "conv_pct": 55.6
+      },
+      {
+        "key": "2026-06-24",
+        "future": false,
+        "gross_sales": 27800,
+        "net_sales": 27800,
+        "orders": 556,
+        "sessions": 1000,
+        "conv_pct": 55.6
+      },
+      {
+        "key": "2026-06-25",
+        "future": false,
+        "gross_sales": 47260,
+        "net_sales": 47260,
+        "orders": 556,
+        "sessions": 1000,
+        "conv_pct": 55.6
+      },
+      {
+        "key": "2026-06-26",
+        "future": false,
+        "gross_sales": 13900,
+        "net_sales": 13345,
+        "orders": 556,
+        "sessions": 1000,
+        "conv_pct": 55.6
+      },
+      {
+        "key": "2026-06-27",
+        "future": false,
+        "gross_sales": 33360,
+        "net_sales": 33360,
+        "orders": 556,
+        "sessions": 1000,
+        "conv_pct": 55.6
+      },
+      {
+        "key": "2026-06-28",
+        "future": false,
+        "gross_sales": 41700,
+        "net_sales": 41700,
+        "orders": 556,
+        "sessions": 1000,
+        "conv_pct": 55.6
+      },
+      {
+        "key": "2026-06-29",
+        "future": false,
+        "gross_sales": 19460,
+        "net_sales": 19460,
+        "orders": 556,
+        "sessions": 1000,
+        "conv_pct": 55.6
+      },
+      {
+        "key": "2026-06-30",
+        "future": false,
+        "gross_sales": 27880,
+        "net_sales": 27880,
+        "orders": 557,
+        "sessions": 1000,
+        "conv_pct": 55.7
+      },
+      {
+        "key": "2026-07-01",
+        "future": false,
+        "gross_sales": 47260,
+        "net_sales": 46700,
+        "orders": 556,
+        "sessions": 1000,
+        "conv_pct": 55.6
+      },
+      {
+        "key": "2026-07-02",
+        "future": false,
+        "gross_sales": 13875,
+        "net_sales": 13875,
+        "orders": 555,
+        "sessions": 1000,
+        "conv_pct": 55.5
+      },
+      {
+        "key": "2026-07-03",
+        "future": false,
+        "gross_sales": 33310,
+        "net_sales": 33310,
+        "orders": 555,
+        "sessions": 1000,
+        "conv_pct": 55.5
+      },
+      {
+        "key": "2026-07-04",
+        "future": false,
+        "gross_sales": 41625,
+        "net_sales": 41625,
+        "orders": 555,
+        "sessions": 1000,
+        "conv_pct": 55.5
+      },
+      {
+        "key": "2026-07-05",
+        "future": false,
+        "gross_sales": 19415,
+        "net_sales": 19415,
+        "orders": 555,
+        "sessions": 1000,
+        "conv_pct": 55.5
+      },
+      {
+        "key": "2026-07-06",
+        "future": false,
+        "gross_sales": 27750,
+        "net_sales": 27195,
+        "orders": 555,
+        "sessions": 1000,
+        "conv_pct": 55.5
+      },
+      {
+        "key": "2026-07-07",
+        "future": false,
+        "gross_sales": 47185,
+        "net_sales": 47185,
+        "orders": 555,
+        "sessions": 1000,
+        "conv_pct": 55.5
+      },
+      {
+        "key": "2026-07-08",
+        "future": false,
+        "gross_sales": 13875,
+        "net_sales": 13875,
+        "orders": 555,
+        "sessions": 1000,
+        "conv_pct": 55.5
+      },
+      {
+        "key": "2026-07-09",
+        "future": false,
+        "gross_sales": 33290,
+        "net_sales": 33290,
+        "orders": 555,
+        "sessions": 1000,
+        "conv_pct": 55.5
+      },
+      {
+        "key": "2026-07-10",
+        "future": false,
+        "gross_sales": 41625,
+        "net_sales": 41625,
+        "orders": 555,
+        "sessions": 1000,
+        "conv_pct": 55.5
+      }
+    ],
+    "breakdown_summary": {
+      "funnels": {
+        "rows": [
+          {
+            "key": "fperf",
+            "label": "Perf",
+            "net_sales": 912430,
+            "orders": 16650,
+            "aov": 54.8,
+            "name": "Perf"
+          },
+          {
+            "key": "f1",
+            "label": "Alpha",
+            "net_sales": 535,
+            "orders": 4,
+            "aov": 133.75,
+            "name": "Alpha"
+          },
+          {
+            "key": "f2",
+            "label": "Beta",
+            "net_sales": 300,
+            "orders": 1,
+            "aov": 300,
+            "name": "Beta"
+          },
+          {
+            "key": "fweek",
+            "label": "Week",
+            "net_sales": 200,
+            "orders": 2,
+            "aov": 100,
+            "name": "Week"
+          },
+          {
+            "key": "fnoleg",
+            "label": "NoLeg",
+            "net_sales": 90,
+            "orders": 1,
+            "aov": 90,
+            "name": "NoLeg"
+          },
+          {
+            "key": "f3",
+            "label": "Gamma",
+            "net_sales": 70,
+            "orders": 1,
+            "aov": 70,
+            "name": "Gamma"
+          },
+          {
+            "key": "(none)",
+            "label": "(none)",
+            "net_sales": 25,
+            "orders": 1,
+            "aov": 25,
+            "name": null
+          },
+          {
+            "key": "ftz",
+            "label": "TZ",
+            "net_sales": 10,
+            "orders": 1,
+            "aov": 10,
+            "name": "TZ"
+          }
+        ],
+        "totals": {
+          "net_sales": 913660,
+          "orders": 16661,
+          "aov": 54.84
+        },
+        "basis": "gross",
+        "basis_label": "Net sales — the captured base plus upsells",
+        "basis_metric": "net_sales",
+        "limit": 12,
+        "total": 913660,
+        "total_metric": "net_sales",
+        "rows_total": 8,
+        "rows_truncated": false
+      },
+      "products": {
+        "rows": [
+          {
+            "key": "P0",
+            "label": "P0",
+            "gross_sales": 20850,
+            "orders": 417
+          },
+          {
+            "key": "P1",
+            "label": "P1",
+            "gross_sales": 20850,
+            "orders": 417
+          },
+          {
+            "key": "P2",
+            "label": "P2",
+            "gross_sales": 20850,
+            "orders": 417
+          },
+          {
+            "key": "P3",
+            "label": "P3",
+            "gross_sales": 20850,
+            "orders": 417
+          },
+          {
+            "key": "P4",
+            "label": "P4",
+            "gross_sales": 20850,
+            "orders": 417
+          },
+          {
+            "key": "P5",
+            "label": "P5",
+            "gross_sales": 20850,
+            "orders": 417
+          },
+          {
+            "key": "P6",
+            "label": "P6",
+            "gross_sales": 20850,
+            "orders": 417
+          },
+          {
+            "key": "P7",
+            "label": "P7",
+            "gross_sales": 20850,
+            "orders": 417
+          },
+          {
+            "key": "P8",
+            "label": "P8",
+            "gross_sales": 20850,
+            "orders": 417
+          },
+          {
+            "key": "P9",
+            "label": "P9",
+            "gross_sales": 20850,
+            "orders": 417
+          },
+          {
+            "key": "P10",
+            "label": "P10",
+            "gross_sales": 20825,
+            "orders": 416
+          },
+          {
+            "key": "P13",
+            "label": "P13",
+            "gross_sales": 20825,
+            "orders": 416
+          }
+        ],
+        "totals": {
+          "gross_sales": 833540,
+          "orders": 0
+        },
+        "basis": "line_items",
+        "basis_label": "Gross sales — line-item value (price × quantity) — the cart's composition, not what was captured",
+        "basis_metric": "gross_sales",
+        "limit": 12,
+        "total": 833540,
+        "total_metric": "gross_sales",
+        "rows_total": 43,
+        "rows_truncated": true
+      },
+      "sources": {
+        "rows": [
+          {
+            "key": "google",
+            "label": "google",
+            "net_sales": 207665,
+            "orders": 4165
+          },
+          {
+            "key": "meta",
+            "label": "meta",
+            "net_sales": 207440,
+            "orders": 4165
+          },
+          {
+            "key": "tiktok",
+            "label": "tiktok",
+            "net_sales": 207285,
+            "orders": 4162
+          },
+          {
+            "key": "direct",
+            "label": "direct",
+            "net_sales": 207240,
+            "orders": 4162
+          },
+          {
+            "key": "(direct)",
+            "label": "(direct)",
+            "net_sales": 695,
+            "orders": 7
+          }
+        ],
+        "totals": {
+          "net_sales": 830325,
+          "orders": 16661
+        },
+        "basis": "captured_base",
+        "basis_label": "Net sales — the captured base only — upsell money has no gateway, UTM or referrer of its own and is not in here",
+        "basis_metric": "net_sales",
+        "limit": 12,
+        "total": 830325,
+        "total_metric": "net_sales",
+        "rows_total": 5,
+        "rows_truncated": false
+      },
+      "campaigns": {
+        "rows": [
+          {
+            "key": "camp_1",
+            "label": "camp_1",
+            "net_sales": 33300,
+            "orders": 666
+          },
+          {
+            "key": "camp_10",
+            "label": "camp_10",
+            "net_sales": 33300,
+            "orders": 666
+          },
+          {
+            "key": "camp_11",
+            "label": "camp_11",
+            "net_sales": 33300,
+            "orders": 666
+          },
+          {
+            "key": "camp_12",
+            "label": "camp_12",
+            "net_sales": 33300,
+            "orders": 666
+          },
+          {
+            "key": "camp_13",
+            "label": "camp_13",
+            "net_sales": 33300,
+            "orders": 666
+          },
+          {
+            "key": "camp_14",
+            "label": "camp_14",
+            "net_sales": 33300,
+            "orders": 666
+          },
+          {
+            "key": "camp_15",
+            "label": "camp_15",
+            "net_sales": 33300,
+            "orders": 666
+          },
+          {
+            "key": "camp_16",
+            "label": "camp_16",
+            "net_sales": 33300,
+            "orders": 666
+          },
+          {
+            "key": "camp_17",
+            "label": "camp_17",
+            "net_sales": 33300,
+            "orders": 666
+          },
+          {
+            "key": "camp_18",
+            "label": "camp_18",
+            "net_sales": 33300,
+            "orders": 666
+          },
+          {
+            "key": "camp_19",
+            "label": "camp_19",
+            "net_sales": 33300,
+            "orders": 666
+          },
+          {
+            "key": "camp_2",
+            "label": "camp_2",
+            "net_sales": 33300,
+            "orders": 666
+          }
+        ],
+        "totals": {
+          "net_sales": 830325,
+          "orders": 16661
+        },
+        "basis": "captured_base",
+        "basis_label": "Net sales — the captured base only — upsell money has no gateway, UTM or referrer of its own and is not in here",
+        "basis_metric": "net_sales",
+        "limit": 12,
+        "total": 830325,
+        "total_metric": "net_sales",
+        "rows_total": 27,
+        "rows_truncated": true
+      },
+      "countries": {
+        "rows": [
+          {
+            "key": "FR",
+            "label": "FR",
+            "net_sales": 183440,
+            "orders": 3331
+          },
+          {
+            "key": "US",
+            "label": "US",
+            "net_sales": 183375,
+            "orders": 3331
+          },
+          {
+            "key": "IT",
+            "label": "IT",
+            "net_sales": 183250,
+            "orders": 3331
+          },
+          {
+            "key": "DE",
+            "label": "DE",
+            "net_sales": 183230,
+            "orders": 3331
+          },
+          {
+            "key": "ES",
+            "label": "ES",
+            "net_sales": 180365,
+            "orders": 3337
+          }
+        ],
+        "totals": {
+          "net_sales": 913660,
+          "orders": 16661
+        },
+        "basis": "gross",
+        "basis_label": "Net sales — the captured base plus upsells",
+        "basis_metric": "net_sales",
+        "limit": 12,
+        "total": 913660,
+        "total_metric": "net_sales",
+        "rows_total": 5,
+        "rows_truncated": false
+      }
+    },
+    "waterfall": {
+      "steps": [
+        {
+          "step": "checkout",
+          "label": "Checkout",
+          "visitors": 30006,
+          "pct_of_top": 100
+        },
+        {
+          "step": "upsell",
+          "label": "Upsell",
+          "visitors": 4,
+          "pct_of_top": 0.0133
+        }
+      ],
+      "basis": "distinct lb_touches.vid per funnel_pages.type"
+    },
+    "movers": [
+      {
+        "key": "fperf",
+        "label": "Perf",
+        "net_sales": 912430,
+        "previous_net_sales": 913575,
+        "delta": -1145,
+        "delta_pct": -0.1253
+      },
+      {
+        "key": "f1",
+        "label": "Alpha",
+        "net_sales": 535,
+        "previous_net_sales": 80,
+        "delta": 455,
+        "delta_pct": 568.75
+      }
+    ],
+    "window": {
+      "start": "2026-07-11",
+      "end": "2026-08-09",
+      "prev_start": "2026-06-11",
+      "prev_end": "2026-07-10",
+      "days": 30,
+      "timezone": "Europe/Madrid"
+    },
+    "meta": {
+      "computed_ms": 891,
+      "rows_scanned": 42752,
+      "basis": "gross",
+      "basis_label": "Gross sales — the captured base plus upsells",
+      "basis_metric": "net_sales",
+      "timezone": "Europe/Madrid",
+      "sessions_unknown": false,
+      "series_aligned_by": "index",
+      "window": {
+        "start": "2026-07-11",
+        "end": "2026-08-09",
+        "days": 30,
+        "timezone": "Europe/Madrid"
+      },
+      "warnings": []
+    }
+  },
+  "dashboard_ttl": {
+    "band": {
+      "live": 312,
+      "unique_today": 1000,
+      "today": {
+        "day": "2026-08-09",
+        "orders": 555,
+        "revenue": 41625,
+        "spend": 100,
+        "net": 22377.5
+      },
+      "yesterday": {
+        "day": "2026-08-08",
+        "orders": 555,
+        "revenue": 33275,
+        "spend": 100,
+        "net": 18686.4
+      },
+      "timezone": "Europe/Madrid",
+      "meta": {
+        "computed_ms": 104,
+        "rows_scanned": 1393,
+        "timezone": "Europe/Madrid",
+        "warnings": []
+      },
+      "in_window": false
+    },
+    "kpis": {
+      "orders": 3,
+      "gross_sales": 3,
+      "net_sales": 3,
+      "refunds": 0,
+      "sessions": null,
+      "conv_pct": null,
+      "aov": 1,
+      "new_customers": 3,
+      "returning_customers": 0,
+      "net_after_cogs": null,
+      "margin_pct": null,
+      "cost_coverage_pct": null,
+      "spend": null,
+      "roas": null,
+      "cpa": null,
+      "net_profit": null,
+      "previous": {
+        "orders": 0,
+        "gross_sales": 0,
+        "net_sales": 0,
+        "refunds": 0,
+        "sessions": null,
+        "conv_pct": null,
+        "aov": null,
+        "new_customers": 0,
+        "returning_customers": 0,
+        "net_after_cogs": null,
+        "margin_pct": null,
+        "cost_coverage_pct": null,
+        "spend": null,
+        "roas": null,
+        "cpa": null,
+        "net_profit": null
+      },
+      "upsell_lines": {
+        "aov_post": 1,
+        "aov_pre": 1,
+        "upsell_revenue": 0,
+        "take_rate": null,
+        "upsell_refunds": 0,
+        "orders": 3,
+        "abandoned": 0
+      }
+    },
+    "series": [
+      {
+        "key": "2026-01-21",
+        "future": false,
+        "gross_sales": 0,
+        "net_sales": 0,
+        "orders": 0,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2026-01-22",
+        "future": false,
+        "gross_sales": 0,
+        "net_sales": 0,
+        "orders": 0,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2026-01-23",
+        "future": false,
+        "gross_sales": 0,
+        "net_sales": 0,
+        "orders": 0,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2026-01-24",
+        "future": false,
+        "gross_sales": 0,
+        "net_sales": 0,
+        "orders": 0,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2026-01-25",
+        "future": false,
+        "gross_sales": 0,
+        "net_sales": 0,
+        "orders": 0,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2026-01-26",
+        "future": false,
+        "gross_sales": 0,
+        "net_sales": 0,
+        "orders": 0,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2026-01-27",
+        "future": false,
+        "gross_sales": 0,
+        "net_sales": 0,
+        "orders": 0,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2026-01-28",
+        "future": false,
+        "gross_sales": 0,
+        "net_sales": 0,
+        "orders": 0,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2026-01-29",
+        "future": false,
+        "gross_sales": 0,
+        "net_sales": 0,
+        "orders": 0,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2026-01-30",
+        "future": false,
+        "gross_sales": 0,
+        "net_sales": 0,
+        "orders": 0,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2026-01-31",
+        "future": false,
+        "gross_sales": 0,
+        "net_sales": 0,
+        "orders": 0,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2026-02-01",
+        "future": false,
+        "gross_sales": 0,
+        "net_sales": 0,
+        "orders": 0,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2026-02-02",
+        "future": false,
+        "gross_sales": 0,
+        "net_sales": 0,
+        "orders": 0,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2026-02-03",
+        "future": false,
+        "gross_sales": 0,
+        "net_sales": 0,
+        "orders": 0,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2026-02-04",
+        "future": false,
+        "gross_sales": 0,
+        "net_sales": 0,
+        "orders": 0,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2026-02-05",
+        "future": false,
+        "gross_sales": 0,
+        "net_sales": 0,
+        "orders": 0,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2026-02-06",
+        "future": false,
+        "gross_sales": 0,
+        "net_sales": 0,
+        "orders": 0,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2026-02-07",
+        "future": false,
+        "gross_sales": 0,
+        "net_sales": 0,
+        "orders": 0,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2026-02-08",
+        "future": false,
+        "gross_sales": 0,
+        "net_sales": 0,
+        "orders": 0,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2026-02-09",
+        "future": false,
+        "gross_sales": 0,
+        "net_sales": 0,
+        "orders": 0,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2026-02-10",
+        "future": false,
+        "gross_sales": 0,
+        "net_sales": 0,
+        "orders": 0,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2026-02-11",
+        "future": false,
+        "gross_sales": 0,
+        "net_sales": 0,
+        "orders": 0,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2026-02-12",
+        "future": false,
+        "gross_sales": 0,
+        "net_sales": 0,
+        "orders": 0,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2026-02-13",
+        "future": false,
+        "gross_sales": 0,
+        "net_sales": 0,
+        "orders": 0,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2026-02-14",
+        "future": false,
+        "gross_sales": 0,
+        "net_sales": 0,
+        "orders": 0,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2026-02-15",
+        "future": false,
+        "gross_sales": 0,
+        "net_sales": 0,
+        "orders": 0,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2026-02-16",
+        "future": false,
+        "gross_sales": 0,
+        "net_sales": 0,
+        "orders": 0,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2026-02-17",
+        "future": false,
+        "gross_sales": 0,
+        "net_sales": 0,
+        "orders": 0,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2026-02-18",
+        "future": false,
+        "gross_sales": 0,
+        "net_sales": 0,
+        "orders": 0,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2026-02-19",
+        "future": false,
+        "gross_sales": 0,
+        "net_sales": 0,
+        "orders": 0,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2026-02-20",
+        "future": false,
+        "gross_sales": 0,
+        "net_sales": 0,
+        "orders": 0,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2026-02-21",
+        "future": false,
+        "gross_sales": 0,
+        "net_sales": 0,
+        "orders": 0,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2026-02-22",
+        "future": false,
+        "gross_sales": 0,
+        "net_sales": 0,
+        "orders": 0,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2026-02-23",
+        "future": false,
+        "gross_sales": 0,
+        "net_sales": 0,
+        "orders": 0,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2026-02-24",
+        "future": false,
+        "gross_sales": 0,
+        "net_sales": 0,
+        "orders": 0,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2026-02-25",
+        "future": false,
+        "gross_sales": 0,
+        "net_sales": 0,
+        "orders": 0,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2026-02-26",
+        "future": false,
+        "gross_sales": 0,
+        "net_sales": 0,
+        "orders": 0,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2026-02-27",
+        "future": false,
+        "gross_sales": 0,
+        "net_sales": 0,
+        "orders": 0,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2026-02-28",
+        "future": false,
+        "gross_sales": 0,
+        "net_sales": 0,
+        "orders": 0,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2026-03-01",
+        "future": false,
+        "gross_sales": 0,
+        "net_sales": 0,
+        "orders": 0,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2026-03-02",
+        "future": false,
+        "gross_sales": 0,
+        "net_sales": 0,
+        "orders": 0,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2026-03-03",
+        "future": false,
+        "gross_sales": 0,
+        "net_sales": 0,
+        "orders": 0,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2026-03-04",
+        "future": false,
+        "gross_sales": 0,
+        "net_sales": 0,
+        "orders": 0,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2026-03-05",
+        "future": false,
+        "gross_sales": 0,
+        "net_sales": 0,
+        "orders": 0,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2026-03-06",
+        "future": false,
+        "gross_sales": 0,
+        "net_sales": 0,
+        "orders": 0,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2026-03-07",
+        "future": false,
+        "gross_sales": 0,
+        "net_sales": 0,
+        "orders": 0,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2026-03-08",
+        "future": false,
+        "gross_sales": 0,
+        "net_sales": 0,
+        "orders": 0,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2026-03-09",
+        "future": false,
+        "gross_sales": 0,
+        "net_sales": 0,
+        "orders": 0,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2026-03-10",
+        "future": false,
+        "gross_sales": 0,
+        "net_sales": 0,
+        "orders": 0,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2026-03-11",
+        "future": false,
+        "gross_sales": 0,
+        "net_sales": 0,
+        "orders": 0,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2026-03-12",
+        "future": false,
+        "gross_sales": 0,
+        "net_sales": 0,
+        "orders": 0,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2026-03-13",
+        "future": false,
+        "gross_sales": 0,
+        "net_sales": 0,
+        "orders": 0,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2026-03-14",
+        "future": false,
+        "gross_sales": 0,
+        "net_sales": 0,
+        "orders": 0,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2026-03-15",
+        "future": false,
+        "gross_sales": 0,
+        "net_sales": 0,
+        "orders": 0,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2026-03-16",
+        "future": false,
+        "gross_sales": 0,
+        "net_sales": 0,
+        "orders": 0,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2026-03-17",
+        "future": false,
+        "gross_sales": 0,
+        "net_sales": 0,
+        "orders": 0,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2026-03-18",
+        "future": false,
+        "gross_sales": 0,
+        "net_sales": 0,
+        "orders": 0,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2026-03-19",
+        "future": false,
+        "gross_sales": 0,
+        "net_sales": 0,
+        "orders": 0,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2026-03-20",
+        "future": false,
+        "gross_sales": 0,
+        "net_sales": 0,
+        "orders": 0,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2026-03-21",
+        "future": false,
+        "gross_sales": 0,
+        "net_sales": 0,
+        "orders": 0,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2026-03-22",
+        "future": false,
+        "gross_sales": 0,
+        "net_sales": 0,
+        "orders": 0,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2026-03-23",
+        "future": false,
+        "gross_sales": 0,
+        "net_sales": 0,
+        "orders": 0,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2026-03-24",
+        "future": false,
+        "gross_sales": 0,
+        "net_sales": 0,
+        "orders": 0,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2026-03-25",
+        "future": false,
+        "gross_sales": 0,
+        "net_sales": 0,
+        "orders": 0,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2026-03-26",
+        "future": false,
+        "gross_sales": 0,
+        "net_sales": 0,
+        "orders": 0,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2026-03-27",
+        "future": false,
+        "gross_sales": 0,
+        "net_sales": 0,
+        "orders": 0,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2026-03-28",
+        "future": false,
+        "gross_sales": 0,
+        "net_sales": 0,
+        "orders": 0,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2026-03-29",
+        "future": false,
+        "gross_sales": 2,
+        "net_sales": 2,
+        "orders": 2,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2026-03-30",
+        "future": false,
+        "gross_sales": 1,
+        "net_sales": 1,
+        "orders": 1,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2026-03-31",
+        "future": false,
+        "gross_sales": 0,
+        "net_sales": 0,
+        "orders": 0,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2026-04-01",
+        "future": false,
+        "gross_sales": 0,
+        "net_sales": 0,
+        "orders": 0,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2026-04-02",
+        "future": false,
+        "gross_sales": 0,
+        "net_sales": 0,
+        "orders": 0,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2026-04-03",
+        "future": false,
+        "gross_sales": 0,
+        "net_sales": 0,
+        "orders": 0,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2026-04-04",
+        "future": false,
+        "gross_sales": 0,
+        "net_sales": 0,
+        "orders": 0,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2026-04-05",
+        "future": false,
+        "gross_sales": 0,
+        "net_sales": 0,
+        "orders": 0,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2026-04-06",
+        "future": false,
+        "gross_sales": 0,
+        "net_sales": 0,
+        "orders": 0,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2026-04-07",
+        "future": false,
+        "gross_sales": 0,
+        "net_sales": 0,
+        "orders": 0,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2026-04-08",
+        "future": false,
+        "gross_sales": 0,
+        "net_sales": 0,
+        "orders": 0,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2026-04-09",
+        "future": false,
+        "gross_sales": 0,
+        "net_sales": 0,
+        "orders": 0,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2026-04-10",
+        "future": false,
+        "gross_sales": 0,
+        "net_sales": 0,
+        "orders": 0,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2026-04-11",
+        "future": false,
+        "gross_sales": 0,
+        "net_sales": 0,
+        "orders": 0,
+        "sessions": null,
+        "conv_pct": null
+      }
+    ],
+    "prev_series": [
+      {
+        "key": "2025-11-01",
+        "future": false,
+        "gross_sales": 0,
+        "net_sales": 0,
+        "orders": 0,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2025-11-02",
+        "future": false,
+        "gross_sales": 0,
+        "net_sales": 0,
+        "orders": 0,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2025-11-03",
+        "future": false,
+        "gross_sales": 0,
+        "net_sales": 0,
+        "orders": 0,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2025-11-04",
+        "future": false,
+        "gross_sales": 0,
+        "net_sales": 0,
+        "orders": 0,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2025-11-05",
+        "future": false,
+        "gross_sales": 0,
+        "net_sales": 0,
+        "orders": 0,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2025-11-06",
+        "future": false,
+        "gross_sales": 0,
+        "net_sales": 0,
+        "orders": 0,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2025-11-07",
+        "future": false,
+        "gross_sales": 0,
+        "net_sales": 0,
+        "orders": 0,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2025-11-08",
+        "future": false,
+        "gross_sales": 0,
+        "net_sales": 0,
+        "orders": 0,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2025-11-09",
+        "future": false,
+        "gross_sales": 0,
+        "net_sales": 0,
+        "orders": 0,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2025-11-10",
+        "future": false,
+        "gross_sales": 0,
+        "net_sales": 0,
+        "orders": 0,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2025-11-11",
+        "future": false,
+        "gross_sales": 0,
+        "net_sales": 0,
+        "orders": 0,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2025-11-12",
+        "future": false,
+        "gross_sales": 0,
+        "net_sales": 0,
+        "orders": 0,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2025-11-13",
+        "future": false,
+        "gross_sales": 0,
+        "net_sales": 0,
+        "orders": 0,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2025-11-14",
+        "future": false,
+        "gross_sales": 0,
+        "net_sales": 0,
+        "orders": 0,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2025-11-15",
+        "future": false,
+        "gross_sales": 0,
+        "net_sales": 0,
+        "orders": 0,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2025-11-16",
+        "future": false,
+        "gross_sales": 0,
+        "net_sales": 0,
+        "orders": 0,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2025-11-17",
+        "future": false,
+        "gross_sales": 0,
+        "net_sales": 0,
+        "orders": 0,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2025-11-18",
+        "future": false,
+        "gross_sales": 0,
+        "net_sales": 0,
+        "orders": 0,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2025-11-19",
+        "future": false,
+        "gross_sales": 0,
+        "net_sales": 0,
+        "orders": 0,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2025-11-20",
+        "future": false,
+        "gross_sales": 0,
+        "net_sales": 0,
+        "orders": 0,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2025-11-21",
+        "future": false,
+        "gross_sales": 0,
+        "net_sales": 0,
+        "orders": 0,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2025-11-22",
+        "future": false,
+        "gross_sales": 0,
+        "net_sales": 0,
+        "orders": 0,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2025-11-23",
+        "future": false,
+        "gross_sales": 0,
+        "net_sales": 0,
+        "orders": 0,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2025-11-24",
+        "future": false,
+        "gross_sales": 0,
+        "net_sales": 0,
+        "orders": 0,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2025-11-25",
+        "future": false,
+        "gross_sales": 0,
+        "net_sales": 0,
+        "orders": 0,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2025-11-26",
+        "future": false,
+        "gross_sales": 0,
+        "net_sales": 0,
+        "orders": 0,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2025-11-27",
+        "future": false,
+        "gross_sales": 0,
+        "net_sales": 0,
+        "orders": 0,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2025-11-28",
+        "future": false,
+        "gross_sales": 0,
+        "net_sales": 0,
+        "orders": 0,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2025-11-29",
+        "future": false,
+        "gross_sales": 0,
+        "net_sales": 0,
+        "orders": 0,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2025-11-30",
+        "future": false,
+        "gross_sales": 0,
+        "net_sales": 0,
+        "orders": 0,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2025-12-01",
+        "future": false,
+        "gross_sales": 0,
+        "net_sales": 0,
+        "orders": 0,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2025-12-02",
+        "future": false,
+        "gross_sales": 0,
+        "net_sales": 0,
+        "orders": 0,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2025-12-03",
+        "future": false,
+        "gross_sales": 0,
+        "net_sales": 0,
+        "orders": 0,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2025-12-04",
+        "future": false,
+        "gross_sales": 0,
+        "net_sales": 0,
+        "orders": 0,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2025-12-05",
+        "future": false,
+        "gross_sales": 0,
+        "net_sales": 0,
+        "orders": 0,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2025-12-06",
+        "future": false,
+        "gross_sales": 0,
+        "net_sales": 0,
+        "orders": 0,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2025-12-07",
+        "future": false,
+        "gross_sales": 0,
+        "net_sales": 0,
+        "orders": 0,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2025-12-08",
+        "future": false,
+        "gross_sales": 0,
+        "net_sales": 0,
+        "orders": 0,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2025-12-09",
+        "future": false,
+        "gross_sales": 0,
+        "net_sales": 0,
+        "orders": 0,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2025-12-10",
+        "future": false,
+        "gross_sales": 0,
+        "net_sales": 0,
+        "orders": 0,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2025-12-11",
+        "future": false,
+        "gross_sales": 0,
+        "net_sales": 0,
+        "orders": 0,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2025-12-12",
+        "future": false,
+        "gross_sales": 0,
+        "net_sales": 0,
+        "orders": 0,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2025-12-13",
+        "future": false,
+        "gross_sales": 0,
+        "net_sales": 0,
+        "orders": 0,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2025-12-14",
+        "future": false,
+        "gross_sales": 0,
+        "net_sales": 0,
+        "orders": 0,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2025-12-15",
+        "future": false,
+        "gross_sales": 0,
+        "net_sales": 0,
+        "orders": 0,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2025-12-16",
+        "future": false,
+        "gross_sales": 0,
+        "net_sales": 0,
+        "orders": 0,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2025-12-17",
+        "future": false,
+        "gross_sales": 0,
+        "net_sales": 0,
+        "orders": 0,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2025-12-18",
+        "future": false,
+        "gross_sales": 0,
+        "net_sales": 0,
+        "orders": 0,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2025-12-19",
+        "future": false,
+        "gross_sales": 0,
+        "net_sales": 0,
+        "orders": 0,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2025-12-20",
+        "future": false,
+        "gross_sales": 0,
+        "net_sales": 0,
+        "orders": 0,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2025-12-21",
+        "future": false,
+        "gross_sales": 0,
+        "net_sales": 0,
+        "orders": 0,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2025-12-22",
+        "future": false,
+        "gross_sales": 0,
+        "net_sales": 0,
+        "orders": 0,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2025-12-23",
+        "future": false,
+        "gross_sales": 0,
+        "net_sales": 0,
+        "orders": 0,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2025-12-24",
+        "future": false,
+        "gross_sales": 0,
+        "net_sales": 0,
+        "orders": 0,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2025-12-25",
+        "future": false,
+        "gross_sales": 0,
+        "net_sales": 0,
+        "orders": 0,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2025-12-26",
+        "future": false,
+        "gross_sales": 0,
+        "net_sales": 0,
+        "orders": 0,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2025-12-27",
+        "future": false,
+        "gross_sales": 0,
+        "net_sales": 0,
+        "orders": 0,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2025-12-28",
+        "future": false,
+        "gross_sales": 0,
+        "net_sales": 0,
+        "orders": 0,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2025-12-29",
+        "future": false,
+        "gross_sales": 0,
+        "net_sales": 0,
+        "orders": 0,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2025-12-30",
+        "future": false,
+        "gross_sales": 0,
+        "net_sales": 0,
+        "orders": 0,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2025-12-31",
+        "future": false,
+        "gross_sales": 0,
+        "net_sales": 0,
+        "orders": 0,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2026-01-01",
+        "future": false,
+        "gross_sales": 0,
+        "net_sales": 0,
+        "orders": 0,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2026-01-02",
+        "future": false,
+        "gross_sales": 0,
+        "net_sales": 0,
+        "orders": 0,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2026-01-03",
+        "future": false,
+        "gross_sales": 0,
+        "net_sales": 0,
+        "orders": 0,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2026-01-04",
+        "future": false,
+        "gross_sales": 0,
+        "net_sales": 0,
+        "orders": 0,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2026-01-05",
+        "future": false,
+        "gross_sales": 0,
+        "net_sales": 0,
+        "orders": 0,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2026-01-06",
+        "future": false,
+        "gross_sales": 0,
+        "net_sales": 0,
+        "orders": 0,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2026-01-07",
+        "future": false,
+        "gross_sales": 0,
+        "net_sales": 0,
+        "orders": 0,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2026-01-08",
+        "future": false,
+        "gross_sales": 0,
+        "net_sales": 0,
+        "orders": 0,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2026-01-09",
+        "future": false,
+        "gross_sales": 0,
+        "net_sales": 0,
+        "orders": 0,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2026-01-10",
+        "future": false,
+        "gross_sales": 0,
+        "net_sales": 0,
+        "orders": 0,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2026-01-11",
+        "future": false,
+        "gross_sales": 0,
+        "net_sales": 0,
+        "orders": 0,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2026-01-12",
+        "future": false,
+        "gross_sales": 0,
+        "net_sales": 0,
+        "orders": 0,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2026-01-13",
+        "future": false,
+        "gross_sales": 0,
+        "net_sales": 0,
+        "orders": 0,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2026-01-14",
+        "future": false,
+        "gross_sales": 0,
+        "net_sales": 0,
+        "orders": 0,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2026-01-15",
+        "future": false,
+        "gross_sales": 0,
+        "net_sales": 0,
+        "orders": 0,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2026-01-16",
+        "future": false,
+        "gross_sales": 0,
+        "net_sales": 0,
+        "orders": 0,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2026-01-17",
+        "future": false,
+        "gross_sales": 0,
+        "net_sales": 0,
+        "orders": 0,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2026-01-18",
+        "future": false,
+        "gross_sales": 0,
+        "net_sales": 0,
+        "orders": 0,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2026-01-19",
+        "future": false,
+        "gross_sales": 0,
+        "net_sales": 0,
+        "orders": 0,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2026-01-20",
+        "future": false,
+        "gross_sales": 0,
+        "net_sales": 0,
+        "orders": 0,
+        "sessions": null,
+        "conv_pct": null
+      }
+    ],
+    "breakdown_summary": {
+      "funnels": {
+        "rows": [
+          {
+            "key": "fdst",
+            "label": "DST",
+            "net_sales": 3,
+            "orders": 3,
+            "aov": 1,
+            "name": "DST"
+          }
+        ],
+        "totals": {
+          "net_sales": 3,
+          "orders": 3,
+          "aov": 1
+        },
+        "basis": "gross",
+        "basis_label": "Net sales — the captured base plus upsells",
+        "basis_metric": "net_sales",
+        "limit": 12,
+        "total": 3,
+        "total_metric": "net_sales",
+        "rows_total": 1,
+        "rows_truncated": false
+      },
+      "products": {
+        "rows": [],
+        "totals": {
+          "gross_sales": 0,
+          "orders": 0
+        },
+        "basis": "line_items",
+        "basis_label": "Gross sales — line-item value (price × quantity) — the cart's composition, not what was captured",
+        "basis_metric": "gross_sales",
+        "limit": 12,
+        "total": 0,
+        "total_metric": "gross_sales",
+        "rows_total": 0,
+        "rows_truncated": false
+      },
+      "sources": {
+        "rows": [
+          {
+            "key": "(direct)",
+            "label": "(direct)",
+            "net_sales": 3,
+            "orders": 3
+          }
+        ],
+        "totals": {
+          "net_sales": 3,
+          "orders": 3
+        },
+        "basis": "captured_base",
+        "basis_label": "Net sales — the captured base only — upsell money has no gateway, UTM or referrer of its own and is not in here",
+        "basis_metric": "net_sales",
+        "limit": 12,
+        "total": 3,
+        "total_metric": "net_sales",
+        "rows_total": 1,
+        "rows_truncated": false
+      },
+      "campaigns": {
+        "rows": [
+          {
+            "key": "(no campaign)",
+            "label": "(no campaign)",
+            "net_sales": 3,
+            "orders": 3
+          }
+        ],
+        "totals": {
+          "net_sales": 3,
+          "orders": 3
+        },
+        "basis": "captured_base",
+        "basis_label": "Net sales — the captured base only — upsell money has no gateway, UTM or referrer of its own and is not in here",
+        "basis_metric": "net_sales",
+        "limit": 12,
+        "total": 3,
+        "total_metric": "net_sales",
+        "rows_total": 1,
+        "rows_truncated": false
+      },
+      "countries": {
+        "rows": [
+          {
+            "key": "ES",
+            "label": "ES",
+            "net_sales": 3,
+            "orders": 3
+          }
+        ],
+        "totals": {
+          "net_sales": 3,
+          "orders": 3
+        },
+        "basis": "gross",
+        "basis_label": "Net sales — the captured base plus upsells",
+        "basis_metric": "net_sales",
+        "limit": 12,
+        "total": 3,
+        "total_metric": "net_sales",
+        "rows_total": 1,
+        "rows_truncated": false
+      }
+    },
+    "waterfall": {
+      "steps": [],
+      "basis": "distinct lb_touches.vid per funnel_pages.type"
+    },
+    "movers": [],
+    "window": {
+      "start": "2026-01-21",
+      "end": "2026-04-11",
+      "prev_start": "2025-11-01",
+      "prev_end": "2026-01-20",
+      "days": 81,
+      "timezone": "Europe/Madrid"
+    },
+    "meta": {
+      "computed_ms": 105,
+      "rows_scanned": 21,
+      "basis": "gross",
+      "basis_label": "Gross sales — the captured base plus upsells",
+      "basis_metric": "net_sales",
+      "timezone": "Europe/Madrid",
+      "sessions_unknown": true,
+      "series_aligned_by": "index",
+      "window": {
+        "start": "2026-01-21",
+        "end": "2026-04-11",
+        "days": 81,
+        "timezone": "Europe/Madrid"
+      },
+      "warnings": [
+        {
+          "source": "lb_touches",
+          "reason": "window reaches past the 90-day touch retention — sessions and every rate over them are withheld for the affected buckets"
+        },
+        {
+          "source": "sessions",
+          "reason": "sessions withheld for this window (touch retention)"
+        }
+      ]
+    }
+  },
+  "band": {
+    "live": 312,
+    "unique_today": 1000,
+    "today": {
+      "day": "2026-08-09",
+      "orders": 555,
+      "revenue": 41625,
+      "spend": 100,
+      "net": 22377.5
+    },
+    "yesterday": {
+      "day": "2026-08-08",
+      "orders": 555,
+      "revenue": 33275,
+      "spend": 100,
+      "net": 18686.4
+    },
+    "timezone": "Europe/Madrid",
+    "meta": {
+      "computed_ms": 20,
+      "rows_scanned": 1393,
+      "timezone": "Europe/Madrid",
+      "warnings": []
+    }
+  },
+  "marketing": {
+    "dimension": "campaign",
+    "rows": [
+      {
+        "key": "camp_0",
+        "label": "camp_0",
+        "orders": 666,
+        "sales": 33300,
+        "attribution": "resolved",
+        "is_unattributed": false,
+        "bar_pct": 100
+      },
+      {
+        "key": "camp_1",
+        "label": "camp_1",
+        "orders": 666,
+        "sales": 33300,
+        "attribution": "resolved",
+        "is_unattributed": false,
+        "bar_pct": 100
+      },
+      {
+        "key": "camp_10",
+        "label": "camp_10",
+        "orders": 666,
+        "sales": 33300,
+        "attribution": "resolved",
+        "is_unattributed": false,
+        "bar_pct": 100
+      },
+      {
+        "key": "camp_11",
+        "label": "camp_11",
+        "orders": 666,
+        "sales": 33300,
+        "attribution": "resolved",
+        "is_unattributed": false,
+        "bar_pct": 100
+      },
+      {
+        "key": "camp_12",
+        "label": "camp_12",
+        "orders": 666,
+        "sales": 33300,
+        "attribution": "resolved",
+        "is_unattributed": false,
+        "bar_pct": 100
+      },
+      {
+        "key": "camp_13",
+        "label": "camp_13",
+        "orders": 666,
+        "sales": 33300,
+        "attribution": "resolved",
+        "is_unattributed": false,
+        "bar_pct": 100
+      },
+      {
+        "key": "camp_14",
+        "label": "camp_14",
+        "orders": 666,
+        "sales": 33300,
+        "attribution": "resolved",
+        "is_unattributed": false,
+        "bar_pct": 100
+      },
+      {
+        "key": "camp_15",
+        "label": "camp_15",
+        "orders": 666,
+        "sales": 33300,
+        "attribution": "resolved",
+        "is_unattributed": false,
+        "bar_pct": 100
+      },
+      {
+        "key": "camp_16",
+        "label": "camp_16",
+        "orders": 666,
+        "sales": 33300,
+        "attribution": "resolved",
+        "is_unattributed": false,
+        "bar_pct": 100
+      },
+      {
+        "key": "camp_17",
+        "label": "camp_17",
+        "orders": 666,
+        "sales": 33300,
+        "attribution": "resolved",
+        "is_unattributed": false,
+        "bar_pct": 100
+      },
+      {
+        "key": "camp_18",
+        "label": "camp_18",
+        "orders": 666,
+        "sales": 33300,
+        "attribution": "resolved",
+        "is_unattributed": false,
+        "bar_pct": 100
+      },
+      {
+        "key": "camp_19",
+        "label": "camp_19",
+        "orders": 666,
+        "sales": 33300,
+        "attribution": "resolved",
+        "is_unattributed": false,
+        "bar_pct": 100
+      }
+    ],
+    "totals": {
+      "orders": 16661,
+      "sales": 833665,
+      "rows_total": 28
+    },
+    "basis": "captured_base",
+    "basis_label": "captured base only — upsell money has no UTM, gateway or referrer of its own and is not in here",
+    "revenue_basis": "order_window",
+    "revenue_basis_label": "orders whose payment landed inside the window, keyed by the click or visit that preceded them — however long before the window that was",
+    "funnel_scoped": false,
+    "attribution_ttl_risk": false,
+    "currency": "USD",
+    "mixed_currency": false,
+    "warnings": [],
+    "window": {
+      "start": "2026-07-11",
+      "end": "2026-08-09",
+      "days": 30,
+      "timezone": "Europe/Madrid"
+    },
+    "meta": {
+      "computed_ms": 123,
+      "rows_scanned": 16661
+    }
+  },
+  "marketing_by_dimension": {
+    "campaign": {
+      "dimension": "campaign",
+      "rows": [
+        {
+          "key": "camp_0",
+          "label": "camp_0",
+          "orders": 666,
+          "sales": 33300,
+          "attribution": "resolved",
+          "is_unattributed": false,
+          "bar_pct": 100
+        },
+        {
+          "key": "camp_1",
+          "label": "camp_1",
+          "orders": 666,
+          "sales": 33300,
+          "attribution": "resolved",
+          "is_unattributed": false,
+          "bar_pct": 100
+        },
+        {
+          "key": "camp_10",
+          "label": "camp_10",
+          "orders": 666,
+          "sales": 33300,
+          "attribution": "resolved",
+          "is_unattributed": false,
+          "bar_pct": 100
+        },
+        {
+          "key": "camp_11",
+          "label": "camp_11",
+          "orders": 666,
+          "sales": 33300,
+          "attribution": "resolved",
+          "is_unattributed": false,
+          "bar_pct": 100
+        },
+        {
+          "key": "camp_12",
+          "label": "camp_12",
+          "orders": 666,
+          "sales": 33300,
+          "attribution": "resolved",
+          "is_unattributed": false,
+          "bar_pct": 100
+        },
+        {
+          "key": "camp_13",
+          "label": "camp_13",
+          "orders": 666,
+          "sales": 33300,
+          "attribution": "resolved",
+          "is_unattributed": false,
+          "bar_pct": 100
+        },
+        {
+          "key": "camp_14",
+          "label": "camp_14",
+          "orders": 666,
+          "sales": 33300,
+          "attribution": "resolved",
+          "is_unattributed": false,
+          "bar_pct": 100
+        },
+        {
+          "key": "camp_15",
+          "label": "camp_15",
+          "orders": 666,
+          "sales": 33300,
+          "attribution": "resolved",
+          "is_unattributed": false,
+          "bar_pct": 100
+        },
+        {
+          "key": "camp_16",
+          "label": "camp_16",
+          "orders": 666,
+          "sales": 33300,
+          "attribution": "resolved",
+          "is_unattributed": false,
+          "bar_pct": 100
+        },
+        {
+          "key": "camp_17",
+          "label": "camp_17",
+          "orders": 666,
+          "sales": 33300,
+          "attribution": "resolved",
+          "is_unattributed": false,
+          "bar_pct": 100
+        },
+        {
+          "key": "camp_18",
+          "label": "camp_18",
+          "orders": 666,
+          "sales": 33300,
+          "attribution": "resolved",
+          "is_unattributed": false,
+          "bar_pct": 100
+        },
+        {
+          "key": "camp_19",
+          "label": "camp_19",
+          "orders": 666,
+          "sales": 33300,
+          "attribution": "resolved",
+          "is_unattributed": false,
+          "bar_pct": 100
+        }
+      ],
+      "totals": {
+        "orders": 16661,
+        "sales": 833665,
+        "rows_total": 28
+      },
+      "basis": "captured_base",
+      "basis_label": "captured base only — upsell money has no UTM, gateway or referrer of its own and is not in here",
+      "revenue_basis": "order_window",
+      "revenue_basis_label": "orders whose payment landed inside the window, keyed by the click or visit that preceded them — however long before the window that was",
+      "funnel_scoped": false,
+      "attribution_ttl_risk": false,
+      "currency": "USD",
+      "mixed_currency": false,
+      "warnings": [],
+      "window": {
+        "start": "2026-07-11",
+        "end": "2026-08-09",
+        "days": 30,
+        "timezone": "Europe/Madrid"
+      },
+      "meta": {
+        "computed_ms": 123,
+        "rows_scanned": 16661
+      }
+    },
+    "source": {
+      "dimension": "source",
+      "rows": [
+        {
+          "key": "google",
+          "label": "google",
+          "orders": 4165,
+          "sales": 208495,
+          "attribution": "resolved",
+          "is_unattributed": false,
+          "bar_pct": 100
+        },
+        {
+          "key": "meta",
+          "label": "meta",
+          "orders": 4165,
+          "sales": 208275,
+          "attribution": "resolved",
+          "is_unattributed": false,
+          "bar_pct": 99.9
+        },
+        {
+          "key": "tiktok",
+          "label": "tiktok",
+          "orders": 4162,
+          "sales": 208125,
+          "attribution": "resolved",
+          "is_unattributed": false,
+          "bar_pct": 99.8
+        },
+        {
+          "key": "direct",
+          "label": "direct",
+          "orders": 4162,
+          "sales": 208075,
+          "attribution": "resolved",
+          "is_unattributed": false,
+          "bar_pct": 99.8
+        },
+        {
+          "key": "direct / none",
+          "label": "direct / none",
+          "orders": 6,
+          "sales": 395,
+          "attribution": "none",
+          "is_unattributed": true,
+          "bar_pct": 0.2
+        },
+        {
+          "key": "(not set)",
+          "label": "(not set)",
+          "orders": 1,
+          "sales": 300,
+          "attribution": "untagged",
+          "is_unattributed": true,
+          "bar_pct": 0.1
+        }
+      ],
+      "totals": {
+        "orders": 16661,
+        "sales": 833665,
+        "rows_total": 6
+      },
+      "basis": "captured_base",
+      "basis_label": "captured base only — upsell money has no UTM, gateway or referrer of its own and is not in here",
+      "revenue_basis": "order_window",
+      "revenue_basis_label": "orders whose payment landed inside the window, keyed by the click or visit that preceded them — however long before the window that was",
+      "funnel_scoped": false,
+      "attribution_ttl_risk": false,
+      "currency": "USD",
+      "mixed_currency": false,
+      "warnings": [],
+      "window": {
+        "start": "2026-07-11",
+        "end": "2026-08-09",
+        "days": 30,
+        "timezone": "Europe/Madrid"
+      },
+      "meta": {
+        "computed_ms": 112,
+        "rows_scanned": 16661
+      }
+    },
+    "referrer": {
+      "dimension": "referrer",
+      "rows": [
+        {
+          "key": "src2.com",
+          "label": "src2.com",
+          "orders": 2775,
+          "sales": 208125,
+          "attribution": "resolved",
+          "is_unattributed": false,
+          "bar_pct": 100
+        },
+        {
+          "key": "src5.com",
+          "label": "src5.com",
+          "orders": 2775,
+          "sales": 208125,
+          "attribution": "resolved",
+          "is_unattributed": false,
+          "bar_pct": 100
+        },
+        {
+          "key": "src1.com",
+          "label": "src1.com",
+          "orders": 2775,
+          "sales": 138750,
+          "attribution": "resolved",
+          "is_unattributed": false,
+          "bar_pct": 66.7
+        },
+        {
+          "key": "src4.com",
+          "label": "src4.com",
+          "orders": 2775,
+          "sales": 138750,
+          "attribution": "resolved",
+          "is_unattributed": false,
+          "bar_pct": 66.7
+        },
+        {
+          "key": "src0.com",
+          "label": "src0.com",
+          "orders": 2775,
+          "sales": 69375,
+          "attribution": "resolved",
+          "is_unattributed": false,
+          "bar_pct": 33.3
+        },
+        {
+          "key": "src3.com",
+          "label": "src3.com",
+          "orders": 2775,
+          "sales": 69375,
+          "attribution": "resolved",
+          "is_unattributed": false,
+          "bar_pct": 33.3
+        },
+        {
+          "key": "direct / none",
+          "label": "direct / none",
+          "orders": 7,
+          "sales": 695,
+          "attribution": "none",
+          "is_unattributed": true,
+          "bar_pct": 0.3
+        },
+        {
+          "key": "google.com",
+          "label": "google.com",
+          "orders": 2,
+          "sales": 320,
+          "attribution": "resolved",
+          "is_unattributed": false,
+          "bar_pct": 0.2
+        },
+        {
+          "key": "facebook.com",
+          "label": "facebook.com",
+          "orders": 2,
+          "sales": 150,
+          "attribution": "resolved",
+          "is_unattributed": false,
+          "bar_pct": 0.1
+        }
+      ],
+      "totals": {
+        "orders": 16661,
+        "sales": 833665,
+        "rows_total": 9
+      },
+      "basis": "captured_base",
+      "basis_label": "captured base only — upsell money has no UTM, gateway or referrer of its own and is not in here",
+      "revenue_basis": "order_window",
+      "revenue_basis_label": "orders whose payment landed inside the window, keyed by the click or visit that preceded them — however long before the window that was",
+      "funnel_scoped": false,
+      "attribution_ttl_risk": false,
+      "currency": "USD",
+      "mixed_currency": false,
+      "warnings": [],
+      "window": {
+        "start": "2026-07-11",
+        "end": "2026-08-09",
+        "days": 30,
+        "timezone": "Europe/Madrid"
+      },
+      "meta": {
+        "computed_ms": 98,
+        "rows_scanned": 16661
+      }
+    },
+    "landing_page": {
+      "dimension": "landing_page",
+      "rows": [
+        {
+          "key": "a.com/lp2",
+          "label": "a.com/lp2",
+          "orders": 2380,
+          "sales": 119220,
+          "attribution": "resolved",
+          "is_unattributed": false,
+          "bar_pct": 100
+        },
+        {
+          "key": "a.com/lp4",
+          "label": "a.com/lp4",
+          "orders": 2380,
+          "sales": 119000,
+          "attribution": "resolved",
+          "is_unattributed": false,
+          "bar_pct": 99.8
+        },
+        {
+          "key": "a.com/lp5",
+          "label": "a.com/lp5",
+          "orders": 2379,
+          "sales": 119000,
+          "attribution": "resolved",
+          "is_unattributed": false,
+          "bar_pct": 99.8
+        },
+        {
+          "key": "a.com/lp1",
+          "label": "a.com/lp1",
+          "orders": 2378,
+          "sales": 118925,
+          "attribution": "resolved",
+          "is_unattributed": false,
+          "bar_pct": 99.8
+        },
+        {
+          "key": "a.com/lp3",
+          "label": "a.com/lp3",
+          "orders": 2379,
+          "sales": 118900,
+          "attribution": "resolved",
+          "is_unattributed": false,
+          "bar_pct": 99.7
+        },
+        {
+          "key": "a.com/lp6",
+          "label": "a.com/lp6",
+          "orders": 2378,
+          "sales": 118900,
+          "attribution": "resolved",
+          "is_unattributed": false,
+          "bar_pct": 99.7
+        },
+        {
+          "key": "a.com/lp0",
+          "label": "a.com/lp0",
+          "orders": 2378,
+          "sales": 118875,
+          "attribution": "resolved",
+          "is_unattributed": false,
+          "bar_pct": 99.7
+        },
+        {
+          "key": "direct / none",
+          "label": "direct / none",
+          "orders": 6,
+          "sales": 395,
+          "attribution": "none",
+          "is_unattributed": true,
+          "bar_pct": 0.3
+        },
+        {
+          "key": "b.com/lp",
+          "label": "b.com/lp",
+          "orders": 1,
+          "sales": 300,
+          "attribution": "resolved",
+          "is_unattributed": false,
+          "bar_pct": 0.3
+        },
+        {
+          "key": "a.com/lp",
+          "label": "a.com/lp",
+          "orders": 2,
+          "sales": 150,
+          "attribution": "resolved",
+          "is_unattributed": false,
+          "bar_pct": 0.1
+        }
+      ],
+      "totals": {
+        "orders": 16661,
+        "sales": 833665,
+        "rows_total": 10
+      },
+      "basis": "captured_base",
+      "basis_label": "captured base only — upsell money has no UTM, gateway or referrer of its own and is not in here",
+      "revenue_basis": "order_window",
+      "revenue_basis_label": "orders whose payment landed inside the window, keyed by the click or visit that preceded them — however long before the window that was",
+      "funnel_scoped": false,
+      "attribution_ttl_risk": false,
+      "currency": "USD",
+      "mixed_currency": false,
+      "warnings": [],
+      "window": {
+        "start": "2026-07-11",
+        "end": "2026-08-09",
+        "days": 30,
+        "timezone": "Europe/Madrid"
+      },
+      "meta": {
+        "computed_ms": 104,
+        "rows_scanned": 16661
+      }
+    }
+  },
+  "marketing_unattributed": {
+    "dimension": "source",
+    "rows": [
+      {
+        "key": "google",
+        "label": "google",
+        "orders": 4165,
+        "sales": 208495,
+        "attribution": "resolved",
+        "is_unattributed": false,
+        "bar_pct": 100
+      },
+      {
+        "key": "meta",
+        "label": "meta",
+        "orders": 4165,
+        "sales": 208275,
+        "attribution": "resolved",
+        "is_unattributed": false,
+        "bar_pct": 99.9
+      },
+      {
+        "key": "tiktok",
+        "label": "tiktok",
+        "orders": 4162,
+        "sales": 208125,
+        "attribution": "resolved",
+        "is_unattributed": false,
+        "bar_pct": 99.8
+      },
+      {
+        "key": "direct",
+        "label": "direct",
+        "orders": 4162,
+        "sales": 208075,
+        "attribution": "resolved",
+        "is_unattributed": false,
+        "bar_pct": 99.8
+      },
+      {
+        "key": "direct / none",
+        "label": "direct / none",
+        "orders": 6,
+        "sales": 395,
+        "attribution": "none",
+        "is_unattributed": true,
+        "bar_pct": 0.2
+      },
+      {
+        "key": "(not set)",
+        "label": "(not set)",
+        "orders": 1,
+        "sales": 300,
+        "attribution": "untagged",
+        "is_unattributed": true,
+        "bar_pct": 0.1
+      }
+    ],
+    "totals": {
+      "orders": 16661,
+      "sales": 833665,
+      "rows_total": 6
+    },
+    "basis": "captured_base",
+    "basis_label": "captured base only — upsell money has no UTM, gateway or referrer of its own and is not in here",
+    "revenue_basis": "order_window",
+    "revenue_basis_label": "orders whose payment landed inside the window, keyed by the click or visit that preceded them — however long before the window that was",
+    "funnel_scoped": false,
+    "attribution_ttl_risk": false,
+    "currency": "USD",
+    "mixed_currency": false,
+    "warnings": [],
+    "window": {
+      "start": "2026-07-11",
+      "end": "2026-08-09",
+      "days": 30,
+      "timezone": "Europe/Madrid"
+    },
+    "meta": {
+      "computed_ms": 112,
+      "rows_scanned": 16661
+    }
+  },
+  "marketing_unattributed_dimension": "source",
+  "withheld": {
+    "band": {
+      "live": null,
+      "unique_today": null,
+      "today": {
+        "day": "2026-08-09",
+        "orders": null,
+        "revenue": null,
+        "spend": null,
+        "net": null
+      },
+      "yesterday": {
+        "day": "2026-08-08",
+        "orders": null,
+        "revenue": null,
+        "spend": null,
+        "net": null
+      },
+      "timezone": "Europe/Madrid",
+      "meta": {
+        "computed_ms": null,
+        "rows_scanned": null,
+        "timezone": "Europe/Madrid",
+        "warnings": []
+      },
+      "in_window": true
+    },
+    "kpis": {
+      "orders": null,
+      "gross_sales": null,
+      "net_sales": null,
+      "refunds": null,
+      "sessions": null,
+      "conv_pct": null,
+      "aov": null,
+      "new_customers": null,
+      "returning_customers": null,
+      "net_after_cogs": null,
+      "margin_pct": null,
+      "cost_coverage_pct": null,
+      "spend": null,
+      "roas": null,
+      "cpa": null,
+      "net_profit": null,
+      "previous": {
+        "orders": null,
+        "gross_sales": null,
+        "net_sales": null,
+        "refunds": null,
+        "sessions": null,
+        "conv_pct": null,
+        "aov": null,
+        "new_customers": null,
+        "returning_customers": null,
+        "net_after_cogs": null,
+        "margin_pct": null,
+        "cost_coverage_pct": null,
+        "spend": null,
+        "roas": null,
+        "cpa": null,
+        "net_profit": null
+      },
+      "upsell_lines": {
+        "aov_post": null,
+        "aov_pre": null,
+        "upsell_revenue": null,
+        "take_rate": null,
+        "upsell_refunds": null,
+        "orders": null,
+        "abandoned": null
+      }
+    },
+    "series": [
+      {
+        "key": "2026-07-11",
+        "future": false,
+        "gross_sales": null,
+        "net_sales": null,
+        "orders": null,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2026-07-12",
+        "future": false,
+        "gross_sales": null,
+        "net_sales": null,
+        "orders": null,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2026-07-13",
+        "future": false,
+        "gross_sales": null,
+        "net_sales": null,
+        "orders": null,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2026-07-14",
+        "future": false,
+        "gross_sales": null,
+        "net_sales": null,
+        "orders": null,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2026-07-15",
+        "future": false,
+        "gross_sales": null,
+        "net_sales": null,
+        "orders": null,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2026-07-16",
+        "future": false,
+        "gross_sales": null,
+        "net_sales": null,
+        "orders": null,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2026-07-17",
+        "future": false,
+        "gross_sales": null,
+        "net_sales": null,
+        "orders": null,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2026-07-18",
+        "future": false,
+        "gross_sales": null,
+        "net_sales": null,
+        "orders": null,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2026-07-19",
+        "future": false,
+        "gross_sales": null,
+        "net_sales": null,
+        "orders": null,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2026-07-20",
+        "future": false,
+        "gross_sales": null,
+        "net_sales": null,
+        "orders": null,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2026-07-21",
+        "future": false,
+        "gross_sales": null,
+        "net_sales": null,
+        "orders": null,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2026-07-22",
+        "future": false,
+        "gross_sales": null,
+        "net_sales": null,
+        "orders": null,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2026-07-23",
+        "future": false,
+        "gross_sales": null,
+        "net_sales": null,
+        "orders": null,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2026-07-24",
+        "future": false,
+        "gross_sales": null,
+        "net_sales": null,
+        "orders": null,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2026-07-25",
+        "future": false,
+        "gross_sales": null,
+        "net_sales": null,
+        "orders": null,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2026-07-26",
+        "future": false,
+        "gross_sales": null,
+        "net_sales": null,
+        "orders": null,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2026-07-27",
+        "future": false,
+        "gross_sales": null,
+        "net_sales": null,
+        "orders": null,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2026-07-28",
+        "future": false,
+        "gross_sales": null,
+        "net_sales": null,
+        "orders": null,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2026-07-29",
+        "future": false,
+        "gross_sales": null,
+        "net_sales": null,
+        "orders": null,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2026-07-30",
+        "future": false,
+        "gross_sales": null,
+        "net_sales": null,
+        "orders": null,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2026-07-31",
+        "future": false,
+        "gross_sales": null,
+        "net_sales": null,
+        "orders": null,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2026-08-01",
+        "future": false,
+        "gross_sales": null,
+        "net_sales": null,
+        "orders": null,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2026-08-02",
+        "future": false,
+        "gross_sales": null,
+        "net_sales": null,
+        "orders": null,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2026-08-03",
+        "future": false,
+        "gross_sales": null,
+        "net_sales": null,
+        "orders": null,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2026-08-04",
+        "future": false,
+        "gross_sales": null,
+        "net_sales": null,
+        "orders": null,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2026-08-05",
+        "future": false,
+        "gross_sales": null,
+        "net_sales": null,
+        "orders": null,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2026-08-06",
+        "future": false,
+        "gross_sales": null,
+        "net_sales": null,
+        "orders": null,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2026-08-07",
+        "future": false,
+        "gross_sales": null,
+        "net_sales": null,
+        "orders": null,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2026-08-08",
+        "future": false,
+        "gross_sales": null,
+        "net_sales": null,
+        "orders": null,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2026-08-09",
+        "future": false,
+        "gross_sales": null,
+        "net_sales": null,
+        "orders": null,
+        "sessions": null,
+        "conv_pct": null
+      }
+    ],
+    "prev_series": [
+      {
+        "key": "2026-06-11",
+        "future": false,
+        "gross_sales": null,
+        "net_sales": null,
+        "orders": null,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2026-06-12",
+        "future": false,
+        "gross_sales": null,
+        "net_sales": null,
+        "orders": null,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2026-06-13",
+        "future": false,
+        "gross_sales": null,
+        "net_sales": null,
+        "orders": null,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2026-06-14",
+        "future": false,
+        "gross_sales": null,
+        "net_sales": null,
+        "orders": null,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2026-06-15",
+        "future": false,
+        "gross_sales": null,
+        "net_sales": null,
+        "orders": null,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2026-06-16",
+        "future": false,
+        "gross_sales": null,
+        "net_sales": null,
+        "orders": null,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2026-06-17",
+        "future": false,
+        "gross_sales": null,
+        "net_sales": null,
+        "orders": null,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2026-06-18",
+        "future": false,
+        "gross_sales": null,
+        "net_sales": null,
+        "orders": null,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2026-06-19",
+        "future": false,
+        "gross_sales": null,
+        "net_sales": null,
+        "orders": null,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2026-06-20",
+        "future": false,
+        "gross_sales": null,
+        "net_sales": null,
+        "orders": null,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2026-06-21",
+        "future": false,
+        "gross_sales": null,
+        "net_sales": null,
+        "orders": null,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2026-06-22",
+        "future": false,
+        "gross_sales": null,
+        "net_sales": null,
+        "orders": null,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2026-06-23",
+        "future": false,
+        "gross_sales": null,
+        "net_sales": null,
+        "orders": null,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2026-06-24",
+        "future": false,
+        "gross_sales": null,
+        "net_sales": null,
+        "orders": null,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2026-06-25",
+        "future": false,
+        "gross_sales": null,
+        "net_sales": null,
+        "orders": null,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2026-06-26",
+        "future": false,
+        "gross_sales": null,
+        "net_sales": null,
+        "orders": null,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2026-06-27",
+        "future": false,
+        "gross_sales": null,
+        "net_sales": null,
+        "orders": null,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2026-06-28",
+        "future": false,
+        "gross_sales": null,
+        "net_sales": null,
+        "orders": null,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2026-06-29",
+        "future": false,
+        "gross_sales": null,
+        "net_sales": null,
+        "orders": null,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2026-06-30",
+        "future": false,
+        "gross_sales": null,
+        "net_sales": null,
+        "orders": null,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2026-07-01",
+        "future": false,
+        "gross_sales": null,
+        "net_sales": null,
+        "orders": null,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2026-07-02",
+        "future": false,
+        "gross_sales": null,
+        "net_sales": null,
+        "orders": null,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2026-07-03",
+        "future": false,
+        "gross_sales": null,
+        "net_sales": null,
+        "orders": null,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2026-07-04",
+        "future": false,
+        "gross_sales": null,
+        "net_sales": null,
+        "orders": null,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2026-07-05",
+        "future": false,
+        "gross_sales": null,
+        "net_sales": null,
+        "orders": null,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2026-07-06",
+        "future": false,
+        "gross_sales": null,
+        "net_sales": null,
+        "orders": null,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2026-07-07",
+        "future": false,
+        "gross_sales": null,
+        "net_sales": null,
+        "orders": null,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2026-07-08",
+        "future": false,
+        "gross_sales": null,
+        "net_sales": null,
+        "orders": null,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2026-07-09",
+        "future": false,
+        "gross_sales": null,
+        "net_sales": null,
+        "orders": null,
+        "sessions": null,
+        "conv_pct": null
+      },
+      {
+        "key": "2026-07-10",
+        "future": false,
+        "gross_sales": null,
+        "net_sales": null,
+        "orders": null,
+        "sessions": null,
+        "conv_pct": null
+      }
+    ],
+    "breakdown_summary": {
+      "funnels": {
+        "rows": [
+          {
+            "key": "fperf",
+            "label": "Perf",
+            "net_sales": null,
+            "orders": null,
+            "aov": null,
+            "name": "Perf"
+          },
+          {
+            "key": "f1",
+            "label": "Alpha",
+            "net_sales": null,
+            "orders": null,
+            "aov": null,
+            "name": "Alpha"
+          },
+          {
+            "key": "f2",
+            "label": "Beta",
+            "net_sales": null,
+            "orders": null,
+            "aov": null,
+            "name": "Beta"
+          },
+          {
+            "key": "fweek",
+            "label": "Week",
+            "net_sales": null,
+            "orders": null,
+            "aov": null,
+            "name": "Week"
+          },
+          {
+            "key": "fnoleg",
+            "label": "NoLeg",
+            "net_sales": null,
+            "orders": null,
+            "aov": null,
+            "name": "NoLeg"
+          },
+          {
+            "key": "f3",
+            "label": "Gamma",
+            "net_sales": null,
+            "orders": null,
+            "aov": null,
+            "name": "Gamma"
+          },
+          {
+            "key": "(none)",
+            "label": "(none)",
+            "net_sales": null,
+            "orders": null,
+            "aov": null,
+            "name": null
+          },
+          {
+            "key": "ftz",
+            "label": "TZ",
+            "net_sales": null,
+            "orders": null,
+            "aov": null,
+            "name": "TZ"
+          }
+        ],
+        "totals": {
+          "net_sales": null,
+          "orders": null,
+          "aov": null
+        },
+        "basis": "gross",
+        "basis_label": "Net sales — the captured base plus upsells",
+        "basis_metric": "net_sales",
+        "limit": null,
+        "total": null,
+        "total_metric": "net_sales",
+        "rows_total": null,
+        "rows_truncated": false
+      },
+      "products": {
+        "rows": [
+          {
+            "key": "P0",
+            "label": "P0",
+            "gross_sales": null,
+            "orders": null
+          },
+          {
+            "key": "P1",
+            "label": "P1",
+            "gross_sales": null,
+            "orders": null
+          },
+          {
+            "key": "P2",
+            "label": "P2",
+            "gross_sales": null,
+            "orders": null
+          },
+          {
+            "key": "P3",
+            "label": "P3",
+            "gross_sales": null,
+            "orders": null
+          },
+          {
+            "key": "P4",
+            "label": "P4",
+            "gross_sales": null,
+            "orders": null
+          },
+          {
+            "key": "P5",
+            "label": "P5",
+            "gross_sales": null,
+            "orders": null
+          },
+          {
+            "key": "P6",
+            "label": "P6",
+            "gross_sales": null,
+            "orders": null
+          },
+          {
+            "key": "P7",
+            "label": "P7",
+            "gross_sales": null,
+            "orders": null
+          },
+          {
+            "key": "P8",
+            "label": "P8",
+            "gross_sales": null,
+            "orders": null
+          },
+          {
+            "key": "P9",
+            "label": "P9",
+            "gross_sales": null,
+            "orders": null
+          },
+          {
+            "key": "P10",
+            "label": "P10",
+            "gross_sales": null,
+            "orders": null
+          },
+          {
+            "key": "P13",
+            "label": "P13",
+            "gross_sales": null,
+            "orders": null
+          }
+        ],
+        "totals": {
+          "gross_sales": null,
+          "orders": null
+        },
+        "basis": "line_items",
+        "basis_label": "Gross sales — line-item value (price × quantity) — the cart's composition, not what was captured",
+        "basis_metric": "gross_sales",
+        "limit": null,
+        "total": null,
+        "total_metric": "gross_sales",
+        "rows_total": null,
+        "rows_truncated": true
+      },
+      "sources": {
+        "rows": [
+          {
+            "key": "google",
+            "label": "google",
+            "net_sales": null,
+            "orders": null
+          },
+          {
+            "key": "meta",
+            "label": "meta",
+            "net_sales": null,
+            "orders": null
+          },
+          {
+            "key": "tiktok",
+            "label": "tiktok",
+            "net_sales": null,
+            "orders": null
+          },
+          {
+            "key": "direct",
+            "label": "direct",
+            "net_sales": null,
+            "orders": null
+          },
+          {
+            "key": "(direct)",
+            "label": "(direct)",
+            "net_sales": null,
+            "orders": null
+          }
+        ],
+        "totals": {
+          "net_sales": null,
+          "orders": null
+        },
+        "basis": "captured_base",
+        "basis_label": "Net sales — the captured base only — upsell money has no gateway, UTM or referrer of its own and is not in here",
+        "basis_metric": "net_sales",
+        "limit": null,
+        "total": null,
+        "total_metric": "net_sales",
+        "rows_total": null,
+        "rows_truncated": false
+      },
+      "campaigns": {
+        "rows": [
+          {
+            "key": "camp_1",
+            "label": "camp_1",
+            "net_sales": null,
+            "orders": null
+          },
+          {
+            "key": "camp_10",
+            "label": "camp_10",
+            "net_sales": null,
+            "orders": null
+          },
+          {
+            "key": "camp_11",
+            "label": "camp_11",
+            "net_sales": null,
+            "orders": null
+          },
+          {
+            "key": "camp_12",
+            "label": "camp_12",
+            "net_sales": null,
+            "orders": null
+          },
+          {
+            "key": "camp_13",
+            "label": "camp_13",
+            "net_sales": null,
+            "orders": null
+          },
+          {
+            "key": "camp_14",
+            "label": "camp_14",
+            "net_sales": null,
+            "orders": null
+          },
+          {
+            "key": "camp_15",
+            "label": "camp_15",
+            "net_sales": null,
+            "orders": null
+          },
+          {
+            "key": "camp_16",
+            "label": "camp_16",
+            "net_sales": null,
+            "orders": null
+          },
+          {
+            "key": "camp_17",
+            "label": "camp_17",
+            "net_sales": null,
+            "orders": null
+          },
+          {
+            "key": "camp_18",
+            "label": "camp_18",
+            "net_sales": null,
+            "orders": null
+          },
+          {
+            "key": "camp_19",
+            "label": "camp_19",
+            "net_sales": null,
+            "orders": null
+          },
+          {
+            "key": "camp_2",
+            "label": "camp_2",
+            "net_sales": null,
+            "orders": null
+          }
+        ],
+        "totals": {
+          "net_sales": null,
+          "orders": null
+        },
+        "basis": "captured_base",
+        "basis_label": "Net sales — the captured base only — upsell money has no gateway, UTM or referrer of its own and is not in here",
+        "basis_metric": "net_sales",
+        "limit": null,
+        "total": null,
+        "total_metric": "net_sales",
+        "rows_total": null,
+        "rows_truncated": true
+      },
+      "countries": {
+        "rows": [
+          {
+            "key": "FR",
+            "label": "FR",
+            "net_sales": null,
+            "orders": null
+          },
+          {
+            "key": "US",
+            "label": "US",
+            "net_sales": null,
+            "orders": null
+          },
+          {
+            "key": "IT",
+            "label": "IT",
+            "net_sales": null,
+            "orders": null
+          },
+          {
+            "key": "DE",
+            "label": "DE",
+            "net_sales": null,
+            "orders": null
+          },
+          {
+            "key": "ES",
+            "label": "ES",
+            "net_sales": null,
+            "orders": null
+          }
+        ],
+        "totals": {
+          "net_sales": null,
+          "orders": null
+        },
+        "basis": "gross",
+        "basis_label": "Net sales — the captured base plus upsells",
+        "basis_metric": "net_sales",
+        "limit": null,
+        "total": null,
+        "total_metric": "net_sales",
+        "rows_total": null,
+        "rows_truncated": false
+      }
+    },
+    "waterfall": {
+      "steps": [
+        {
+          "step": "checkout",
+          "label": "Checkout",
+          "visitors": null,
+          "pct_of_top": null
+        },
+        {
+          "step": "upsell",
+          "label": "Upsell",
+          "visitors": null,
+          "pct_of_top": null
+        }
+      ],
+      "basis": "distinct lb_touches.vid per funnel_pages.type"
+    },
+    "movers": [
+      {
+        "key": "fperf",
+        "label": "Perf",
+        "net_sales": null,
+        "previous_net_sales": null,
+        "delta": null,
+        "delta_pct": null
+      },
+      {
+        "key": "f1",
+        "label": "Alpha",
+        "net_sales": null,
+        "previous_net_sales": null,
+        "delta": null,
+        "delta_pct": null
+      }
+    ],
+    "window": {
+      "start": "2026-07-11",
+      "end": "2026-08-09",
+      "prev_start": "2026-06-11",
+      "prev_end": "2026-07-10",
+      "days": null,
+      "timezone": "Europe/Madrid"
+    },
+    "meta": {
+      "computed_ms": null,
+      "rows_scanned": null,
+      "basis": "gross",
+      "basis_label": "Gross sales — the captured base plus upsells",
+      "basis_metric": "net_sales",
+      "timezone": "Europe/Madrid",
+      "sessions_unknown": true,
+      "series_aligned_by": "index",
+      "window": {
+        "start": "2026-07-11",
+        "end": "2026-08-09",
+        "days": null,
+        "timezone": "Europe/Madrid"
+      },
+      "warnings": [
+        {
+          "source": "sessions",
+          "reason": "sessions withheld for this window (touch retention)"
+        }
+      ]
+    }
+  }
+}

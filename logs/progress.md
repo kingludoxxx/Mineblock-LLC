@@ -2533,6 +2533,71 @@ MADE — no retention/purge on lb_health_alerts; the cooldown bounds growth and
 the gap is stated in the service header rather than pretended away. (d) The
 funnels.js ↔ funnelTransfer.js import cycle is deliberate and verified by
 execution in BOTH module-evaluation orders.
+TIMESTAMP: 2026-08-09 21:05
+TASK: ANALYTICS LANE 3 — analytics dashboard page (client)
+BUILT: New client workspace at client/src/pages/analytics/dashboard/** plus
+client/src/pages/analytics/metricsApi.js (the ONE place Lane 1's
+/funnel-metrics/dashboard and Lane 2's /funnel-attribution/marketing are
+named, with tolerant-on-shape / strict-on-meaning readers) and
+client/src/pages/analytics/analyticsRoutes.jsx (owns /app/analytics and
+/app/analytics/explorer). App.jsx took ONE additive import + ONE additive
+route line; every existing analytics file is untouched and read-only
+(format.js is imported, never edited). Surfaces, first-priority first: the
+18-column FUNNEL PERFORMANCE table (Funnel · Sessions · Orders · Conv · Gross ·
+Net · AOV · $/session · Refunds · COGS · Fees · GP · GP% · Coverage · Spend ·
+Net profit · ROAS · CPA, row-click scopes the page, per-cell withholding with
+a hover reason and a footnote naming the 90-day TTL); header with the
+provenance line (window · compare window · reporting zone · scope · funnel
+count) and a collapsible "Dashboard"; 8 KPI tiles with delta chips and
+sparklines; total sales over time (solid vs dashed previous, overlaid by
+index, connectNulls false, "N days not measured" caption); total sales
+breakdown (both refund ledgers); order value & upsells with the four verbatim
+footnotes; sales by funnel donut; marketing bars and UTM source bars with
+honest blank-bucket labels, "Top N of M · $total" footers and the
+captured-base disclaimer printed only from the server's own basis_label;
+conversion and sessions over time; sales by country (order shipping country);
+and explicit NOT-COLLECTED placeholders for device and geolocated pageviews.
+Two fetches only, with a 15s quiet repoll gated on tab visibility.
+TESTED: (1) client/src/pages/analytics/dashboard/__checks__/formatterContract.mjs
+— 153 assertions over the real dashFormat.js + metricsApi.js readers, run under
+TZ=UTC, TZ=Europe/Madrid and TZ=Pacific/Auckland; UTC and Auckland outputs
+diffed byte-for-byte identical. (2) __checks__/screenshot.mjs — boots vite
+against the real DashboardView with seeded payloads, drives headless chromium,
+asserts 71 honesty rules in the rendered DOM and writes screenshots that were
+opened and inspected. Six render states incl. edge cases: everything-withheld
+(no fabricated figure anywhere), cold failure, malformed payload (wrong type in
+every block — renders, does not throw), and the explorer route with Lane 4's
+module genuinely absent so the guarded dynamic import REALLY rejects.
+(3) vite build twice from clean, (4) eslint before/after.
+OUTPUT: formatterContract 153 passed / 0 failed in all three zones.
+screenshot.mjs 71 passed / 0 failed; the one 404 in the run is Lane 4's module
+(the failure path), asserted as such, and the harness made zero API calls.
+vite build exit 0 twice ("✓ built" in both logs); the >500kB chunk notice is
+pre-existing on main. eslint 156 errors / 19 warnings before AND after — delta
+0/0, zero problems in any Lane 3 file, App.jsx still clean.
+Two real defects were found BY INSPECTING THE SCREENSHOT and fixed: the money
+chart's Y-axis was clipping the currency symbol off "$1,500", and the Sales by
+country card printed its basis sentence twice.
+DECISIONS: (a) OPERATOR OVERRIDE APPLIED — the header prints the zone the
+SERVER names (window.timezone), mapping Europe/Madrid to "Madrid time" and any
+other zone to its raw IANA string; an absent zone prints nothing. Hardcoding
+the label would survive only until REPORT_TZ moved (DECISION MADE).
+(b) Default window day keys come from the BROWSER'S local calendar day, not
+format.js's UTC todayIso — Madrid is ahead of UTC, so a UTC-derived "today"
+is yesterday between Madrid midnight and 02:00. Picker day strings are passed
+to the server unchanged (DECISION MADE).
+(c) Lane 4's explorer is lazy-imported through a variable specifier marked
+@vite-ignore so Rollup cannot fail the build on a module that does not exist on
+this branch; the rejection is caught and renders a named placeholder. A
+post-merge swap to the ordinary static import is documented inline at the call
+site. No stub was created under ./explorer/ — that is Lane 4's fence
+(DECISION MADE).
+(d) The scope selector and the funnel count are built from the composite's own
+funnel breakdown rather than a third request, keeping the page at the
+mandated ONE + ONE (DECISION MADE).
+(e) The funnel table's total row is the server's window-scoped KPI block, never
+a sum of the visible rows (which are ranked and may be truncated), and says so
+underneath (DECISION MADE).
 STATUS: COMPLETE
 ---
 
@@ -2658,5 +2723,62 @@ atomic even WITH an advisory lock: measured at 4 rows from 4 processes, because
 a statement's snapshot is taken BEFORE it blocks on the lock, so the waiter
 cannot see the row it waited for. Corrected to lock-then-read-then-write across
 statement boundaries inside one transaction (fresh snapshot per statement).
+TIMESTAMP: 2026-08-09 23:40
+TASK: ANALYTICS LANE 3 — adversarial-review fix cycle
+BUILT: Reworked the lane against Lane 1's SHIPPED shapes (metrics@3e42a8e) and
+Lane 2's (attribution@14ce8f9), read out of their services rather than the work
+order's prose. Readers: rowMoney/moneyMetricOf (breakdowns fold net_sales, not
+gross_sales — cards now caption which); breakdownOf reads the scalar
+total/total_metric/basis_metric/rows_total and REFUSES a money total when the
+declared metric is a count; warningsOf normalises {source, reason} objects (the
+string-only reader was silently discarding every warning); sessionsUnknownOf
+reads meta.sessions_unknown, then an lb_touches/sessions warning, then the
+documented sessions-null-beside-real-orders fallback; marketingOf carries
+revenue_basis_label, currency/mixed_currency, attribution_ttl_risk and counts
+the two unattributed states separately; bandOf keeps in_window tri-state;
+seriesCol is type-guarded. Cards: a fifth state (WITHHELD) distinct from EMPTY,
+and `failed` never renders an empty state anywhere; Donut/HBar take the wire
+total + rows_total and never claim "All N" without it; non-positive donut rows
+fold into the tail instead of being dropped. KpiRow: DeltaChip branches on the
+unrounded pct (Math.round(-0.4) === -0 rendered a green "↗ 0%" for a metric that
+fell) and returning-rate requires BOTH counts finite. Funnel table: threads
+state, hides columns no row carries and NAMES them, guards the '(none)' bucket.
+Hook: heartbeat now targets Lane 1's new GET /band at 15s, splices the block
+(preserving in_window), never stacks, and tags the marketing payload with its
+window. Window seed is the REPORT-ZONE day via Intl; the server's window echo is
+adopted once in the RESPONSE CALLBACK. Fixtures are no longer authored:
+captureSeed.mjs runs Lane 1's own engine harness, calls runDashboard/runBand/
+getMarketing against real Postgres and writes seed.generated.json.
+TESTED: formatterContract.mjs grown to 228 assertions incl. a new section H that
+drives the readers against the CAPTURED payloads; run under TZ=UTC,
+Europe/Madrid, Pacific/Auckland, twice each. screenshot.mjs grown to 103
+assertions over 8 render states, incl. a new end-to-end state that mounts the
+REAL route (index.jsx + the hook + axios) with the captured payloads served by
+playwright route interception. vite build ×2 from clean; eslint before/after.
+Screenshots opened and inspected.
+OUTPUT: formatterContract 228 passed / 0 failed in all three zones, both runs;
+UTC vs Auckland output byte-identical apart from the TZ banner. screenshot 103
+passed / 0 failed, both runs; em-dash census pinned at measured=15 ttl=32
+withheld=62 failed=25. vite build exit 0 twice. eslint 156/19 before AND after —
+delta 0/0, zero problems in any Lane 3 file. Capture reports funnels rows_total=8
+total_metric=net_sales, marketing totals {orders:16661, sales:833665,
+rows_total:28}, dashboard_ttl.meta.sessions_unknown=true.
+FOUR REAL DEFECTS FOUND BY RUNNING AGAINST CAPTURED OUTPUT, not by review:
+(1) a fully-withheld series rendered "No data for this date range" — the
+forbidden claim, in a card the earlier suite passed; (2) referencing
+onServerWindow before its const (TDZ) would have crashed the real page, and
+nothing in the suite mounted index.jsx until the new end-to-end state; (3) a
+measured-zero refund rendered "−$0.00"; (4) "1 orders".
+DECISIONS: (a) the reader branch for the reference key `kpis.sessions_known` was
+REMOVED, not kept — neither lane emits it, and a tolerance that can never be
+exercised hides the day the real signal changes (DECISION MADE). (b) Lane 1's
+`upsell_take_pct` (legs ÷ upsell views) returns 104125 on the real fixture; the
+card prints it AND marks it "over 100%, so the view denominator is incomplete;
+shown as reported, not corrected" — not hidden, not clamped (DECISION MADE,
+flagged to the coordinator). (c) the funnel table COLLAPSES the 14 columns Lane
+1's 3-metric funnel fold does not carry and names them underneath, rather than
+drawing 14 columns of em dashes that would claim we measured and refuse to say
+(DECISION MADE). (d) the window echo is adopted in the fetch callback, not an
+effect, to satisfy react-hooks/set-state-in-effect (DECISION MADE).
 STATUS: COMPLETE
 ---
