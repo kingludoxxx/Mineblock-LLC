@@ -890,7 +890,13 @@ function loadWhopLoader(){if(whopLoaderStarted)return;whopLoaderStarted=true;var
 function post(path,payload){return fetch(API+path,{method:'POST',headers:{'Content-Type':'application/json'},credentials:'same-origin',body:JSON.stringify(payload)}).then(function(r){return r.json().catch(function(){return {};}).then(function(j){return {status:r.status,json:j};});});}
 function sessErr(code){if(code==='pricing_unavailable')return 'Payment is temporarily unavailable. Please try again in a moment.';if(code==='invalid_variant'||code==='empty_cart')return 'This item is currently unavailable.';if(code==='total_below_minimum')return 'This order is below the minimum amount.';if(code==='rate_limited')return 'Too many attempts. Please wait a moment and retry.';return 'We could not start checkout ('+code+').';}
 function embedErr(code){if(code==='gateway_not_configured')return 'Checkout is not fully set up yet. Please contact support.';if(code==='session_not_payable')return 'This checkout session has expired. Please refresh the page.';if(code==='gateway_error')return 'The payment provider is temporarily unavailable. Please try again shortly.';return 'We could not start the payment ('+code+').';}
-function mountEmbed(root,embed){try{var mount=root.querySelector('[data-fos-whop-mount]');if(mount&&embed.whop_session_id){mount.setAttribute('data-whop-checkout-session',embed.whop_session_id);}var fb=root.querySelector('[data-fos-fallback]');if(fb&&embed.purchase_url){fb.setAttribute('href',embed.purchase_url);fb.hidden=false;}loadWhopLoader();}catch(e){showError(root,'Could not initialize the payment form.');}}
+function mountEmbed(root,embed){try{var mount=root.querySelector('[data-fos-whop-mount]');if(mount&&embed.whop_session_id){mount.setAttribute('data-whop-checkout-session',embed.whop_session_id);/* The embed ships a COMPLETE checkout of its own (dark, browser-locale, its
+   own email + billing + price + TOS + CTA). Dropped into our page that is a
+   second checkout inside the first: two email fields, two card forms, two
+   buttons, one of them dark and in the visitor's language saying "Get
+   access". Reduce it to the ONE thing only it can do — the PCI card fields —
+   and let our page own every other pixel. */mount.setAttribute('data-whop-checkout-theme','light');mount.setAttribute('data-whop-checkout-locale','en');mount.setAttribute('data-whop-checkout-hide-email','true');mount.setAttribute('data-whop-checkout-hide-address','true');mount.setAttribute('data-whop-checkout-hide-price','true');mount.setAttribute('data-whop-checkout-hide-tos','true');mount.setAttribute('data-whop-checkout-hide-submit-button','true');mount.setAttribute('data-whop-checkout-identifier','puure-checkout');/* Whop still needs an email for the receipt; ours is the only one on the
+   page now, so hand it over instead of asking the buyer twice. */try{var em=document.querySelector('input[name="email"]');if(em&&em.value){mount.setAttribute('data-whop-checkout-prefill-email',em.value);}}catch(e){}}var fb=root.querySelector('[data-fos-fallback]');if(fb&&embed.purchase_url){fb.setAttribute('href',embed.purchase_url);fb.hidden=false;}loadWhopLoader();}catch(e){showError(root,'Could not initialize the payment form.');}}
 function initBlock(root){var cfg={};try{cfg=JSON.parse((root.querySelector('.fos-checkout-cfg')||{}).textContent||'{}');}catch(e){cfg={};}var items=(cfg&&cfg.line_items)||[];if(!items.length){showError(root,'This checkout has no product configured yet.');return;}
 post('/create-session',{funnel_id:CTX.funnel_id,page_id:CTX.page_id,gateway:'whop',line_items:items}).then(function(res){if(res.status!==200||!res.json||!res.json.success){showError(root,sessErr((res.json&&res.json.error&&res.json.error.code)||('http_'+res.status)));return;}var session=res.json.data;window.__fos_checkout.session=session;persistSession(session);fillSummaries(session);return post('/whop/create-session',{session_id:session.session_id}).then(function(er){if(er.status!==200||!er.json||!er.json.success){showError(root,embedErr((er.json&&er.json.error&&er.json.error.code)||('http_'+er.status)));return;}var embed=er.json.data;if(!embed||!embed.whop_session_id){showError(root,'Checkout is not fully set up yet (no session).');return;}mountEmbed(root,embed);});}).catch(function(){showError(root,'Network error starting checkout. Please try again.');});}
 ready(function(){try{var blocks=document.querySelectorAll('[data-fos-checkout]');if(!blocks.length){return;}Array.prototype.forEach.call(blocks,function(b){try{initBlock(b);}catch(e){}});}catch(e){}});
@@ -1305,10 +1311,30 @@ const CKT_TEMPLATE_JS = `(function(){
     var btn=ev.target&&ev.target.closest&&ev.target.closest('[data-ckt-complete]');
     if(!btn)return;
     try{
+      var mount=q('[data-fos-whop-mount]');
+      /* Whop's own CTA is hidden (it read "Get access" in the visitor's
+         language). THIS button is the checkout's only submit, so it drives the
+         embed through the loader's documented API. */
+      if(window.wco&&typeof window.wco.submit==='function'&&mount&&mount.getAttribute('data-whop-checkout-session')){
+        var em=q('input[name="email"]');
+        /* Hand our email over first — the embed's own field is hidden, so this
+           is the only address it will ever see. */
+        try{if(em&&em.value&&typeof window.wco.setEmail==='function'){window.wco.setEmail('puure-checkout',em.value);}}catch(e){}
+        btn.disabled=true;var prev=btn.textContent;btn.textContent='Processing\u2026';
+        var done=function(){btn.disabled=false;btn.textContent=prev;};
+        try{
+          mount.addEventListener('payment-error',done,{once:true});
+          var r=window.wco.submit('puure-checkout');
+          if(r&&typeof r.catch==='function'){r.catch(done);}
+          setTimeout(function(){if(btn.disabled){done();}},45000);
+        }catch(e){done();}
+        return;
+      }
+      /* Embed not mounted (creds missing / network): fall back to the hosted
+         Whop page rather than a dead button. */
       var fb=q('[data-fos-fallback]');
       var href=fb&&fb.getAttribute('href');
       if(href&&href!=='#'){window.open(href,'_blank','noopener');return;}
-      var mount=q('[data-fos-whop-mount]');
       if(mount&&mount.scrollIntoView){mount.scrollIntoView({behavior:'smooth',block:'center'});}
     }catch(e){}
   });
@@ -1414,23 +1440,14 @@ export function checkoutPageTemplate() {
       `</div></section>`),
     html('ckt_payhead', 'checkout-payment-heading',
       `<section class='ckt-section'><h2 class='ckt-h2'>Payment method</h2><p class='ckt-note'>All transactions are secure and encrypted.</p>` +
-      `<div class='ckt-pay-card ckt-pay-card-top'>` +
-      `<label class='ckt-pay-option'><input type='radio' name='ckt-pay' checked><span class='ckt-pay-icon'>${CKT_ICON_CARD}</span><span>Card</span></label>` +
-      `<div class='ckt-card-fields'>` +
-      `<div class='ckt-card-sublabel'>Card information</div>` +
-      `<div class='ckt-card-number'><input class='ckt-input' type='text' name='card_number' placeholder='1234 1234 1234 1234' autocomplete='cc-number' inputmode='numeric'><span class='ckt-card-brands'>${CKT_MINI_VISA}${CKT_MINI_MC}${CKT_MINI_AMEX}</span></div>` +
-      `<div class='ckt-two'><input class='ckt-input' type='text' name='card_exp' placeholder='MM / YY' autocomplete='cc-exp' inputmode='numeric'><input class='ckt-input' type='text' name='card_cvc' placeholder='CVC' autocomplete='cc-csc' inputmode='numeric'></div>` +
-      `</div></div></section>`),
+      `</section>`),
     {
       id: 'ckt_whop',
       type: 'whop_checkout',
       props: { block_name: 'checkout-payment', quantity: 1, button_text: 'Complete checkout' },
     },
     html('ckt_payfoot', 'checkout-payment-options',
-      `<section class='ckt-section'><div class='ckt-pay-card ckt-pay-card-bottom'>` +
-      `<label class='ckt-pay-option'><input type='radio' name='ckt-pay'><span class='ckt-pay-glyph'>${CKT_ICON_CRYPTO}</span><span>Pay with Crypto</span></label>` +
-      `<label class='ckt-pay-option'><input type='radio' name='ckt-pay'><span class='ckt-pay-glyph'>${CKT_ICON_BANK}</span><span>Bank transfer</span></label>` +
-      `</div>` +
+      `<section class='ckt-section'>` +
       `<p class='ckt-fineprint'>By purchasing, you agree to Puure's terms and conditions.</p>` +
       `<p class='ckt-poweredby'>Powered by Whop \u00b7 Terms \u00b7 Privacy</p></section>`),
     html('ckt_button', 'checkout-complete-button',
