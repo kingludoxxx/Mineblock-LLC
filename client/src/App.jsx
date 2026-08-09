@@ -143,7 +143,7 @@ export default function App() {
           <Route path="funnel-analytics" element={<PageGate permission="funnels:access"><FunnelAnalyticsPage /></PageGate>} />
           <Route path="integrations" element={<PageGate permission="funnels:access"><IntegrationsPage /></PageGate>} /> {/* KLAVIYO LANE: single additive route line */}
           {/* INTEGRATION HOOK (live-view lane) — ONE additive route line */}
-          <Route path="live" element={<PageGate permission="funnels:access"><LiveViewPage /></PageGate>} />
+          <Route path="live-view" element={<PageGate permission="funnels:access"><LiveViewPage /></PageGate>} />
           <Route path="costs/*" element={<PageGate permission="funnels:access"><CostsRoutes /></PageGate>} /> {/* INTEGRATION HOOK (costs lane) — ONE additive route line */}
 
           {/* Intel */}

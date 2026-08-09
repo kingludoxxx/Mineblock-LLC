@@ -11,6 +11,8 @@ import { Router } from 'express';
 import { authenticate } from '../middleware/auth.js';
 import { requirePermission } from '../middleware/rbac.js';
 import { ensureFunnelCostsTables } from '../services/funnelCostsSchema.js';
+import { ensureCheckoutTables } from '../services/checkoutSchema.js';
+import { ensureTrackingTables } from '../services/trackingSchema.js';
 import {
   CostError, appendRate, listRates, rateHistory, getFeeSettings,
   updateFeeSettings, runDetectSweep, coverageSummary, listVariants,
@@ -29,7 +31,11 @@ router.use(authenticate, requirePermission('funnels', 'access'));
 // attempt inside funnelSpend — this call is idempotent and cheap).
 router.use(async (req, res, next) => {
   try {
+    // The engine reads co_sessions/co_upsell_charges + lb_clicks raw — on a
+    // fresh DB those owners must ensure too (sweep finding F2: 42P01 without).
     await ensureFunnelCostsTables();
+    await ensureCheckoutTables();
+    await ensureTrackingTables();
     startSpendTicker();
     next();
   } catch (err) {
