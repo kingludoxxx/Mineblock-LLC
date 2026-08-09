@@ -10,6 +10,15 @@
 //      identity). It only posts a consent=denied signal, which the relay
 //      records without any matchable identity (that is correct, not an error).
 //
+// GOOGLE (GA4): this runtime deliberately emits NO Google loader. ga4 rows are
+// s2s-only (the trackingAdmin registry refuses native/hybrid for them) and
+// /track/config already selects mode IN ('native','hybrid'), so a ga4 row never
+// reaches fireOne; fireOne's kind check is the second gate, so even a
+// hand-written hybrid ga4 row inserted straight into lb_pixels emits nothing
+// here. Until the tag-manager phase lands, GA4 is served entirely server-side
+// by the Measurement Protocol sender in trackingDelivery. Keep this note OUT of
+// the emitted script body — every byte in there ships on every page view.
+//
 // SECURITY (XSS): funnel_id / page_id are embedded through jsonForScript()
 // (escapes <, >, &, U+2028/9) so a hostile funnel/page id can never break out
 // of the inline <script>. Pixel ids arrive at runtime as JSON from /track/config

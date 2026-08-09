@@ -23,18 +23,76 @@ const clampLimit = (v, def = 100, max = 500) => Math.max(1, Math.min(parseInt(v,
 // One entry per supported ad network. `network` is the CLICK_ID_NETWORK label
 // (drives click_id_params in the summary); `secrets` are encrypted at rest via
 // the gatewayConfigs pattern and surfaced ONLY as <field>_set booleans;
-// `plain` fields round-trip as values. Structure is open for ga4 / google_ads
-// / gtm later — add an entry, no route changes needed.
+// `plain` fields round-trip as values.
+//
+// Per-entry knobs (all optional, meta-compatible defaults):
+//   idField      the BODY/VIEW name of the lb_pixels.pixel_id column. GA4's
+//                identity is its measurement_id and Meta's is its pixel id —
+//                same column, same (funnel_id, kind) uniqueness, same
+//                lb_tracking_sent claim key. One column, one alias.
+//   idRe         validation for that id (garbage-in insurance, review MINOR #5)
+//   idOptional   the row may exist with NO id (dormant kinds only)
+//   modes        the modes this kind accepts — anything else is invalid_mode
+//   defaultMode  the mode a NEW row lands on
+//   defaultEnabled  the enabled flag a NEW row lands on
+//   readySecret  the config key that must be present for server_channel_ready
+//   notActive    REGISTERED BUT NOT WIRED: config is accepted and stored, but
+//                nothing delivers. Surfaced as not_active in every read so the
+//                UI can never imply conversions are flowing.
 export const TRACKING_NETWORKS = {
   meta_pixel: {
     network: 'meta',
     secrets: ['capi_token'],
     plain: ['test_event_code', 'graph_version'],
+    idField: 'pixel_id',
     // Garbage-in insurance (review MINOR #5): Meta pixel ids are numeric.
-    pixelIdRe: /^\d{5,20}$/,
+    idRe: /^\d{5,20}$/,
+    modes: ['native', 's2s', 'hybrid'],
+    defaultMode: 'hybrid',
+    readySecret: 'capi_token',
+  },
+  // GA4 Measurement Protocol. SERVER-SIDE ONLY in this branch: MP is a
+  // server transport and the browser half (gtag/GTM) is a later phase, so
+  // 'native' and 'hybrid' are REFUSED — accepting them would advertise a
+  // browser channel that emits nothing.
+  ga4: {
+    network: 'google',
+    secrets: ['api_secret'],
+    plain: [],
+    idField: 'measurement_id',
+    idRe: /^G-[A-Z0-9]{4,16}$/,
+    modes: ['s2s'],
+    defaultMode: 's2s',
+    readySecret: 'api_secret',
+    // Honest capability note, surfaced on every read (GA4 MP answers 204 to
+    // everything it accepts — see trackingDelivery.sendGa4).
+    deliveryNote: 'GA4 Measurement Protocol returns 204 for every accepted hit and gives NO per-event validation: a sent_24h count proves the hit was accepted by the endpoint, NOT that GA4 recorded the conversion. Validate payloads against the MP debug endpoint (GA4_MP_DEBUG=1).',
+  },
+  // Google Ads — REGISTERED BUT DORMANT. The write surface accepts and stores
+  // the credentials (encrypted) so an operator can stage them, but there is NO
+  // delivery adapter: trackingDelivery has no google_ads sender and a fire
+  // dead-letters as 'kind_not_wired' in ONE pass. New rows therefore land
+  // DISABLED and every read carries not_active: true.
+  google_ads: {
+    network: 'google',
+    secrets: ['developer_token', 'refresh_token'],
+    plain: ['customer_id', 'conversion_action_id'],
+    idField: 'pixel_id',
+    idOptional: true,
+    modes: ['s2s'],
+    defaultMode: 's2s',
+    defaultEnabled: false,
+    notActive: true,
+    deliveryNote: 'Registered but NOT wired: credentials are stored, nothing is delivered. Enabling this row does not send conversions — a fire dead-letters as kind_not_wired.',
   },
 };
-const PIXEL_MODES = new Set(['native', 's2s', 'hybrid']);
+const DEFAULT_MODES = ['native', 's2s', 'hybrid'];
+const modesOf = (spec) => spec.modes || DEFAULT_MODES;
+const idFieldOf = (spec) => spec.idField || 'pixel_id';
+// Error codes stay keyed to the kind's OWN id name, so a GA4 form never gets
+// told its "pixel_id" is invalid.
+const invalidIdCode = (spec) => `invalid_${idFieldOf(spec)}`;
+const requiredIdCode = (spec) => `${idFieldOf(spec)}_required`;
 // Same shape trackingDelivery.graphVersion accepts — reject bad input at
 // WRITE time too, so the stored config never silently falls back.
 const GRAPH_VERSION_RE = /^v\d{1,3}\.\d{1,3}$/;
@@ -52,12 +110,21 @@ function networkView(kind, row) {
     network: spec.network,
     configured: Boolean(row),
     pixel_id: row ? String(row.pixel_id || '') : '',
-    mode: row ? String(row.mode || 'hybrid') : 'hybrid',
+    mode: row ? String(row.mode || spec.defaultMode || 'hybrid') : (spec.defaultMode || 'hybrid'),
+    modes: modesOf(spec),
     enabled: row ? Boolean(row.enabled) : false,
     updated_at: row ? row.updated_at : null,
   };
+  // The kind's own id alias (measurement_id for ga4) rides ALONGSIDE pixel_id
+  // so a generic client keeps working and a GA4 form can read its own name.
+  const idField = idFieldOf(spec);
+  if (idField !== 'pixel_id') out[idField] = out.pixel_id;
   for (const f of spec.secrets) out[`${f}_set`] = Boolean(cfg[f]);
   for (const f of spec.plain) out[f] = cfg[f] == null ? '' : String(cfg[f]);
+  // Registered-but-dormant kinds say so on EVERY read — never let a stored
+  // credential imply a live delivery channel.
+  if (spec.notActive) out.not_active = true;
+  if (spec.deliveryNote) out.delivery_note = spec.deliveryNote;
   return out;
 }
 
@@ -123,26 +190,36 @@ router.put('/:funnelId/networks/:kind', async (req, res) => {
       return res.status(400).json({ success: false, error: { code: 'unknown_kind' } });
     }
     const b = (req.body && typeof req.body === 'object') ? req.body : {};
-    if (b.mode !== undefined && !PIXEL_MODES.has(b.mode)) {
+    // Per-kind mode allow-list: GA4 MP is a SERVER transport, so ga4 refuses
+    // native/hybrid rather than advertising a browser channel that emits
+    // nothing (the gtag/GTM phase lands that separately).
+    if (b.mode !== undefined && !modesOf(spec).includes(b.mode)) {
       return res.status(400).json({ success: false, error: { code: 'invalid_mode' } });
     }
     // Review NIT #6: Boolean("false") === true — accept ONLY JSON booleans.
     if (b.enabled !== undefined && b.enabled !== true && b.enabled !== false) {
       return res.status(400).json({ success: false, error: { code: 'invalid_enabled' } });
     }
-    const pixelId = b.pixel_id === undefined ? undefined : String(b.pixel_id || '').trim().slice(0, 64);
-    if (pixelId !== undefined && pixelId !== '' && spec.pixelIdRe && !spec.pixelIdRe.test(pixelId)) {
-      return res.status(400).json({ success: false, error: { code: 'invalid_pixel_id' } });
+    // The id arrives under the kind's own name (measurement_id for ga4) or the
+    // generic pixel_id; both write the SAME column.
+    const idField = idFieldOf(spec);
+    const rawId = b[idField] !== undefined ? b[idField] : b.pixel_id;
+    const pixelId = rawId === undefined ? undefined : String(rawId || '').trim().slice(0, 64);
+    if (pixelId !== undefined && pixelId !== '' && spec.idRe && !spec.idRe.test(pixelId)) {
+      return res.status(400).json({ success: false, error: { code: invalidIdCode(spec) } });
     }
     await ensureTrackingTables();
     const funnelId = funnelParam(req);
     const existing = await loadPixelRow(funnelId, kind);
-    // pixel_id is required for a NEW row; an existing row may omit it to keep
-    // the stored value (same keep-on-undefined rule as the other fields).
-    if (!(pixelId !== undefined && pixelId !== '') && !existing) {
-      return res.status(400).json({ success: false, error: { code: 'pixel_id_required' } });
+    // The id is required for a NEW row (unless the kind is idOptional — a
+    // dormant kind whose identity lives entirely in config); an existing row
+    // may omit it to keep the stored value (same keep-on-undefined rule as the
+    // other fields).
+    if (!(pixelId !== undefined && pixelId !== '') && !existing && !spec.idOptional) {
+      return res.status(400).json({ success: false, error: { code: requiredIdCode(spec) } });
     }
-    if (b.graph_version !== undefined && b.graph_version !== null && String(b.graph_version).trim() !== ''
+    if (spec.plain.includes('graph_version')
+        && b.graph_version !== undefined && b.graph_version !== null && String(b.graph_version).trim() !== ''
         && !GRAPH_VERSION_RE.test(String(b.graph_version).trim())) {
       return res.status(400).json({ success: false, error: { code: 'invalid_graph_version' } });
     }
@@ -174,8 +251,14 @@ router.put('/:funnelId/networks/:kind', async (req, res) => {
     }
 
     const pixelParam = pixelId !== undefined && pixelId !== '' ? pixelId : null;
-    const modeParam = b.mode !== undefined ? b.mode : null;
-    const enabledParam = b.enabled !== undefined ? b.enabled : null;
+    // null = keep stored (COALESCE). On a NEW row the kind's own default lands
+    // instead of the table-wide one: ga4/google_ads default to 's2s' (never a
+    // browser mode), and a dormant kind lands DISABLED so staged credentials
+    // can never look like a live channel.
+    const modeParam = b.mode !== undefined ? b.mode : (existing ? null : (spec.defaultMode || null));
+    const enabledParam = b.enabled !== undefined
+      ? b.enabled
+      : (existing || spec.defaultEnabled === undefined ? null : spec.defaultEnabled);
     const rows = await pgQuery(
       `INSERT INTO lb_pixels (id, funnel_id, kind, pixel_id, mode, enabled, config, created_at, updated_at)
        VALUES ($1, $2, $3, COALESCE($4, ''), COALESCE($5, 'hybrid'), COALESCE($6, TRUE), $7::jsonb, NOW(), NOW())
@@ -265,11 +348,16 @@ router.get('/:funnelId/tracking/summary', async (req, res) => {
         deduped_24h: c.deduped_24h || 0,
         queued_now: queuedByKind.get(kind) || 0,
         breaker: { state: open ? 'open' : 'closed', fails: breaker ? breaker.fails : 0, open_until: breaker ? breaker.open_until : null },
-        // Ready = the server channel can actually fire: enabled, a pixel id,
-        // a stored token, AND a mode that relays server events (native fires
-        // browser-only, so it is NOT a ready server channel).
-        server_channel_ready: Boolean(row && row.enabled && row.pixel_id && cfg.capi_token
+        // Ready = the server channel can actually fire: enabled, an id, the
+        // kind's stored secret (capi_token for meta, api_secret for ga4), AND
+        // a mode that relays server events (native fires browser-only, so it
+        // is NOT a ready server channel). A registered-but-dormant kind is
+        // NEVER ready, however complete its config looks — nothing delivers.
+        server_channel_ready: Boolean(!spec.notActive && row && row.enabled
+          && (row.pixel_id || spec.idOptional)
+          && (!spec.readySecret || cfg[spec.readySecret])
           && (row.mode === 's2s' || row.mode === 'hybrid')),
+        ...(spec.notActive ? { not_active: true } : {}),
         click_id_params: paramsByNetwork[spec.network] || [],
       };
     });

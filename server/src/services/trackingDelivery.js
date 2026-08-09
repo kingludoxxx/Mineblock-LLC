@@ -24,8 +24,14 @@ const BREAKER_COOLDOWN_S = 900;  // 15 min open
 const STALE_CLAIM_S = 1800;      // 'sending' older than this = dead worker
 
 // Terminal errors — retrying can never succeed, dead-letter in ONE pass.
+// 'kind_not_wired': a pixel row whose kind has NO delivery adapter (today:
+// google_ads, registered-but-dormant in the trackingAdmin registry). Retrying
+// cannot wire an adapter, so it dead-letters in one pass and says exactly why
+// in the event feed rather than pretending a send happened.
+// 'no_client_id': GA4 MP requires a client_id and the envelope carried nothing
+// stable to derive one from.
 const HARD_ERRORS = new Set(['not_configured', 'no_click_id', 'no_order_id',
-  'pixel_gone', 'skipped_window', 'no_identity']);
+  'pixel_gone', 'skipped_window', 'no_identity', 'kind_not_wired', 'no_client_id']);
 const HARD_PREFIXES = ['unsafe_url'];
 // ...except a DNS blip in the SSRF pre-flight — the transient the rails exist
 // for. This ONE exception is the difference between surviving a DNS wobble and
@@ -80,13 +86,25 @@ export function buildUserData(raw = {}) {
 // fields (lb_tracking_events.error, lb_postback_queue.last_error). Mask any
 // access_token value BEFORE slicing, so a mid-token cut can't leak partial
 // token bytes either.
+// `api_secret` is masked for the SAME reason plus a sharper one: GA4's
+// Measurement Protocol only accepts it as a QUERY parameter (see ga4CollectUrl),
+// so any endpoint that echoes the request URI — a debug relay, a 500 page, an
+// error body — hands the live secret straight into
+// lb_tracking_events.error / lb_postback_queue.last_error, which the admin UI
+// renders. Mask BEFORE errOf slices, so a mid-secret cut can't leak partial
+// bytes either. Matches both `api_secret=VALUE` (URL) and `"api_secret":"VALUE"`
+// (JSON) via the \W{0,3} separator run.
 export function redactTokens(s) {
-  return String(s).replace(/(access_token\W{0,3})[A-Za-z0-9_.%\-]+/gi, '$1[REDACTED]');
+  return String(s)
+    .replace(/(access_token\W{0,3})[A-Za-z0-9_.%\-]+/gi, '$1[REDACTED]')
+    .replace(/(api_secret\W{0,3})[A-Za-z0-9_.%\-]+/gi, '$1[REDACTED]');
 }
 
 export function errOf(res) {
   const r = res || {};
-  if (r.error) return String(r.error);
+  // Redact the error STRING too, not just the body: a transport error message
+  // is the other path a URL (and therefore a query secret) could ride out on.
+  if (r.error) return redactTokens(String(r.error));
   const bodyStr = r.body == null ? '' : (typeof r.body === 'string' ? r.body : (() => { try { return JSON.stringify(r.body); } catch { return String(r.body); } })());
   const safeBody = bodyStr ? redactTokens(bodyStr) : '';
   if (Number.isInteger(r.status)) return `http_${r.status}${safeBody ? `: ${safeBody.slice(0, 200)}` : ''}`;
@@ -111,6 +129,10 @@ export function payloadRejected(res) {
       if (Array.isArray(codes) && codes.some((c) => String(c) === '507')) return true; // Snap
     }
     if (String(body.code || '') === '953') return true; // Pinterest
+    // GA4 MP debug endpoint (GA4_MP_DEBUG=1): a 200 carrying validationMessages
+    // means THIS payload was rejected — the endpoint itself is healthy, so it
+    // must not touch the breaker.
+    if (Array.isArray(body.validationMessages) && body.validationMessages.length) return true;
   } catch { return false; }
   return false;
 }
@@ -197,18 +219,19 @@ export function resolveEndpoint(pixel) {  // exported for the delivery-patches h
   return '';
 }
 
-// The stored capi_token is EITHER encrypted at rest ('gcm1:' — written by the
+// A stored secret is EITHER encrypted at rest ('gcm1:' — written by the
 // trackingAdmin network CRUD via the gatewayConfigs pattern) OR legacy
 // plaintext (rows that predate the write surface). Decrypt only the former;
 // pass the latter through unchanged. Throws on a bad ciphertext/key — the
 // caller maps that to a retryable result so fixing CHECKOUT_CREDS_KEY heals
 // the queued backlog (queue rows re-read the pixel at send time, DECISIONS
-// #12). The token value itself is never logged in any branch.
-function resolveToken(pixel) {
-  const raw = String((pixel.config || {}).capi_token || '');
+// #12). The secret value itself is never logged in any branch.
+function resolveSecret(pixel, field) {
+  const raw = String((pixel.config || {})[field] || '');
   if (!raw) return '';
   return raw.startsWith('gcm1:') ? decryptSecret(raw) : raw;
 }
+const resolveToken = (pixel) => resolveSecret(pixel, 'capi_token');
 
 // Hostnames that must never be reachable, whatever they resolve to.
 const SSRF_HOST_DENY = new Set([
@@ -279,43 +302,54 @@ export async function endpointAllowed(url) {  // exported for the SSRF regressio
   return answers.every((a) => isPublicAddress(a.address)) ? true : 'blocked_host';
 }
 
-async function httpSend(url, token, payload, { timeoutMs = 6000 } = {}) {
+// The one place an outbound POST happens. Returns a result object, never
+// throws, and NEVER puts the request URL into the result: `url` may carry a
+// query secret (GA4 MP) and every field of this object can end up in
+// lb_tracking_events.error / lb_postback_queue.last_error.
+async function postJson(url, { headers = {}, body, timeoutMs = 6000 } = {}) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   if (timer.unref) timer.unref();
   try {
-    // The CAPI token goes in a HEADER, never the URL: a request line is
-    // logged by every proxy it crosses, and if an SSRF ever slipped past the
-    // guard the token would be handed to whatever answered. Meta accepts the
-    // token in the body for /events, so send it there rather than as a query
-    // param. `redirect: 'manual'` stops a 302 from walking the validated host
-    // to an unvalidated one (the reference's guard has exactly that hole).
+    // `redirect: 'manual'` stops a 302 from walking the validated host to an
+    // unvalidated one (the reference's guard has exactly that hole) — which
+    // for GA4 would also hand the query secret to the redirect target.
     const resp = await fetch(url, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      },
-      body: JSON.stringify(token ? { ...payload, access_token: token } : payload),
+      headers: { 'Content-Type': 'application/json', ...headers },
+      body,
       redirect: 'manual',
       signal: controller.signal,
     });
-    let body = null;
-    try { body = await resp.json(); } catch { body = null; }
-    if (resp.ok) return { ok: true, status: resp.status, body };
-    return { ok: false, status: resp.status, body };
+    let parsed = null;
+    try { parsed = await resp.json(); } catch { parsed = null; }
+    if (resp.ok) return { ok: true, status: resp.status, body: parsed };
+    return { ok: false, status: resp.status, body: parsed };
   } catch (err) {
-    // Network error / timeout / DNS — a soft, retryable failure.
-    const msg = String(err && err.message || err);
+    // Network error / timeout / DNS — a soft, retryable failure. The message
+    // is redacted on the way out: an undici cause can quote the request target.
+    const msg = redactTokens(String(err && err.message || err));
     if (/getaddrinfo|EAI_AGAIN|dns/i.test(msg)) return { ok: false, error: 'unsafe_url:dns_resolution_failed' };
     return { ok: false, error: `network:${msg.slice(0, 120)}` };
+  } finally {
+    clearTimeout(timer);
   }
 }
 
-// Render + send one event to one pixel's server endpoint. Returns a result
-// object (never throws). Does NOT touch lb_tracking_sent — the caller owns the
-// idempotency claim.
-async function sendToPixel(pixel, envelope) {
+async function httpSend(url, token, payload, { timeoutMs = 6000 } = {}) {
+  // The CAPI token goes in a HEADER, never the URL: a request line is logged
+  // by every proxy it crosses, and if an SSRF ever slipped past the guard the
+  // token would be handed to whatever answered. Meta accepts the token in the
+  // body for /events, so send it there rather than as a query param.
+  return postJson(url, {
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
+    body: JSON.stringify(token ? { ...payload, access_token: token } : payload),
+    timeoutMs,
+  });
+}
+
+// ── Meta CAPI sender ─────────────────────────────────────────────────────────
+async function sendMetaPixel(pixel, envelope) {
   const url = resolveEndpoint(pixel);
   if (!url) return { ok: false, error: 'not_configured' };
   const guard = await endpointAllowed(url);
@@ -343,6 +377,163 @@ async function sendToPixel(pixel, envelope) {
     ...(( pixel.config || {}).test_event_code ? { test_event_code: pixel.config.test_event_code } : {}),
   };
   return httpSend(url, token, payload, {});
+}
+
+// ── GA4 Measurement Protocol sender ─────────────────────────────────────────
+// NOTE ON THE ENDPOINT: the MP collection endpoint is
+// https://www.google-analytics.com/mp/collect (validation twin:
+// /debug/mp/collect). It is NOT /g/collect — that is the gtag BROWSER
+// collection path, which takes url-encoded gtag params, not an MP JSON body,
+// and would silently accept-and-discard our payload.
+const GA4_MP_ENDPOINT = 'https://www.google-analytics.com/mp/collect';
+const GA4_MP_DEBUG_ENDPOINT = 'https://www.google-analytics.com/debug/mp/collect';
+
+// Our event vocabulary is Meta-cased (Purchase, PageView, …); GA4's is
+// lower_snake and its recommended-event names differ outright. The mapping
+// lives HERE, in the sender, so callers (firePurchaseConversion et al.) keep
+// emitting exactly one event name for every network.
+const GA4_EVENT_NAMES = {
+  Purchase: 'purchase',
+  PageView: 'page_view',
+  ViewContent: 'view_item',
+  AddToCart: 'add_to_cart',
+  InitiateCheckout: 'begin_checkout',
+  AddPaymentInfo: 'add_payment_info',
+  Lead: 'generate_lead',
+  CompleteRegistration: 'sign_up',
+  UpsellView: 'view_item',
+};
+export function ga4EventName(name) {
+  const n = String(name || '').trim();
+  if (GA4_EVENT_NAMES[n]) return GA4_EVENT_NAMES[n];
+  // Unknown names degrade to a legal GA4 custom-event name: lower_snake,
+  // alphanumeric+underscore, must not start with a digit, max 40 chars.
+  const snake = n.replace(/([a-z0-9])([A-Z])/g, '$1_$2').toLowerCase()
+    .replace(/[^a-z0-9_]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 40);
+  return /^[a-z]/.test(snake) ? snake : `evt_${snake}`.slice(0, 40);
+}
+
+// GA4 requires a client_id on every MP hit.
+//
+// DECISION — WHAT WE SEND, AND WHAT IT IS NOT: the honest source would be the
+// browser's _ga cookie client id, but this branch ships NO gtag/GTM loader, so
+// that value does not exist server-side; the checkout session's `vid` is not
+// carried on the delivery envelope either (the envelope contract is owned by
+// trackingService, outside this change's fence). We therefore derive a STABLE,
+// PSEUDONYMOUS id from the order/session identity already on the envelope
+// (custom_data.order_id, else event_id) hashed into GA4's `NNNN.NNNN` shape.
+// Consequences, stated plainly: it is deterministic (a retry/redelivery of the
+// same event reuses it, so GA4 sees one user, not many), it carries no PII and
+// is not reversible, and it will NOT join to a browser session in GA4 until
+// the GTM phase supplies the real _ga client id. Cross-device/user stitching in
+// GA4 is therefore NOT provided by this adapter.
+export function ga4ClientId(envelope) {
+  const env = envelope || {};
+  const seed = String((env.custom_data || {}).order_id || env.event_id || '').trim();
+  if (!seed) return '';
+  const h = crypto.createHash('sha256').update(`ga4cid:${seed}`).digest();
+  return `${h.readUInt32BE(0)}.${h.readUInt32BE(4)}`;
+}
+
+// ⚠️⚠️ THE ONE SANCTIONED SECRET-IN-A-URL IN THIS CODEBASE ⚠️⚠️
+// House rule: credentials go in headers, never in a URL. GA4's Measurement
+// Protocol has NO header form — `api_secret` is only accepted as a query
+// parameter, and there is no alternative transport for MP. So the exception is
+// isolated to THIS function and these are the compensating controls:
+//   • the returned URL is passed to fetch and to endpointAllowed and NOWHERE
+//     else — it is never returned to a caller, never logged, never stored;
+//   • postJson never copies the URL into its result object;
+//   • redactTokens() masks `api_secret` in every string that can reach
+//     lb_tracking_events.error / lb_postback_queue.last_error, so an endpoint
+//     that ECHOES the request URI still cannot persist the secret;
+//   • the SSRF guard runs on the built URL, so the secret can only ever be
+//     handed to a public host over https (or a loopback dev relay).
+// If you add a log line anywhere near this function, log the measurement_id,
+// never the URL.
+export function ga4CollectUrl(measurementId, apiSecret) {
+  const base = String(process.env.GA4_MP_OVERRIDE_URL || '').trim()
+    || (String(process.env.GA4_MP_DEBUG || '') === '1' ? GA4_MP_DEBUG_ENDPOINT : GA4_MP_ENDPOINT);
+  const u = new URL(base);
+  u.searchParams.set('measurement_id', String(measurementId));
+  u.searchParams.set('api_secret', String(apiSecret));
+  return u.toString();
+}
+
+async function sendGa4(pixel, envelope) {
+  const measurementId = String(pixel.pixel_id || '').trim();
+  if (!measurementId) return { ok: false, error: 'not_configured' };
+  let apiSecret;
+  try {
+    apiSecret = resolveSecret(pixel, 'api_secret');
+  } catch {
+    return { ok: false, error: 'token_decrypt_failed' }; // retryable, healable
+  }
+  if (!apiSecret) return { ok: false, error: 'not_configured' };
+  const clientId = ga4ClientId(envelope);
+  if (!clientId) return { ok: false, error: 'no_client_id' };
+
+  const cd = envelope.custom_data || {};
+  const params = {
+    // GA4 dedupes purchases on transaction_id CLIENT-SIDE OF THEIR PIPELINE,
+    // with a window we do not control and cannot observe. It is a courtesy,
+    // not the guarantee: OUR guarantee stays the lb_tracking_sent
+    // (pixel_id, event_id) claim in deliverToPixel, which is per pixel row and
+    // fires exactly once whatever GA4 does with the id.
+    transaction_id: String(envelope.event_id || ''),
+    currency: cd.currency ? String(cd.currency).toUpperCase() : undefined,
+    value: cd.value == null ? undefined : Number(cd.value),
+    // Without engagement_time_msec + session_id an MP hit is accepted but does
+    // not surface in realtime/session-scoped reports.
+    engagement_time_msec: 1,
+    session_id: clientId.split('.')[0],
+    ...(Array.isArray(cd.items) && cd.items.length ? { items: cd.items } : {}),
+  };
+  for (const k of Object.keys(params)) if (params[k] === undefined) delete params[k];
+
+  const payload = {
+    client_id: clientId,
+    timestamp_micros: String(Date.now() * 1000),
+    non_personalized_ads: false,
+    events: [{ name: ga4EventName(envelope.event_name), params }],
+  };
+
+  const url = ga4CollectUrl(measurementId, apiSecret);
+  const guard = await endpointAllowed(url);
+  if (guard !== true) return { ok: false, error: `unsafe_url:${guard}` };
+  // HONEST COUNTER SEMANTICS: MP answers 204 No Content to everything it
+  // accepts — no event id, no per-event validation, no way to tell a recorded
+  // conversion from a silently-dropped one. A 2xx here means "the endpoint
+  // accepted the hit", which is exactly what status='sent' records; it does NOT
+  // mean GA4 reported it. Payload correctness is proven against the debug twin
+  // (GA4_MP_DEBUG=1 → /debug/mp/collect, whose validationMessages are read as a
+  // per-event payload rejection, not an endpoint fault).
+  const res = await postJson(url, { body: JSON.stringify(payload) });
+  // The debug twin answers 200 even when it REJECTS the payload — the verdict
+  // is in validationMessages, so a bare `resp.ok` would score a rejected event
+  // as sent. Demote it to a failure; payloadRejected() then classifies it as a
+  // per-event rejection (dead-letters in one pass, breaker untouched).
+  if (res.ok && res.body && Array.isArray(res.body.validationMessages) && res.body.validationMessages.length) {
+    return { ok: false, status: res.status, body: res.body };
+  }
+  return res;
+}
+
+// ── per-kind dispatch ────────────────────────────────────────────────────────
+// One adapter per pixel kind. A kind with no entry is REGISTERED BUT NOT WIRED
+// (google_ads today): it dead-letters as 'kind_not_wired' in one pass rather
+// than silently reporting a send that never happened.
+const KIND_SENDERS = {
+  meta_pixel: sendMetaPixel,
+  ga4: sendGa4,
+};
+
+// Render + send one event to one pixel's server endpoint. Returns a result
+// object (never throws). Does NOT touch lb_tracking_sent — the caller owns the
+// idempotency claim.
+async function sendToPixel(pixel, envelope) {
+  const sender = KIND_SENDERS[(pixel || {}).kind];
+  if (!sender) return { ok: false, error: 'kind_not_wired' };
+  return sender(pixel, envelope);
 }
 
 // ── event log ────────────────────────────────────────────────────────────────
@@ -528,4 +719,8 @@ export async function runDelivery({ limit = 200 } = {}) {
   return out;
 }
 
-export default { deliverToPixel, runDelivery, buildUserData, retryable, payloadRejected, breakerOpen, breakerRecord, resolveEndpoint, graphVersion };
+export default {
+  deliverToPixel, runDelivery, buildUserData, retryable, payloadRejected,
+  breakerOpen, breakerRecord, resolveEndpoint, graphVersion,
+  ga4EventName, ga4ClientId, ga4CollectUrl,
+};

@@ -116,7 +116,11 @@ await sql`DELETE FROM lb_postback_breakers WHERE funnel_id = ${FID}`;
   check('T2 new row without pixel_id → 400 pixel_id_required', r3.status === 400 && r3.j?.error?.code === 'pixel_id_required', JSON.stringify(r3.j));
   const r4 = await req('PUT', `/${FID}/networks/meta_pixel`, { pixel_id: '712000123', graph_version: 'nineteen' });
   check('T2 bad graph_version → 400', r4.status === 400 && r4.j?.error?.code === 'invalid_graph_version', JSON.stringify(r4.j));
-  const r5 = await req('GET', `/${FID}/networks/ga4`);
+  // NB (feat/google-tracking): 'ga4' used to be the unknown-kind fixture here.
+  // It is now a REGISTERED kind (see TRACKING_NETWORKS), so the fixture moved to
+  // a kind that is still genuinely unregistered. ga4's own CRUD is covered by
+  // server/tests/tracking/google-adapter.mjs.
+  const r5 = await req('GET', `/${FID}/networks/snap_pixel`);
   check('T2 GET unknown kind → 400', r5.status === 400 && r5.j?.error?.code === 'unknown_kind', JSON.stringify(r5.j));
   // review MINOR #5 + NIT #6
   const r6 = await req('PUT', `/${FID}/networks/meta_pixel`, { pixel_id: 'abc123' });
