@@ -8,6 +8,8 @@
 // RETRY (queue) or dead-letters — it never blocks settlement and never throws
 // up the stack.
 import crypto from 'crypto';
+import net from 'net';
+import dns from 'dns/promises';
 import { pgQuery } from '../db/pg.js';
 import { ensureTrackingTables } from './trackingSchema.js';
 import { emqScore, idkFrom } from './trackingAttribution.js';
@@ -172,15 +174,73 @@ function resolveEndpoint(pixel) {
   return '';
 }
 
-function endpointAllowed(url) {
-  try {
-    const u = new URL(url);
-    if (u.protocol === 'https:') return true;
-    if (u.protocol === 'http:' && /^(localhost|127\.0\.0\.1|\[::1\])$/.test(u.hostname)) {
-      return process.env.NODE_ENV !== 'production';
+// Hostnames that must never be reachable, whatever they resolve to.
+const SSRF_HOST_DENY = new Set([
+  'localhost', 'metadata', 'metadata.google.internal',
+  'instance-data', 'metadata.goog',
+]);
+
+// True when EVERY resolved address is a public unicast address.
+function isPublicAddress(addr) {
+  if (net.isIPv4(addr)) {
+    const [a, b] = addr.split('.').map(Number);
+    if (a === 10 || a === 127 || a === 0) return false;             // private / loopback / unspecified
+    if (a === 172 && b >= 16 && b <= 31) return false;              // private
+    if (a === 192 && b === 168) return false;                       // private
+    if (a === 169 && b === 254) return false;                       // link-local (cloud metadata)
+    if (a === 100 && b >= 64 && b <= 127) return false;             // CGNAT
+    if (a >= 224) return false;                                     // multicast / reserved
+    return true;
+  }
+  if (net.isIPv6(addr)) {
+    const x = addr.toLowerCase();
+    if (x === '::' || x === '::1') return false;                    // unspecified / loopback
+    if (x.startsWith('fe80') || x.startsWith('fc') || x.startsWith('fd')) return false; // link-local / ULA
+    if (x.startsWith('ff')) return false;                           // multicast
+    // IPv4-mapped must be judged as IPv4. WHATWG URL canonicalizes
+    // ::ffff:169.254.169.254 into HEX form (::ffff:a9fe:a9fe), so match both —
+    // the dotted form alone is a bypass (caught by the regression test).
+    const dotted = x.match(/::ffff:(\d+\.\d+\.\d+\.\d+)$/);
+    if (dotted) return isPublicAddress(dotted[1]);
+    const hex = x.match(/^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/);
+    if (hex) {
+      const n = (parseInt(hex[1], 16) << 16) | parseInt(hex[2], 16);
+      const v4 = [(n >>> 24) & 255, (n >>> 16) & 255, (n >>> 8) & 255, n & 255].join('.');
+      return isPublicAddress(v4);
     }
-    return false;
-  } catch { return false; }
+    return true;
+  }
+  return false;
+}
+
+// DECISION #12: the endpoint is operator-supplied config, so it must be
+// re-validated AT SEND TIME, not only at write time — and a scheme check alone
+// is not validation. `https://169.254.169.254/...` is a valid https URL that
+// reads cloud instance credentials. Resolve the host and refuse if ANY answer
+// is a private/loopback/link-local address. Fail CLOSED on a resolution error.
+export async function endpointAllowed(url) {  // exported for the SSRF regression test
+  let u;
+  try { u = new URL(url); } catch { return 'scheme'; }
+  const host = u.hostname.toLowerCase().replace(/^\[|\]$/g, '');
+  if (u.protocol === 'http:') {
+    // Only a loopback dev relay may be plaintext, and never in production.
+    const devLoopback = process.env.NODE_ENV !== 'production'
+      && /^(localhost|127\.0\.0\.1|::1)$/.test(host);
+    return devLoopback ? true : 'scheme';
+  }
+  if (u.protocol !== 'https:') return 'scheme';
+  if (SSRF_HOST_DENY.has(host)) return 'blocked_host';
+  if (net.isIP(host)) return isPublicAddress(host) ? true : 'blocked_host';
+  let answers;
+  try {
+    answers = await dns.lookup(host, { all: true, verbatim: true });
+  } catch {
+    // Fail closed, but as a TRANSIENT: a DNS wobble must not dead-letter a
+    // day of conversions (SOFT_PREFIXES re-queues this one).
+    return 'dns_resolution_failed';
+  }
+  if (!answers.length) return 'dns_resolution_failed';
+  return answers.every((a) => isPublicAddress(a.address)) ? true : 'blocked_host';
 }
 
 async function httpSend(url, token, payload, { timeoutMs = 6000 } = {}) {
@@ -188,11 +248,20 @@ async function httpSend(url, token, payload, { timeoutMs = 6000 } = {}) {
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   if (timer.unref) timer.unref();
   try {
-    const target = token ? `${url}${url.includes('?') ? '&' : '?'}access_token=${encodeURIComponent(token)}` : url;
-    const resp = await fetch(target, {
+    // The CAPI token goes in a HEADER, never the URL: a request line is
+    // logged by every proxy it crosses, and if an SSRF ever slipped past the
+    // guard the token would be handed to whatever answered. Meta accepts the
+    // token in the body for /events, so send it there rather than as a query
+    // param. `redirect: 'manual'` stops a 302 from walking the validated host
+    // to an unvalidated one (the reference's guard has exactly that hole).
+    const resp = await fetch(url, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
+      headers: {
+        'Content-Type': 'application/json',
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      body: JSON.stringify(token ? { ...payload, access_token: token } : payload),
+      redirect: 'manual',
       signal: controller.signal,
     });
     let body = null;
@@ -213,7 +282,8 @@ async function httpSend(url, token, payload, { timeoutMs = 6000 } = {}) {
 async function sendToPixel(pixel, envelope) {
   const url = resolveEndpoint(pixel);
   if (!url) return { ok: false, error: 'not_configured' };
-  if (!endpointAllowed(url)) return { ok: false, error: 'unsafe_url:scheme_or_host' };
+  const guard = await endpointAllowed(url);
+  if (guard !== true) return { ok: false, error: `unsafe_url:${guard}` };
   const token = (pixel.config || {}).capi_token || '';
   const payload = {
     data: [{

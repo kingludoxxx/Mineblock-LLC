@@ -118,3 +118,14 @@ export async function resolveArm({ visitorId, testId }, { query = pgQuery } = {}
     return { armKey: null, arm: null, failedOpen: true };
   }
 }
+
+// Whether the SERVE path actually delivers a visitor's assigned arm.
+//
+// False today: routes/funnelPublic.js renders by slug and routes/checkoutPublic.js
+// loads the offer the client names, so lb_split_arms.page_id / offer_id are
+// written by the admin CRUD and read by nothing. Assignment is recorded and has
+// no causal effect, which means any measured gap between arms is noise.
+//
+// funnelAnalytics reads this to refuse to declare a winner. Flip it to true in
+// the SAME commit that wires arm delivery into serving — not before.
+export const SPLIT_DELIVERY_WIRED = false;

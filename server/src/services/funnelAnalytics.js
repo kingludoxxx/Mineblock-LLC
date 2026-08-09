@@ -191,6 +191,7 @@
 //   loudly, never silently.
 import { analyticsQuery } from './analyticsDb.js';
 import { buildVerdict, varianceFromSums, MIN_RATE_SAMPLE, STAT_METHOD } from './analyticsStats.js';
+import { SPLIT_DELIVERY_WIRED } from './splitResolver.js';
 
 // THE predicate. Every revenue read in this file interpolates this constant and
 // nothing else, so there is exactly one place to audit.
@@ -1177,7 +1178,21 @@ export async function getSplitResults(
     };
   });
 
-  const verdict = buildVerdict(
+  // ── ARM DELIVERY GATE ──────────────────────────────────────────────────
+  // A significance engine pointed at two samples drawn from the SAME
+  // distribution will, at alpha, eventually print a winner with a confidence
+  // percentage. That is not a statistics bug — it is the engine working
+  // correctly on an experiment that never ran.
+  //
+  // Today nothing in the SERVE path resolves an arm: routes/funnelPublic.js
+  // renders by slug and routes/checkoutPublic.js loads the offer the CLIENT
+  // names, so `lb_split_arms.page_id` / `offer_id` are written and never read.
+  // Every arm therefore serves the identical page and the identical offer, and
+  // any difference between arms is sampling noise.
+  //
+  // Until serve-time delivery lands, refuse to name a winner. Flip
+  // SPLIT_DELIVERY_WIRED (splitResolver.js) in the same commit that wires it.
+  const verdictRaw = buildVerdict(
     arms.map((a) => ({
       arm_key: a.arm_key,
       is_control: a.is_control,
@@ -1191,6 +1206,19 @@ export async function getSplitResults(
       net_revenue_sum_squares: a.net_revenue_sum_squares,
     }))
   );
+  const verdict = SPLIT_DELIVERY_WIRED ? verdictRaw : {
+    ...verdictRaw,
+    status: 'not_ready',
+    winner_arm_key: null,
+    leader: null,
+    significant: false,
+    headline: 'Not scoreable yet — arms are measured but not served',
+    body: 'Every visitor currently sees the same page and the same offer: '
+      + 'arm assignment is recorded, but nothing in the serving path renders a '
+      + 'different variant yet. Any gap below is sampling noise, so no winner '
+      + 'can be declared. The numbers are real; the comparison is not.',
+    blocked_reason: 'arm_delivery_not_wired',
+  };
 
   // vs-control percentage on the ranking metric.
   const control = arms.find((a) => a.is_control) || null;
