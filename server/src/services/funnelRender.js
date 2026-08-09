@@ -891,6 +891,12 @@ function post(path,payload){return fetch(API+path,{method:'POST',headers:{'Conte
 function sessErr(code){if(code==='pricing_unavailable')return 'Payment is temporarily unavailable. Please try again in a moment.';if(code==='invalid_variant'||code==='empty_cart')return 'This item is currently unavailable.';if(code==='total_below_minimum')return 'This order is below the minimum amount.';if(code==='rate_limited')return 'Too many attempts. Please wait a moment and retry.';return 'We could not start checkout ('+code+').';}
 function embedErr(code){if(code==='gateway_not_configured')return 'Checkout is not fully set up yet. Please contact support.';if(code==='session_not_payable')return 'This checkout session has expired. Please refresh the page.';if(code==='gateway_error')return 'The payment provider is temporarily unavailable. Please try again shortly.';return 'We could not start the payment ('+code+').';}
 function mountEmbed(root,embed){try{var mount=root.querySelector('[data-fos-whop-mount]');if(!mount||!embed.whop_session_id){return;}
+/* The loader only reacts to nodes being ADDED — configuring a node it has
+   already scanned does nothing, which is why setting the session attribute
+   after the buyer filled the form left the iframe uncreated. Re-inserting the
+   fully-configured node is what actually triggers it (verified live: 0 -> 1
+   iframe the instant the node was replaced). */
+function activate(){var fresh=mount.cloneNode(true);mount.parentNode.replaceChild(fresh,mount);mount=fresh;}
 /* The embed ships a COMPLETE checkout of its own (dark, browser-locale, its own
    email + billing + price + TOS + CTA). Dropped into our page that is a second
    checkout inside the first. Reduce it to the ONE thing only it can do - the
@@ -949,7 +955,8 @@ function doMount(){var v=emailValue();if(mounted||!valid(v)||!billingReady()){re
   mount.setAttribute('data-fos-prefill-key',prefillKey());
   mount.setAttribute('data-whop-checkout-session',embed.whop_session_id);
   if(placeholder){placeholder.hidden=true;}
-  loadWhopLoader();}
+  loadWhopLoader();
+  activate();}
 /* If the buyer corrects the address after the form mounted, the baked-in value
    is stale - tear the frame down and rebuild it with the new one rather than
    charging a receipt to the wrong address. */
@@ -958,7 +965,7 @@ function remount(){var v=emailValue();if(!mounted||!valid(v)||!billingReady()){r
   mount.removeAttribute('data-whop-checkout-session');
   applyPrefill(billing(),v);
   mount.setAttribute('data-fos-prefill-key',k);
-  setTimeout(function(){mount.setAttribute('data-whop-checkout-session',embed.whop_session_id);},50);}
+  setTimeout(function(){mount.setAttribute('data-whop-checkout-session',embed.whop_session_id);activate();},50);}
 ['email','first_name','last_name','address1','address2','city','state','postal','country'].forEach(function(n){
   var el=document.querySelector('[name="'+n+'"]');if(!el){return;}
   el.addEventListener('blur',function(){mounted?remount():doMount();});
