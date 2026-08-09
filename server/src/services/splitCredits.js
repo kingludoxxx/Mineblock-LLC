@@ -636,26 +636,52 @@ async function readArmSubmits(testId, query) {
  * operator who ships it is shipping a coincidence. The totals above cannot show
  * that; this can.
  *
- * THE DAY IS THE EXPOSURE ROW'S DAY, on both sides. `creditConversion` rolls a
- * credit up on the day cell that carries its exposure (so a leg settling after
- * midnight lands with the visit that earned it), which is what makes the
- * numerator and denominator here describe the same cohort. A calendar join on
- * the credit's own date would drift them apart by exactly the orders that
- * settled overnight.
+ * THE DAY IS THE SESSION'S EXPOSURE DAY, DERIVED — NOT THE CREDIT ROW'S OWN.
+ *
+ * This is the join that decides whether the two halves of a rate describe the
+ * same people. `creditConversion` normally stamps a credit with its exposure
+ * row's day, so reading `credit.day` LOOKS equivalent — and it is, right up
+ * until it isn't: the function accepts an explicit `day` override, the retry
+ * sweep can re-credit a parked leg later, a rebuilt rollup or a backfill can
+ * write whatever it likes, and a void row carries its own date. Any one of
+ * those silently splits a cohort in half.
+ *
+ * The failure is not subtle and it is not symmetric. An arm whose money lands
+ * on the following day renders "$0.0000 over 50 exposures" for the day it
+ * actually earned on — a FALSE MEASURED ZERO, which is precisely the null-vs-0
+ * distinction this module refuses to blur everywhere else — and then
+ * "— over 0 exposures" the next day, hiding real revenue behind a dash. Two
+ * arms with identical lifetime numbers render completely different shapes for
+ * no reason but settlement timing, which is the one thing this table exists to
+ * rule out.
+ *
+ * So the day is taken from the EXPOSURE row and joined back by session. There
+ * is exactly one exposure row per (session, group) — rule 1 at the top of this
+ * file — so the join is 1:1 and cannot fan out. The arm is taken from the
+ * exposure row too, for the same reason `creditConversion` resolves it there:
+ * the exposure is the server-side truth about which arm a visitor saw.
  *
  * FULL OUTER JOIN, deliberately: a day with exposures and no money is a real
- * data point (it is what a dead arm looks like), and a day with money whose
- * exposure landed earlier must not silently vanish either.
+ * data point (it is what a dead arm looks like). With the cohort join above the
+ * money side can no longer produce a day the exposure side lacks, but the outer
+ * join stays — a credit whose exposure row was somehow lost must surface as a
+ * visible anomaly rather than being silently dropped by an inner join.
  *
  * Returns newest-first, which is the order the panel reads in.
  */
 async function readDailySeries(testId, query) {
   const rows = await query(
-    `WITH per_session AS (
-       SELECT arm_key, day, session_id, SUM(value) AS net
+    `WITH exposure_day AS (
+       SELECT session_id, arm_key, day
        FROM lb_split_credits
-       WHERE group_id = $1 AND kind IN ('credit', 'void')
-       GROUP BY arm_key, day, session_id
+       WHERE group_id = $1 AND kind = 'exposure'
+     ),
+     per_session AS (
+       SELECT x.arm_key, x.day, c.session_id, SUM(c.value) AS net
+       FROM lb_split_credits c
+       JOIN exposure_day x ON x.session_id = c.session_id
+       WHERE c.group_id = $1 AND c.kind IN ('credit', 'void')
+       GROUP BY x.arm_key, x.day, c.session_id
      ),
      money AS (
        SELECT arm_key, day,
@@ -666,8 +692,7 @@ async function readDailySeries(testId, query) {
      ),
      exposures AS (
        SELECT arm_key, day, COUNT(*)::int AS exposures
-       FROM lb_split_credits
-       WHERE group_id = $1 AND kind = 'exposure'
+       FROM exposure_day
        GROUP BY arm_key, day
      )
      SELECT COALESCE(e.day, m.day)         AS day,
@@ -725,6 +750,28 @@ async function readDailySeries(testId, query) {
  * pre-change key set is a strict subset of the post-change one with identical
  * values, because the canvas tile reader (FunnelCanvasPage's lifetime fallback)
  * consumes the raw counts and must not notice this change at all.
+ *
+ * ── KNOWN RESIDUAL, DEFERRED DELIBERATELY: TWO DENOMINATORS ON ONE SCREEN ──
+ *
+ * The results modal shows the WINDOWED table (denominator: `visitors` =
+ * delivered page renders, from lb_split_views, via funnelAnalytics) directly
+ * above the LIFETIME readiness panel (denominator: `exposures` = attributable
+ * checkout sessions, from this ledger). Both are correct and they are different
+ * populations, so the same test legitimately reads e.g. 910 in one and 400 in
+ * the other.
+ *
+ * MITIGATED, NOT ELIMINATED. Each surface is labelled with its own denominator
+ * and the panel carries a one-sentence reconciliation
+ * (SplitResultsModal.ReadinessPanel). What is NOT built is a true reconciling
+ * figure — a per-arm "400 of 910 renders reached checkout" ratio — because the
+ * two numbers are produced by two different lanes (this one and analytics) and
+ * joining them per arm is an analytics-lane change. CLAUDE.md §5 says stop and
+ * coordinate rather than cross lanes, so this is documented and left.
+ *
+ * If it is picked up: the ratio belongs on the WINDOWED payload (it already has
+ * both `visitors` and the ledger via `ledger`), not here — computing it here
+ * would need lb_split_views windowed to the analytics window, which is exactly
+ * the duplication that produced two denominators in the first place.
  *
  * THE DENOMINATOR IS `exposures`, NOT `visitors`, AND THE CHOICE IS FORCED.
  * `visitors` counts delivered page renders (lb_split_views); `exposures` counts

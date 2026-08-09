@@ -33,7 +33,9 @@ import {
   requiredSampleForProportions, requiredSampleForMeans,
   MIN_STATS_SAMPLE, SPLIT_MIN_VISITORS_PER_ARM, SPLIT_MIN_CONVERSIONS_PER_ARM,
 } from '../../src/services/splitStats.js';
-import { normalCdf, tTestTwoSidedP, varianceFromSums } from '../../src/services/analyticsStats.js';
+import {
+  normalCdf, tTestTwoSidedP, varianceFromSums, formatConfidencePct, buildVerdict,
+} from '../../src/services/analyticsStats.js';
 import { ensureSplitTables } from '../../src/services/splitTestSchema.js';
 import { readResults, recordExposure, creditConversion, voidCredit } from '../../src/services/splitCredits.js';
 
@@ -329,12 +331,14 @@ function properties() {
     `readiness reports the exact exposure shortfall (${SPLIT_MIN_VISITORS_PER_ARM - 40})`);
   assert(thin.arms.b.readiness.needs_conversions === SPLIT_MIN_CONVERSIONS_PER_ARM - 22,
     `readiness reports the exact conversion shortfall (${SPLIT_MIN_CONVERSIONS_PER_ARM - 22})`);
-  // The prose must name BOTH thin arms and BOTH floors — an operator reading
-  // "not ready" with no numbers has been told nothing they can act on.
-  assert(thin.verdict.body.includes('a, b'), `the not-ready body names the thin arms (${thin.verdict.body})`);
-  assert(thin.verdict.body.includes(String(SPLIT_MIN_VISITORS_PER_ARM))
-    && thin.verdict.body.includes(String(SPLIT_MIN_CONVERSIONS_PER_ARM)),
-  'the not-ready body names both floors');
+  // The prose must name EACH thin arm with ITS OWN shortfall. (The earlier form
+  // asserted one shared conjunction for every arm; P17 covers why that was
+  // false prose.) An operator reading "not ready" with no numbers has been told
+  // nothing they can act on.
+  assert(/a needs [^;]+/.test(thin.verdict.body) && /b needs [^;.]+/.test(thin.verdict.body),
+    `the not-ready body names each thin arm with its own shortfall (${thin.verdict.body})`);
+  assert(thin.verdict.body.includes(String(SPLIT_MIN_VISITORS_PER_ARM - 40)),
+    'and the shortfall is the exact remaining distance to the floor');
 
   // ── P6 · WITHHOLD, DON'T GUESS ─────────────────────────────────────────
   // Each of the three named states must produce insufficient_data WITH prose
@@ -668,6 +672,124 @@ function properties() {
     'and the OUTPUT is always `exposures`, whichever spelling came in');
 }
 
+// ── P16 · NO PROSE BUILDER EVER PRINTS FLAT 100% CERTAINTY ─────────────────
+//
+// The reviewer proved B7 (which greps the shipped JSX) structurally CANNOT see
+// these two: both headlines are built SERVER-side, so the string reaches the
+// panel already formatted and no client-side cap applies. They are covered here,
+// where they live.
+//
+// TWO builders, one bug: splitStats' winner headline and analyticsStats'
+// buildVerdict headline independently wrote `(conf * 100).toFixed(1)`, and
+// `(0.9999 * 100).toFixed(1)` is the string "100.0". Both rendered "100.0%
+// confidence" as the LARGEST string on the panel, directly above cells reading
+// ">99.99%". They now share one formatter, and this case pins both.
+function proseBuilders() {
+  hr('P16 · neither server-side headline can print "100.0% confidence"');
+
+  // The formatter itself, at the exact value both caps produce.
+  near(Number(String(formatConfidencePct(0.5)).replace('%', '')), 50, 1e-9, 'formatter: 0.5 -> 50.0%');
+  assert(formatConfidencePct(0.9999) === '>99.99%',
+    `formatter: the CAP value renders as a bound, not "100.0%" (got ${formatConfidencePct(0.9999)})`);
+  assert(formatConfidencePct(1) === '>99.99%', 'formatter: 1.0 renders as a bound');
+  assert(formatConfidencePct(0.9) === '90.0%', `formatter: 0.9 -> "90.0%" (got ${formatConfidencePct(0.9)})`);
+  assert(formatConfidencePct(0.973) === '97.3%', 'formatter: an ordinary confidence is untouched');
+  assert(formatConfidencePct(null) === null, 'formatter: a missing confidence yields null, not a string');
+
+  // BUILDER 1 — splitStats' winner headline, at a confidence that hits the cap.
+  const capped = computeSplitStatistics([
+    arm('a', { control: true, exposures: 50000, conversions: 2500, revenue: 125000, sumsq: 7000000 }),
+    arm('b', { control: false, exposures: 50000, conversions: 6000, revenue: 300000, sumsq: 22000000 }),
+  ]);
+  assert(capped.verdict.status === 'winner', 'the fixture is a winner (so a headline exists)');
+  assert(capped.arms.b.revenue.confidence === 0.9999,
+    `and its confidence IS the capped value (got ${capped.arms.b.revenue.confidence})`);
+  assert(!capped.verdict.headline.includes('100.0% confidence'),
+    `splitStats headline never says "100.0% confidence" (got: ${capped.verdict.headline})`);
+  assert(capped.verdict.headline.includes('>99.99% confidence'),
+    `it says ">99.99% confidence" instead (got: ${capped.verdict.headline})`);
+
+  // BUILDER 2 — analyticsStats' buildVerdict headline, the windowed banner in
+  // the SAME modal. Driven to the same place.
+  const wv = buildVerdict([
+    { arm_key: 'a', is_control: true, visitors: 50000, orders: 2500, net_revenue: 125000, net_revenue_sum_squares: 7000000 },
+    { arm_key: 'b', is_control: false, visitors: 50000, orders: 6000, net_revenue: 300000, net_revenue_sum_squares: 22000000 },
+  ]);
+  assert(wv.status === 'winner', 'the windowed fixture is a winner too');
+  assert(!wv.headline.includes('100.0% confidence'),
+    `buildVerdict headline never says "100.0% confidence" (got: ${wv.headline})`);
+  assert(wv.headline.includes('>99.99% confidence'),
+    `it says ">99.99% confidence" instead (got: ${wv.headline})`);
+
+  // POSITIVE CONTROL — an ordinary confidence must still render as a NUMBER, or
+  // the two assertions above would pass on a builder that had simply stopped
+  // printing confidence at all.
+  const ordinary = buildVerdict([
+    { arm_key: 'a', is_control: true, visitors: 4000, orders: 400, net_revenue: 20000, net_revenue_sum_squares: 200000 },
+    { arm_key: 'b', is_control: false, visitors: 4000, orders: 440, net_revenue: 21000, net_revenue_sum_squares: 220000 },
+  ]);
+  const pct = /(\d+\.\d)% confidence/.exec(ordinary.headline);
+  assert(ordinary.status === 'winner' && pct !== null,
+    `positive control: an ordinary winner prints a NUMERIC confidence (got: ${ordinary.headline})`);
+  if (pct) {
+    const value = Number(pct[1]);
+    assert(value > 50 && value < 100,
+      `positive control: it is a real percentage strictly below 100 (got ${value})`);
+  }
+  // And the same positive control on the split builder.
+  const ordinarySplit = computeSplitStatistics([
+    arm('a', { control: true, exposures: 4000, conversions: 400, revenue: 20000, sumsq: 200000 }),
+    arm('b', { control: false, exposures: 4000, conversions: 440, revenue: 21000, sumsq: 220000 }),
+  ]);
+  assert(/\d+\.\d% confidence/.test(ordinarySplit.verdict.headline),
+    `positive control: splitStats prints a numeric confidence too (got: ${ordinarySplit.verdict.headline})`);
+}
+
+// ── P17 · THE TWO NARRATION FIXES ──────────────────────────────────────────
+function narration() {
+  hr('P17 · not-ready prose is PER ARM, and the corrected bar is explained');
+
+  // Arm a is short only on ORDERS (it has 4,000 exposures); arms b and c are
+  // short only on EXPOSURES. The old sentence asserted BOTH floors against ALL
+  // of them, which was false about every one.
+  const mixed = computeSplitStatistics([
+    arm('a', { control: true, exposures: 4000, conversions: 12, revenue: 600, sumsq: 40000 }),
+    arm('b', { control: false, exposures: 120, conversions: 80, revenue: 4000, sumsq: 250000 }),
+    arm('c', { control: false, exposures: 150, conversions: 90, revenue: 4500, sumsq: 280000 }),
+  ]);
+  assert(mixed.verdict.status === 'not_ready', 'the fixture is not ready');
+  assert(mixed.verdict.body.includes('a needs ~13 more orders'),
+    `arm a is short on ORDERS ONLY and says so (got: ${mixed.verdict.body})`);
+  assert(!/a needs[^;]*more exposures/.test(mixed.verdict.body),
+    'and arm a is NOT told it needs more exposures — it has 4,000');
+  assert(mixed.verdict.body.includes('b needs ~180 more exposures'),
+    'arm b is short on EXPOSURES and says so');
+  assert(!/b needs[^;]*more orders/.test(mixed.verdict.body),
+    'and arm b is NOT told it needs more orders — it has 80');
+  assert(mixed.verdict.body.includes('c needs ~150 more exposures'), 'arm c reports its own shortfall');
+
+  // BONFERRONI NARRATION — the sentence that explains a revoked winner.
+  assert(/Bonferroni-corrected to α 0\.025/.test(mixed.verdict.body),
+    `3 arms -> the corrected bar is stated (got: ${mixed.verdict.body})`);
+  // With ONE comparison there is no correction, so there must be no sentence.
+  const twoArm = computeSplitStatistics([
+    arm('a', { control: true, exposures: 120, conversions: 12, revenue: 600, sumsq: 40000 }),
+    arm('b', { control: false, exposures: 120, conversions: 15, revenue: 780, sumsq: 52000 }),
+  ]);
+  assert(!/Bonferroni/.test(twoArm.verdict.body),
+    `2 arms -> NO correction sentence is invented (got: ${twoArm.verdict.body})`);
+  // Given history, it narrates the TRANSITION — the revoked-winner explanation.
+  const grew = computeSplitStatistics([
+    arm('a', { control: true, exposures: 9000, conversions: 900, revenue: 45000, sumsq: 3000000 }),
+    arm('b', { control: false, exposures: 9000, conversions: 940, revenue: 47000, sumsq: 3100000 }),
+    arm('c', { control: false, exposures: 9000, conversions: 910, revenue: 45500, sumsq: 3050000 }),
+  ], { previousComparisons: 1 });
+  assert(/up from 2/.test(grew.verdict.body) && /tightened to α/.test(grew.verdict.body),
+    `a grown family narrates the tightening (got: ${grew.verdict.body})`);
+  assert(/may no longer clear this one/.test(grew.verdict.body),
+    'and says explicitly that an old result may no longer clear the new bar');
+}
+
 // Re-used by P10; kept as a function so the two call sites cannot drift.
 function ka3Ref() {
   return computeSplitStatistics([
@@ -885,6 +1007,95 @@ async function contract(query, sql) {
   assert(!findNonFinite(after.daily), 'the daily series carries no NaN/Infinity');
   // The series must NOT feed the verdict — it is a shape reading only.
   assert(after.verdict.ranked.length === 2, 'the verdict is unchanged by the presence of the series');
+
+  hr('C12 · a credit-day lag cannot change the day-by-day shape');
+  // THE REVIEWER'S FIXTURE. Two arms, identical lifetime numbers, differing ONLY
+  // in when their money was stamped: arm a's credits carry their exposure day,
+  // arm b's carry the NEXT day (the shape a settlement crossing midnight, an
+  // explicit `day` override, a retry sweep or a rebuilt rollup produces).
+  //
+  // Keying the money to the credit row's own day rendered arm b as
+  // "$0.0000 over 50 exposures" on the day it actually earned — a FALSE MEASURED
+  // ZERO, which is exactly the null-vs-0 distinction this module refuses to blur
+  // — followed by "— over 0 exposures" the next day, hiding real revenue behind
+  // a dash. Keyed to the SESSION'S EXPOSURE DAY, the two arms are identical.
+  const lagId = 'lbsg_stats_lag';
+  await query(`DELETE FROM lb_split_credits WHERE group_id = $1`, [lagId]);
+  await query(`DELETE FROM lb_split_arms WHERE test_id = $1`, [lagId]);
+  await query(`DELETE FROM lb_split_tests WHERE id = $1`, [lagId]);
+  await query(
+    `INSERT INTO lb_split_tests (id, name, scope, enabled) VALUES ($1, 'credit-day lag', 'page', TRUE)`,
+    [lagId]
+  );
+  for (const [key, ctl] of [['a', true], ['b', false]]) {
+    await query(
+      `INSERT INTO lb_split_arms (id, test_id, arm_key, weight, is_control, is_entry, sort_order)
+       VALUES ($1, $2, $3, 50, $4, $4, 0)`,
+      [`lbsa_lag_${key}`, lagId, key, ctl]
+    );
+  }
+  const EXPOSURE_DAY = '2026-03-01';
+  const NEXT_DAY = '2026-03-02';
+  for (const armKey of ['a', 'b']) {
+    for (let i = 0; i < 50; i += 1) {
+      const st = await recordExposure(
+        { sessionId: `lag_${armKey}_${i}`, testId: lagId, armKey, day: EXPOSURE_DAY }, { query });
+      if (st !== 'recorded') throw new Error(`lag exposure ${armKey}/${i} -> ${st}`);
+    }
+  }
+  for (let i = 0; i < 10; i += 1) {
+    // Arm a: no explicit day — the credit inherits its exposure row's day.
+    const sa = await creditConversion(
+      { sessionId: `lag_a_${i}`, testId: lagId, chargeId: `lag_ch_a_${i}`, value: 100 }, { query });
+    if (sa !== 'credited') throw new Error(`lag credit a/${i} -> ${sa}`);
+    // Arm b: the SAME money, stamped a day late.
+    const sb = await creditConversion(
+      { sessionId: `lag_b_${i}`, testId: lagId, chargeId: `lag_ch_b_${i}`, value: 100, day: NEXT_DAY },
+      { query }
+    );
+    if (sb !== 'credited') throw new Error(`lag credit b/${i} -> ${sb}`);
+  }
+
+  const lag = await readResults({ testId: lagId }, { query });
+  const lagA = lag.arms.find((x) => x.arm_key === 'a');
+  const lagB = lag.arms.find((x) => x.arm_key === 'b');
+  // Precondition: the arms really are identical on lifetime figures.
+  assert(Number(lagA.net_revenue) === 1000 && Number(lagB.net_revenue) === 1000,
+    `both arms earned 1000 lifetime (a=${lagA.net_revenue}, b=${lagB.net_revenue})`);
+  assert(lagA.exposures === 50 && lagB.exposures === 50, 'both arms took 50 exposures');
+  // Precondition: the credit rows really ARE stamped on different days, or this
+  // case would pass without testing anything.
+  const stampedDays = await query(
+    `SELECT DISTINCT arm_key, day FROM lb_split_credits
+     WHERE group_id = $1 AND kind = 'credit' ORDER BY arm_key`,
+    [lagId]
+  );
+  const dayOf = (k) => stampedDays.filter((r) => r.arm_key === k)
+    .map((r) => new Date(r.day).toISOString().slice(0, 10));
+  assert(dayOf('a')[0] === EXPOSURE_DAY, `arm a's credits are stamped ${EXPOSURE_DAY}`);
+  assert(dayOf('b')[0] === NEXT_DAY,
+    `arm b's credits really ARE stamped a day late (${dayOf('b')[0]}) — the lag is present`);
+
+  // THE ASSERTION. One day cell, both arms, identical shapes.
+  assert(lag.daily.length === 1,
+    `the lagged money does NOT create a second day cell (got ${lag.daily.length}: ${lag.daily.map((d) => d.day).join(', ')})`);
+  assert(lag.daily[0].day === EXPOSURE_DAY,
+    `and the single cell is the EXPOSURE day (got ${lag.daily[0].day})`);
+  const cellA = lag.daily[0].arms.a;
+  const cellB = lag.daily[0].arms.b;
+  assert(JSON.stringify(cellA) === JSON.stringify(cellB),
+    `two identical arms render IDENTICAL day-by-day shapes despite the credit-day lag `
+    + `(a=${JSON.stringify(cellA)}, b=${JSON.stringify(cellB)})`);
+  near(cellB.rev_per_exposure, 20, 1e-9, 'arm b reads 1000/50 = 20.00 on its exposure day, not 0.0000');
+  assert(cellB.rev_per_exposure !== 0,
+    'and specifically NOT a false measured zero — the defect this join fixes');
+  assert(cellB.exposures === 50 && cellB.orders === 10, 'its numerator and denominator are on the same cell');
+
+  for (const id of [lagId]) {
+    await query(`DELETE FROM lb_split_credits WHERE group_id = $1`, [id]);
+    await query(`DELETE FROM lb_split_arms WHERE test_id = $1`, [id]);
+    await query(`DELETE FROM lb_split_tests WHERE id = $1`, [id]);
+  }
 
   hr('C11 · per-arm submits are real or an honest refusal, never a fabricated zero');
   assert(after.submits && typeof after.submits.available === 'boolean',
@@ -1212,6 +1423,8 @@ async function main() {
   console.log('SPLIT STATISTICS HARNESS');
   knownAnswers();
   properties();
+  proseBuilders();
+  narration();
   await clientBoundary();
 
   let sql = null;

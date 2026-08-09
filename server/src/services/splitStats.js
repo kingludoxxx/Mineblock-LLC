@@ -72,6 +72,7 @@ import {
   varianceFromSums,
   requiredSampleForProportions,
   requiredSampleForMeans,
+  formatConfidencePct,
   SPLIT_MIN_VISITORS_PER_ARM,
   SPLIT_MIN_CONVERSIONS_PER_ARM,
   MIN_RATE_SAMPLE,
@@ -712,6 +713,33 @@ export function computeSplitStatistics(rows, opts = {}) {
     ? `about ${requiredPerArm.toLocaleString('en-US')} exposures per arm`
       + (timeToDecision === null ? '.' : ` — roughly ${timeToDecision} more days at the current rate.`)
     : null;
+  // ── WHY THE BAR IS WHERE IT IS ─────────────────────────────────────────
+  //
+  // A winner can be REVOKED without a single number moving: a third arm crosses
+  // the statistics floor, joins the family, and Bonferroni divides the
+  // threshold — so yesterday's significant result is today's "not significant"
+  // and nothing on screen explains it. That is the moment an operator stops
+  // trusting the panel.
+  //
+  // This module is PURE and has no memory, so it cannot observe the transition
+  // by itself. Two honest forms:
+  //   • given `previousComparisons` by a caller that DOES have history, it
+  //     narrates the change;
+  //   • otherwise it states the current correction whenever one is in force,
+  //     which is what actually answers "why is the bar 0.025?".
+  // Never invented: with a single comparison there is no correction and the
+  // sentence is absent entirely.
+  const prevComparisons = Number(opts.previousComparisons);
+  const grew = Number.isFinite(prevComparisons) && prevComparisons > 0 && comparisons > prevComparisons;
+  const correctionClause = comparisons > 1
+    ? (grew
+      ? ` ${qualifying.length} arms are now in the comparison (up from ${prevComparisons + 1}), so the `
+        + `significance bar tightened to α ${round(alphaAdjusted, 6)} — a result that cleared the old bar `
+        + 'may no longer clear this one.'
+      : ` ${qualifying.length} arms are in the comparison, so the significance bar is Bonferroni-corrected `
+        + `to α ${round(alphaAdjusted, 6)} rather than ${alpha}.`)
+    : '';
+
   const pendingClause = pendingArms.length
     ? ` ${pendingArms.join(', ')} ${pendingArms.length === 1 ? 'is' : 'are'} still collecting and `
       + `${pendingArms.length === 1 ? 'is' : 'are'} not part of this comparison yet.`
@@ -729,21 +757,36 @@ export function computeSplitStatistics(rows, opts = {}) {
     status = 'winner';
     headline = `${winner} beats ${control.arm_key} on net revenue per exposure`
       + (pct === null || pct === undefined ? '' : ` by ${round(pct, 1)}%`)
-      + (conf === null ? '.' : ` — ${(conf * 100).toFixed(1)}% confidence.`);
+      // ONE shared formatter (analyticsStats.formatConfidencePct) — this string
+      // and the windowed banner's are built by the same function precisely so
+      // they cannot disagree about what 0.9999 looks like. Both used to print
+      // "100.0% confidence" above cells reading ">99.99%".
+      + (conf === null ? '.' : ` — ${formatConfidencePct(conf)} confidence.`);
     body = (lift?.earned_so_far === null || lift?.earned_so_far === undefined
       ? 'Every compared arm has cleared its sample floors and the gap is significant at the '
         + 'corrected threshold.'
       : `On the traffic it has already taken, ${winner} earned $${lift.earned_so_far.toFixed(2)} more than `
-        + `${control.arm_key}'s rate would have produced.`) + pendingClause;
+        + `${control.arm_key}'s rate would have produced.`) + pendingClause + correctionClause;
   } else if (!ready) {
     status = 'not_ready';
     headline = 'Not ready — the sample is still too thin to call.';
-    body = `${thinArms.join(', ')} ${thinArms.length === 1 ? 'has' : 'have'} not reached `
-      + `${minExposures.toLocaleString('en-US')} exposures and ${minConversions} orders yet. `
+    // PER ARM, NOT ONE CONJUNCTION FOR ALL OF THEM. The old sentence asserted
+    // BOTH floors against EVERY thin arm — "a, b have not reached 300 exposures
+    // and 25 orders yet" — which is simply false about an arm that has 4,000
+    // exposures and is short only on orders. It also told the operator to go get
+    // the wrong thing. Each arm now states its own shortfall.
+    const shortfalls = thinArms.map((k) => {
+      const rd = armsOut[k].readiness;
+      const needs = [];
+      if (rd.needs_exposures > 0) needs.push(`~${rd.needs_exposures.toLocaleString('en-US')} more exposures`);
+      if (rd.needs_conversions > 0) needs.push(`~${rd.needs_conversions.toLocaleString('en-US')} more orders`);
+      return `${k} needs ${needs.join(' and ')}`;
+    });
+    body = `${shortfalls.join('; ')}. `
       + (waitClause
         ? `At the gap observed so far, proving it would take ${waitClause}`
         : 'No winner can be named until every compared arm clears both floors.')
-      + pendingClause;
+      + pendingClause + correctionClause;
   } else {
     status = 'no_winner';
     headline = 'No winner yet — the arms are too close to call.';
@@ -751,7 +794,7 @@ export function computeSplitStatistics(rows, opts = {}) {
       ? 'Every compared arm has cleared its floors, but the gap is not significant at the corrected '
         + `threshold. Proving it would take ${waitClause}`
       : 'Every compared arm has cleared its floors and the observed gap is zero, so no amount of '
-        + 'further traffic will prove one.') + pendingClause;
+        + 'further traffic will prove one.') + pendingClause + correctionClause;
   }
 
   return {
