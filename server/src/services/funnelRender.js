@@ -898,7 +898,13 @@ function mountEmbed(root,embed){try{var mount=root.querySelector('[data-fos-whop
 mount.setAttribute('data-whop-checkout-theme','light');
 mount.setAttribute('data-whop-checkout-locale','en');
 mount.setAttribute('data-whop-checkout-hide-email','true');
-mount.setAttribute('data-whop-checkout-hide-address','true');
+/* Address deliberately NOT hidden. Hiding a field we cannot populate is
+   what broke the first live order: the buyer cannot supply it, we cannot
+   inject it after mount (the embed stops answering the messaging API),
+   and the validation error is invisible. Email we CAN bake into the
+   iframe URL before creation; the delivery address is still empty at
+   that moment, so it stays visible and Whop collects it if it needs it.
+   Revisit only after a charge has actually succeeded. */
 mount.setAttribute('data-whop-checkout-hide-price','true');
 mount.setAttribute('data-whop-checkout-hide-tos','true');
 mount.setAttribute('data-whop-checkout-hide-submit-button','true');
