@@ -2177,3 +2177,45 @@ dead-letters log status 'error' per reviewer wording, distinct from inline
 'skipped' hard errors - DECISION MADE.
 STATUS: COMPLETE
 ---
+
+---
+TIMESTAMP: 2026-08-09 18:25
+TASK: Funnel-settings TRACKING tab — client directory + Meta detail (feat/tracking-ui)
+BUILT: Replaced the TrackingSection scaffold with the real reference-parity
+directory (client/src/components/funnels/settings/TrackingSection.jsx): header
+copy, GENERAL event-options panel persisted to funnels.settings.tracking via
+read-merge-write PATCH (optimistic flip, revert + inline prose on failure),
+full-width GTM "recommended base layer" card with honest coming-soon detail,
+12-network card grid (Meta wired to /api/v1/tracking-admin — the actual mount;
+11 honest "not wired yet" stubs). Meta detail page: write-only CAPI-token
+credentials card ('' keeps / Clear sends null), ad tracking URL from the
+funnel's serving origin (custom_domain else /f/<slug>) with macro query + copy,
+status rows from tracking/summary (click-id params, server-channel-ready, 24h
+sent/failed/deduped, breaker-open line), optimistic segmented tracking mode
+(native|s2s|hybrid), recent-deliveries feed filtered platform=meta with
+refresh/empty/error states. Exported isObj + saveFunnelPatch from sections.jsx.
+TESTED: server/tests/funnel-settings/tracking-tab.mjs (new, house harness):
+settings.tracking PATCH seams + full /tracking-admin NETWORKS surface. Written
+pre-merge with a 404-probe skip block; executed pre-merge against the
+feat/tracking-server worktree via TRACKING_ADMIN_PATH (15/15), then
+feat/tracking-server merged to main, branch rebased onto b5b5206, block
+activated live: 17/17 (adds invalid_pixel_id + invalid_enabled edge cases).
+Failure paths executed: 401 no-token, invalid_mode, unknown_kind,
+pixel_id_required (mode PUT on unconfigured row), malformed pixel id,
+string-boolean enabled. Regressions on the rebase: patch-settings 22/22,
+render-settings 30/30, domains-tab 58/58. client npm run build clean.
+OUTPUT: commits 75ca0cc + 1e2e2e3 on feat/tracking-ui (not merged, not
+deployed). validateFunnelSettings gap check: NO gap — no key whitelist,
+settings.tracking accepted (proven by unit + route tests).
+DECISIONS: Coded against the real mount /api/v1/tracking-admin (task brief
+said /api/v1/tracking; routes/index.js:63 is authoritative) - DECISION MADE.
+queued_now not rendered (UI shows 24h sent/failed/deduped + breaker only) -
+DECISION MADE. TEST badge on delivery rows omitted — lb_tracking_events rows
+carry no test_event_code field (spec said "if available"; it is not) -
+DECISION MADE. Tracking-mode caption composed (screenshots unavailable);
+mode segment PUTs {mode} alone, pixel_id_required surfaced as prose -
+DECISION MADE. Browser-pane verification skipped: running preview belongs to
+another session and its tab is PRODUCTION (puure-dashboard.onrender.com) —
+off-limits per revenue-page rule; verified by execution via harness instead.
+STATUS: COMPLETE
+---
