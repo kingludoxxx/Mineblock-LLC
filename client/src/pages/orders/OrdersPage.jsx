@@ -13,6 +13,9 @@ import {
 } from 'lucide-react';
 import api from '../../services/api';
 import Button from '../../components/ui/Button';
+import SavedViewsBar from './SavedViewsBar';
+import CreateOrderModal from './CreateOrderModal';
+import NeedsReviewPanel from './NeedsReviewPanel';
 
 // ── formatting helpers ──────────────────────────────────────────────
 
@@ -140,6 +143,7 @@ const FILTER_DEFS = [
   },
   { key: 'fulfillment', label: 'Fulfillment', options: ['unfulfilled', 'fulfilled', 'partial'] },
   { key: 'gateway', label: 'Gateway', options: ['Whop', 'Stripe', 'PayPal', 'shopify_payments'] },
+  { key: 'source', label: 'Source', options: ['shopify', 'manual'] },
 ];
 
 export default function OrdersPage() {
@@ -156,17 +160,34 @@ export default function OrdersPage() {
   const [filters, setFilters] = useState({});
   const [filterMenuOpen, setFilterMenuOpen] = useState(false);
   const [q, setQ] = useState(searchParams.get('q') || '');
+  const [sort, setSort] = useState('created_at:desc');
+  const [views, setViews] = useState([]);
+  const [activeViewId, setActiveViewId] = useState(null);
+  const [viewBusy, setViewBusy] = useState(false);
+  const [createOpen, setCreateOpen] = useState(false);
+  const [flash, setFlash] = useState(null);
   const page = Math.max(parseInt(searchParams.get('page'), 10) || 1, 1);
   const debounceRef = useRef(null);
   const filterMenuRef = useRef(null);
 
   const queryParams = useMemo(() => {
-    const p = { page, limit: 25 };
+    const p = { page, limit: 25, sort };
     if (q) p.q = q;
     if (showArchived) p.archived = 'true';
     for (const [k, v] of Object.entries(filters)) if (v) p[k] = v;
     return p;
-  }, [page, q, showArchived, filters]);
+  }, [page, q, showArchived, filters, sort]);
+
+  // The filter set a saved view stores. It is deliberately NOT queryParams:
+  // page and limit are pagination, not a preset, and baking page:3 into a
+  // saved view would strand the operator on a page that may not exist tomorrow.
+  const viewFilters = useMemo(() => {
+    const f = {};
+    if (q) f.q = q;
+    if (showArchived) f.archived = 'true';
+    for (const [k, v] of Object.entries(filters)) if (v) f[k] = v;
+    return f;
+  }, [q, showArchived, filters]);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -205,6 +226,82 @@ export default function OrdersPage() {
     document.addEventListener('mousedown', close);
     return () => document.removeEventListener('mousedown', close);
   }, []);
+
+  // ── saved views ───────────────────────────────────────────────────
+  const loadViews = useCallback(async () => {
+    try {
+      const res = await api.get('/orders/views');
+      setViews(res.data?.data?.views || []);
+    } catch {
+      // Views are a convenience layer; the list works without them. Failing
+      // loudly here would block a working orders page over a missing preset.
+      setViews([]);
+    }
+  }, []);
+
+  useEffect(() => {
+    loadViews();
+  }, [loadViews]);
+
+  // Applying a view REPLACES the filter state wholesale rather than merging.
+  // A merge would leave filters from the previous view silently active, so the
+  // rows on screen would not be the rows the view actually names.
+  const applyView = (view) => {
+    const f = view?.filters || {};
+    setActiveViewId(view?.id ?? null);
+    setSort(view?.sort || 'created_at:desc');
+    setShowArchived(f.archived === 'true');
+    setFilters({
+      payment: f.payment || '',
+      fulfillment: f.fulfillment || '',
+      gateway: f.gateway || '',
+      source: f.source || '',
+    });
+    setQ(f.q || '');
+    const next = new URLSearchParams(searchParams);
+    if (f.q) next.set('q', f.q);
+    else next.delete('q');
+    next.set('page', '1');
+    setSearchParams(next, { replace: true });
+  };
+
+  const createView = async (name) => {
+    setViewBusy(true);
+    try {
+      const res = await api.post('/orders/views', { name, filters: viewFilters, sort });
+      const view = res.data?.data?.view;
+      await loadViews();
+      if (view) setActiveViewId(view.id);
+    } finally {
+      setViewBusy(false);
+    }
+  };
+
+  const updateView = async (view) => {
+    setViewBusy(true);
+    try {
+      await api.put(`/orders/views/${view.id}`, { filters: viewFilters, sort });
+      await loadViews();
+      setFlash(`Saved “${view.name}”`);
+    } catch (err) {
+      setFlash(err.response?.data?.error || 'Could not update this view');
+    } finally {
+      setViewBusy(false);
+    }
+  };
+
+  const deleteView = async (view) => {
+    setViewBusy(true);
+    try {
+      await api.delete(`/orders/views/${view.id}`);
+      await loadViews();
+      if (activeViewId === view.id) applyView(null);
+    } catch (err) {
+      setFlash(err.response?.data?.error || 'Could not delete this view');
+    } finally {
+      setViewBusy(false);
+    }
+  };
 
   const onSearch = (value) => {
     setQ(value);
@@ -257,8 +354,8 @@ export default function OrdersPage() {
           <Button
             variant="primary"
             size="md"
-            title="Manual order creation arrives with the checkout phase"
-            onClick={() => {}}
+            title="Record an order taken outside a funnel checkout — no payment is charged"
+            onClick={() => setCreateOpen(true)}
           >
             <Plus className="w-4 h-4" /> Create order
           </Button>
@@ -275,6 +372,7 @@ export default function OrdersPage() {
       <div className="flex gap-1 border-b border-border-subtle">
         {[
           { value: 'orders', label: 'Orders' },
+          { value: 'needs-review', label: 'Needs review' },
           { value: 'subscriptions', label: 'Subscriptions' },
         ].map((t) => (
           <button
@@ -291,7 +389,9 @@ export default function OrdersPage() {
         ))}
       </div>
 
-      {tab === 'subscriptions' ? (
+      {tab === 'needs-review' ? (
+        <NeedsReviewPanel />
+      ) : tab === 'subscriptions' ? (
         <>
           <div className="flex bg-bg-card border border-border-default rounded-xl overflow-hidden">
             {['Active subscriptions', 'MRR', 'Churn (30d)', 'Next 7 days charges'].map((label, i) => (
@@ -328,11 +428,35 @@ export default function OrdersPage() {
         <>
           <KpiStrip stats={stats} />
 
+          {/* Saved views */}
+          <div className="bg-bg-card border border-border-default rounded-xl px-3 py-2">
+            <SavedViewsBar
+              views={views}
+              activeViewId={activeViewId}
+              filters={viewFilters}
+              sort={sort}
+              onApply={applyView}
+              onCreate={createView}
+              onUpdate={updateView}
+              onDelete={deleteView}
+              busy={viewBusy}
+            />
+          </div>
+
+          {flash && (
+            <div className="flex items-center justify-between px-4 py-2 text-sm text-text-muted bg-bg-elevated border border-border-default rounded-lg">
+              <span>{flash}</span>
+              <button
+                onClick={() => setFlash(null)}
+                className="p-0.5 rounded text-text-faint hover:text-text-primary cursor-pointer"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            </div>
+          )}
+
           {/* Search + filter bar */}
           <div className="bg-bg-card border border-border-default rounded-xl px-3 py-2 flex items-center gap-3">
-            <span className="px-2.5 py-1 text-sm font-medium text-text-primary border-b-2 border-accent">
-              All
-            </span>
             <div className="flex items-center gap-2 flex-1 min-w-0">
               <Search className="w-4 h-4 text-text-faint shrink-0" />
               <input
@@ -442,6 +566,14 @@ export default function OrdersPage() {
                       >
                         <td className="px-4 py-3 font-medium text-text-primary whitespace-nowrap">
                           {o.order_number || o.order_id}
+                          {o.source === 'manual' && (
+                            <span
+                              title="Recorded by an operator — no payment was taken through a gateway"
+                              className="ml-1.5 px-1.5 py-0.5 text-[10px] font-medium rounded bg-bg-elevated border border-border-default text-text-muted align-middle"
+                            >
+                              Manual
+                            </span>
+                          )}
                         </td>
                         <td className="px-4 py-3 text-text-muted whitespace-nowrap">
                           {fmtDate(o.created_at)}
@@ -533,6 +665,19 @@ export default function OrdersPage() {
           </div>
         </>
       )}
+
+      <CreateOrderModal
+        open={createOpen}
+        onClose={() => setCreateOpen(false)}
+        onCreated={(order) => {
+          setFlash(
+            order
+              ? `Recorded ${order.order_number} — bookkeeping only, no payment was taken.`
+              : 'Order recorded.'
+          );
+          load();
+        }}
+      />
     </div>
   );
 }
