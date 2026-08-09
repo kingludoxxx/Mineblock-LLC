@@ -32,6 +32,7 @@ import trackingAdminRoutes from './trackingAdmin.js';
 import domainHubRoutes from './domainHub.js';
 import funnelAnalyticsRoutes from './funnelAnalytics.js';
 import aiDeveloperRoutes from './aiDeveloper.js';
+import funnelTransferRoutes from './funnelTransfer.js';
 
 const mountRoutes = (app) => {
   app.use('/api/v1/users', userRoutes);
@@ -73,6 +74,9 @@ const mountRoutes = (app) => {
   // AI Developer — builder chat that PROPOSES block edits (read-only on
   // funnel_pages; the editor applies ops in memory) + Higgsfield job proxy.
   app.use('/api/v1/ai-developer', aiDeveloperRoutes);
+  // Funnel export/import — portable JSON envelope (authed, funnels permission;
+  // import always lands a DRAFT with no domain, in one transaction).
+  app.use('/api/v1/funnel-transfer', funnelTransferRoutes);
 };
 
 export default mountRoutes;

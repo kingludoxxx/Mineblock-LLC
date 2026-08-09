@@ -13,15 +13,19 @@
 //   • the verdict is never invented. With no data the headline is "Not enough
 //     data yet", never "no winner" — those say different things.
 //
-// This modal writes NOTHING. It is a pure read of derived figures.
+// ONE WRITE, AND ONLY ONE: promoting the winner. Everything else on this
+// surface is a pure read of derived figures. The promote button appears only
+// when the SERVICE says there is a winner (verdict.status === 'winner', with
+// verdict.leader naming the arm) — this modal never decides a winner itself,
+// for exactly the reason the banner never composes its own prose.
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { X, TrendingUp, AlertTriangle, Loader2 } from 'lucide-react';
+import { X, TrendingUp, AlertTriangle, Loader2, Trophy, CheckCircle2 } from 'lucide-react';
 import {
-  fetchSplitMetrics, armLetter, fmtInt, fmtMoney, fmtPct, fmtDate, fmtDateTime,
-  isoDay, utcDay, num, DASH,
+  fetchSplitMetrics, promoteSplitWinner, armLetter, fmtInt, fmtMoney, fmtPct,
+  fmtDate, fmtDateTime, isoDay, utcDay, num, DASH,
 } from './splitApi';
 
-export default function SplitResultsModal({ open, onClose, test }) {
+export default function SplitResultsModal({ open, onClose, test, onPromoted }) {
   const testId = test?.id;
   const handle = test?.handle || '';
   const createdAt = test?.created_at;
@@ -130,6 +134,15 @@ export default function SplitResultsModal({ open, onClose, test }) {
             verdict={verdict}
             from={state.data?.window?.from || range.from}
             to={state.data?.window?.to || range.to}
+          />
+
+          {/* ── Promote the winner ────────────────────────────── */}
+          <PromoteWinner
+            test={test}
+            handle={handle}
+            available={state.available}
+            verdict={verdict}
+            onPromoted={(updated) => { onPromoted?.(updated); load(); }}
           />
 
           {/* ── Degraded-source strip ─────────────────────────── */}
@@ -265,6 +278,149 @@ const STATUS_TONE = {
   // `blocked_reason` set — the comparison itself is invalid. Never green.
   blocked: { border: 'border-amber-500/30', bg: 'bg-amber-500/[0.09]', icon: 'text-amber-400' },
 };
+
+// ── PROMOTE THE WINNER ─────────────────────────────────────────────────────
+//
+// Shown ONLY when the service returns verdict.status === 'winner' AND names the
+// arm in verdict.leader. `verdict.winner_arm_key` does not exist on this
+// endpoint (splitApi.js documents it in the "must never be invented" list), so
+// `leader` is the field, and it carries an ARM KEY — the arm ID the endpoint
+// wants is looked up on the test definition.
+//
+// TYPED CONFIRM, not a checkbox: this repoints a live route AND stops the
+// experiment. Typing the arm key is the smallest gesture that cannot be made by
+// a mis-click, and it also forces the operator to look at WHICH arm they are
+// crowning.
+function PromoteWinner({ test, handle, available, verdict, onPromoted }) {
+  const [typed, setTyped] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState(null);
+  const [done, setDone] = useState(null);
+  const [arming, setArming] = useState(false);
+
+  const winnerKey = available && verdict.status === 'winner' ? verdict.leader : null;
+  const arms = Array.isArray(test?.arms) ? test.arms : [];
+  const winnerArm = winnerKey ? arms.find((a) => a.arm_key === winnerKey && !a.archived) : null;
+  // A test that has already ENDED must not offer the button again — the
+  // endpoint would answer 409 for a different arm and the operator would be
+  // reading an error instead of a state.
+  //
+  // `enabled === false` is the load-bearing half of this test: promoting always
+  // pauses, so a paused test has either been promoted or been stopped by hand,
+  // and "promote the winner" is the wrong offer in both cases. It is also the
+  // half that is actually PRESENT here — the split-test list response
+  // (splitTests.js TEST_COLS) carries `enabled` but not `promoted_arm_id`, so
+  // relying on the latter alone would have left the button showing forever.
+  const alreadyEnded = Boolean(test?.promoted_arm_id) || test?.enabled === false;
+
+  const promote = useCallback(async () => {
+    if (!winnerArm || busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const updated = await promoteSplitWinner(test.id, winnerArm.id);
+      setDone(updated || { promoted_arm_key: winnerKey });
+      onPromoted?.(updated);
+    } catch (err) {
+      const code = err?.response?.data?.error?.code;
+      setError({
+        arm_page_not_published: 'That arm\u2019s page is still a draft, so it would never serve. Publish the page first.',
+        arm_has_no_page: 'That arm has no page attached, so there is nothing to serve.',
+        arm_archived: 'That arm is archived and takes no traffic.',
+        already_promoted: 'A different arm has already been promoted on this test.',
+        not_found: 'That arm no longer exists on this test.',
+        confirm_required: 'The server refused without a confirmation.',
+      }[code] || (code ? `Promote refused: ${code}` : 'Promote failed. Nothing changed.'));
+      setBusy(false);
+    }
+  }, [winnerArm, winnerKey, busy, test, onPromoted]);
+
+  if (done) {
+    const key = done.promoted_arm_key || winnerKey;
+    return (
+      <div className="rounded-xl border border-emerald-500/25 bg-emerald-500/[0.07] px-4 py-3">
+        <div className="flex items-start gap-2.5">
+          <CheckCircle2 className="w-4 h-4 mt-0.5 shrink-0 text-emerald-400" />
+          <div className="min-w-0">
+            <p className="text-sm font-semibold text-text-primary">
+              Winner promoted \u2014 test paused, <span className="font-mono text-emerald-400">/{handle}</span> now
+              serves <span className="font-mono text-emerald-400">{key}</span>
+            </p>
+            <p className="mt-1 text-xs text-text-muted leading-relaxed">
+              The route stays live and every visitor sees the winning page. Nothing already in the ledger moved \u2014
+              the figures above still describe the traffic that was split.
+            </p>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (!winnerArm || alreadyEnded) return null;
+
+  return (
+    <div className="rounded-xl border border-emerald-500/20 bg-emerald-500/[0.05] px-4 py-3">
+      <div className="flex items-start gap-2.5">
+        <Trophy className="w-4 h-4 mt-0.5 shrink-0 text-emerald-400" />
+        <div className="min-w-0 flex-1">
+          <p className="text-sm font-semibold text-text-primary">
+            Promote <span className="font-mono text-emerald-400">{winnerKey}</span> and end the test
+          </p>
+          <p className="mt-1 text-xs text-text-muted leading-relaxed">
+            <span className="font-mono">/{handle || '\u2026'}</span> will serve this arm\u2019s page to
+            everyone and the test is paused. The route stays live; the split stops.
+          </p>
+
+          {!arming ? (
+            <button
+              onClick={() => setArming(true)}
+              className="mt-2.5 px-3 py-1.5 text-xs rounded-lg border border-emerald-500/30 bg-emerald-500/10
+                text-emerald-300 hover:bg-emerald-500/20 transition-colors cursor-pointer"
+            >
+              Promote winner
+            </button>
+          ) : (
+            <div className="mt-2.5 space-y-2">
+              <label className="block text-[11px] text-text-muted">
+                Type <span className="font-mono text-text-primary">{winnerKey}</span> to confirm
+              </label>
+              <div className="flex items-center gap-2">
+                <input
+                  autoFocus
+                  value={typed}
+                  onChange={(e) => setTyped(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === 'Enter' && typed.trim() === winnerKey) promote(); }}
+                  placeholder={winnerKey}
+                  className="px-2.5 py-1.5 text-xs font-mono bg-bg-elevated border border-border-default rounded-md
+                    text-text-primary placeholder:text-text-faint focus:outline-none focus:border-emerald-500/40"
+                />
+                <button
+                  onClick={promote}
+                  disabled={typed.trim() !== winnerKey || busy}
+                  className="px-3 py-1.5 text-xs rounded-lg border border-emerald-500/30 bg-emerald-500/10
+                    text-emerald-300 hover:bg-emerald-500/20 transition-colors cursor-pointer
+                    disabled:opacity-40 disabled:pointer-events-none inline-flex items-center gap-1.5"
+                >
+                  {busy && <Loader2 className="w-3 h-3 animate-spin" />}
+                  Confirm promote
+                </button>
+                <button
+                  onClick={() => { setArming(false); setTyped(''); setError(null); }}
+                  disabled={busy}
+                  className="px-2.5 py-1.5 text-xs rounded-lg text-text-muted hover:text-text-primary
+                    hover:bg-bg-hover transition-colors cursor-pointer"
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          )}
+          {error && <p className="mt-2 text-xs text-red-400">{error}</p>}
+        </div>
+      </div>
+    </div>
+  );
+}
 
 function VerdictBanner({ available, verdict, from, to }) {
   const status = available ? (verdict.status || 'no_winner') : 'unavailable';

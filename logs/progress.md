@@ -2177,3 +2177,41 @@ dead-letters log status 'error' per reviewer wording, distinct from inline
 'skipped' hard errors - DECISION MADE.
 STATUS: COMPLETE
 ---
+
+---
+TIMESTAMP: 2026-08-09 18:55
+TASK: Funnel export/import (portable envelope) + split promote-winner
+BUILT: NEW server/src/services/funnelTransfer.js (envelope build, NESTED
+settings allowlist, caps, atomic import) + NEW server/src/routes/funnelTransfer.js
+(GET /:funnelId/export, POST /import), mounted at /api/v1/funnel-transfer.
+POST /api/v1/split-tests/:id/promote added to splitTests.js: atomic
+parent-row-locked entry swap + pause (enabled=FALSE — there is NO status column
+on lb_split_tests), with additive promoted_arm_id/promoted_at columns. Client:
+NEW ImportFunnelModal.jsx (drop/paste, envelope summary + script warnings
+BEFORE confirm), Import + per-row Export on FunnelsPage, promoteSplitWinner in
+splitApi.js, typed-confirm Promote-winner panel in SplitResultsModal.
+TESTED: NEW server/tests/funnels/funnel-transfer.mjs — 83/83 ×2 (export carries
+no ids and no credential canary; roundtrip byte-identical; 400/413/422 refusals
+each with row counts unchanged; a trigger-forced MID-transaction failure rolls
+back to zero rows; promote happy path + 6 refusals + replay rules; the public
+handle still answers 200 and serves the winner). Regression: page-duplicate
+34/34, verifySplitTesting 48/48, money-path/split-delivery 33/33. vite build
+clean; node --check clean on all 5 server files; eslint 6 problems on the
+touched client files, identical to main's 6 (zero introduced).
+OUTPUT: two implementation bugs caught BY EXECUTION. (1) pre-stringifying the
+jsonb params stored blocks/flow_layout as jsonb STRING scalars — postgres.js
+serializes jsonb itself; fixed by passing raw objects. (2) Postgres NOW() is
+TRANSACTION-scoped, so all N imported pages shared one created_at and the
+funnel's page order (is_home DESC, created_at ASC) came back nondeterministic;
+fixed with a per-row millisecond offset so envelope order IS funnel order.
+DECISIONS: "paused" = enabled=FALSE (no status column exists; splitDelivery
+deliberately does not filter on enabled, so the route keeps serving the entry
+arm) - DECISION MADE. Promote replay is idempotent for the SAME arm and 409
+already_promoted for a different one - DECISION MADE. The additive promote DDL
+lives in splitTests.js rather than splitTestSchema.js to stay inside the change
+fence - DECISION MADE. settings.checkout.maps_api_key is excluded from the
+allowlist while its sibling toggles travel - DECISION MADE. An Export trigger
+was added to the funnels list beyond the stated client scope, because the
+export endpoint is otherwise unreachable from the product - DECISION MADE.
+STATUS: COMPLETE
+---

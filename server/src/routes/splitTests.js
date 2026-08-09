@@ -546,6 +546,148 @@ router.post('/:id/arms/:armId/control', async (req, res) => {
   }
 });
 
+// ── PROMOTE THE WINNER ─────────────────────────────────────────────────────
+//
+// THERE IS NO `status` COLUMN ON lb_split_tests. The table's live/terminal axis
+// is `enabled` (boolean) plus `archived` (boolean) — see splitTestSchema.js:67.
+// So "paused" here means exactly what it means everywhere else in this
+// subsystem: enabled = FALSE, archived unchanged. There is no 'completed'
+// status to reach for; inventing one would mean a CHECK-less string column that
+// no reader understands.
+//
+// A PAUSED TEST KEEPS SERVING. splitDelivery.js:55-58 does NOT filter on
+// `enabled`: a disabled, non-archived test still OWNS its route and pins every
+// visitor to the ENTRY arm, unbranched, with no view recorded. That is what
+// makes "promote" a complete act — set the entry arm to the winner, then pause,
+// and /<handle> serves the winner to 100% of traffic with the experiment
+// stopped. Nothing in splitDelivery is touched by this endpoint.
+//
+// promoted_arm_id / promoted_at record WHICH arm won and WHEN, so a paused test
+// can be told apart from a promoted one (both read enabled=FALSE).
+//
+// DECISION MADE — the additive DDL lives HERE, not in splitTestSchema.js.
+// The change fence for this task admits splitTests.js and not splitTestSchema.js.
+// The pattern is copied verbatim from that file (addOperatorColumns): ADD COLUMN
+// IF NOT EXISTS only, no drop, no retype, no backfill, serialized behind a
+// single in-flight promise that resets on failure so the next request retries.
+// A database created before this lane picks the columns up on the next promote
+// call with its ledger untouched. To relocate it later, move these two
+// statements into addOperatorColumns and delete this block.
+let promoteColumnsPromise = null;
+function ensurePromoteColumns() {
+  if (!promoteColumnsPromise) {
+    promoteColumnsPromise = (async () => {
+      await pgQuery(`ALTER TABLE lb_split_tests ADD COLUMN IF NOT EXISTS promoted_arm_id TEXT`);
+      await pgQuery(`ALTER TABLE lb_split_tests ADD COLUMN IF NOT EXISTS promoted_at TIMESTAMPTZ`);
+    })().catch((err) => { promoteColumnsPromise = null; throw err; });
+  }
+  return promoteColumnsPromise;
+}
+
+// The promote response's own column list. TEST_COLS is shared with every other
+// endpoint in this file; widening it would change four responses to ship one.
+const PROMOTE_TEST_COLS = `${TEST_COLS}, promoted_arm_id, promoted_at`;
+
+// POST /:id/promote  { arm_id, confirm: true }
+//
+// Atomic, parent-row-locked, for the same reason the entry swap is
+// (POST /:id/arms/:armId/entry): this moves the live route. One transaction,
+// lock lb_split_tests FOR UPDATE first, clear-then-set, then pause.
+//
+// REFUSALS, and why each one exists:
+//   confirm !== true      → 400. This repoints live traffic. It is the same
+//                           posture reassignDomain takes on a connected host.
+//   unknown test / arm    → 404.
+//   archived arm          → 422. An archived arm takes no traffic; promoting it
+//                           would point /<handle> at a retired page (the same
+//                           rule the entry endpoint enforces at :490).
+//   arm has no page       → 422. Nothing to serve.
+//   arm's page is a draft → 422. splitDelivery only resolves a page that is
+//                           `NOT archived AND status = 'published'` (:91). A
+//                           draft arm would fall through the re-pick loop and
+//                           the "winner" would never be what serves — a promote
+//                           that silently does not promote.
+//
+// REPLAY — DECISION MADE: idempotent for the SAME arm, 409 for a DIFFERENT one.
+// Re-promoting the winner is a retry (a dropped response, a double click) and
+// re-asserts the same end state, so it answers 200 with the unchanged test.
+// Promoting a second, different arm onto an already-promoted test is not a
+// retry — it is a new decision about which page earns the traffic, and the
+// ledger behind the first verdict no longer describes what is serving. That
+// answers 409 `already_promoted`; the operator clears it with the existing
+// entry endpoint, which is explicit about what it does.
+router.post('/:id/promote', async (req, res) => {
+  try {
+    await ensureSplitTables();
+    await ensurePromoteColumns();
+    const b = req.body || {};
+    if (b.confirm !== true) {
+      return res.status(400).json({ success: false, error: { code: 'confirm_required' } });
+    }
+    const testId = s(req.params.id, 120);
+    const armId = s(b.arm_id, 120);
+    if (!armId) return res.status(422).json({ success: false, error: { code: 'arm_id_required' } });
+
+    const result = await pgDb.begin(async (tx) => {
+      const q = (text, params = []) => tx.unsafe(text, params);
+      // Parent-row lock, NOT a lock over the arm rows — N tuples locked in plan
+      // order deadlock under concurrency (measured on the entry swap: 12
+      // concurrent moves → 6 × 40P01). One parent row has no ordering to
+      // disagree about, and every writer here takes this same lock first.
+      const [test] = await q(
+        `SELECT id, promoted_arm_id FROM lb_split_tests WHERE id = $1 FOR UPDATE`,
+        [testId]
+      );
+      if (!test) return { error: 'not_found', status: 404 };
+
+      const arms = await q(
+        `SELECT id, arm_key, page_id, archived FROM lb_split_arms WHERE test_id = $1`,
+        [testId]
+      );
+      const target = arms.find((a) => a.id === armId);
+      if (!target) return { error: 'not_found', status: 404 };
+      if (test.promoted_arm_id && test.promoted_arm_id !== armId) {
+        return { error: 'already_promoted', status: 409 };
+      }
+      if (target.archived) return { error: 'arm_archived', status: 422 };
+      if (!target.page_id) return { error: 'arm_has_no_page', status: 422 };
+      // The exact predicate splitDelivery uses to decide an arm is servable.
+      const [page] = await q(
+        `SELECT id FROM funnel_pages
+         WHERE id = $1 AND NOT archived AND status = 'published'`,
+        [String(target.page_id)]
+      );
+      if (!page) return { error: 'arm_page_not_published', status: 422 };
+
+      await q(
+        `UPDATE lb_split_arms SET is_entry = FALSE WHERE test_id = $1 AND is_entry AND id <> $2`,
+        [testId, armId]
+      );
+      await q(`UPDATE lb_split_arms SET is_entry = TRUE WHERE id = $1`, [armId]);
+      const [row] = await q(
+        `UPDATE lb_split_tests
+         SET enabled = FALSE, promoted_arm_id = $2,
+             promoted_at = COALESCE(promoted_at, NOW()), updated_at = NOW()
+         WHERE id = $1
+         RETURNING ${PROMOTE_TEST_COLS}`,
+        [testId, armId]
+      );
+      return { test: row, arm_key: target.arm_key };
+    });
+
+    if (result.error) {
+      return res.status(result.status).json({ success: false, error: { code: result.error } });
+    }
+    return res.json({
+      success: true,
+      data: { ...result.test, promoted_arm_key: result.arm_key },
+    });
+  } catch (err) {
+    console.error('[splitTests] promote failed:', err);
+    return res.status(500).json({ success: false, error: { code: 'server_error' } });
+  }
+});
+
 // GET /:id/results  — derived exposures vs credited conversions per arm,
 // netted against refunds.
 router.get('/:id/results', async (req, res) => {

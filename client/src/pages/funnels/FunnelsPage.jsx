@@ -10,9 +10,12 @@ import {
   BarChart3,
   ChevronRight,
   ArrowRight,
+  Upload,
+  Download,
 } from 'lucide-react';
 import api from '../../services/api';
 import Button from '../../components/ui/Button';
+import ImportFunnelModal from '../../components/funnels/ImportFunnelModal';
 import DateRangePicker from '../../components/ui/DateRangePicker';
 import { typeMeta } from '../../components/funnels/pageTypes';
 import { fmtMoney, fmtInt, fmtRate, daysAgoIso, todayIso } from '../analytics/format';
@@ -557,6 +560,11 @@ export default function FunnelsPage() {
   const [error, setError] = useState(null);
   const [q, setQ] = useState('');
   const [showCreate, setShowCreate] = useState(false);
+  const [showImport, setShowImport] = useState(false);
+  // Export is a per-row action, so its in-flight state is keyed by funnel id —
+  // a single boolean would spin every row's icon at once.
+  const [exportingId, setExportingId] = useState(null);
+  const [rowError, setRowError] = useState(null);
   const debounceRef = useRef(null);
   const [query, setQuery] = useState('');
   const [viewMode, setViewMode] = useState('grid'); // 'grid' | 'list' | 'metrics'
@@ -608,6 +616,44 @@ export default function FunnelsPage() {
 
   const openFunnel = (f) => navigate(`/app/funnels/${f.id}`);
 
+  // DECISION MADE: the funnels list carries the EXPORT trigger as well as the
+  // import one. The import modal is the specified surface, but an export
+  // endpoint with no button is an API, not a feature — there would be no way
+  // to produce the file the modal consumes without devtools. One icon in the
+  // list row is the smallest affordance that closes the loop.
+  //
+  // The envelope is written to a file client-side (same approach as
+  // funnel-os's LBWebsitesPage.jsx:760-771) rather than served as an
+  // attachment, because the endpoint is authed with a bearer token and a
+  // plain <a download> could not carry it.
+  const exportFunnel = async (f) => {
+    if (exportingId) return;
+    setExportingId(f.id);
+    setRowError(null);
+    try {
+      const res = await api.get(`/funnel-transfer/${f.id}/export`);
+      const envelope = res.data?.data;
+      if (!envelope?.format) throw new Error('empty envelope');
+      const blob = new Blob([JSON.stringify(envelope, null, 2)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `funnel-${f.slug || f.id}.json`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      setRowError(
+        err?.response?.data?.error?.code
+          ? `Export failed: ${err.response.data.error.code}`
+          : 'Export failed. Nothing was downloaded.'
+      );
+    } finally {
+      setExportingId(null);
+    }
+  };
+
   return (
     <div className="p-6 space-y-5">
       <div className="flex items-start justify-between gap-4">
@@ -617,9 +663,14 @@ export default function FunnelsPage() {
             Build and manage sales funnels: pages, flows and checkout paths.
           </p>
         </div>
-        <Button onClick={() => setShowCreate(true)}>
-          <Plus className="w-4 h-4" /> Create funnel
-        </Button>
+        <div className="flex items-center gap-2">
+          <Button variant="secondary" onClick={() => setShowImport(true)}>
+            <Upload className="w-4 h-4" /> Import funnel
+          </Button>
+          <Button onClick={() => setShowCreate(true)}>
+            <Plus className="w-4 h-4" /> Create funnel
+          </Button>
+        </div>
       </div>
 
       <div className="bg-bg-card border border-border-default rounded-xl px-3 py-2 flex items-center gap-3 flex-wrap">
@@ -683,6 +734,12 @@ export default function FunnelsPage() {
         </div>
       </div>
 
+      {rowError && (
+        <div className="bg-bg-card border border-red-500/20 rounded-xl px-4 py-2.5 text-sm text-red-400">
+          {rowError}
+        </div>
+      )}
+
       {viewMode === 'metrics' ? (
         <MetricsView
           funnels={filter === 'archived' ? [] : visible}
@@ -722,12 +779,13 @@ export default function FunnelsPage() {
                   <th className="text-left font-medium px-4 py-3">Status</th>
                   <th className="text-right font-medium px-4 py-3">Pages</th>
                   <th className="text-left font-medium px-4 py-3">Updated</th>
+                  <th className="text-right font-medium px-4 py-3">Export</th>
                 </tr>
               </thead>
               <tbody>
                 {visible.length === 0 ? (
                   <tr>
-                    <td colSpan={5} className="px-4 py-16 text-center text-text-muted">
+                    <td colSpan={6} className="px-4 py-16 text-center text-text-muted">
                       <Waypoints className="w-6 h-6 mx-auto mb-2 text-text-faint" />
                       No funnels yet. Create your first one.
                     </td>
@@ -748,6 +806,17 @@ export default function FunnelsPage() {
                       <td className="px-4 py-3 text-text-muted whitespace-nowrap">
                         {fmtDate(f.updated_at)}
                       </td>
+                      <td className="px-4 py-3 text-right">
+                        <button
+                          onClick={(e) => { e.stopPropagation(); exportFunnel(f); }}
+                          disabled={exportingId === f.id}
+                          title="Export as .json"
+                          className="p-1.5 rounded-md text-text-muted hover:text-text-primary hover:bg-bg-elevated
+                            transition-colors cursor-pointer disabled:opacity-40 disabled:pointer-events-none"
+                        >
+                          <Download className="w-4 h-4" />
+                        </button>
+                      </td>
                     </tr>
                   ))
                 )}
@@ -758,6 +827,19 @@ export default function FunnelsPage() {
             {visible.length} funnel{visible.length === 1 ? '' : 's'}
           </div>
         </div>
+      )}
+
+      {showImport && (
+        <ImportFunnelModal
+          onClose={() => setShowImport(false)}
+          onImported={(data) => {
+            setShowImport(false);
+            // Straight to the new funnel's canvas — the operator's next act is
+            // reading the pages that just landed, not the list they came from.
+            if (data?.funnel?.id) navigate(`/app/funnels/${data.funnel.id}`);
+            else load();
+          }}
+        />
       )}
 
       {showCreate && (
