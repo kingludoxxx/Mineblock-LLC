@@ -3054,3 +3054,81 @@ were left alone: rewriting live data-loading behaviour with no harness over it,
 to satisfy a rule the repo violates 147 times, is the worse trade.
 STATUS: COMPLETE
 ---
+
+---
+TIMESTAMP: 2026-08-10 02:05
+TASK: Split-test statistics — review fix round + reference-tool parity
+BUILT: Two rounds on feat/split-statistics. (1) FIX ROUND M1-M5 + minors.
+M1: the statistics floor gated on EVERY arm, so a fresh arm — or an archived
+zero-traffic arm, which readResults returns on essentially every concluded test
+— nulled every figure on a 20,000-exposure test while the windowed banner above
+still named a winner. The comparison family is now scoped: arms at/above
+MIN_STATS_SAMPLE qualify and are compared, counted in the Bonferroni correction
+and subject to the readiness floors; arms below it get stats_status
+'insufficient', keep their readiness block, and are reported in
+verdict.pending_arms. A sub-floor CONTROL withholds under its own reason. M2:
+p is published no lower than 1e-6 and confidence no higher than 0.9999 (with
+p_value_floored declared), and fmtPct caps confidence display — "100.0%
+confidence" was reachable two different ways. Significance is still judged on
+the TRUE p, so the floor cannot move a verdict. M3: the green "significant"
+label is gated on readiness via a pure predicate, and the sample_small /
+normal_approx_weak / floored-p hedges now render (they were shipped and
+displayed nowhere). M4: the stats denominator is `exposures` end-to-end —
+two different numbers were both called "visitors" on one screen. M5:
+time_to_decision_days was dead; wired from ledger timestamps
+(first->last exposure, span floored at one day) with the window choice and its
+bias documented. Minors: orders/conversions honoured at the entry point with an
+explicit first-positive convention; rev_per_exposure withheld under the same
+floor as cvr; prose matched to the shape it describes; the orphan projection
+sentence removed from the winner state; funnelAnalytics passes withStats:false
+so the windowed hot path stops computing a second verdict nothing reads.
+(2) PARITY ROUND: audited the reference layout first and found the verdict
+banner, the delivery-epoch honesty note, the created-date sub-line and the
+window picker ALREADY present and correct — not rebuilt. Added a day-by-day
+table (new readDailySeries, joined on the exposure row's day so numerator and
+denominator describe one cohort), a page-all-time table labelled "not a
+verdict", a per-arm Sample row derived from the service's own floors, a
+Conv. confidence row, 4-decimal rev/visitor, a method footnote, and real
+per-arm opt-in submits attributed by arm page with three guards that REFUSE
+with a reason rather than degrading to zeros.
+TESTED: server/tests/split/statistics.mjs 362/362 (from 257 at review time).
+New: P9 multi-arm scoping (the exact regression shape — a 12-exposure arm now
+changes neither winner, comparison count nor corrected alpha; a 120-exposure
+arm is THIN and still blocks; a third qualifying arm does tighten alpha), P10
+display floor + proof it moves no verdict, P11 total ranked comparator, P12 one
+floor for both rates, P13 prose/shape agreement, P14 time-to-decision wired and
+monotone in the rate, P15 both input spellings byte-identical, C8 rate read from
+the ledger checked against the identity days=(required-held)*arms/rate, C9
+withStats:false byte-identical minus `stats`, C10 daily series shape, C11
+submits real-or-refused, B6 formatter shapes, B7 a STRUCTURAL check against the
+shipped JSX that every confidence cell opts into the display cap and the
+vs-control cell does not. Regressions all identical to baseline:
+verifySplitTesting 48/48, verifySplitUiGuards 25/25, split-delivery 33/33,
+verifyFunnelAnalytics 212 passed/1 failed (the same pre-existing DST failure,
+measured before any change). vite build exit 0; eslint 2 pre-existing errors,
+0 added, 0 warnings.
+OUTPUT: 362/362; 48/48; 25/25; 33/33; 212+1; VITE_EXIT=0. Two more bugs caught
+BY EXECUTION: (a) my first fmtPct cap applied to MAGNITUDE and silently
+corrupted "-100%" — an arm that earned nothing, real data — to "-99.99%";
+(b) the C8 estimate assertion I hand-wrote assumed required=300 when the
+observed-effect sizing returns 804, so the assertion was wrong, not the code.
+DECISIONS: (1) The cap is OPT-IN, not opt-out — confidence is bounded at 100 by
+definition, lifts are not, and defaulting to capped is what corrupted -100%.
+(2) Daily rates are NOT withheld below the stats floor: the denominator prints
+beside every cell and nothing in the verdict reads the series, so it is a shape
+reading rather than a verdict input. (3) The exposure-rate window is
+first->last exposure, NOT first->now (a paused test would decay toward "needs
+400 more days") and NOT a trailing 7d (a younger test would divide by a span it
+never lived through); the known optimistic bias is documented and
+required_sample_per_arm is always shown beside it. (4) LANE BOUNDARY HELD: the
+reference's windowed Submits sub-lines need funnelAnalytics.js, an analytics-lane
+file; per CLAUDE.md section 5 I did not make that change unilaterally and
+flagged it instead. The withStats:false edit there is a performance fix to an
+existing call, not a feature. (5) NO BROWSER VERIFICATION ATTEMPTED: the running
+preview server serves /Users/ludo against production puure-dashboard.onrender.com
+— a different project from this worktree and a live revenue surface — so it
+cannot verify this code and driving it would breach the live-page rule. The UI
+is verified by build, lint, 39 executable assertions over the real client module,
+and the B7 structural check against the shipped JSX.
+STATUS: COMPLETE
+---
