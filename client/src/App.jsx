@@ -27,6 +27,8 @@ import PageBuilderPage from './pages/funnels/builder/PageBuilderPage';
 // INTEGRATION HOOK (analytics lane) — additive import
 import FunnelAnalyticsPage from './pages/analytics/FunnelAnalyticsPage';
 import IntegrationsPage from './pages/integrations/IntegrationsPage'; // KLAVIYO LANE: single additive import
+// INTEGRATION HOOK (live-view lane) — additive import
+import LiveViewPage from './pages/live/LiveViewPage';
 import Settings from './pages/Settings';
 import NotFound from './pages/NotFound';
 import SupplierPublicSheet from './pages/public/SupplierPublicSheet';
@@ -139,6 +141,8 @@ export default function App() {
           {/* INTEGRATION HOOK (analytics lane) — ONE additive route line */}
           <Route path="funnel-analytics" element={<PageGate permission="funnels:access"><FunnelAnalyticsPage /></PageGate>} />
           <Route path="integrations" element={<PageGate permission="funnels:access"><IntegrationsPage /></PageGate>} /> {/* KLAVIYO LANE: single additive route line */}
+          {/* INTEGRATION HOOK (live-view lane) — ONE additive route line */}
+          <Route path="live" element={<PageGate permission="funnels:access"><LiveViewPage /></PageGate>} />
 
           {/* Intel */}
           <Route path="meta" element={<PageGate permission="meta-ads:access"><MetaPage /></PageGate>} />

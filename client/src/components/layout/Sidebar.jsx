@@ -30,6 +30,7 @@ import {
   Monitor,
   Bug,
   Signal,
+  Radio,
   Video,
   ShoppingCart,
   Store,
@@ -56,6 +57,8 @@ const navGroups = [
       { to: '/app/funnels', icon: Waypoints, label: 'Funnels', permission: 'funnels:access' },
       // INTEGRATION HOOK (analytics lane) — ONE additive sidebar line
       { to: '/app/funnel-analytics', icon: BarChart3, label: 'Funnel Analytics', permission: 'funnels:access' },
+      // INTEGRATION HOOK (live-view lane) — ONE additive sidebar line
+      { to: '/app/live', icon: Radio, label: 'Live View', permission: 'funnels:access' },
       { to: '/app/domains', icon: Globe, label: 'Domain Hub', permission: 'funnels:access' }, // DOMAIN-HUB LANE: single additive entry
       { to: '/app/integrations', icon: Plug, label: 'Integrations', permission: 'funnels:access' }, // KLAVIYO LANE: single additive entry
       { to: '/app/brief-agent', icon: Sparkles, label: 'Brief Agent', permission: 'brief-agent:access' },
