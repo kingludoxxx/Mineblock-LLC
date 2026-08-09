@@ -30,6 +30,7 @@ import splitTestsRoutes from './splitTests.js';
 import trackingAdminRoutes from './trackingAdmin.js';
 import domainHubRoutes from './domainHub.js';
 import funnelAnalyticsRoutes from './funnelAnalytics.js';
+import aiDeveloperRoutes from './aiDeveloper.js';
 
 const mountRoutes = (app) => {
   app.use('/api/v1/users', userRoutes);
@@ -67,6 +68,9 @@ const mountRoutes = (app) => {
   // server-side statement_timeout and no circuit-breaker participation, so a
   // slow report can never starve or trip the money path's shared pool.
   app.use('/api/v1/funnel-analytics', funnelAnalyticsRoutes);
+  // AI Developer — builder chat that PROPOSES block edits (read-only on
+  // funnel_pages; the editor applies ops in memory) + Higgsfield job proxy.
+  app.use('/api/v1/ai-developer', aiDeveloperRoutes);
 };
 
 export default mountRoutes;
