@@ -206,6 +206,10 @@ function ProposalCard({ proposal, canEdit, busy, onAccept, onDismiss }) {
 function MemberPicker({ rows, exclude, onAdd, busy }) {
   const [q, setQ] = useState('');
   const [unitsPer, setUnitsPer] = useState({});
+  // A variant already in another group needs a SECOND, deliberate click: the
+  // server refuses the move without an explicit steal flag, and the operator
+  // should see what they are taking it out of before that flag is sent.
+  const [armed, setArmed] = useState('');
 
   const matches = useMemo(() => {
     const needle = q.trim().toLowerCase();
@@ -260,14 +264,27 @@ function MemberPicker({ rows, exclude, onAdd, busy }) {
                 />
                 <Button
                   size="sm"
-                  variant="secondary"
+                  variant={armed === r.variant_id ? 'danger' : 'secondary'}
                   disabled={Boolean(busy)}
+                  title={r.cost_item_id
+                    ? 'This variant is in another cost group — moving it changes which rate answers its cost'
+                    : 'Add this variant to the group'}
                   onClick={() => {
-                    onAdd(r.variant_id, unitsPer[r.variant_id] ?? 1);
+                    // Not in a group → add outright. In one → arm, then move.
+                    if (!r.cost_item_id) {
+                      onAdd(r.variant_id, unitsPer[r.variant_id] ?? 1, false);
+                      setQ('');
+                      return;
+                    }
+                    if (armed !== r.variant_id) { setArmed(r.variant_id); return; }
+                    onAdd(r.variant_id, unitsPer[r.variant_id] ?? 1, true);
+                    setArmed('');
                     setQ('');
                   }}
                 >
-                  <Plus className="w-3 h-3" />
+                  {r.cost_item_id
+                    ? (armed === r.variant_id ? 'Confirm move' : 'Move here')
+                    : <Plus className="w-3 h-3" />}
                 </Button>
               </span>
             </li>
@@ -278,9 +295,177 @@ function MemberPicker({ rows, exclude, onAdd, busy }) {
   );
 }
 
+// ── New-group panel ────────────────────────────────────────────────────────
+// The operator PICKS the members. An earlier draft grabbed the first two
+// unbound variants off the page — variants nobody chose, bound to a cost
+// item that is about to carry a real rate. Selection is explicit here, and
+// the submit stays disabled below two, because a one-member group is a rate
+// that reaches one variant by a longer route.
+function NewGroupPanel({ rows, busy, onCancel, onCreate }) {
+  const [name, setName] = useState('');
+  const [q, setQ] = useState('');
+  const [picked, setPicked] = useState({}); // variant_id → units_per
+
+  const available = useMemo(
+    () => rows.filter((r) => !r.cost_item_id && r.coverage !== 'ignored'),
+    [rows],
+  );
+  const matches = useMemo(() => {
+    const needle = q.trim().toLowerCase();
+    const base = needle
+      ? available.filter((r) => `${r.product_title} ${r.variant_title} ${r.variant_id}`.toLowerCase().includes(needle))
+      : available;
+    return base.slice(0, 40);
+  }, [q, available]);
+
+  const chosen = Object.keys(picked);
+  const toggle = (vid) => setPicked((s) => {
+    const next = { ...s };
+    if (next[vid] === undefined) next[vid] = 1; else delete next[vid];
+    return next;
+  });
+
+  return (
+    <div className="mt-3 rounded-lg border border-border-default bg-bg-elevated/30 p-3 space-y-3" data-testid="cost-group-new">
+      <input
+        value={name}
+        onChange={(e) => setName(e.target.value)}
+        placeholder="Group name — e.g. Breast Lift bottle"
+        className="w-full h-[32px] px-2.5 rounded-lg border border-border-default bg-bg-elevated
+                   text-[12px] text-text-primary placeholder:text-text-faint focus:outline-none
+                   focus:border-border-strong"
+        data-testid="cost-group-new-name"
+      />
+
+      <div>
+        <div className="relative">
+          <Search className="w-3.5 h-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-text-faint" />
+          <input
+            value={q}
+            onChange={(e) => setQ(e.target.value)}
+            placeholder={`Search ${available.length} variants that are not in a group yet`}
+            className="w-full h-[30px] pl-8 pr-2 rounded-lg border border-border-default bg-bg-elevated
+                       text-[12px] text-text-primary placeholder:text-text-faint focus:outline-none"
+            data-testid="cost-group-new-search"
+          />
+        </div>
+        {available.length === 0 ? (
+          <p className="mt-2 text-[11px] text-text-muted">
+            Every variant in the catalog is already in a group. Unbind one first, or run detection.
+          </p>
+        ) : (
+          <ul className="mt-2 space-y-1 max-h-[240px] overflow-y-auto">
+            {matches.map((r) => {
+              const on = picked[r.variant_id] !== undefined;
+              return (
+                <li key={r.variant_id} className="flex items-center gap-2 text-[12px]">
+                  <input
+                    type="checkbox"
+                    id={`pick-${r.variant_id}`}
+                    checked={on}
+                    onChange={() => toggle(r.variant_id)}
+                    className="shrink-0 accent-accent"
+                  />
+                  <label htmlFor={`pick-${r.variant_id}`} className="min-w-0 truncate text-text-primary cursor-pointer">
+                    <span className="text-text-muted">{r.product_title}</span>
+                    {r.variant_title ? ` · ${r.variant_title}` : ''}
+                  </label>
+                  {on && (
+                    <span className="ml-auto flex items-center gap-1.5 shrink-0">
+                      <label className="text-text-faint" htmlFor={`nu-${r.variant_id}`}>units</label>
+                      <input
+                        id={`nu-${r.variant_id}`}
+                        type="number"
+                        min="1"
+                        step="1"
+                        value={picked[r.variant_id]}
+                        onChange={(e) => setPicked((s) => ({ ...s, [r.variant_id]: e.target.value }))}
+                        className="w-14 h-[26px] px-1.5 rounded-md border border-border-default bg-bg-elevated
+                                   text-right tabular-nums text-text-primary focus:outline-none"
+                        title="How many of the GROUP's unit this variant contains — a 3-pack is 3"
+                      />
+                    </span>
+                  )}
+                </li>
+              );
+            })}
+          </ul>
+        )}
+      </div>
+
+      <div className="flex items-center gap-2 flex-wrap">
+        <span className="text-[11px] text-text-muted">
+          {chosen.length} selected{chosen.length < 2 ? ' — a group needs at least two' : ''}
+        </span>
+        <span className="ml-auto flex items-center gap-2">
+          <Button
+            size="sm"
+            variant="primary"
+            loading={busy === 'create'}
+            disabled={!name.trim() || chosen.length < 2 || Boolean(busy)}
+            onClick={() => onCreate(name.trim(), chosen.map((vid) => ({
+              variant_id: vid, units_per: Number(picked[vid]) || 1,
+            })))}
+            data-testid="cost-group-new-submit"
+          >
+            Create group
+          </Button>
+          <Button size="sm" variant="ghost" onClick={onCancel}>Cancel</Button>
+        </span>
+      </div>
+    </div>
+  );
+}
+
+// ── Delete confirm ─────────────────────────────────────────────────────────
+// Archiving a group unbinds every member, so from today those variants lose
+// the cost the group was giving them. That is a margin change on live
+// revenue, and it takes more than one stray click: the operator types the
+// group's name back.
+function DeleteConfirm({ group, busy, onCancel, onConfirm }) {
+  const [typed, setTyped] = useState('');
+  const armed = typed.trim().toLowerCase() === String(group.name || '').trim().toLowerCase();
+  return (
+    <div className="mt-3 rounded-lg border border-danger/30 bg-danger/5 p-3 space-y-2" data-testid="cost-group-delete-confirm">
+      <p className="text-[12px] text-text-primary flex items-start gap-1.5">
+        <AlertTriangle className="w-3.5 h-3.5 mt-[2px] text-danger shrink-0" />
+        <span>
+          Archiving <strong>{group.name}</strong> unbinds its{' '}
+          <span className="tabular-nums">{group.member_count}</span> variant
+          {group.member_count === 1 ? '' : 's'}. From today they lose this group&rsquo;s cost and fall back to
+          their own rate, or to no cost at all — which withholds their profit rather than reporting it as
+          100% margin. Days they were already members keep their cost, and the group&rsquo;s rate history is kept.
+        </span>
+      </p>
+      <div className="flex items-center gap-2 flex-wrap">
+        <input
+          value={typed}
+          onChange={(e) => setTyped(e.target.value)}
+          placeholder={`Type "${group.name}" to confirm`}
+          className="flex-1 min-w-[200px] h-[30px] px-2.5 rounded-lg border border-border-default bg-bg-elevated
+                     text-[12px] text-text-primary placeholder:text-text-faint focus:outline-none"
+          data-testid="cost-group-delete-typed"
+        />
+        <Button
+          size="sm"
+          variant="danger"
+          disabled={!armed || Boolean(busy)}
+          loading={busy === `del:${group.cost_item_id}`}
+          onClick={onConfirm}
+          data-testid="cost-group-delete-confirm-btn"
+        >
+          Archive group
+        </Button>
+        <Button size="sm" variant="ghost" onClick={onCancel}>Cancel</Button>
+      </div>
+    </div>
+  );
+}
+
 // ── Group row ──────────────────────────────────────────────────────────────
 function GroupCard({ group, rows, canEdit, busy, onAddMember, onRemoveMember, onDelete }) {
   const [open, setOpen] = useState(false);
+  const [confirming, setConfirming] = useState(false);
   const g = group;
   const exclude = useMemo(
     () => new Set((g.members || []).map((m) => String(m.variant_id))),
@@ -303,12 +488,31 @@ function GroupCard({ group, rows, canEdit, busy, onAddMember, onRemoveMember, on
               <Layers className="w-3.5 h-3.5 text-accent-text shrink-0" />
               <span className="text-sm text-text-primary truncate">{g.name}</span>
               <Chip>{g.member_count} variants</Chip>
+              {/* A group everything was unbound out of still holds a rate that
+                  now reaches nobody. Say so — an ordinary empty row reads as
+                  "nothing to see". */}
+              {g.is_empty && (
+                <Chip tone="warn" title="This group has no members, so its rate reaches no variant">
+                  empty — rate reaches nobody
+                </Chip>
+              )}
               {shadowed > 0 && (
                 <Chip
                   tone="warn"
                   title="These members have their OWN variant rate, which beats the group rate — the group cost does not move them"
                 >
                   {shadowed} shadowed
+                </Chip>
+              )}
+              {/* N5 — a ship-only variant rate shadows the group's SHIPPING
+                  but not its COGS. Calling both "shadowed" would say the
+                  group cost is inert when it is doing all the work. */}
+              {(g.coverage?.ship_shadowed ?? 0) > 0 && (
+                <Chip
+                  tone="warn"
+                  title="These members have their own SHIPPING rate, which beats the group's ship map. Their group COGS still applies."
+                >
+                  {g.coverage.ship_shadowed} ship-only
                 </Chip>
               )}
             </span>
@@ -333,7 +537,7 @@ function GroupCard({ group, rows, canEdit, busy, onAddMember, onRemoveMember, on
             size="sm"
             variant="ghost"
             disabled={Boolean(busy)}
-            onClick={() => onDelete(g)}
+            onClick={() => setConfirming((v) => !v)}
             title="Archive this group and unbind its variants. Its rate history is kept."
             data-testid="cost-group-delete"
           >
@@ -341,6 +545,15 @@ function GroupCard({ group, rows, canEdit, busy, onAddMember, onRemoveMember, on
           </Button>
         )}
       </div>
+
+      {confirming && canEdit && (
+        <DeleteConfirm
+          group={g}
+          busy={busy}
+          onCancel={() => setConfirming(false)}
+          onConfirm={async () => { await onDelete(g); setConfirming(false); }}
+        />
+      )}
 
       {open && (
         <div className="mt-3">
@@ -426,7 +639,6 @@ export default function CostGroupsTab({ rows = [], canEdit = false, notify, onCh
   const [detecting, setDetecting] = useState(false);
   const [busy, setBusy] = useState(null);
   const [creating, setCreating] = useState(false);
-  const [newName, setNewName] = useState('');
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -495,12 +707,14 @@ export default function CostGroupsTab({ rows = [], canEdit = false, notify, onCh
     }
   }, [load, notify]);
 
-  const onAddMember = useCallback(async (g, variantId, unitsPer) => {
+  const onAddMember = useCallback(async (g, variantId, unitsPer, steal = false) => {
     setBusy(`add:${g.cost_item_id}`);
     try {
-      const res = await addCostGroupMembers(g.cost_item_id, [
-        { variant_id: variantId, units_per: Number(unitsPer) || 1 },
-      ]);
+      const res = await addCostGroupMembers(
+        g.cost_item_id,
+        [{ variant_id: variantId, units_per: Number(unitsPer) || 1 }],
+        steal,
+      );
       // A move is never silent — it changes which rate answers that variant.
       if (res?.moved?.length) {
         notify?.(`Moved ${res.moved.length} variant(s) out of another cost group.`);
@@ -543,25 +757,13 @@ export default function CostGroupsTab({ rows = [], canEdit = false, notify, onCh
     }
   }, [after, notify]);
 
-  // A group needs two members to exist, so creation starts from a name and
-  // the picker fills it — rather than minting an empty group that would
-  // accept a rate reaching nothing.
-  const onCreate = useCallback(async () => {
-    const name = newName.trim();
-    if (!name) return;
-    const picked = rows.filter((r) => !r.cost_item_id).slice(0, 2);
-    if (picked.length < 2) {
-      notify?.('Need at least two unbound variants in the catalog to start a group.', true);
-      return;
-    }
+  // The members come from the operator's OWN selection in NewGroupPanel —
+  // never from whatever happened to be first on the page.
+  const onCreate = useCallback(async (name, members) => {
     setBusy('create');
     try {
-      await createCostGroup({
-        name,
-        members: picked.map((r) => ({ variant_id: r.variant_id, units_per: 1 })),
-      });
-      notify?.(`Created "${name}". Adjust its members and units-per below, then enter its cost.`);
-      setNewName('');
+      await createCostGroup({ name, members });
+      notify?.(`Created "${name}" with ${members.length} variants. It has no cost yet — enter one from any member.`);
       setCreating(false);
       await after();
     } catch (e) {
@@ -569,7 +771,7 @@ export default function CostGroupsTab({ rows = [], canEdit = false, notify, onCh
     } finally {
       setBusy(null);
     }
-  }, [newName, rows, after, notify]);
+  }, [after, notify]);
 
   return (
     <div className="space-y-4" data-testid="cost-groups-tab">
@@ -655,23 +857,12 @@ export default function CostGroupsTab({ rows = [], canEdit = false, notify, onCh
         </div>
 
         {creating && (
-          <div className="mt-3 flex items-center gap-2 flex-wrap">
-            <input
-              value={newName}
-              onChange={(e) => setNewName(e.target.value)}
-              placeholder="Group name — e.g. Breast Lift bottle"
-              className="flex-1 min-w-[220px] h-[32px] px-2.5 rounded-lg border border-border-default
-                         bg-bg-elevated text-[12px] text-text-primary placeholder:text-text-faint
-                         focus:outline-none focus:border-border-strong"
-              data-testid="cost-group-new-name"
-            />
-            <Button size="sm" variant="primary" loading={busy === 'create'} disabled={!newName.trim() || Boolean(busy)} onClick={onCreate}>
-              Create
-            </Button>
-            <Button size="sm" variant="ghost" onClick={() => { setCreating(false); setNewName(''); }}>
-              Cancel
-            </Button>
-          </div>
+          <NewGroupPanel
+            rows={rows}
+            busy={busy}
+            onCancel={() => setCreating(false)}
+            onCreate={onCreate}
+          />
         )}
 
         <div className="mt-3 space-y-2">

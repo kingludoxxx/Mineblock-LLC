@@ -87,6 +87,48 @@ console.log('\n── G2 pack size + Stage 0 ──');
   ok(P('1 Bottle').size === 1 && P('1 Bottle').rule === 'leading-int', 'G2 leading int "1 Bottle" → 1');
   ok(P('3 Bottles').size === 3, 'G2 leading int "3 Bottles" → 3');
   ok(P('Three Bottles').size === 3 && P('Three Bottles').rule === 'word', 'G2 number word "Three Bottles" → 3');
+
+  // ── B2: WHAT THE LEADING INTEGER ACTUALLY COUNTS ─────────────────────────
+  // The bug this replaces: every leading integer was read as a pack count at
+  // confidence 'exact', so "500 ml Bottle" became units_per 500 and put
+  // $3,000 of COGS on a $60 product.
+  const measure = P('500 ml Bottle');
+  ok(measure.size === 1 && measure.rule === 'measure' && measure.confidence === 'exact',
+    `G2 B2 "500 ml Bottle" is ONE unit, not 500 (size=${measure.size} rule=${measure.rule})`);
+  ok(P('250 mg Capsule').size === 1, 'G2 B2 "250 mg Capsule" → 1 (mg is a measure)');
+  ok(P('16 oz Tub').size === 1, 'G2 B2 "16 oz Tub" → 1');
+  ok(P('1.5 L Bottle').size === 1 || P('1.5 L Bottle').confidence !== 'exact',
+    'G2 B2 a decimal measure never asserts a pack count');
+
+  // Contents and duration count what is INSIDE one container.
+  const caps = P('60 Capsules');
+  ok(caps.size === 1 && caps.confidence === 'low',
+    `G2 B2 "60 Capsules" is ONE bottle of sixty → units_per 1, low (${caps.size}/${caps.confidence})`);
+  ok(P('30 Gummies').confidence === 'low', 'G2 B2 "30 Gummies" → low');
+  ok(P('3 Month Supply').confidence === 'low', 'G2 B2 "3 Month Supply" → low (a duration, not a count)');
+  ok(P('90 Tablets').confidence === 'low', 'G2 B2 "90 Tablets" → low');
+
+  // Compound titles: which number is the pack is unknowable.
+  const compound = P('2 Pack of 3');
+  ok(compound.confidence === 'low' && compound.size === 1,
+    `G2 B2 "2 Pack of 3" → low, NEVER exact 2 (${compound.size}/${compound.confidence})`);
+  ok(P('1 Bottle (60 capsules)').confidence === 'low', 'G2 B2 a parenthetical second number → low');
+  ok(P('3 x 2 Bottles').confidence === 'low', 'G2 B2 "3 x 2 Bottles" → low');
+
+  // Real count nouns still parse outright.
+  ok(P('2 Pack').size === 2 && P('2 Pack').confidence === 'exact', 'G2 B2 "2 Pack" → exact 2');
+  ok(P('6 Pieces').size === 6 && P('6 Pieces').confidence === 'exact', 'G2 B2 "6 Pieces" → exact 6');
+  ok(P('4 Boxes').size === 4, 'G2 B2 "4 Boxes" → exact 4');
+
+  // The auto cap: a big number needs an operator, not a regex.
+  const over = P('48 Pack');
+  ok(over.size === 1 && over.confidence === 'low',
+    `G2 B2 "48 Pack" is above the ${detect.MAX_AUTO_UNITS_PER} auto cap → low (${over.size}/${over.confidence})`);
+  ok(P('24 Pack').size === 24 && P('24 Pack').confidence === 'exact', 'G2 B2 24 is exactly at the cap → exact');
+
+  // A bare count or an unknown noun is plausible but unproven.
+  ok(P('3 Widgets').confidence === 'low', 'G2 B2 an unknown noun → low, never exact');
+  ok(P('12').confidence === 'low' || P('12').confidence === 'none', 'G2 B2 a bare number never asserts a pack');
   const bogo = P('Buy 2 Get 1 Free (3 Bottles)');
   ok(bogo.size === 3 && bogo.confidence === 'review', 'G2 BOGO reconciles → 3, confidence review');
   const bad = P('Buy 2 Get 2 Free (3 Bottles)');
@@ -264,7 +306,7 @@ await costs.appendRate({
 }
 {
   // units_per multiplies COGS but NOT shipping — the deliberate asymmetry.
-  const rates = costs.buildRateIndex(await costs.loadRates());
+  const rates = await costs.loadCostIndex();
   const [vcB] = await sql`SELECT * FROM lb_variant_costs WHERE variant_id = ${VB}`;
   const [cogsB, srcB] = costs.resolveUnitCogs(vcB, rates, DAY);
   const [shipB] = costs.resolveUnitShip(vcB, rates, DAY, 'main');
@@ -278,7 +320,7 @@ await costs.appendRate({
   effectiveFrom: DAY, source: 'manual', createdBy: 'harness',
 });
 {
-  const rates = costs.buildRateIndex(await costs.loadRates());
+  const rates = await costs.loadCostIndex();
   const [vcA] = await sql`SELECT * FROM lb_variant_costs WHERE variant_id = ${VA}`;
   const [cogsA, srcA] = costs.resolveUnitCogs(vcA, rates, DAY);
   ok(cogsA === 10 && srcA === 'variant',
@@ -296,7 +338,7 @@ await costs.appendRate({
     scope: 'variant', refId: V_SHIPONLY, unitCogs: null, ship: { default: 2 },
     effectiveFrom: DAY, source: 'manual', createdBy: 'harness',
   });
-  const rates = costs.buildRateIndex(await costs.loadRates());
+  const rates = await costs.loadCostIndex();
   const [vc] = await sql`SELECT * FROM lb_variant_costs WHERE variant_id = ${V_SHIPONLY}`;
   const [c, src] = costs.resolveUnitCogs(vc, rates, DAY);
   const [s] = costs.resolveUnitShip(vc, rates, DAY, 'main');
@@ -318,7 +360,7 @@ console.log('\n── G6 append-only history ──');
     'G6 the superseded row survives VERBATIM — nothing is rewritten in place');
   // …and the OLD day still prices at the OLD rate. This is the whole point:
   // editing a cost today cannot silently restate last quarter.
-  const rates = costs.buildRateIndex(await costs.loadRates());
+  const rates = await costs.loadCostIndex();
   const [vcB] = await sql`SELECT * FROM lb_variant_costs WHERE variant_id = ${VB}`;
   ok(costs.resolveUnitCogs(vcB, rates, DAY)[0] === 90, 'G6 the PAST day still prices at the OLD rate (90)');
   ok(costs.resolveUnitCogs(vcB, rates, RDAY(0))[0] === 132, 'G6 today prices at the NEW rate (44 × 3 = 132)');
@@ -352,10 +394,27 @@ let G2ID = null;
       80, ${sql.json([])}, ${onDay(DAY)}, ${onDay(DAY)})`;
   await sql`INSERT INTO lb_variant_costs (variant_id, product_title, variant_title, price, first_sold, coverage)
             VALUES (${V_UNK}, 'Unknown Good', '1 Bottle', 80, ${DAY}, 'needs_cost')`;
+  // VA is currently in the engine group, so this create is a STEAL — refused
+  // without explicit consent (M4).
+  let refused = null;
+  try {
+    await groups.createGroup({
+      name: 'Unknown group',
+      members: [{ variant_id: V_UNK, units_per: 1 }, { variant_id: VA, units_per: 1 }],
+      createdBy: 'harness',
+    });
+  } catch (e) { refused = e; }
+  ok(refused && refused.code === 'variant_in_other_group',
+    `G8/M4 taking a variant from another group WITHOUT steal:true is refused (${refused && refused.code})`);
+  // …and the refusal ROLLED BACK: no half-made group survives.
+  ok(!(await sql`SELECT 1 FROM lb_cost_items WHERE name = 'Unknown group'`).length,
+    'G8/M4 the refused create left NO group behind (transaction rolled back)');
+
   const g2 = await groups.createGroup({
     name: 'Unknown group',
     members: [{ variant_id: V_UNK, units_per: 1 }, { variant_id: VA, units_per: 1 }],
     createdBy: 'harness',
+    steal: true,
   });
   G2ID = g2.group.cost_item_id;
   // This create TOOK VA out of the engine group — and said so. A rebind is
@@ -367,7 +426,7 @@ let G2ID = null;
     scope: 'item', refId: g2.group.cost_item_id, unitCogs: null, ship: { default: 1 },
     effectiveFrom: DAY, source: 'manual', createdBy: 'harness',
   });
-  const rates = costs.buildRateIndex(await costs.loadRates());
+  const rates = await costs.loadCostIndex();
   const [vc] = await sql`SELECT * FROM lb_variant_costs WHERE variant_id = ${V_UNK}`;
   const [c] = costs.resolveUnitCogs(vc, rates, DAY);
   ok(c === null, `G8 unknown group COGS resolves to NULL, not 0 (${JSON.stringify(c)})`);
@@ -381,7 +440,7 @@ let G2ID = null;
     scope: 'item', refId: g2.group.cost_item_id, unitCogs: 0, ship: { default: 0 },
     effectiveFrom: DAY, source: 'manual', createdBy: 'harness',
   });
-  const rates2 = costs.buildRateIndex(await costs.loadRates());
+  const rates2 = await costs.loadCostIndex();
   const [vc2] = await sql`SELECT * FROM lb_variant_costs WHERE variant_id = ${V_UNK}`;
   ok(costs.resolveUnitCogs(vc2, rates2, DAY)[0] === 0, 'G8 an explicit 0 resolves to 0 (known free)');
   const ov2 = await costs.pnlOverview(DAY, DAY);
@@ -395,10 +454,16 @@ console.log('\n── G4b membership lifecycle ──');
   // Unbinding takes the group's cost away — and the member falls back to
   // UNKNOWN, never to a stale number.
   await groups.removeMembers(GID, [VB]);
-  const rates = costs.buildRateIndex(await costs.loadRates());
+  const rates = await costs.loadCostIndex();
   const [vcB] = await sql`SELECT * FROM lb_variant_costs WHERE variant_id = ${VB}`;
   ok(vcB.cost_item_id === null && Number(vcB.units_per) === 1, 'G4b unbind clears the pointer and resets units_per');
-  ok(costs.resolveUnitCogs(vcB, rates, DAY)[0] === null, 'G4b an unbound member falls back to UNKNOWN, not a stale cost');
+  // The tombstone is effective TODAY, so TODAY falls to unknown while the
+  // days the variant really was a member keep their cost (B1). Asserting the
+  // past went null would be asserting the restatement bug.
+  ok(costs.resolveUnitCogs(vcB, rates, RDAY(0))[0] === null,
+    'G4b an unbound member falls to UNKNOWN today, not a stale cost');
+  ok(costs.resolveUnitCogs(vcB, rates, DAY)[0] === 90,
+    `G4b …while the days it WAS a member keep pricing at 90 (${costs.resolveUnitCogs(vcB, rates, DAY)[0]})`);
   ok(vcB.coverage === 'needs_cost', `G4b …and coverage flips back to needs_cost (${vcB.coverage})`);
   await groups.addMembers(GID, [{ variant_id: VB, units_per: 3 }]);
   const [reb] = await sql`SELECT * FROM lb_variant_costs WHERE variant_id = ${VB}`;
@@ -406,7 +471,10 @@ console.log('\n── G4b membership lifecycle ──');
 
   // A rebind from another group is REPORTED, never silent.
   const other = await groups.createGroup({
-    name: 'Other group', members: [{ variant_id: VA, units_per: 1 }, { variant_id: VB, units_per: 1 }], createdBy: 'h',
+    name: 'Other group',
+    members: [{ variant_id: VA, units_per: 1 }, { variant_id: VB, units_per: 1 }],
+    createdBy: 'h',
+    steal: true,
   });
   // Each member's reported provenance is its ACTUAL previous group — VA was
   // moved into G2ID by the null-vs-0 block above, VB is still in GID. A
@@ -416,7 +484,7 @@ console.log('\n── G4b membership lifecycle ──');
   ok(fromOf[VB] === GID, `G4b VB's provenance is the engine group (${fromOf[VB]})`);
   ok(fromOf[VA] === G2ID, `G4b VA's provenance is the group that took it earlier (${fromOf[VA]})`);
   // Put them back.
-  await groups.addMembers(GID, [{ variant_id: VA, units_per: 1 }, { variant_id: VB, units_per: 3 }]);
+  await groups.addMembers(GID, [{ variant_id: VA, units_per: 1 }, { variant_id: VB, units_per: 3 }], { steal: true });
 
   // DELETE is an archive + unbind; the RATE HISTORY SURVIVES.
   const ratesBefore = (await sql`SELECT id FROM lb_cost_rates WHERE cost_item_id = ${other.group.cost_item_id}`).length;
@@ -443,6 +511,46 @@ console.log('\n── G4b membership lifecycle ──');
     'G4b binding into a non-existent group is refused');
   const ghost = await groups.addMembers(GID, [{ variant_id: '111111111111' }]);
   ok(ghost.missing.includes('111111111111'), 'G4b a variant with no catalog row is reported missing, never written as a ghost');
+
+  // M1 — a rate for a group that does not exist, or is archived, reaches no
+  // variant. It is refused at the write door rather than stored as a cost the
+  // operator believes they entered.
+  ok(await guard(() => costs.appendRate({
+    scope: 'item', refId: 'ci_never_existed', unitCogs: 5, createdBy: 'h',
+  })) === 'item_not_found', 'M1 a rate for a non-existent cost group is refused');
+  {
+    const dead = await groups.createGroup({
+      name: 'Archived target',
+      members: [{ variant_id: VA }, { variant_id: VB }],
+      createdBy: 'h',
+      steal: true,
+    });
+    await groups.deleteGroup(dead.group.cost_item_id, 'h');
+    ok(await guard(() => costs.appendRate({
+      scope: 'item', refId: dead.group.cost_item_id, unitCogs: 5, createdBy: 'h',
+    })) === 'item_archived', 'M1 a rate for an ARCHIVED cost group is refused');
+    await groups.addMembers(GID, [{ variant_id: VA, units_per: 1 }, { variant_id: VB, units_per: 3 }], { steal: true });
+  }
+
+  // N6 — two LIVE groups may not share a name; the operator picks a group by
+  // name in the rate drawer, and two identical names is a coin flip.
+  ok(await guard(() => groups.createGroup({
+    name: 'Engine Widget bottle', members: [{ variant_id: VA }, { variant_id: VB }], steal: true,
+  })) === 'name_taken', 'N6 a duplicate live group name is refused');
+  ok(await guard(() => groups.updateGroup(GID, { name: 'unknown group' })) === 'name_taken',
+    'N6 …and renaming onto a taken name is refused too (case-insensitively)');
+
+  // NIT — units_per must be a CANONICAL integer. Number() reads '0x18' as 24
+  // and '1e3' as 1000; either would silently scale a real cost.
+  ok(await guard(() => groups.addMembers(GID, [{ variant_id: VA, units_per: '0x18' }])) === 'bad_units_per',
+    'NIT a hex string units_per is refused');
+  ok(await guard(() => groups.addMembers(GID, [{ variant_id: VA, units_per: '1e3' }])) === 'bad_units_per',
+    'NIT an exponent-notation units_per is refused');
+  ok(await guard(() => groups.addMembers(GID, [{ variant_id: VA, units_per: ' 4 ' }])) === null,
+    'NIT a plain integer string with whitespace is accepted');
+  ok(await guard(() => groups.addMembers(GID, [{ variant_id: VA, units_per: 9999 }])) === 'bad_units_per',
+    'NIT units_per beyond the hard cap is refused');
+  await groups.addMembers(GID, [{ variant_id: VA, units_per: 1 }]); // restore
 
   // The group read surface labels a shadowed member rather than hiding it.
   const g = await groups.getGroup(GID);
@@ -550,7 +658,7 @@ console.log('\n── G7 proposals: detect on seeded orders, accept/dismiss ─�
     scope: 'item', refId: acc.group.cost_item_id, unitCogs: 5, ship: { default: 0 },
     effectiveFrom: DAY, source: 'manual', createdBy: 'harness',
   });
-  const rates = costs.buildRateIndex(await costs.loadRates());
+  const rates = await costs.loadCostIndex();
   const [v1] = await sql`SELECT * FROM lb_variant_costs WHERE variant_id = ${LIFT1}`;
   const [v3] = await sql`SELECT * FROM lb_variant_costs WHERE variant_id = ${LIFT3}`;
   ok(costs.resolveUnitCogs(v1, rates, DAY)[0] === 5, 'G7 ONE rate costs the 1-bottle member at 5');
@@ -558,6 +666,134 @@ console.log('\n── G7 proposals: detect on seeded orders, accept/dismiss ─�
   const ov = await costs.pnlOverview(DAY, DAY);
   const r = ov.rows.find((x) => x.fid === 'f_g3');
   ok(r && r.cogs > 0, `G7 the accepted group's rate reaches the P&L (cogs ${r && r.cogs})`);
+}
+
+console.log('\n── G10 membership is EFFECTIVE-DATED (closed periods cannot be restated) ──');
+{
+  // A variant that has been selling for 90 days, grouped today at 3 per pack,
+  // with the group rate 10/unit backdated over the whole span.
+  const HV = '920000000001';
+  const HV2 = '920000000002';
+  const OLD = RDAY(60);
+  const FIRST = RDAY(90);
+  for (const [vid, title] of [[HV, '3 Bottles'], [HV2, '1 Bottle']]) {
+    await sql`INSERT INTO lb_variant_costs (variant_id, product_title, variant_title, price, first_sold, coverage)
+              VALUES (${vid}, 'History Widget', ${title}, 100, ${FIRST}, 'needs_cost')`;
+  }
+  const hg = await groups.createGroup({
+    name: 'History Widget bottle',
+    members: [{ variant_id: HV, units_per: 3 }, { variant_id: HV2, units_per: 1 }],
+    createdBy: 'harness',
+  });
+  const HGID = hg.group.cost_item_id;
+  await costs.appendRate({
+    scope: 'item', refId: HGID, unitCogs: 10, ship: { default: 0 },
+    effectiveFrom: FIRST, source: 'manual', createdBy: 'harness',
+  });
+
+  const cogsOn = async (vid, day) => {
+    const idx = await costs.loadCostIndex();
+    const [vc] = await sql`SELECT * FROM lb_variant_costs WHERE variant_id = ${vid}`;
+    return costs.resolveUnitCogs(vc, idx, day)[0];
+  };
+
+  // The FIRST membership backdates to the variant's first sale, so grouping a
+  // variant today also costs the days it was already selling.
+  ok(await cogsOn(HV, OLD) === 30, `G10 60 days ago prices at 10 × 3 = 30 (${await cogsOn(HV, OLD)})`);
+
+  // ── THE PROBE: correcting the pack size 3 → 6 TODAY ──────────────────────
+  await groups.addMembers(HGID, [{ variant_id: HV, units_per: 6 }], { actor: 'harness' });
+  const afterOld = await cogsOn(HV, OLD);
+  const afterToday = await cogsOn(HV, RDAY(0));
+  ok(afterOld === 30,
+    `G10 B1 a pack-size fix does NOT restate a closed period — 60 days ago is STILL 30 (${afterOld})`);
+  ok(afterToday === 60, `G10 B1 …while TODAY prices with the new value, 10 × 6 = 60 (${afterToday})`);
+  {
+    const rows = await sql`SELECT units_per, effective_from, superseded_at FROM lb_cost_item_members
+                           WHERE variant_id = ${HV} ORDER BY id`;
+    ok(rows.length === 2, `G10 B1 the change APPENDED a membership row (${rows.length})`);
+    ok(Number(rows[0].units_per) === 3 && rows[0].superseded_at !== null,
+      'G10 B1 the superseded row survives verbatim, stamped rather than rewritten');
+    ok(Number(rows[1].units_per) === 6, 'G10 B1 the new row carries the corrected pack size');
+  }
+
+  // ── THE PROBE: deleting the group ────────────────────────────────────────
+  await groups.deleteGroup(HGID, 'harness');
+  const pastAfterDelete = await cogsOn(HV, OLD);
+  const todayAfterDelete = await cogsOn(HV, RDAY(0));
+  ok(pastAfterDelete === 30,
+    `G10 B1 deleting the group leaves PAST days priced — 60 days ago is still 30 (${pastAfterDelete})`);
+  ok(todayAfterDelete === null,
+    `G10 B1 …and today falls to UNKNOWN, not 0 (${JSON.stringify(todayAfterDelete)})`);
+  {
+    const tomb = await sql`SELECT cost_item_id, effective_from FROM lb_cost_item_members
+                           WHERE variant_id = ${HV} ORDER BY id DESC LIMIT 1`;
+    ok(tomb[0].cost_item_id === null, 'G10 B1 the unbind wrote a TOMBSTONE, it did not delete history');
+  }
+  // The P&L agrees — the same effective-dated read, through the real engine.
+  await sql`INSERT INTO co_sessions (id, funnel_id, status, line_items, total, refunds, paid_at, created_at)
+    VALUES ('s_hist', 'f_hist', 'paid',
+      ${sql.json([{ variant_id: HV, quantity: 1, price: 100, product_title: 'History Widget', variant_title: '3 Bottles' }])},
+      100, ${sql.json([])}, ${onDay(OLD)}, ${onDay(OLD)})`;
+  const ovOld = await costs.pnlOverview(OLD, OLD);
+  const rOld = ovOld.rows.find((r) => r.fid === 'f_hist');
+  ok(rOld && rOld.cogs === 30,
+    `G10 B1 the P&L prices that closed day through membership history too (cogs ${rOld && rOld.cogs})`);
+}
+
+console.log('\n── G11 accept is ATOMIC under concurrency ──');
+{
+  // Seed a fresh grouping and detect it.
+  const R1 = '930000000001';
+  const R2 = '930000000003';
+  await sql`INSERT INTO co_sessions (id, funnel_id, status, line_items, total, refunds, paid_at, created_at)
+    VALUES ('s_race', 'f_race', 'paid', ${sql.json([
+    { variant_id: R1, quantity: 1, price: 40, product_title: 'Race Widget', variant_title: '1 Bottle' },
+    { variant_id: R2, quantity: 1, price: 100, product_title: 'Race Widget', variant_title: '3 Bottles' },
+  ])}, 140, ${sql.json([])}, ${onDay(DAY)}, ${onDay(DAY)})`;
+  await costs.runDetectSweep({ days: 90 });
+  await detect.detectProposals();
+  const open = await detect.listProposals({ status: 'open' });
+  const target = open.items.find((p) => p.members.some((m) => m.variant_id === R1));
+  ok(Boolean(target), 'G11 a proposal covers the race variants');
+
+  const groupsBefore = (await sql`SELECT COUNT(*)::int AS n FROM lb_cost_items`)[0].n;
+  // SIX parallel accepts. Read-then-write lets all six pass the status check,
+  // mint six groups, and steal the members down the chain.
+  const results = await Promise.allSettled(
+    Array.from({ length: 6 }, () => detect.acceptProposal(target.proposal_id, { actor: 'racer' }))
+  );
+  const won = results.filter((r) => r.status === 'fulfilled');
+  const lost = results.filter((r) => r.status === 'rejected');
+  ok(won.length === 1, `G11 B3 exactly ONE of six parallel accepts wins (${won.length})`);
+  ok(lost.every((r) => r.reason && r.reason.code === 'already_accepted'),
+    `G11 B3 the other five are refused already_accepted (${[...new Set(lost.map((r) => r.reason && r.reason.code))].join(',')})`);
+  const groupsAfter = (await sql`SELECT COUNT(*)::int AS n FROM lb_cost_items`)[0].n;
+  ok(groupsAfter === groupsBefore + 1,
+    `G11 B3 exactly ONE group was minted, not six (${groupsBefore} → ${groupsAfter})`);
+  // …and no member was stolen down a chain of half-made groups.
+  const bound = await sql`SELECT DISTINCT cost_item_id FROM lb_variant_costs
+                          WHERE variant_id IN (${R1}, ${R2}) AND cost_item_id IS NOT NULL`;
+  ok(bound.length === 1, `G11 B3 both members sit in the SAME group, none stolen (${bound.length})`);
+
+  // A crash-state re-accept must never mint a second group over the members.
+  let again = null;
+  try { await detect.acceptProposal(target.proposal_id, { actor: 'racer' }); } catch (e) { again = e; }
+  ok(again && again.code === 'already_accepted', 'G11 B3 a later re-accept is still refused');
+
+  // The claim ROLLS BACK with the create: a proposal whose group creation
+  // fails must not be left reading 'accepted' with nothing behind it.
+  const other = open.items.find((p) => p.proposal_id !== target.proposal_id && p.members_ready.length >= 2);
+  if (other) {
+    const clash = (await sql`SELECT name FROM lb_cost_items LIMIT 1`)[0].name;
+    let boom = null;
+    try { await detect.acceptProposal(other.proposal_id, { name: clash, actor: 'racer' }); } catch (e) { boom = e; }
+    ok(boom && boom.code === 'name_taken', `G11 B3 a name collision fails the accept (${boom && boom.code})`);
+    ok((await detect.getProposal(other.proposal_id)).status === 'open',
+      'G11 B3 …and the CLAIM rolled back with it — the proposal is still open, not stranded');
+  } else {
+    ok(true, 'G11 B3 (no second bindable proposal to test the rollback with — skipped)');
+  }
 }
 
 console.log('\n── G9 route surface (real router, real auth) ──');
@@ -609,10 +845,19 @@ console.log('\n── G9 route surface (real router, real auth) ──');
   ok(det.status === 200 && typeof det.j.data.open === 'number', 'G9 POST /proposals/detect answers');
 
   // Create → read → patch → members → history → delete, over HTTP.
-  const mk = await req('POST', '/', {
+  // VA/VB are bound to the engine group, so this create is a STEAL: refused
+  // 409 without consent, accepted with an explicit steal flag (M4).
+  const stealNo = await req('POST', '/', {
     name: 'Route group', members: [{ variant_id: VA, units_per: 1 }, { variant_id: VB, units_per: 2 }],
   });
+  ok(stealNo.status === 409 && stealNo.j.error.code === 'variant_in_other_group',
+    `G9/M4 a steal without consent is 409 over HTTP (${stealNo.status}/${stealNo.j?.error?.code})`);
+  const mk = await req('POST', '/', {
+    name: 'Route group', steal: true,
+    members: [{ variant_id: VA, units_per: 1 }, { variant_id: VB, units_per: 2 }],
+  });
   ok(mk.status === 201 && mk.j.data.group.cost_item_id, `G9 POST / → 201 with a group (${mk.status})`);
+  ok(mk.j.data.moved.length === 2, 'G9/M4 …and the response reports the variants it moved');
   const RID = mk.j.data.group.cost_item_id;
   ok((await req('GET', `/${RID}`)).j.data.group.member_count === 2, 'G9 GET /:id returns the members');
   ok((await req('PATCH', `/${RID}`, { name: 'Renamed' })).j.data.group.name === 'Renamed', 'G9 PATCH /:id renames');
@@ -625,7 +870,14 @@ console.log('\n── G9 route surface (real router, real auth) ──');
   const del = await req('DELETE', `/${RID}`);
   ok(del.status === 200 && del.j.data.archived === true && del.j.data.rates_kept === true,
     'G9 DELETE /:id archives and keeps rates');
-  ok((await req('GET', '/ci_does_not_exist')).status === 422, 'G9 an unknown group is 422 with a code');
+  // A missing group is 404 ("gone"), a malformed id is 422 ("your payload is
+  // wrong"), and a steal is 409 ("the world moved") — three different fixes.
+  const gone = await req('GET', '/ci_does_not_exist');
+  ok(gone.status === 404 && gone.j.error.code === 'group_not_found',
+    `G9 an unknown group is 404 (${gone.status}/${gone.j?.error?.code})`);
+  const malformed = await req('GET', '/not-a-group-id');
+  ok(malformed.status === 422 && malformed.j.error.code === 'bad_cost_item_id',
+    `G9 a malformed group id is 422 (${malformed.status}/${malformed.j?.error?.code})`);
   ok((await req('POST', '/proposals/not_an_id/dismiss', {})).status === 422, 'G9 a malformed proposal id is 422');
 
   server.close();

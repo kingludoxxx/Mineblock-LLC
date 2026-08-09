@@ -121,13 +121,6 @@ async function createTables() {
   // bottle sold as 1x/3x/5x, the same tee in six colours). ONE rate covers
   // every member.
   //
-  // MEMBERSHIP IS NOT STORED HERE. It is lb_variant_costs.cost_item_id — the
-  // column the engine ALREADY reads in resolveUnitCogs/resolveUnitShip. A
-  // second membership table would be a second source of truth the P&L engine
-  // does not consult, i.e. a group whose rate silently never applies. The
-  // group layer is additive precisely because it writes the column the
-  // existing read path already bisects on.
-  //
   // Rates for a group live in lb_cost_rates with scope='item' — the SAME
   // append-only, effective-dated ledger as per-variant rates. There is no
   // second rate table and no second history.
@@ -143,11 +136,66 @@ async function createTables() {
     )
   `);
   await pgQuery(`CREATE INDEX IF NOT EXISTS idx_lb_cost_items_live ON lb_cost_items (archived, cost_item_id)`);
+  // Two live groups may not share a name — the operator picks a group by its
+  // name in the rate drawer, and two "Breast Lift bottle"s is a coin flip
+  // over which cost applies. Archived rows are excluded so a retired name can
+  // be reused.
+  await pgQuery(`
+    CREATE UNIQUE INDEX IF NOT EXISTS uq_lb_cost_items_name_live
+    ON lb_cost_items (lower(name)) WHERE archived = FALSE
+  `);
   // Membership lookups ("who is in this group") hit this column on every
   // group read; without it each one is a seq scan of the whole catalog.
   await pgQuery(`
     CREATE INDEX IF NOT EXISTS idx_lb_variant_costs_item
     ON lb_variant_costs (cost_item_id) WHERE cost_item_id IS NOT NULL
+  `);
+
+  // ── lb_cost_item_members — MEMBERSHIP IS EFFECTIVE-DATED AND APPEND-ONLY ──
+  //
+  // THE BUG THIS TABLE EXISTS TO PREVENT. Membership and units_per are inputs
+  // to a PRICE: a member's COGS is the group rate × units_per. If they live
+  // only as mutable columns on lb_variant_costs, then correcting a pack size
+  // today silently restates every closed period — a "3 Pack" relabelled to 6
+  // would retroactively double last quarter's COGS — and unbinding a variant
+  // would wipe its cost from days it was genuinely in the group. Keeping the
+  // rate rows is not enough when the thing that SELECTS the rate is mutable.
+  //
+  // So membership moves exactly like a rate: an "edit" is a NEW ROW, and the
+  // membership in force for day D is the row with the greatest effective_from
+  // <= D (created_at, then id, break ties — the later WRITE wins).
+  //
+  // cost_item_id NULL is a TOMBSTONE: "as of this day, this variant is in no
+  // group". That is how an unbind and a group deletion are recorded without
+  // destroying the days the membership was real.
+  //
+  // superseded_at is a DERIVED convenience for audit reads and is stamped on
+  // the previous row when a new one lands. RESOLUTION NEVER READS IT — the
+  // engine bisects effective_from — so it cannot make a price wrong.
+  //
+  // lb_variant_costs.cost_item_id / units_per remain the CURRENT view, kept
+  // in step for the UI and for the catalog grid's filters.
+  await pgQuery(`
+    CREATE TABLE IF NOT EXISTS lb_cost_item_members (
+      id BIGSERIAL PRIMARY KEY,
+      variant_id TEXT NOT NULL,
+      cost_item_id TEXT,
+      units_per INT NOT NULL DEFAULT 1,
+      effective_from DATE NOT NULL,
+      superseded_at TIMESTAMPTZ,
+      source TEXT NOT NULL DEFAULT 'manual',
+      note TEXT NOT NULL DEFAULT '',
+      created_by TEXT NOT NULL DEFAULT '',
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
+  await pgQuery(`
+    CREATE INDEX IF NOT EXISTS idx_lb_cost_item_members_variant
+    ON lb_cost_item_members (variant_id, effective_from DESC)
+  `);
+  await pgQuery(`
+    CREATE INDEX IF NOT EXISTS idx_lb_cost_item_members_item
+    ON lb_cost_item_members (cost_item_id, effective_from DESC) WHERE cost_item_id IS NOT NULL
   `);
 
   // ── lb_cost_group_proposals — auto-detected candidate groupings ──────────

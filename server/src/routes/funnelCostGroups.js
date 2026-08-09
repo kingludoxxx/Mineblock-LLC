@@ -25,8 +25,8 @@ import { requirePermission } from '../middleware/rbac.js';
 import { ensureFunnelCostsTables } from '../services/funnelCostsSchema.js';
 import { CostError } from '../services/funnelCosts.js';
 import {
-  listGroups, getGroup, groupRateHistory, createGroup, updateGroup,
-  addMembers, removeMembers, deleteGroup,
+  listGroups, getGroup, groupRateHistory, groupMemberHistory, createGroup,
+  updateGroup, addMembers, removeMembers, deleteGroup,
 } from '../services/funnelCostGroups.js';
 import {
   detectProposals, listProposals, getProposal, dismissProposal,
@@ -45,13 +45,24 @@ router.use(async (req, res, next) => {
   }
 });
 
-// The one error boundary — same contract as funnelCosts.js.
+// The one error boundary — same contract as funnelCosts.js. CONFLICT codes
+// answer 409: they mean "the world moved under you", not "your payload is
+// malformed", and a client retrying a 422 forever is a different bug from one
+// that re-reads and shows the operator what changed.
+const CONFLICT_CODES = new Set([
+  'already_accepted', 'name_taken', 'variant_in_other_group', 'group_archived',
+]);
+const NOT_FOUND_CODES = new Set(['group_not_found', 'unknown_proposal', 'item_not_found']);
+
 const guard = (name, fn) => async (req, res) => {
   try {
     await fn(req, res);
   } catch (err) {
     if (err instanceof CostError) {
-      return res.status(422).json({ success: false, error: { code: err.code } });
+      const status = CONFLICT_CODES.has(err.code) ? 409
+        : NOT_FOUND_CODES.has(err.code) ? 404
+          : 422;
+      return res.status(status).json({ success: false, error: { code: err.code } });
     }
     console.error(`[funnelCostGroups] ${name} failed:`, err && err.message ? err.message : err);
     return res.status(500).json({ success: false, error: { code: 'internal_error' } });
@@ -97,6 +108,7 @@ router.post('/proposals/:id/accept', guard('proposal-accept', async (req, res) =
     note: b.note === undefined ? '' : String(b.note),
     members: Array.isArray(b.members) ? b.members : null,
     actor: userId(req),
+    steal: b.steal === true,
   });
   res.json({ success: true, data: out });
 }));
@@ -124,7 +136,11 @@ router.post('/proposals/:id/reopen', guard('proposal-reopen', async (req, res) =
 // for-today cost and which layer answered), its rate in force today, and its
 // own coverage rollup.
 router.get('/', guard('groups-list', async (req, res) => {
-  const out = await listGroups({ includeArchived: truthy(req.query.include_archived) });
+  const out = await listGroups({
+    includeArchived: truthy(req.query.include_archived),
+    limit: req.query.limit,
+    offset: req.query.offset,
+  });
   res.json({ success: true, data: out });
 }));
 
@@ -140,6 +156,9 @@ router.post('/', guard('group-create', async (req, res) => {
     note: b.note === undefined ? '' : b.note,
     members: b.members,
     createdBy: userId(req),
+    // Moving a variant out of another group changes which rate answers its
+    // cost, so it takes an explicit act — never a side effect of this call.
+    steal: b.steal === true,
   });
   res.status(201).json({ success: true, data: out });
 }));
@@ -177,7 +196,12 @@ router.post('/:costItemId/members', guard('members-add', async (req, res) => {
   if (!Array.isArray(b.members)) {
     return res.status(422).json({ success: false, error: { code: 'bad_members' } });
   }
-  res.json({ success: true, data: await addMembers(String(req.params.costItemId), b.members) });
+  res.json({
+    success: true,
+    data: await addMembers(String(req.params.costItemId), b.members, {
+      steal: b.steal === true, actor: userId(req),
+    }),
+  });
 }));
 
 // DELETE /:costItemId/members/:variantId — unbind ONE. The variant keeps
@@ -203,6 +227,16 @@ router.get('/:costItemId/history', guard('group-history', async (req, res) => {
   res.json({
     success: true,
     data: await groupRateHistory(String(req.params.costItemId), req.query.limit),
+  });
+}));
+
+// GET /:costItemId/members/history — the MEMBERSHIP ledger: who was in this
+// group, with what units_per, from when. Membership is an input to a price,
+// so this is the audit trail for "why did March price the way it did".
+router.get('/:costItemId/members/history', guard('member-history', async (req, res) => {
+  res.json({
+    success: true,
+    data: await groupMemberHistory(String(req.params.costItemId), req.query.limit),
   });
 }));
 

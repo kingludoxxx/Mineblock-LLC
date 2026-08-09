@@ -61,8 +61,8 @@
 import crypto from 'crypto';
 import { pgQuery } from '../db/pg.js';
 import { ensureFunnelCostsTables } from './funnelCostsSchema.js';
-import { CostError, round2 } from './funnelCosts.js';
-import { createGroup, MAX_MEMBERS } from './funnelCostGroups.js';
+import { CostError, round2, refreshCoverage } from './funnelCosts.js';
+import { createGroupInTx, getGroup, withTx, MAX_MEMBERS } from './funnelCostGroups.js';
 
 const PROPOSAL_RE = /^cgp_[0-9a-f]{8,32}$/;
 export const PROPOSAL_STATUSES = ['open', 'accepted', 'dismissed'];
@@ -99,9 +99,16 @@ export function sanitizeText(value, maxLen = MAX_TITLE) {
   if (value === null || value === undefined) return '';
   let s = String(value).replace(CONTROL_RE, ' ').replace(WS_RE, ' ').trim();
   // The ellipsis counts against the cap — max_len is a hard character bound.
-  if (s.length > maxLen) s = `${s.slice(0, maxLen - 1).trimEnd()}…`;
+  if (maxLen !== null && s.length > maxLen) s = `${s.slice(0, maxLen - 1).trimEnd()}…`;
   return s;
 }
+
+// Normalization for MATCHING is never truncated. Two 210-character titles
+// that differ only at character 205 both truncate to the same 200-character
+// prefix + '…', so a truncating stem would call two different products equal
+// — the exact over-merge exact-equality exists to prevent. Display truncates;
+// identity does not.
+const sanitizeFull = (value) => sanitizeText(value, null);
 
 // A cloned funnel page appends a channel tag to the product title; two rows
 // that differ only by "- Downsell (en-dws2)" are the same good. Stripping is
@@ -118,7 +125,7 @@ const SUFFIX_RES = [
 const STEM_PASSES = 6;
 
 export function stem(title) {
-  const base = sanitizeText(title, MAX_TITLE).toLowerCase();
+  const base = sanitizeFull(title).toLowerCase();
   let s = base;
   for (let i = 0; i < STEM_PASSES; i += 1) {
     const before = s;
@@ -147,12 +154,58 @@ const BOGO_RE = /buy\s*(\d{1,3})\s*\D{0,8}?\s*get\s*(\d{1,3})\s*free\s*\(\s*(\d{
 const DIGITAL_RE = /digital\s+download/i;
 const SERVICE_TITLE_RE = /^(default title|this order)$/i;
 const SERVICE_PRODUCT_RE = /expedited shipping|porch pirate protection/i;
-const LEADING_INT_RE = /^(\d{1,3})\s+\S/;
+const LEADING_INT_RE = /^(\d{1,4})\s*([A-Za-z]+)?/;
 const WORD_NUMBERS = {
   single: 1, one: 1, two: 2, three: 3, four: 4, five: 5,
   six: 6, seven: 7, eight: 8, nine: 9, ten: 10,
 };
-const WORD_RE = new RegExp(`^(${Object.keys(WORD_NUMBERS).join('|')})\\s`, 'i');
+const WORD_RE = new RegExp(`^(${Object.keys(WORD_NUMBERS).join('|')})\\s+([A-Za-z]+)`, 'i');
+
+// ── THE UNIT TAXONOMY (the fix for the volume-as-pack-count bug) ──────────
+// A leading integer means completely different things depending on the word
+// that follows it, and reading them all as "pack count" is a live money bug:
+// "500 ml Bottle" parsed as units_per 500 puts a $6 cost item at $3,000 of
+// COGS on a $60 product. The number is only a COUNT when the next word says
+// it counts DISCRETE THINGS.
+//
+// MEASURE — the integer is a size, so the variant is ONE unit.
+const MEASURE_UNITS = new Set([
+  'ml', 'mg', 'g', 'gr', 'kg', 'mcg', 'ug', 'oz', 'lb', 'lbs', 'l', 'cl', 'dl',
+  'fl', 'floz', 'litre', 'liter', 'litres', 'liters', 'gram', 'grams',
+  'gramme', 'grammes', 'kilogram', 'kilograms', 'ounce', 'ounces', 'pound',
+  'pounds', 'milligram', 'milligrams', 'millilitre', 'millilitres',
+  'milliliter', 'milliliters', 'inch', 'inches', 'cm', 'mm', 'm', 'ft',
+]);
+// COUNT — the integer counts discrete containers or packs. Beyond the
+// reviewer's list this adds the discrete CONTAINERS (bottle, jar, tube, …),
+// because "3 Bottles" is genuinely three units of the good; only the
+// CONTENTS nouns below are ambiguous.
+const COUNT_NOUNS = new Set([
+  'pack', 'packs', 'pk', 'pks', 'x', 'count', 'ct', 'pc', 'pcs', 'piece',
+  'pieces', 'bundle', 'bundles', 'kit', 'kits', 'set', 'sets', 'pair', 'pairs',
+  'unit', 'units', 'item', 'items', 'box', 'boxes', 'bottle', 'bottles',
+  'jar', 'jars', 'tube', 'tubes', 'tub', 'tubs', 'can', 'cans', 'bag', 'bags',
+  'sachet', 'sachets', 'stick', 'sticks', 'pouch', 'pouches', 'vial', 'vials',
+  'tester', 'testers', 'bar', 'bars', 'tin', 'tins',
+]);
+// CONTENTS / DURATION — the integer counts what is INSIDE one container, or
+// how long it lasts. "60 Capsules" is ONE bottle, not sixty units, and
+// reading it as sixty is a 60x COGS overstatement. Never auto-trusted.
+const AMBIGUOUS_NOUNS = new Set([
+  'capsule', 'capsules', 'caps', 'softgel', 'softgels', 'gummy', 'gummies',
+  'tablet', 'tablets', 'tabs', 'pill', 'pills', 'serving', 'servings',
+  'scoop', 'scoops', 'dose', 'doses', 'day', 'days', 'week', 'weeks',
+  'month', 'months', 'supply', 'wipe', 'wipes', 'sheet', 'sheets',
+  'treatment', 'treatments', 'application', 'applications',
+]);
+// A SECOND number anywhere after the first makes the title compound —
+// "2 Pack of 3", "3 x 2", "1 Bottle (60 capsules)". Which number is the pack
+// count is genuinely unknowable from the string, so none of them is trusted.
+const SECOND_NUMBER_RE = /\d[\d.,]*\D+\d/;
+// The largest pack size this parser will assert on its own. A bigger number
+// is far likelier a dose, a year or a SKU fragment than a carton the
+// operator sells — above it the operator types the value themselves.
+export const MAX_AUTO_UNITS_PER = 24;
 
 /**
  * → {size:int|null, rule, confidence, is_digital, is_service, note}
@@ -187,19 +240,50 @@ export function parsePackSize({ variantTitle = '', productTitle = '' } = {}) {
   if (SERVICE_TITLE_RE.test(vt) || SERVICE_PRODUCT_RE.test(pt) || SERVICE_PRODUCT_RE.test(vt)) {
     return { size: null, rule: 'service', confidence: 'none', is_digital: false, is_service: true, note: 'service / non-good' };
   }
-  // 4. Leading integer — "3 Bottles", "2 Pack".
+  // A 'low' verdict is NOT "unknown": it means the variant almost certainly
+  // holds ONE of the group's units, but the string is not proof. It lands
+  // units_per 1 (the only safe multiplier) AND a blocker, so the operator
+  // must confirm before a one-click Accept can bind it.
+  const low = (rule, note) => ({
+    size: 1, rule, confidence: 'low', is_digital: false, is_service: false, note,
+  });
+
+  // 4. Leading integer — but WHAT the integer counts decides everything.
   const lead = LEADING_INT_RE.exec(vt);
-  if (lead) {
-    const n = Number(lead[1]);
-    if (n >= 1) return { size: n, rule: 'leading-int', confidence: 'exact', is_digital: false, is_service: false, note: '' };
-  }
-  // 5. Number word — "Three Bottles", "Single".
   const word = WORD_RE.exec(vt);
-  if (word) {
-    const n = WORD_NUMBERS[String(word[1]).toLowerCase()];
-    if (n >= 1) return { size: n, rule: 'word', confidence: 'exact', is_digital: false, is_service: false, note: '' };
+  const numeric = lead
+    ? { n: Number(lead[1]), next: String(lead[2] || '').toLowerCase(), rule: 'leading-int' }
+    : word
+      ? { n: WORD_NUMBERS[String(word[1]).toLowerCase()], next: String(word[2] || '').toLowerCase(), rule: 'word' }
+      : null;
+
+  if (numeric && numeric.n >= 1) {
+    const { n, next, rule } = numeric;
+    // 4a. A measure — "500 ml Bottle", "250 mg Capsule". The integer sizes
+    //     the unit; the variant is ONE of them.
+    if (MEASURE_UNITS.has(next)) {
+      return { size: 1, rule: 'measure', confidence: 'exact', is_digital: false, is_service: false, note: `${n} ${next} is a size, not a count` };
+    }
+    // 4b. Compound — a second number makes the pack count unknowable.
+    if (SECOND_NUMBER_RE.test(vt)) {
+      return low('ambiguous-multi', 'more than one number in the title');
+    }
+    // 4c. Contents or duration — "60 Capsules" is one bottle of sixty.
+    if (AMBIGUOUS_NOUNS.has(next)) {
+      return low('ambiguous-noun', `"${next}" counts contents, not packs`);
+    }
+    // 4d. A discrete count noun — the only case trusted outright.
+    if (COUNT_NOUNS.has(next)) {
+      if (n > MAX_AUTO_UNITS_PER) {
+        return low('over-cap', `${n} is above the ${MAX_AUTO_UNITS_PER} auto-detect cap`);
+      }
+      return { size: n, rule, confidence: 'exact', is_digital: false, is_service: false, note: '' };
+    }
+    // 4e. A bare count, or a noun in no list. Plausible, unproven.
+    return low('bare-count', next ? `"${next}" is not a known pack word` : 'a bare number');
   }
-  // 6. Unknown. Not 1 — unknown.
+
+  // 5. Unknown. Not 1 — unknown.
   return none;
 }
 
@@ -217,7 +301,14 @@ const GENERIC_NOUNS = new Set([
   'set', 'sets', 'bundle', 'bundles', 'box', 'boxes', 'count', 'ct',
   'item', 'items', 'order', 'orders',
 ]);
-const COUNTING_RULES = new Set(['leading-int', 'word', 'parenthetical']);
+// C4 asks "what is this title counting?", so it applies to EVERY title that
+// opens with a number — including the ones whose pack size was downgraded.
+// Listing the trusted rules instead would silently disarm the check the
+// moment a title lands in a new tier: "1 Test Kit" became 'bare-count' under
+// the B2 taxonomy, and an allowlist of trusted rules stopped comparing it to
+// "3 Testers" — the exact over-merge C4 exists to catch. So this is a DENY
+// list of the rules that are not counting anything.
+const NON_COUNTING_RULES = new Set(['ambiguous', 'digital', 'service']);
 
 /** Crude, deliberate, and symmetric: "Testers"→tester, "Boxes"→box. */
 export function singular(word) {
@@ -231,7 +322,7 @@ export function singular(word) {
 // the title is not a counting one, or ends on a generic packaging word that
 // says nothing about the good.
 export function nounOf(variantTitle, rule) {
-  if (rule && !COUNTING_RULES.has(rule)) return '';
+  if (rule && NON_COUNTING_RULES.has(rule)) return '';
   const tokens = sanitizeText(variantTitle, MAX_TITLE).match(/[A-Za-z]+/g);
   if (!tokens || !tokens.length) return '';
   const n = singular(tokens[tokens.length - 1]);
@@ -364,8 +455,12 @@ function makeUnionFind() {
 }
 
 /** Deterministic id, so a re-run is idempotent and a dismissal sticks. */
+// JSON.stringify, NOT a '|'.join — a title legitimately containing a pipe
+// would let {"a|b"} and {"a","b"} hash to the same fingerprint, silently
+// welding one proposal's dismissal onto a different grouping. JSON escapes
+// the separator, so the encoding is injective.
 export function proposalIdFor(stems) {
-  const key = [...stems].sort().join('|');
+  const key = JSON.stringify([...stems].sort());
   return `cgp_${crypto.createHash('sha1').update(key, 'utf8').digest('hex').slice(0, 16)}`;
 }
 
@@ -409,10 +504,16 @@ export function cluster(rows, mirror = new Map()) {
       shopify_product_id: String(row.shopify_product_id || enrich.shopify_product_id || ''),
       shopify_handle: String(row.shopify_handle || enrich.handle || ''),
       mirror_title: String(enrich.product_title || row.shopify_product_title || ''),
-      product_type: String(enrich.product_type || ''),
-      units_per: Number.isInteger(pack.size) && pack.size >= 1 ? pack.size : null,
+      // Read from the catalog row as well as the mirror (N3), so check C3
+      // goes live the moment either side carries the field.
+      product_type: String(row.product_type || enrich.product_type || ''),
+      // 'low' lands units_per 1 — the only safe multiplier — and raises a
+      // blocker below; 'none' stays NULL (genuinely unreadable).
+      units_per: pack.confidence === 'none' ? null
+        : Number.isInteger(pack.size) && pack.size >= 1 ? pack.size : null,
       units_per_rule: pack.rule,
       units_per_conf: pack.confidence,
+      units_per_note: pack.note || '',
       contexts: Array.isArray(row.contexts) ? [...row.contexts].sort() : [],
       funnels: Array.isArray(row.funnels) ? [...row.funnels].sort() : [],
       units_30d: Number(row.units_30d || 0),
@@ -495,6 +596,14 @@ export function cluster(rows, mirror = new Map()) {
     for (const m of members) {
       if (m.units_per === null || m.units_per_conf === 'none') {
         blockers.push({ code: 'units_per_unknown', variant_id: m.variant_id, detail: `pack size unreadable on "${m.variant_title || m.product_title}"` });
+      } else if (m.units_per_conf === 'low') {
+        // Assumed 1, NOT proven 1 — the operator has to say so before a
+        // one-click can bind a multiplier that scales a real cost.
+        blockers.push({
+          code: 'units_per_unverified',
+          variant_id: m.variant_id,
+          detail: `"${m.variant_title || m.product_title}": ${m.units_per_note || 'pack size not provable'} — set units per variant yourself`,
+        });
       } else if (m.already_bound_to) {
         blockers.push({ code: 'already_bound', variant_id: m.variant_id, detail: `already in ${m.already_bound_to}` });
       }
@@ -507,9 +616,12 @@ export function cluster(rows, mirror = new Map()) {
     if (checks.some((c) => !c.ok)) identity = 'review';
     const confidence = (identity === 'review' || blockers.length) ? 'review' : identity;
 
-    // The members a one-click could safely bind RIGHT NOW: pack size known,
-    // not already spoken for by another group.
-    const ready = members.filter((m) => m.units_per !== null && !m.already_bound_to);
+    // The members a one-click could safely bind RIGHT NOW. Derived FROM the
+    // blocker list, so a blocker can never be raised and still leave the
+    // member one-clickable — including 'units_per_unverified', which is the
+    // whole point of the low tier.
+    const blocked = new Set(blockers.map((b) => b.variant_id).filter(Boolean));
+    const ready = members.filter((m) => !blocked.has(m.variant_id));
 
     const usableStems = stems.length ? stems : pids.map((p) => `core:${p}`).sort();
     proposals.push({
@@ -739,10 +851,22 @@ export async function dismissProposal(proposalId, { reason = '', actor = '' } = 
 // permanently hides a real grouping, since detect refuses to resurrect it.
 export async function reopenProposal(proposalId) {
   const p = await getProposal(proposalId);
-  if (p.status === 'accepted') throw new CostError('already_accepted', 'this proposal already became a group');
+  // An accepted proposal is reopenable ONLY once its group is gone (deleting
+  // a group reopens it automatically; this covers a group archived by hand).
+  // Reopening one whose group is live would let a second group be minted over
+  // the same variants, stealing them from the first.
+  if (p.status === 'accepted') {
+    const [g] = p.cost_item_id
+      ? await pgQuery(`SELECT archived FROM lb_cost_items WHERE cost_item_id = $1`, [p.cost_item_id])
+      : [];
+    if (g && !g.archived) {
+      throw new CostError('already_accepted', 'this proposal already became a live group');
+    }
+  }
   await pgQuery(
     `UPDATE lb_cost_group_proposals
-     SET status = 'open', decided_at = NULL, decided_by = '' WHERE fingerprint = $1`,
+     SET status = 'open', cost_item_id = NULL, decided_at = NULL, decided_by = ''
+     WHERE fingerprint = $1`,
     [p.proposal_id]
   );
   return { proposal_id: p.proposal_id, status: 'open' };
@@ -758,11 +882,9 @@ export async function reopenProposal(proposalId) {
 //
 // Accepting creates NO rate. The group is costed only when the operator
 // enters one through the append-only write door.
-export async function acceptProposal(proposalId, { name = '', note = '', members = null, actor = '' } = {}) {
+export async function acceptProposal(proposalId, { name = '', note = '', members = null, actor = '', steal = false } = {}) {
   const p = await getProposal(proposalId);
-  if (p.status === 'accepted' && p.cost_item_id) {
-    // IDEMPOTENT: a double-click must not mint a second group over the same
-    // variants — the second bind would silently steal them from the first.
+  if (p.status === 'accepted') {
     throw new CostError('already_accepted', 'this proposal already became a group');
   }
   const bySize = new Map((p.members || []).map((m) => [String(m.variant_id), m.units_per]));
@@ -787,22 +909,53 @@ export async function acceptProposal(proposalId, { name = '', note = '', members
     throw new CostError('too_few_members', 'no two bindable members — resolve the blockers first');
   }
 
-  const created = await createGroup({
-    name: String(name || p.suggested_name || '').trim() || p.suggested_name || p.proposal_id,
-    note: String(note || '').slice(0, 500),
-    members: list,
-    createdBy: actor,
+  // ── CLAIM FIRST, IN THE SAME TRANSACTION AS THE CREATE ──────────────────
+  // Read-then-write cannot make this safe: six parallel accepts all read
+  // status='open', all pass the check, and all mint a group — each binding
+  // the same variants and STEALING them from the one before, leaving five
+  // empty groups and a member set nobody chose.
+  //
+  // Instead the UPDATE itself is the lock. `WHERE status='open'` returning
+  // zero rows IS the "someone else got there first" answer: concurrent
+  // updates serialize on the row, and under READ COMMITTED the loser
+  // re-evaluates the predicate after the winner commits and matches nothing.
+  //
+  // Claim and create share ONE transaction, so a failure anywhere — a name
+  // collision, a steal without consent, a group that would end with one
+  // member — rolls the claim back too. There is no crash state where the
+  // proposal reads 'accepted' with no group behind it.
+  const out = await withTx(async (q) => {
+    const claimed = await q(
+      `UPDATE lb_cost_group_proposals
+       SET status = 'accepted', decided_at = NOW(), decided_by = $2
+       WHERE fingerprint = $1 AND status = 'open'
+       RETURNING fingerprint`,
+      [p.proposal_id, String(actor || '').slice(0, 128)]
+    );
+    if (!claimed.length) throw new CostError('already_accepted', 'this proposal already became a group');
+
+    const created = await createGroupInTx(q, {
+      name: String(name || p.suggested_name || '').trim() || p.suggested_name || p.proposal_id,
+      note: String(note || '').slice(0, 500),
+      members: list,
+      createdBy: actor,
+      steal,
+    });
+    await q(
+      `UPDATE lb_cost_group_proposals SET cost_item_id = $2 WHERE fingerprint = $1`,
+      [p.proposal_id, created.cost_item_id]
+    );
+    return created;
   });
-  await pgQuery(
-    `UPDATE lb_cost_group_proposals
-     SET status = 'accepted', cost_item_id = $2, decided_at = NOW(), decided_by = $3
-     WHERE fingerprint = $1`,
-    [p.proposal_id, created.group.cost_item_id, String(actor || '').slice(0, 128)]
-  );
+
+  await refreshCoverage('item', out.cost_item_id);
   return {
     proposal_id: p.proposal_id,
     status: 'accepted',
-    ...created,
+    group: await getGroup(out.cost_item_id),
+    bound: out.bound,
+    moved: out.moved,
+    missing: out.missing,
   };
 }
 

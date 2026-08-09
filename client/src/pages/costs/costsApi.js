@@ -133,6 +133,16 @@ export function fetchCostGroups(params = {}) {
   return api.get(GROUP_ROUTES.groups, { params }).then(unwrap);
 }
 
+/**
+ * ONE group, from the server. The rate drawer's fan-out preview MUST use
+ * this and never the loaded variant page: the page is one slice of the
+ * catalog, so a group whose members sit outside it would under-report how
+ * many variants (and which funnels) a group rate is about to move.
+ */
+export function fetchCostGroup(id) {
+  return api.get(GROUP_ROUTES.group(id)).then(unwrap);
+}
+
 export function createCostGroup(body) {
   return api.post(GROUP_ROUTES.groups, body).then(unwrap);
 }
@@ -146,8 +156,14 @@ export function deleteCostGroup(id) {
   return api.delete(GROUP_ROUTES.group(id)).then(unwrap);
 }
 
-export function addCostGroupMembers(id, members) {
-  return api.post(GROUP_ROUTES.members(id), { members }).then(unwrap);
+/**
+ * `steal` must be explicit. A variant already in another group is REFUSED
+ * (409 variant_in_other_group) unless the caller says to move it — silently
+ * reassigning it would change which rate answers that variant's cost, in a
+ * call the operator issued about a different group.
+ */
+export function addCostGroupMembers(id, members, steal = false) {
+  return api.post(GROUP_ROUTES.members(id), { members, steal }).then(unwrap);
 }
 
 export function removeCostGroupMember(id, variantId) {
@@ -323,6 +339,10 @@ const API_ERRORS = {
   already_accepted: 'That suggestion has already become a group.',
   bad_status: 'That is not a status the suggestions list knows about.',
   no_members: 'Name at least one variant.',
+  name_taken: 'Another live cost group already has that name.',
+  variant_in_other_group: 'That variant is already in another cost group — confirm the move to take it.',
+  item_not_found: 'That cost group does not exist, so a rate for it would reach nothing.',
+  item_archived: 'That cost group is archived — un-archive it before entering a cost.',
   empty_patch: 'Nothing to change.',
   unknown_field: 'That field cannot be edited here.',
 };

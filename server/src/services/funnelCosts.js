@@ -135,7 +135,16 @@ const parseJson = (v, fallback) => {
 // (reference RateIndex :249-350). Rows sharing (effective_from, created_at)
 // keep insertion order so the last WRITE wins — correcting today's typo is
 // deterministic.
-export function buildRateIndex(rows) {
+// MEMBERSHIP IS EFFECTIVE-DATED TOO, and is bisected by the SAME code. A
+// member's COGS is the group rate × units_per, so BOTH inputs have to be
+// resolved as-of the day being priced. Reading today's membership column
+// while pricing a day in March restates March every time an operator fixes a
+// pack size — see lb_cost_item_members' header.
+//
+// `memberRows` is optional so a caller that only needs variant-scope answers
+// (or a pure unit test) can still build a bare index; when it is absent,
+// membership falls back to the variant row's CURRENT column.
+export function buildRateIndex(rows, memberRows = null) {
   const buckets = new Map(); // `${scope}|${ref}` → [{ef, at, row}]
   for (const r of rows || []) {
     const scope = String(r.scope || '');
@@ -146,23 +155,68 @@ export function buildRateIndex(rows) {
     if (!buckets.has(key)) buckets.set(key, []);
     buckets.get(key).push({ ef, at: String(r.created_at || ''), id: Number(r.id || 0), row: r });
   }
-  for (const lst of buckets.values()) {
-    lst.sort((a, b) => (a.ef < b.ef ? -1 : a.ef > b.ef ? 1 : a.at < b.at ? -1 : a.at > b.at ? 1 : a.id - b.id));
+  const byEffective = (a, b) => (
+    a.ef < b.ef ? -1 : a.ef > b.ef ? 1 : a.at < b.at ? -1 : a.at > b.at ? 1 : a.id - b.id
+  );
+  for (const lst of buckets.values()) lst.sort(byEffective);
+
+  // variant_id → [{ef, at, id, row}] of membership rows.
+  const members = new Map();
+  const hasMembers = Array.isArray(memberRows);
+  for (const m of memberRows || []) {
+    const vid = String(m.variant_id || '');
+    const ef = dayKey(m.effective_from);
+    if (!vid || !ef) continue;
+    if (!members.has(vid)) members.set(vid, []);
+    members.get(vid).push({ ef, at: String(m.created_at || ''), id: Number(m.id || 0), row: m });
   }
+  for (const lst of members.values()) lst.sort(byEffective);
+
+  // bisect_right over effective_from — the newest row at or before `day`.
+  const asOf = (lst, day) => {
+    if (!lst) return null;
+    const d = String(day || '');
+    let lo = 0;
+    let hi = lst.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (lst[mid].ef <= d) lo = mid + 1;
+      else hi = mid;
+    }
+    return lo === 0 ? null : lst[lo - 1].row;
+  };
+
   return {
     lookup(scope, refId, day) {
-      const lst = buckets.get(`${String(scope)}|${String(refId)}`);
-      if (!lst) return null;
-      const d = String(day || '');
-      // bisect_right over effective_from
-      let lo = 0;
-      let hi = lst.length;
-      while (lo < hi) {
-        const mid = (lo + hi) >> 1;
-        if (lst[mid].ef <= d) lo = mid + 1;
-        else hi = mid;
+      return asOf(buckets.get(`${String(scope)}|${String(refId)}`), day);
+    },
+    /**
+     * The variant's group membership ON `day` → {cost_item_id, units_per}.
+     * cost_item_id null means "in no group that day" — which is what a
+     * tombstone row records after an unbind or a group deletion.
+     *
+     * MIGRATION BRIDGE: a variant with NO membership rows at all falls back
+     * to its current column, so catalog rows bound before this table existed
+     * keep resolving. Once a variant has any history row, history is the only
+     * authority — an unbind writes a tombstone rather than deleting, so the
+     * fallback can never resurrect a membership the operator ended.
+     */
+    memberOf(vc, day) {
+      const v = vc || {};
+      const vid = String(v.variant_id || '');
+      const lst = hasMembers ? members.get(vid) : null;
+      if (!lst || !lst.length) {
+        return {
+          cost_item_id: v.cost_item_id ? String(v.cost_item_id) : null,
+          units_per: Number(v.units_per) > 0 ? Number(v.units_per) : 1,
+        };
       }
-      return lo === 0 ? null : lst[lo - 1].row;
+      const row = asOf(lst, day);
+      if (!row) return { cost_item_id: null, units_per: 1 };
+      return {
+        cost_item_id: row.cost_item_id ? String(row.cost_item_id) : null,
+        units_per: Number(row.units_per) > 0 ? Number(row.units_per) : 1,
+      };
     },
   };
 }
@@ -179,12 +233,12 @@ export function resolveUnitCogs(vc, rateIndex, day) {
   if (r && r.unit_cogs !== null && r.unit_cogs !== undefined) {
     return [Number(r.unit_cogs), 'variant'];
   }
-  const itemId = String(v.cost_item_id || '');
+  // Membership AS OF `day`, never as of now — see buildRateIndex.memberOf.
+  const { cost_item_id: itemId, units_per: unitsPer } = rateIndex.memberOf(v, day);
   if (itemId) {
     const ri = rateIndex.lookup('item', itemId, day);
     if (ri && ri.unit_cogs !== null && ri.unit_cogs !== undefined) {
-      const unitsPer = Number(v.units_per) > 0 ? Number(v.units_per) : 1;
-      return [Number(ri.unit_cogs) * unitsPer, 'item'];
+      return [round4(Number(ri.unit_cogs) * unitsPer), 'item'];
     }
   }
   return [null, null];
@@ -208,7 +262,9 @@ export function resolveUnitShip(vc, rateIndex, day, context) {
   };
   let val = pick(rateIndex.lookup('variant', String(v.variant_id || ''), day));
   if (val !== null) return [val, 'variant'];
-  const itemId = String(v.cost_item_id || '');
+  // Membership AS OF `day` (see resolveUnitCogs). units_per is deliberately
+  // NOT applied here — a 5-pack goes in one box.
+  const { cost_item_id: itemId } = rateIndex.memberOf(v, day);
   if (itemId) {
     val = pick(rateIndex.lookup('item', itemId, day));
     if (val !== null) return [val, 'item'];
@@ -365,7 +421,7 @@ export function buildUpsellLegs(charges, provider, txOffset = 0) {
 // ══════════════════════════════════════════════════════════════════════════
 export function resolveCosts(orderOrLegs, atTime = null, opts = {}) {
   const cat = opts.catalog || {};
-  const rateIndex = opts.rateIndex || buildRateIndex(opts.rates || []);
+  const rateIndex = opts.rateIndex || buildRateIndex(opts.rates || [], opts.memberships || null);
   const feesCfg = opts.feeSettings || {};
 
   let session = {};
@@ -585,6 +641,28 @@ export async function loadRates() {
   `);
 }
 
+// The membership ledger, ordered the way buildRateIndex wants it.
+export async function loadMemberships() {
+  await ensureFunnelCostsTables();
+  return pgQuery(`
+    SELECT id, variant_id, cost_item_id, units_per,
+           to_char(effective_from, 'YYYY-MM-DD') AS effective_from,
+           source, note, created_by,
+           to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS created_at
+    FROM lb_cost_item_members
+    ORDER BY effective_from, created_at, id
+  `);
+}
+
+// THE index every read surface should build. Loading rates without
+// memberships silently reverts group resolution to "as of now", which is the
+// restatement bug lb_cost_item_members exists to prevent — so the two loads
+// live in one function and no call site can take only half.
+export async function loadCostIndex() {
+  const [rates, members] = await Promise.all([loadRates(), loadMemberships()]);
+  return buildRateIndex(rates, members);
+}
+
 export async function loadCatalog() {
   await ensureFunnelCostsTables();
   const rows = await pgQuery(`SELECT * FROM lb_variant_costs`);
@@ -712,6 +790,18 @@ export async function appendRate({
     throw new CostError('usd_only', 'v1 rates are USD only');
   }
 
+  // An item-scope rate must name a cost group that EXISTS and is live. A
+  // typo'd ci_ id would otherwise be accepted, stored, and resolve for
+  // nobody — a cost the operator believes they entered and that reaches no
+  // variant. An archived group is refused for the same reason: its members
+  // have been unbound, so the rate would price nothing.
+  if (scope === 'item') {
+    const [item] = await pgQuery(
+      `SELECT cost_item_id, archived FROM lb_cost_items WHERE cost_item_id = $1`, [ref]);
+    if (!item) throw new CostError('item_not_found', 'no such cost group');
+    if (item.archived) throw new CostError('item_archived', 'that cost group is archived');
+  }
+
   const col = scope === 'variant' ? 'variant_id' : 'cost_item_id';
   const [prior] = await pgQuery(
     `SELECT id FROM lb_cost_rates WHERE scope = $1 AND ${col} = $2 LIMIT 1`, [scope, ref]);
@@ -761,7 +851,7 @@ export async function refreshCoverage(scope, refId) {
   const col = scope === 'variant' ? 'variant_id' : 'cost_item_id';
   const rows = await pgQuery(`SELECT * FROM lb_variant_costs WHERE ${col} = $1`, [refId]);
   if (!rows.length) return 0;
-  const rateIndex = buildRateIndex(await loadRates());
+  const rateIndex = await loadCostIndex();
   const today = dayKey();
   let flipped = 0;
   for (const vc of rows) {
@@ -929,7 +1019,7 @@ export async function runDetectSweep({ days = 90, now = null } = {}) {
   // ── 3. Upsert — observed facts $set; operator columns untouched ─────────
   const existing = await pgQuery(`SELECT variant_id, coverage, cost_item_id, units_per, first_sold FROM lb_variant_costs`);
   const existingBy = new Map(existing.map((r) => [String(r.variant_id), r]));
-  const rateIndex = buildRateIndex(await loadRates());
+  const rateIndex = await loadCostIndex();
   const today = dayKey(nowD);
 
   let inserted = 0;
@@ -1088,7 +1178,7 @@ export async function listVariants({ coverage = null, context = null, funnelId =
   const lim = Math.max(1, Math.min(parseInt(limit, 10) || 200, 500));
   const page = rows.slice(off, off + lim);
 
-  const rateIndex = buildRateIndex(await loadRates());
+  const rateIndex = await loadCostIndex();
   const today = dayKey();
   const items = page.map((vc) => variantRow(vc, rateIndex, today));
   return { items, total, limit: lim, offset: off };
@@ -1098,6 +1188,7 @@ export async function listVariants({ coverage = null, context = null, funnelId =
 // top-level; unknown = null, never omitted). Both /variants and /by-funnel
 // emit this; the contract harness asserts the exact key set.
 export function variantRow(vc, rateIndex, today) {
+  const membership = rateIndex.memberOf(vc, today);
   const [unitCogs, cogsSrc] = resolveUnitCogs(vc, rateIndex, today);
   const ship = {};
   for (const key of SHIP_KEYS) {
@@ -1139,8 +1230,10 @@ export function variantRow(vc, rateIndex, today) {
     kind_override: vc.kind_override ?? null,
     // Contract v2 addendum (re-probe residual): the item-scope hook rides the
     // wire so the drawer's Cost-group scope can enable when a group exists.
-    cost_item_id: vc.cost_item_id ?? null,
-    units_per: Number(vc.units_per || 1),
+    // Read AS OF `today` from the membership ledger, so the row the UI holds
+    // is the one that priced it — not a column that may have moved.
+    cost_item_id: membership.cost_item_id,
+    units_per: membership.units_per,
     first_sold: vc.first_sold || '',
     detected_at: vc.detected_at,
     updated_at: vc.updated_at,
@@ -1160,7 +1253,7 @@ export function variantRow(vc, rateIndex, today) {
 export async function listByFunnel() {
   await ensureFunnelCostsTables();
   const rows = await pgQuery(`SELECT * FROM lb_variant_costs ORDER BY revenue_30d DESC, variant_id`);
-  const rateIndex = buildRateIndex(await loadRates());
+  const rateIndex = await loadCostIndex();
   const today = dayKey();
   const byFid = new Map();
   for (const vc of rows) {
@@ -1263,7 +1356,7 @@ export async function patchVariant(variantId, patch) {
       sets.push(`coverage = $${params.length}`);
     } else {
       // un-ignore → recompute from the ledger, never guess
-      const rateIndex = buildRateIndex(await loadRates());
+      const rateIndex = await loadCostIndex();
       const [unit] = resolveUnitCogs(vc, rateIndex, dayKey());
       params.push(unit !== null ? 'ready' : 'needs_cost');
       sets.push(`coverage = $${params.length}`);
@@ -1440,7 +1533,7 @@ export async function pnlOverview(start, end) {
   const [s, e] = validateWindow(start, end);
   const { sessions, charges } = await loadMoneyWindow(s, e);
   const catalog = await loadCatalog();
-  const rateIndex = buildRateIndex(await loadRates());
+  const rateIndex = await loadCostIndex();
   const feeSettings = await getFeeSettings();
   const ctx = { catalog, rateIndex, feeSettings };
 
@@ -1506,7 +1599,7 @@ export async function pnlFunnel(fid, start, end) {
 
   const { sessions, charges } = await loadMoneyWindow(s, e, funnelId);
   const catalog = await loadCatalog();
-  const rateIndex = buildRateIndex(await loadRates());
+  const rateIndex = await loadCostIndex();
   const feeSettings = await getFeeSettings();
   const ctx = { catalog, rateIndex, feeSettings };
 
