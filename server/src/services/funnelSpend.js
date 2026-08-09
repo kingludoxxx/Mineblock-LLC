@@ -155,9 +155,9 @@ export async function recordSyncAttempt(source, ok, { error = null, state = null
   return row;
 }
 
-export async function getSyncState(source = 'meta') {
+export async function getSyncState(source = 'meta', { query = pgQuery } = {}) {
   await ensureFunnelCostsTables();
-  const [row] = await pgQuery(`SELECT * FROM lb_spend_sync_state WHERE source = $1`, [source]);
+  const [row] = await query(`SELECT * FROM lb_spend_sync_state WHERE source = $1`, [source]);
   return row || null;
 }
 
@@ -255,11 +255,11 @@ export async function syncMetaCampaignSpend(days = SPEND_PERIODIC_DAYS) {
 // over [start, end] (day keys, inclusive). fid = MAJORITY funnel; fids =
 // every funnel this campaign's money landed on, most sessions first; ties
 // break on the funnel id so the result is deterministic.
-export async function deriveCampaignBindings(start, end) {
+export async function deriveCampaignBindings(start, end, { query = pgQuery } = {}) {
   await ensureTrackingTables();
   const loIso = `${start}T00:00:00Z`;
   const hiIso = `${dayKeyUtc(new Date(`${end}T00:00:00Z`).getTime() + 86400000)}T00:00:00Z`;
-  const sessions = await pgQuery(
+  const sessions = await query(
     `SELECT s.id, s.funnel_id, s.vid, s.paid_at
      FROM co_sessions s
      WHERE ${MONEY_MOVED_SQL} AND s.paid_at >= $1 AND s.paid_at < $2
@@ -291,7 +291,7 @@ export async function deriveCampaignBindings(start, end) {
   const sids = sessions.map((s) => String(s.id));
   for (let i = 0; i < sids.length; i += CLICK_CHUNK) {
     const chunk = sids.slice(i, i + CLICK_CHUNK);
-    const clicks = await pgQuery(
+    const clicks = await query(
       `SELECT session_id, struct, ts FROM lb_clicks
        WHERE session_id = ANY($1) AND bot = FALSE
        ORDER BY ts, id`,
@@ -309,7 +309,7 @@ export async function deriveCampaignBindings(start, end) {
   const vids = [...vidToSids.keys()];
   for (let i = 0; i < vids.length; i += CLICK_CHUNK) {
     const chunk = vids.slice(i, i + CLICK_CHUNK);
-    const clicks = await pgQuery(
+    const clicks = await query(
       `SELECT vid, struct, ts FROM lb_clicks
        WHERE vid = ANY($1) AND bot = FALSE
        ORDER BY ts, id`,
@@ -355,7 +355,7 @@ export async function deriveCampaignBindings(start, end) {
 // operator has typed manual spend. Everything else renders spend null /
 // spend_known false — a zero would read as "no ad spend", the opposite of
 // the truth.
-export async function funnelSpendByDay(fids, start, end, { bindStart = null } = {}) {
+export async function funnelSpendByDay(fids, start, end, { bindStart = null, query = pgQuery } = {}) {
   await ensureFunnelCostsTables();
   const wanted = [...new Set((fids || []).map((f) => String(f)).filter(Boolean))];
   const days = {};
@@ -367,7 +367,7 @@ export async function funnelSpendByDay(fids, start, end, { bindStart = null } = 
   // the spend window — a funnel that is DOWN has no sales today, and binding
   // on the spend window alone would leave exactly the campaigns you most
   // need attributed unbound.
-  const bindings = await deriveCampaignBindings(bindStart || start, end);
+  const bindings = await deriveCampaignBindings(bindStart || start, end, { query });
   const cmpToFid = new Map();
   for (const [cid, b] of Object.entries(bindings)) {
     const fid = String((b || {}).fid || '');
@@ -375,7 +375,7 @@ export async function funnelSpendByDay(fids, start, end, { bindStart = null } = 
   }
   // Pins win — including a pin that moves a campaign to a funnel OUTSIDE the
   // asked-for set, which must REMOVE the derived credit here.
-  const pins = await pgQuery(`SELECT campaign_id, funnel_id FROM lb_campaign_map`);
+  const pins = await query(`SELECT campaign_id, funnel_id FROM lb_campaign_map`);
   for (const p of pins) {
     const cid = String(p.campaign_id);
     const fid = String(p.funnel_id);
@@ -383,11 +383,11 @@ export async function funnelSpendByDay(fids, start, end, { bindStart = null } = 
     else cmpToFid.delete(cid);
   }
 
-  const state = await getSyncState('meta');
+  const state = await getSyncState('meta', { query });
   const feedSynced = Boolean(state && state.last_sync);
 
   if (cmpToFid.size) {
-    const rows = await pgQuery(
+    const rows = await query(
       `SELECT ref_id, day, spend FROM lb_ad_spend_daily
        WHERE source = 'meta' AND ref_id = ANY($1) AND day >= $2 AND day <= $3`,
       [[...cmpToFid.keys()], start, end]
@@ -403,7 +403,7 @@ export async function funnelSpendByDay(fids, start, end, { bindStart = null } = 
     }
   }
 
-  const manual = await pgQuery(
+  const manual = await query(
     `SELECT ref_id, day, spend FROM lb_ad_spend_daily
      WHERE source = 'manual' AND ref_id = ANY($1) AND day >= $2 AND day <= $3`,
     [wanted, start, end]
