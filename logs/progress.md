@@ -2607,3 +2607,41 @@ fixed rails plus the inspector is 908px of chrome in a 1060px body
 (DECISION MADE).
 STATUS: COMPLETE
 ---
+
+---
+TIMESTAMP: 2026-08-09 22:52
+TASK: Re-review FIX-FIRST pass on fix/builder-bughunt — 1 gating defect
+(phantom slug, introduced by my own M5 fix) + 4 confirmed follow-ups
+BUILT: resyncMeta re-syncs title/slug/status from every successful PATCH
+response (skipping fields still dirty) and recordRefusal/clearRefusals keep a
+sticky per-field refusal off the shared saveError, so a refused slug can
+neither linger on screen as a phantom value nor disappear silently once an
+unrelated save succeeds; the inspector now names the rejected value and the
+live one. Follow-ups: capture-phase in-app link guard (useBlocker needs a
+data router, this app is plain BrowserRouter), ungated + always-visible empty
+-page QuickInsert with truthful prose, LeftPanel tab lifted to the page,
+Preview loading state, and a propsEpoch remount of BlockProps scoped to the
+blocks an AI batch touched.
+TESTED: vite build exit 0 (3x). builder-model 181/181 (was 154 — 37 new
+assertions covering the re-sync, the stickiness and an end-to-end replay of
+the reported sequence), ai-ops-wiring 31/31, code-doc 107/107, whole
+server/tests sweep unchanged (same 2 pre-existing env failures:
+review-regression needs a server on :4003, upsell-page needs live Shopify).
+eslint 0 errors across the builder dir + all touched files. FU2 verified by
+MEASUREMENT in a browser against the built CSS: new control 20x20 @ opacity
+1, hit-tests to itself, click reaches it; old hover-only strip @ opacity 0.
+OUTPUT: the linter caught a real bug mid-pass — refusedSaveField used but not
+imported (no-undef), which the build would not have flagged and which would
+have thrown at the first save refusal. Kept the import list honest after
+extracting the helpers.
+DECISIONS: (1) Fixed the gating defect from BOTH directions the reviewer
+offered rather than picking one — re-sync alone would show the truth but
+erase the fact that the operator's slug was rejected; stickiness alone would
+explain the refusal but leave the wrong value in the box (DECISION MADE).
+(2) Did NOT migrate the app to a data router for useBlocker; the capture
+-phase interception is contained to the builder and does not touch routing
+for the rest of the app (DECISION MADE). (3) propsEpoch is scoped to touched
+blocks rather than bumped on every batch, so an AI edit elsewhere does not
+interrupt typing in the inspector (DECISION MADE).
+STATUS: COMPLETE
+---
