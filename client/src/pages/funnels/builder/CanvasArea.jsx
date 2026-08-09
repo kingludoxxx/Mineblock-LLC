@@ -3,10 +3,11 @@
 //   click-to-select · drag-to-reorder · drop-from-palette · hover quick-insert
 //   between blocks · double-click inline text editing (heading/text/button).
 import { useEffect, useRef, useState } from 'react';
-import { Plus, GripVertical, Eye, EyeOff } from 'lucide-react';
+import { Plus, GripVertical, Eye, EyeOff, Copy, Trash2 } from 'lucide-react';
 import BlockPreview from './BlockPreview';
 import { BLOCK_DEFS, blockLabel } from './blockRegistry';
 import { styleToCanvas, hiddenOnDevice } from './styleUtils';
+import { blockNameAttr } from './builderModel';
 import { DRAG_MIME } from './LeftPanel';
 
 const QUICK_TYPES = ['heading', 'text', 'button', 'image', 'divider', 'spacer', 'section', 'custom_html'];
@@ -82,6 +83,8 @@ export default function CanvasArea({
   onInsertAt,
   onMove,
   onProp,
+  onDuplicate,
+  onDelete,
   showOutlines,
   onToggleOutlines,
   device,
@@ -176,6 +179,12 @@ export default function CanvasArea({
                   {dropIndex === i && <div className="h-0.5 bg-sky-400 rounded-full my-0.5" />}
                   <div
                     data-blk-idx={i}
+                    // CSS hook, mirrored from the block-name field. `undefined`
+                    // omits the attribute entirely so an unnamed block adds no
+                    // selector surface. The PUBLISHED page needs the matching
+                    // one-liner in funnelRender.js blockStyleWrap() — that file
+                    // is integrator-owned, so this is the builder half only.
+                    data-blk-name={blockNameAttr(b.props) || undefined}
                     draggable={editingId !== b.id}
                     onDragStart={(e) => {
                       setDragId(b.id);
@@ -201,7 +210,9 @@ export default function CanvasArea({
                       ...(blkStyle || null),
                     }}
                   >
-                    {/* Hover/selected block chrome */}
+                    {/* Hover/selected block toolbar: label + drag handle +
+                        duplicate + delete. All three reuse the page's existing
+                        block ops — this is chrome, not a second implementation. */}
                     <div
                       className={`absolute -top-2.5 left-1 z-20 flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] font-semibold uppercase tracking-wider
                         ${selected ? 'opacity-100' : 'opacity-0 group-hover/blk:opacity-100'}`}
@@ -210,6 +221,20 @@ export default function CanvasArea({
                       <GripVertical className="w-2.5 h-2.5 cursor-grab" />
                       {blockLabel(b)}
                       {hiddenHere && <span className="normal-case tracking-normal">· hidden on {device}</span>}
+                      <button
+                        onClick={(e) => { e.stopPropagation(); onDuplicate(b.id); }}
+                        title="Duplicate block"
+                        className="ml-1 p-0.5 rounded hover:bg-white/25 cursor-pointer"
+                      >
+                        <Copy className="w-2.5 h-2.5" />
+                      </button>
+                      <button
+                        onClick={(e) => { e.stopPropagation(); onDelete(b.id); }}
+                        title="Delete block"
+                        className="p-0.5 rounded hover:bg-white/25 cursor-pointer"
+                      >
+                        <Trash2 className="w-2.5 h-2.5" />
+                      </button>
                     </div>
                     {editingId === b.id && inlineProp ? (
                       <InlineEditor

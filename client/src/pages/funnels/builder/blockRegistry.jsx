@@ -348,25 +348,66 @@ export const BLOCK_DEFS = {
   // Visual commerce-adjacent blocks. Prices here are DISPLAY STRINGS only —
   // nothing in these blocks can feed a charge (the server treats them the
   // same way: static markup, esc()'d text, no money logic).
+  // ORDER BUMP — the one block on this list that can move money.
+  //
+  // The server contract is LIVE: POST /api/v1/checkout/public/session/:id/bump
+  // reads the PUBLISHED page's block props {variant_id, quantity} and re-prices
+  // the variant against Shopify. Nothing here sets an amount — `price` stays a
+  // DISPLAY STRING, and a bump with no variant_id is refused server-side
+  // (422 bump_not_chargeable) rather than charged at the displayed number.
   order_bump: {
     label: 'Order Bump',
     category: 'blocks',
     icon: Gift,
+    // No `label` here: it is the LEGACY key the renderer still falls back to
+    // for older blocks. Seeding it on a NEW block would put a value behind
+    // the headline field that the operator cannot see in the inspector.
     defaults: () => ({
-      label: 'Yes! Add this one-time offer to my order',
       description: 'Special one-time deal, only available right now.',
-      price: '$19.00',
+      quantity: 1,
     }),
+    // Field ORDER and COPY are operator-spec'd (reference-tool screenshots).
+    // Block name is field 1 but lives in the SHARED inspector header, so it is
+    // not repeated here.
     fields: [
-      { key: 'label', label: 'Label', kind: 'text' },
-      { key: 'description', label: 'Description', kind: 'textarea' },
       {
-        key: 'price', label: 'Price (display text)', kind: 'text', placeholder: '$19.00',
-        help: 'Display only — this block has NO charging logic yet; the checkbox is visual.',
+        key: 'variant_id', label: 'Shopify product', kind: 'variant',
+        help: 'Variants and prices come live from Shopify; the published page creates the payment session server-side, so the buyer is always charged the current Shopify price.',
+      },
+      // KEY IS `headline`. Verified by execution against the renderer on main
+      // (funnelRender.js order_bump): it resolves
+      //   p.headline -> "Yes, I want the {offer_name}!" -> p.label -> default.
+      // `label` is the LEGACY key and stays readable for blocks authored
+      // before that change; new edits write `headline`, which wins.
+      {
+        key: 'headline', label: 'Checkbox headline', kind: 'text',
+        placeholder: 'Yes, I want the … (auto from the offer name if blank)',
+        help: 'Leave blank and the page builds it from the offer name. No price is inserted automatically — the amount charged is always the live Shopify price.',
       },
       {
-        key: 'checked', label: 'Pre-checked', kind: 'select', coerce: 'bool',
+        key: 'offer_name', label: 'Offer name (bold, before the description)', kind: 'text',
+        placeholder: 'EMERGENCY WATER TEST KIT',
+        help: 'Renders as a bold “NAME:” prefix on the description line, and fills the headline when that is left blank.',
+      },
+      {
+        key: 'description', label: 'Description', kind: 'textarea',
+        help: 'What it is and why to add it. <b>bold</b> and <u>underline</u> are allowed — everything else is shown as plain text.',
+      },
+      {
+        key: 'quantity', label: 'Quantity per order', kind: 'number', min: 1, max: 10, coerce: 'int',
+        help: 'Units added when the bump is accepted. The server clamps this to 1-10.',
+      },
+      {
+        key: 'checked', label: 'Ticked by default', kind: 'select', coerce: 'bool',
         options: [{ value: '', label: 'No' }, { value: 'true', label: 'Yes' }],
+      },
+      {
+        key: 'offer_name_color', label: 'Offer name color', kind: 'color',
+        help: 'Tints the bold offer name. Must be a hex value (#111827) — anything else is ignored and the default ink is used.',
+      },
+      {
+        key: 'price', label: 'Price (display text)', kind: 'text', placeholder: '$19.00',
+        help: 'Filled in for you when you pick a product. Label only — the amount charged always comes from Shopify via the variant above, re-priced at checkout.',
       },
     ],
   },
@@ -420,11 +461,26 @@ export const BLOCK_DEFS = {
       'Renders as an inert labelled placeholder on the public page for now. For a live checkout use the Whop Checkout block (or create a page with the checkout type — it seeds the full template).',
   },
 
+  // EXPRESS CHECKOUT — insertable LAYOUT PLACEHOLDER, no payment logic.
+  //
+  // It is in the server's PLACEHOLDER_TYPES set, so the public page renders a
+  // labelled dashed box — the SAME mechanism checkout_template already ships
+  // with. Inserting it reserves the slot in a layout; it can never take a
+  // payment, and this block adds nothing that could.
+  express_checkout: {
+    label: 'Express Checkout',
+    category: 'blocks',
+    icon: Zap,
+    defaults: () => ({}),
+    fields: [],
+    help:
+      'Layout placeholder only. Apple Pay / Google Pay express buttons are NOT wired on this platform — the public page renders a labelled dashed box where this sits. Use the Whop Checkout block to actually take a payment.',
+  },
+
   // Unwired gateway checkouts — visible but DISABLED in the palette
   // (`soon: true`). Whop is the only wired gateway on this platform.
   stripe_checkout: { label: 'Stripe Checkout', category: 'blocks', icon: Banknote, soon: true, defaults: () => ({}), fields: [] },
   nmi_checkout: { label: 'NMI Checkout', category: 'blocks', icon: Wallet, soon: true, defaults: () => ({}), fields: [] },
-  express_checkout: { label: 'Express Checkout', category: 'blocks', icon: Zap, soon: true, defaults: () => ({}), fields: [] },
 };
 
 // Palette ordering per category.
@@ -433,11 +489,11 @@ export const PALETTE_ORDER = {
   layout: ['section', 'row', 'custom_html'],
   blocks: [
     'whop_checkout', 'order_summary', 'order_bump', 'shipping_method',
-    'checkout_template', 'product', 'upsell_offer',
+    'checkout_template', 'express_checkout', 'product', 'upsell_offer',
     'hero', 'list', 'checklist', 'testimonial', 'faq', 'ranking',
     'comparison_table', 'product_grid', 'table', 'countdown', 'sticky_cta', 'html',
     // Visible-disabled (soon) — unwired gateways on a Whop-only platform.
-    'stripe_checkout', 'nmi_checkout', 'express_checkout',
+    'stripe_checkout', 'nmi_checkout',
   ],
 };
 

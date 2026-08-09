@@ -2,13 +2,14 @@
 //
 // Faithful STRUCTURAL approximations of the server renderer's output
 // (funnelRender.js), in the light buyer theme. Deliberately NOT the server
-// renderer: no dangerouslySetInnerHTML anywhere in the admin DOM. All operator
+// renderer: no dangerouslySetInnerHTML in THIS file. All operator
 // text renders through React text nodes (auto-escaped). Operator HTML props
 // (custom_html / html / section html / row columns) preview inside a fully
 // sandboxed iframe (sandbox="" — no scripts, no same-origin) so hostile HTML
 // typed into a prop can never execute in the admin surface.
 import { useMemo } from 'react';
 import { CreditCard, ReceiptText, Film, Image as ImageIcon, Code2 } from 'lucide-react';
+import { bumpHeadline, bumpUnconfigured, bumpNameColor, parseInlineMarkup } from './builderModel';
 
 const T = {
   text: '#374151',
@@ -376,26 +377,82 @@ export default function BlockPreview({ block, pageCss = '' }) {
           {p.fine_print ? <p style={{ color: T.faint, fontSize: 11, marginTop: 10 }}>{String(p.fine_print)}</p> : null}
         </section>
       );
-    case 'order_bump':
+    // ORDER BUMP. Two visibly different states, because the difference is
+    // whether this block can take money:
+    //   UNCONFIGURED (no variant_id) — dashed outline + the assign hint. The
+    //     renderer omits data-bump-armed and the server refuses the bump with
+    //     422 bump_not_chargeable, so the canvas must not draw it as working.
+    //   CONFIGURED — the wired strip. The public runtime IS live on main:
+    //     funnelRender arms .lb-order-bump[data-bump-armed='1'] → POST
+    //     /session/:id/bump.
+    // Every display field (headline, offer_name, offer_name_color, and <b>/<u>
+    // in the description) is now emitted by the renderer, so this preview is
+    // a true preview and no field carries a "canvas-only" caveat any more.
+    case 'order_bump': {
+      // LAYOUT MIRRORS funnelRender.js EXACTLY, because a preview that
+      // arranges the same props differently is a preview that lies:
+      //   · the card border is ALWAYS 2px dashed #f59e0b (the renderer never
+      //     recolours it — offer_name_color tints the NAME only)
+      //   · offer_name is a bold "NAME:" prefix on the DESCRIPTION line,
+      //     not a prefix on the headline
+      //   · the description line appears when EITHER description or
+      //     offer_name is set
+      //   · the price is a display string printed verbatim beside the label
+      // The "Product ·" strip below the card is builder-only chrome and is
+      // drawn OUTSIDE the card so it cannot be mistaken for page content.
+      const unconfigured = bumpUnconfigured(p);
+      const nameColor = bumpNameColor(p);
+      const headline = bumpHeadline(p);
+      const offerName = String(p.offer_name == null ? '' : p.offer_name).trim();
+      const descRaw = String(p.description == null ? '' : p.description).trim();
+      const priceText = p.price != null && String(p.price).trim() !== '' ? String(p.price).trim() : '';
+      const qty = Number.isFinite(Number(p.quantity)) && Number(p.quantity) > 1 ? Number(p.quantity) : null;
       return (
-        <div style={{ border: '2px dashed #f59e0b', borderRadius: 12, background: '#fffbeb', padding: '16px 18px' }}>
-          <label style={{ display: 'flex', alignItems: 'flex-start', gap: 10 }}>
-            <input type="checkbox" checked={p.checked === true} readOnly style={{ marginTop: 3, width: 18, height: 18, accentColor: '#f59e0b', pointerEvents: 'none' }} />
-            <span style={{ flex: 1, fontWeight: 600, color: T.dark, fontSize: 14 }}>
-              {String(p.label || 'Yes! Add this one-time offer to my order')}
-            </span>
-            {p.price != null && String(p.price).trim() !== '' && (
-              <span style={{ fontWeight: 700, color: T.dark, whiteSpace: 'nowrap', fontSize: 14 }}>{String(p.price)}</span>
+        <div>
+          <div style={{ border: '2px dashed #f59e0b', borderRadius: 12, background: '#fffbeb', padding: '16px 18px' }}>
+            <label style={{ display: 'flex', alignItems: 'flex-start', gap: 10 }}>
+              <input
+                type="checkbox"
+                checked={p.checked === true}
+                readOnly
+                style={{ marginTop: 3, width: 18, height: 18, accentColor: '#f59e0b', pointerEvents: 'none' }}
+              />
+              <span style={{ flex: 1, fontWeight: 600, color: T.dark, fontSize: 14 }}>{headline}</span>
+              {priceText && (
+                <span style={{ fontWeight: 700, color: T.dark, whiteSpace: 'nowrap', fontSize: 14 }}>{priceText}</span>
+              )}
+            </label>
+
+            {(descRaw || offerName) && (
+              // <b>/<u> only, rendered as REACT ELEMENTS around auto-escaped
+              // text — this file's no-dangerouslySetInnerHTML rule holds. The
+              // server allows exactly the same two tags.
+              <p style={{ margin: '8px 0 0 28px', color: T.faint, fontSize: 13 }}>
+                {offerName && <strong style={{ color: nameColor }}>{`${offerName}: `}</strong>}
+                {parseInlineMarkup(descRaw).map((seg, si) => {
+                  let node = seg.text;
+                  if (seg.underline) node = <u key="u">{node}</u>;
+                  if (seg.bold) node = <strong key="b">{node}</strong>;
+                  return <span key={si}>{node}</span>;
+                })}
+              </p>
             )}
-          </label>
-          {p.description != null && String(p.description).trim() !== '' && (
-            <p style={{ margin: '8px 0 0 28px', color: T.faint, fontSize: 13 }}>{String(p.description)}</p>
-          )}
-          <div style={{ marginLeft: 28, marginTop: 6, fontSize: 11, color: T.faint }}>
-            Visual block — the checkbox does not charge yet
           </div>
+
+          {/* Builder-only status strip — never rendered on the public page. */}
+          {unconfigured ? (
+            <div style={{ marginTop: 4, fontSize: 11, color: '#b45309', fontWeight: 600 }}>
+              Assign a Shopify product in the block settings
+            </div>
+          ) : (
+            <div style={{ marginTop: 4, fontSize: 11, color: T.faint }}>
+              Product wired · charged live from Shopify
+              {qty ? ` · ${qty} per order` : ''}
+            </div>
+          )}
         </div>
       );
+    }
     case 'shipping_method': {
       const opts = (Array.isArray(p.options) ? p.options : []).filter((o) => o && typeof o === 'object' && !Array.isArray(o));
       return (

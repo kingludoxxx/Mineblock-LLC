@@ -2439,3 +2439,120 @@ MADE). Upsell settle day = created_at::date, documented in loadMoneyWindow
 (DECISION MADE).
 STATUS: COMPLETE
 ---
+
+---
+TIMESTAMP: 2026-08-09 20:05
+TASK: BUILDER UX PARITY lane (feat/builder-ux)
+BUILT: Page-builder parity pass against the reference tool. Right panel with
+nothing selected is now PAGE settings ("Page" header + select-a-block hint,
+GENERAL group, slug-collision refusal prose next to the field, About-this-page
+copy). Left panel Outline rebuilt on a pure buildOutline() helper with row
+columns nested at depth 1 (non-movable, parent index) and reorder reusing the
+canvas onReorder/DRAG_MIME. Top bar gained a Scan button opening the existing
+ClonePageModal, a tablet device stub disabled with title "coming with tablet
+breakpoints", and a Saved/Save-changes chip that is clickable to flush. Canvas
+block hover toolbar gained duplicate + delete (reusing the page's block ops)
+and blocks emit data-blk-name. Code view REWRITTEN to mirror funnel-os
+LBCodeTab: two sub-tabs (Full HTML | CSS), one marker-delimited document each
+(@HEAD/@BODY-TOP/@BLOCKS/@BODY-END + per-block @block/@col markers), undebounced
+typing, dirty compare, explicit Save + Cmd/Ctrl+S, Refresh-with-confirm, Format;
+Monaco replaced by a textarea + highlight overlay using the repo's existing
+dependency-free highlightHtml/highlightCss. Order Bump Content tab rebuilt to
+the operator's field-exact spec (Shopify product picker -> props.variant_id,
+auto checkbox headline, offer name, b/u description, quantity, ticked-by-default,
+offer-name colour) with an unconfigured/configured canvas split. New authed
+read-only server route GET /api/v1/shopify-variants/search proxying Shopify
+Admin GraphQL. express_checkout became an insertable display placeholder.
+TESTED: 3 new harnesses — builder-model.mjs (84), code-doc.mjs (69),
+variant-search.mjs (73) — all green, all driven by execution. Regressions
+re-run: page-versions 93/93, page-duplicate 34/34, clone-page scan-create
+92/92, version-format 26/26, breakpoint-render 49/49, money-path order-bump
+18/18 + 8 further money-path suites. vite build run twice, clean both times.
+eslint multiset identical to main (175 problems, zero new).
+OUTPUT: two real bugs were caught BY THE TESTS and fixed before commit —
+bumpHeadline(null) threw because `= {}` only defaults `undefined`, and an
+attribute-bearing <b> assertion revealed the inline-markup parser needed its
+claim restated. review-regression.mjs and upsell-page.mjs (46/3) fail
+BYTE-IDENTICALLY on main — pre-existing, not this lane.
+DECISIONS: (1) The bump description parser returns SEGMENTS, not an HTML
+string, so BlockPreview's no-dangerouslySetInnerHTML invariant holds — hostile
+input cannot become markup rather than merely being filtered (DECISION MADE).
+(2) custom_js round-trips inside a tagged <script data-lb="page-js"> instead of
+being concatenated into body-end as the reference does, making the split exact
+(DECISION MADE). (3) A block absent from the document but present now is
+PRESERVED, not dropped as the reference documents — knownIds distinguishes "no
+marker" from "never described" (DECISION MADE). (4) Per-block code is editable
+only where markup IS a prop; the server renderer is not re-implemented client
+side (DECISION MADE, boundary stated in the UI).
+STATUS: COMPLETE
+---
+
+---
+TIMESTAMP: 2026-08-09 20:36
+TASK: BUILDER UX PARITY — adversarial review fixes F1-F21 (feat/builder-ux)
+BUILT: Rebased onto main (93c9795; Order Bump PUBLIC runtime now live there).
+F1 CRITICAL: a missing section header now means "not described" — the field
+family is left UNTOUCHED and blocks come back null, so deleting the @BLOCKS
+header line can no longer blank a live page. F2: type conversion is REFUSED
+for eight protected types (order_bump/whop_checkout/order_summary/product/
+shipping_method/checkout_template/express_checkout/stripe_checkout) with a
+named error. F3+F4: the page-JS wrapper is nonce-anchored and its body escapes
+</script>. F6: Published->Draft needs a typed UNPUBLISH confirm. F7: slug
+commits on blur/Enter with an old->new confirm when published. F8: markers in
+operator content are escaped on emit and ignored on parse. F9: outline drop
+indicator is direction-aware. F10: 30/min/user rate limit. F11: 401/403 ->
+shopify_auth_error, retryable:false, no Retry button. F12: product_status
+surfaced, amber badge + confirm on picking a non-purchasable variant. F13:
+content above the first marker is preserved + reported. F14/F15/F16/F17/F18/
+F19/F21 as specified.
+TESTED: builder-model 106/106, code-doc 101/101, variant-search 94/94 (grown
+from 84/69/73); regressions page-versions 93/93, version-format 26/26,
+breakpoint-render 49/49, page-duplicate 34/34, clone-page 92/92, money-path
+order-bump 18/18. Whole set run TWICE, identical. vite build clean twice.
+eslint delta vs the rebased base: ZERO.
+OUTPUT: F1/F2/F3/F4/F8/F13/F21 are now permanent named tests. Two bugs in my
+own rewrite were caught by them: the section markers contained literal <head>/
+<body> which terminated the [^>]*--> match early (making every section read as
+"missing"), and the CSS marker regex had lost its @.
+DECISIONS: (1) F20's premise is FALSE as of main — verified by execution:
+funnelRender's order_bump case emits p.label and reads no `headline` prop.
+The Checkbox headline field therefore writes `label` (the key that actually
+renders) and bumpHeadline reads headline-then-label so it is already correct
+when the integrator lands headline support (DECISION MADE). (2) F9 is not an
+index off-by-one — moveBlock(from,to) places the block AT to; the DROP
+INDICATOR was the thing that lied, so it is now direction-aware rather than
+changing move semantics (DECISION MADE). (3) The slug re-sync guard is
+"no uncommitted edit" (pure state) rather than a focus ref, because refs may
+not be read during render (DECISION MADE).
+STATUS: COMPLETE
+---
+
+---
+TIMESTAMP: 2026-08-09 20:52
+TASK: BUILDER UX PARITY — F5/F20 renderer alignment after second rebase
+BUILT: Rebased onto main 1a4f334, which now carries the integrator's
+b7000e2 (order_bump renders headline/offer_name/color + b-u description).
+Read the landed renderer BY EXECUTION and aligned the canvas to what it
+actually emits, which differed from my preview in four ways: (1) its
+auto-headline carries NO PRICE — my canvas was building "…for ONLY $19",
+advertising money the page never prints; (2) offer_name renders as a bold
+"NAME:" prefix on the DESCRIPTION line, not before the headline; (3) the
+card border stays 2px dashed amber always — offer_name_color tints the NAME
+only; (4) offer_name_color is gated on a STRICT hex and falls back to
+#111827. The Content field key moved back to `headline` (the renderer now
+prefers it), `label` stays readable as the legacy key, and every
+"canvas preview" caveat was dropped because those fields are now live.
+TESTED: builder-model 114/114 (grown; bumpHeadline and the new bumpNameColor
+are now PINNED to the renderer's precedence and its strict-hex gate),
+code-doc 101/101, variant-search 94/94, page-versions 93/93, version-format
+26/26, breakpoint-render 49/49, page-duplicate 34/34, clone-page 92/92,
+money-path order-bump 18/18. Whole set run TWICE, identical. vite build clean
+twice. eslint delta vs the new base: ZERO.
+OUTPUT: the price-in-headline divergence was caught by reading the landed
+renderer rather than trusting the review note; a test now asserts props.price
+is never spliced into the auto-headline.
+DECISIONS: `label` is not seeded in defaults() any more — seeding the legacy
+key on a NEW block would put a value behind the headline field that the
+operator cannot see in the inspector (DECISION MADE).
+STATUS: COMPLETE
+---
