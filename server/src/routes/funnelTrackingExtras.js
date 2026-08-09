@@ -25,6 +25,7 @@ import { pgQuery } from '../db/pg.js';
 import { authenticate } from '../middleware/auth.js';
 import { requirePermission } from '../middleware/rbac.js';
 import { ensureTrackingTables } from '../services/trackingSchema.js';
+import { ensureTables as ensureFunnelTables } from './funnels.js';
 import { TRACKING_NETWORKS } from './trackingAdmin.js';
 import { shapeTrackingHealth } from '../services/trackingHealth.js';
 import {
@@ -36,7 +37,42 @@ import {
 const router = Router();
 const authed = [authenticate, requirePermission('funnels', 'access')];
 
-const funnelParam = (req) => String(req.params.id).slice(0, 64);
+// Funnel id handling. NO TRUNCATION (review n8): the old `.slice(0, 64)`
+// silently turned an over-length id into a DIFFERENT id — one that matches no
+// row, and, worse, one that can never line up with a breaker scope, since
+// trackingDelivery builds those from the FULL id as `${funnelId}:${pixelRowId}`.
+// A truncated id would therefore report every breaker as closed forever. Refuse
+// loudly instead, with a bound so the parameter still cannot be unbounded.
+const MAX_FUNNEL_ID = 128;
+const funnelIdOf = (req) => {
+  const raw = String(req.params.id ?? '');
+  return raw && raw.length <= MAX_FUNNEL_ID ? raw : null;
+};
+
+// Resolve + validate + prove the funnel EXISTS. Returns the id, or null after
+// having already answered the request.
+//
+// The existence check (review m7) is what stops orphan-row write amplification:
+// without it, PUT .../tracking/custom on a typo'd or deleted funnel id happily
+// inserts a row keyed to a funnel that does not exist, and nothing ever collects
+// it. 404 is also the honest answer for a GET.
+async function resolveFunnel(req, res) {
+  const funnelId = funnelIdOf(req);
+  if (!funnelId) {
+    res.status(400).json({ success: false, error: { code: 'invalid_funnel_id' } });
+    return null;
+  }
+  // funnels.js owns that table's DDL; calling its ensure (an import, never an
+  // edit) means this router can be the first request on a fresh database
+  // without the existence check throwing on a missing relation.
+  await ensureFunnelTables();
+  const rows = await pgQuery(`SELECT 1 FROM funnels WHERE id = $1 LIMIT 1`, [funnelId]);
+  if (rows.length === 0) {
+    res.status(404).json({ success: false, error: { code: 'funnel_not_found' } });
+    return null;
+  }
+  return funnelId;
+}
 
 // Operator-facing names, matching the client's own network directory
 // (client/src/components/funnels/settings/TrackingSection.jsx AD_NETWORKS).
@@ -110,9 +146,31 @@ async function createTables() {
   // The health query counts the LIVE retry backlog per funnel. lb_postback_queue
   // is indexed (status, next_at) for the drain, which cannot serve a
   // funnel-scoped read; this one can. Additive and idempotent.
-  await pgQuery(
-    `CREATE INDEX IF NOT EXISTS idx_lb_postback_queue_funnel ON lb_postback_queue (funnel_id, status)`
-  );
+  //
+  // CONCURRENTLY (review m4): a plain CREATE INDEX takes a SHARE lock, which
+  // blocks every INSERT/UPDATE on lb_postback_queue for the duration — and this
+  // runs in the REQUEST PATH, so the first settings-modal open after a deploy
+  // would stall the delivery drain writing to that same table. CONCURRENTLY
+  // does not block writers. It cannot run inside a transaction block; pgQuery
+  // issues statements outside any explicit transaction, so that holds here.
+  //
+  // NON-FATAL: a CONCURRENTLY build can abort (e.g. a competing build on
+  // another worker) and leave an INVALID index behind. An index is an
+  // optimization, never a correctness requirement — the health query returns
+  // the same rows without it — so a failure is logged and swallowed rather than
+  // 500ing the panel. The next ensure on a fresh process retries.
+  //
+  // NOT a numbered migration: server/migrations is applied MANUALLY
+  // (`npm run migrate`, package.json:10) and tops out at 090, so an index
+  // parked there would simply not exist in any environment nobody remembered to
+  // migrate — which is precisely the environment where the slow scan hurts.
+  try {
+    await pgQuery(
+      `CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_lb_postback_queue_funnel ON lb_postback_queue (funnel_id, status)`
+    );
+  } catch (err) {
+    console.warn('[funnelTrackingExtras] idx_lb_postback_queue_funnel build skipped (non-fatal):', err.message);
+  }
 }
 
 // ── GET /:id/tracking/health ────────────────────────────────────────────────
@@ -125,9 +183,14 @@ router.get('/:id/tracking/health', authed, async (req, res) => {
   try {
     // ensureTrackingExtrasTables() chains ensureTrackingTables() itself.
     await ensureTrackingExtrasTables();
-    const funnelId = funnelParam(req);
+    const funnelId = await resolveFunnel(req, res);
+    if (!funnelId) return undefined;
 
-    const [pixels, countRows, lastRows, lastMsgRows, breakers, queueRows] = await Promise.all([
+    // TWO batches of three, not one of six (review m5): six concurrent
+    // checkouts from the shared pool for a single settings-panel open is real
+    // pressure on the money path's connections. Three at a time keeps the
+    // parallelism win without approaching the pool ceiling.
+    const [pixels, countRows, lastRows] = await Promise.all([
       pgQuery(
         `SELECT id, kind, pixel_id, mode, enabled, config FROM lb_pixels WHERE funnel_id = $1`,
         [funnelId]
@@ -163,6 +226,9 @@ router.get('/:id/tracking/health', authed, async (req, res) => {
          GROUP BY platform`,
         [funnelId]
       ),
+    ]);
+
+    const [lastMsgRows, breakers, queueRows] = await Promise.all([
       // The newest error row AND the newest skipped row per platform, so the UI
       // can show WHY without conflating the two (a skip is a decline, not a
       // failure). error text was already token-redacted by trackingDelivery.
@@ -276,9 +342,11 @@ router.get('/:id/tracking/health', authed, async (req, res) => {
 router.get('/:id/tracking/custom', authed, async (req, res) => {
   try {
     await ensureTrackingExtrasTables();
+    const funnelId = await resolveFunnel(req, res);
+    if (!funnelId) return undefined;
     const rows = await pgQuery(
-      `SELECT code, updated_at FROM lb_tracking_custom_code WHERE funnel_id = $1`,
-      [funnelParam(req)]
+      `SELECT code, updated_at, updated_by FROM lb_tracking_custom_code WHERE funnel_id = $1`,
+      [funnelId]
     );
     const row = rows[0] || null;
     // readCustomCode tolerates BOTH jsonb shapes (object and double-encoded
@@ -289,6 +357,9 @@ router.get('/:id/tracking/custom', authed, async (req, res) => {
       data: {
         ...code,
         updated_at: row ? row.updated_at : null,
+        // Who last saved these snippets — this is operator-supplied code that
+        // runs on every public page, so "who changed it" is part of the record.
+        updated_by: row ? row.updated_by : null,
         max_bytes: CUSTOM_CODE_MAX_BYTES,
       },
     });
@@ -302,9 +373,20 @@ router.get('/:id/tracking/custom', authed, async (req, res) => {
 // Operator-supplied code, stored VERBATIM — no sanitization, by design (same
 // trusted-operator posture as page head_html / settings.custom_head_code). The
 // controls are the funnels permission above and the 32KB-per-field cap.
+//
+// TODO(tracking-render-wiring): STORAGE ONLY — nothing reads this table yet, so
+// a saved snippet does NOT reach a public page. The admin UI carries a
+// "Saved, but not live yet" notice for exactly this reason (client
+// sections.jsx CustomTrackingSection, same marker). To close the loop:
+// funnelPublic.js:125 joins lb_tracking_custom_code onto the funnel row, and
+// funnelRender.js emits it at :1600-1602 alongside the existing
+// settings.custom_head_code / custom_body_end_code injections (:2856 / :2888).
+// When that ships, drop the client notice and flip the copy to present tense.
 router.put('/:id/tracking/custom', authed, async (req, res) => {
   try {
     await ensureTrackingExtrasTables();
+    const funnelId = await resolveFunnel(req, res);
+    if (!funnelId) return undefined;
     const check = validateCustomCode(req.body);
     if (!check.ok) {
       return res.status(400).json({
@@ -328,8 +410,8 @@ router.put('/:id/tracking/custom', authed, async (req, res) => {
                           ELSE '{}'::jsonb END) || EXCLUDED.code,
              updated_at = NOW(),
              updated_by = EXCLUDED.updated_by
-       RETURNING code, updated_at`,
-      [funnelParam(req), check.patch, String((req.user && req.user.id) || '').slice(0, 64) || null]
+       RETURNING code, updated_at, updated_by`,
+      [funnelId, check.patch, String((req.user && req.user.id) || '').slice(0, 64) || null]
     );
     const row = rows[0] || null;
     return res.json({
@@ -337,6 +419,7 @@ router.put('/:id/tracking/custom', authed, async (req, res) => {
       data: {
         ...readCustomCode(row && row.code),
         updated_at: row ? row.updated_at : null,
+        updated_by: row ? row.updated_by : null,
         max_bytes: CUSTOM_CODE_MAX_BYTES,
       },
     });

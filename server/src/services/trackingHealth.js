@@ -30,6 +30,12 @@
 //   4. Never invent a status. Every verdict below is a function of rows that
 //      exist; absence of rows produces 'no_traffic', never a green check.
 
+// The breaker opens after this many CONSECUTIVE endpoint failures and stays
+// open for a cooldown. Mirrors BREAKER_FAILS in services/trackingDelivery.js
+// (:22) — kept as a named constant here so the operator copy can state the
+// threshold instead of hard-coding "5" into a sentence.
+export const BREAKER_FAIL_THRESHOLD = 5;
+
 // Severity ordering — drives the funnel-level roll-up (worst pixel wins) and
 // the client's sort. Higher is worse.
 export const STATUS_RANK = {
@@ -133,6 +139,36 @@ export function serverChannelReady(pixel, spec) {
 // earlier ones explain the later ones away: there is no point calling a
 // disabled pixel "no traffic", or a pixel behind an open breaker "failing" —
 // the breaker IS the reason.
+//
+// PRECEDENCE TABLE (first match wins). The grouping is deliberate:
+//
+//   #  status         condition                              why it sits here
+//   1  disabled       enabled === false                      operator intent — nothing is expected
+//   2  not_active     spec.notActive                         no adapter exists; counters are meaningless
+//   -- HARD EVIDENCE OF BROKEN DELIVERY (red) ------------------------------
+//   3  outage         breaker open                           circuit tripped; explains the backlog below
+//   4  outage         queuedNow > 0 && sent === 0            live backlog, nothing getting through
+//   5  failing        failed  > 0 && sent === 0              every attempt failed
+//   -- CONFIGURATION (amber) ------------------------------------------------
+//   6  misconfigured  server channel required but not ready  cause of a FUTURE zero, not of a live failure
+//   -- QUIET ----------------------------------------------------------------
+//   7  no_traffic     no ledger rows AND no live backlog     silence is not failure
+//   -- PARTIAL / OK ---------------------------------------------------------
+//   8  degraded       (failed > 0 || queuedNow > 0)          implies sent > 0 by now
+//   9  healthy        sent > 0                               deliveries landing, nothing failing
+//  10  no_deliveries  only skips and/or dedupes              traffic, but nothing was sent
+//
+// WHY 3-5 OUTRANK 6 (fixed after review — this was inverted): `misconfigured`
+// is inferred from CONFIG SHAPE, while failing/outage are measured from real
+// delivery records. When both are true the records win, because they are
+// evidence and the config check is only a prediction. With the old order a
+// pixel sitting on 400 failed sends and 500 stranded conversions rendered as a
+// calm amber "Not ready" — the single most under-alarming state this surface
+// could produce. Regression probes: T16a/T16b.
+//
+// WHY 4 OUTRANKS 5: when a backlog exists AND sends are failing, 'outage' is
+// both more accurate and more actionable — it tells the operator delivery is
+// down AND that the events are preserved for retry rather than lost.
 export function classifyPixel({ pixel, spec, h24, breakerOpen, queuedNow }) {
   const s = spec || {};
   const w = h24 || ZERO_WINDOW;
@@ -157,10 +193,24 @@ export function classifyPixel({ pixel, spec, h24, breakerOpen, queuedNow }) {
       reason: 'The circuit breaker is open after repeated endpoint failures — events are being queued, not sent.',
     };
   }
-  // 4. Enabled and expected to relay, but the server channel cannot fire.
-  //    Checked BEFORE the counters, because zero sends is the SYMPTOM here and
-  //    the missing credential is the cause — reporting "no traffic" would send
-  //    the operator looking at their ad spend instead of their token.
+  // 4. A live retry backlog with nothing getting through. Ahead of both
+  //    `failing` and `misconfigured`: real stranded conversions outrank a
+  //    config prediction, and 'outage' says the events are preserved.
+  if (queuedNow > 0 && w.sent === 0) {
+    return {
+      status: 'outage',
+      reason: 'Events are backed up in the retry queue and nothing has been delivered in this window.',
+    };
+  }
+  // 5. There WAS activity and every delivery attempt failed.
+  if (w.failed > 0 && w.sent === 0) {
+    return { status: 'failing', reason: 'Every delivery attempt in this window failed.' };
+  }
+  // 6. Enabled and expected to relay, but the server channel cannot fire.
+  //    Ahead of `no_traffic` because zero sends is the SYMPTOM and the missing
+  //    credential is the cause — reporting "no traffic" would send the operator
+  //    looking at their ad spend instead of their token. BEHIND the two
+  //    branches above: see the precedence note in the header.
   if (!serverChannelReady(pixel, s) && (pixel.mode === 's2s' || pixel.mode === 'hybrid')) {
     const cfg = asObject(pixel && pixel.config);
     const missing = [];
@@ -174,7 +224,7 @@ export function classifyPixel({ pixel, spec, h24, breakerOpen, queuedNow }) {
       missing,
     };
   }
-  // 5. Nothing at all happened in the window. NOT a failure — this is the
+  // 7. Nothing at all happened in the window. NOT a failure — this is the
   //    honest reading for a funnel with no traffic, a paused campaign, or a
   //    brand-new pixel. The 7d counters and last_sent_at carry the nuance.
   //
@@ -190,20 +240,9 @@ export function classifyPixel({ pixel, spec, h24, breakerOpen, queuedNow }) {
   if (windowTotal(w) === 0 && queuedNow === 0) {
     return { status: 'no_traffic', reason: 'No delivery records in this window — nothing to judge.' };
   }
-  // 6. There WAS activity and every delivery attempt failed.
-  if (w.failed > 0 && w.sent === 0) {
-    return { status: 'failing', reason: 'Every delivery attempt in this window failed.' };
-  }
-  // 7. A live retry backlog with nothing getting through reads as an outage
-  //    even when the breaker has not tripped yet (fewer than 5 consecutive
-  //    fails, or the cooldown just lapsed).
-  if (queuedNow > 0 && w.sent === 0) {
-    return {
-      status: 'outage',
-      reason: 'Events are backed up in the retry queue and nothing has been delivered in this window.',
-    };
-  }
   // 8. Partial trouble: some sends land, some fail or are waiting on a retry.
+  //    Branches 4 and 5 already returned unless sent > 0, so this is genuinely
+  //    the mixed case.
   if (w.failed > 0 || queuedNow > 0) {
     return { status: 'degraded', reason: 'Some events are delivering and some are failing or awaiting retry.' };
   }
@@ -224,6 +263,38 @@ export function classifyPixel({ pixel, spec, h24, breakerOpen, queuedNow }) {
   return {
     status: 'no_deliveries',
     reason: 'Every event in this window was already delivered by another channel and deduplicated — nothing new was sent.',
+  };
+}
+
+// The breaker block, INCLUDING its operator sentence.
+//
+// The copy lives here rather than in the client because the client cannot see
+// the contradiction it used to render: with fails >= the threshold but the
+// cooldown already lapsed, the state is 'closed' while the fail counter still
+// reads 7, producing "7 consecutive failures — the breaker opens at 5" next to
+// a calm closed state. `cooldown_lapsed` names that third state explicitly, and
+// `note` is the single string the UI prints — so the wording is assertable in a
+// harness instead of being re-derived in JSX.
+export function breakerView(br, isOpen) {
+  const fails = int(br && br.fails);
+  const openUntil = br && br.open_until ? br.open_until : null;
+  // Tripped at some point, but the open window has already elapsed: delivery is
+  // allowed to try again and the next result decides. Not open, not clean.
+  const cooldownLapsed = !isOpen && fails >= BREAKER_FAIL_THRESHOLD && Boolean(openUntil);
+  let note = null;
+  if (isOpen) {
+    note = `Circuit breaker open after ${fails} consecutive endpoint failures — events are queued, not sent.`;
+  } else if (cooldownLapsed) {
+    note = `Cooldown lapsed after ${fails} consecutive failures — delivery is retrying.`;
+  } else if (fails > 0) {
+    note = `${fails} consecutive failure${fails === 1 ? '' : 's'} recorded — the breaker opens at ${BREAKER_FAIL_THRESHOLD}.`;
+  }
+  return {
+    state: isOpen ? 'open' : 'closed',
+    fails,
+    open_until: openUntil,
+    cooldown_lapsed: cooldownLapsed,
+    note,
   };
 }
 
@@ -284,11 +355,7 @@ export function shapeTrackingHealth({
       ...(verdict.missing && verdict.missing.length ? { missing: verdict.missing } : {}),
       server_channel_ready: serverChannelReady(pixel, spec),
       ...(spec.notActive ? { not_active: true } : {}),
-      breaker: {
-        state: breakerIsOpen ? 'open' : 'closed',
-        fails: int(br && br.fails),
-        open_until: br && br.open_until ? br.open_until : null,
-      },
+      breaker: breakerView(br, breakerIsOpen),
       queued_now: queuedNow,
       windows: { h24, d7 },
       last_sent_at: last.last_sent_at || null,
@@ -309,19 +376,31 @@ export function shapeTrackingHealth({
     }
   }
 
+  // totals_24h is a LEDGER SUM — every field is a count of lb_tracking_events
+  // rows inside the 24h window, `queued` included (rows logged with
+  // status='queued' when an event was escalated to the retry queue).
+  //
+  // `queued_now` is a DIFFERENT QUANTITY and is deliberately NOT in that
+  // object: it is an INSTANTANEOUS gauge of lb_postback_queue depth, with no
+  // window at all. Summing a 24h count and a right-now depth under one "last 24
+  // hours" heading invited exactly the wrong reading (that N events queued
+  // today), so the two are returned as separate, separately-labelled figures.
   const totals = out.reduce((a, p) => ({
     sent: a.sent + p.windows.h24.sent,
     failed: a.failed + p.windows.h24.failed,
     skipped: a.skipped + p.windows.h24.skipped,
     deduped: a.deduped + p.windows.h24.deduped,
-    queued_now: a.queued_now + p.queued_now,
-  }), { sent: 0, failed: 0, skipped: 0, deduped: 0, queued_now: 0 });
+    queued: a.queued + p.windows.h24.queued,
+  }), { sent: 0, failed: 0, skipped: 0, deduped: 0, queued: 0 });
+  const queuedNowTotal = out.reduce((a, p) => a + p.queued_now, 0);
 
   return {
     overall,
     overall_label: (STATUS_META[overall] || {}).label || overall,
     pixels: out.sort((a, b) => (STATUS_RANK[b.status] || 0) - (STATUS_RANK[a.status] || 0)),
     totals_24h: totals,
+    // Right-now retry-queue depth across all pixels. No window — see above.
+    queued_now: queuedNowTotal,
     // Stated, never implied — the client renders these verbatim so an operator
     // is never left guessing what "recent" meant.
     windows: { h24: '24 hours', d7: '7 days' },

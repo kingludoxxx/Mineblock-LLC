@@ -1301,17 +1301,24 @@ function PixelHealthCard({ p }) {
 
       <p className="text-xs text-text-muted">{p.reason}</p>
 
-      {p.breaker?.state === 'open' && (
-        <div className="rounded-md border border-red-500/20 bg-red-500/10 px-2.5 py-1.5">
-          <p className="text-xs text-red-400">
-            Circuit breaker OPEN{p.breaker.open_until ? ` until ${whenText(p.breaker.open_until)}` : ''} — {p.breaker.fails} consecutive endpoint failures.
-          </p>
-        </div>
-      )}
-      {p.breaker?.state === 'closed' && p.breaker.fails > 0 && (
-        <p className="text-xs text-amber-400">
-          {p.breaker.fails} consecutive failure{p.breaker.fails === 1 ? '' : 's'} recorded — the breaker opens at 5.
-        </p>
+      {/*
+        breaker.note is composed SERVER-SIDE (trackingHealth.breakerView) rather
+        than re-derived here. The old client-side version printed "N consecutive
+        failures — the breaker opens at 5" next to a 'closed' state whenever the
+        cooldown had lapsed with N >= 5, which reads as a contradiction. The
+        server names that third state (cooldown_lapsed) and owns the wording, so
+        there is exactly one place it can be wrong — and a harness can assert it.
+      */}
+      {p.breaker?.note && (
+        p.breaker.state === 'open' ? (
+          <div className="rounded-md border border-red-500/20 bg-red-500/10 px-2.5 py-1.5">
+            <p className="text-xs text-red-400">
+              {p.breaker.note}{p.breaker.open_until ? ` Retrying after ${whenText(p.breaker.open_until)}.` : ''}
+            </p>
+          </div>
+        ) : (
+          <p className="text-xs text-amber-400">{p.breaker.note}</p>
+        )
       )}
 
       <div className="grid sm:grid-cols-2 gap-3">
@@ -1406,14 +1413,32 @@ export function TrackingHealthSection({ funnel }) {
             </div>
           ) : (
             <>
-              <div className="rounded-lg border border-border-default bg-bg-card p-3.5">
-                <p className="text-xs font-medium text-text-muted mb-2">All pixels · last 24 hours</p>
-                <div className="grid grid-cols-5 gap-2">
-                  <Stat label="Sent" value={data.totals_24h?.sent} />
-                  <Stat label="Failed" value={data.totals_24h?.failed} tone="danger" />
-                  <Stat label="Skipped" value={data.totals_24h?.skipped} tone="warning" />
-                  <Stat label="Deduped" value={data.totals_24h?.deduped} />
-                  <Stat label="Queued now" value={data.totals_24h?.queued_now} tone="warning" />
+              {/*
+                Two figures, two headings, on purpose. Everything under "last 24
+                hours" is a COUNT OF LOGGED EVENTS in that window; "in the retry
+                queue" is an INSTANTANEOUS depth with no window at all. They were
+                previously shown side by side under the 24h heading, which read
+                as "N events queued today" — a number that does not exist.
+              */}
+              <div className="rounded-lg border border-border-default bg-bg-card p-3.5 space-y-3">
+                <div>
+                  <p className="text-xs font-medium text-text-muted mb-2">All pixels · last 24 hours</p>
+                  <div className="grid grid-cols-5 gap-2">
+                    <Stat label="Sent" value={data.totals_24h?.sent} />
+                    <Stat label="Failed" value={data.totals_24h?.failed} tone="danger" />
+                    <Stat label="Skipped" value={data.totals_24h?.skipped} tone="warning" />
+                    <Stat label="Deduped" value={data.totals_24h?.deduped} />
+                    <Stat label="Queued" value={data.totals_24h?.queued} tone="warning" />
+                  </div>
+                </div>
+                <div className="pt-2.5 border-t border-border-subtle flex items-baseline justify-between gap-3">
+                  <div>
+                    <p className="text-xs font-medium text-text-muted">In the retry queue right now</p>
+                    <p className="text-[11px] text-text-faint">Live depth across all pixels — not a 24h count.</p>
+                  </div>
+                  <span className={`text-lg font-semibold ${data.queued_now > 0 ? 'text-amber-400' : 'text-text-muted'}`}>
+                    {data.queued_now ?? 0}
+                  </span>
                 </div>
               </div>
 
@@ -1529,13 +1554,36 @@ export function CustomTrackingSection({ funnel }) {
       <div>
         <h3 className="text-base font-semibold text-text-primary">Custom Tracking Code</h3>
         <p className="mt-1 text-sm text-text-muted">
-          Raw tracking snippets injected into <span className="text-text-primary font-medium">every page</span> of
-          this funnel. Stored and emitted verbatim — nothing is rewritten or sanitized,
-          so a tag that works elsewhere works here. 32KB per field.
+          Raw tracking snippets for <span className="text-text-primary font-medium">every page</span> of
+          this funnel. Stored and validated verbatim — nothing is rewritten or sanitized,
+          so a tag that works elsewhere will work here. 32KB per field.
         </p>
         <p className="mt-1.5 text-xs text-text-faint">
           For non-tracking code use Advanced → Scripts; for one page, use that page’s
           own head / body escape hatches in the builder.
+        </p>
+      </div>
+
+      {/*
+        TODO(tracking-render-wiring): NOT-YET-LIVE notice — DELETE THIS BLOCK, and
+        flip the tense of the copy above and of both CodeField hints below
+        ("Will be injected" → "Injected"), when the integrator wires the public
+        renderer to emit these snippets. That wiring is
+        services/funnelRender.js (funnelSettingsHead :2835 / funnelSettingsBodyEnd
+        :2872, consumed at :1600-1602) reading lb_tracking_custom_code, which
+        funnelPublic.js:125 must join in. Until it lands, saving here changes
+        nothing about what a visitor's browser executes, and the panel must say
+        so — an operator who pastes a Meta base pixel, sees a green "Saved" and
+        this copy would otherwise believe their tags are live while zero tags
+        render.
+      */}
+      <div className="rounded-lg border border-dashed border-amber-500/30 bg-amber-500/5 px-4 py-3">
+        <p className="text-sm text-amber-400/90 font-medium">Saved, but not live yet</p>
+        <p className="mt-1 text-xs text-amber-400/70">
+          These snippets are stored and validated now, but they are
+          {' '}<span className="font-medium">not yet emitted on public pages</span> — the renderer
+          wiring lands with the tracking phase. Nothing you save here affects a live visitor
+          until then. To ship a tag today, use Advanced → Scripts.
         </p>
       </div>
 
@@ -1545,14 +1593,14 @@ export function CustomTrackingSection({ funnel }) {
         <>
           <CodeField
             label="Head snippet"
-            hint="Injected at the end of <head> — pixel base codes, tag managers, consent tools."
+            hint="Will be injected at the end of <head> — pixel base codes, tag managers, consent tools."
             value={form.head}
             onChange={(v) => setForm((f) => ({ ...f, head: v }))}
             placeholder={'<script>…</script>\n<noscript>…</noscript>'}
           />
           <CodeField
             label="Body snippet"
-            hint="Injected just before </body> — deferred tags, <noscript> fallbacks."
+            hint="Will be injected just before </body> — deferred tags, <noscript> fallbacks."
             value={form.body}
             onChange={(v) => setForm((f) => ({ ...f, body: v }))}
             placeholder={'<noscript><img src="…"/></noscript>'}

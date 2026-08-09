@@ -7,7 +7,7 @@
 // a failure, and an outage must read as an outage.
 //
 // Run:  node server/tests/tracking/health-shape.mjs
-import { shapeTrackingHealth, classifyPixel, serverChannelReady, asObject } from '../../src/services/trackingHealth.js';
+import { shapeTrackingHealth, classifyPixel, serverChannelReady, asObject, STATUS_RANK } from '../../src/services/trackingHealth.js';
 
 let pass = 0, fail = 0;
 const ok = (c, m, x = '') => { if (c) { pass++; console.log('PASS ', m); } else { fail++; console.log('FAIL ', m, x); } };
@@ -146,12 +146,17 @@ const only = (args) => shape(args).pixels[0];
   eq(p.status, 'degraded', 'T9 partial failures → degraded');
 }
 {
+  // NB the expectation here CHANGED with the precedence fix (see T16d): with a
+  // live backlog present, failures + zero sends read as 'outage', not
+  // 'failing' — the events are stranded but preserved for retry, which is both
+  // more accurate and the more actionable message. 'failing' is now reserved
+  // for failures with NO backlog (T2).
   const p = only({
     pixels: [metaPixel()],
     counts: counts('meta', { failed: 2 }),
     queueDepth: [{ kind: 'meta_pixel', n: 14 }],
   });
-  eq(p.status, 'failing', 'T10a failures with zero sends still read failing');
+  eq(p.status, 'outage', 'T10a failures + live backlog + zero sends → outage');
   eq(p.queued_now, 14, 'T10a live queue depth carried');
 }
 {
@@ -263,6 +268,130 @@ eq(serverChannelReady(metaPixel(), SPECS.meta_pixel), true, 'T14b hybrid + token
 eq(serverChannelReady(metaPixel({ mode: 'native' }), SPECS.meta_pixel), false, 'T14c native mode is not a server channel');
 eq(serverChannelReady(metaPixel({ config: {} }), SPECS.meta_pixel), false, 'T14d missing secret → not ready');
 eq(serverChannelReady(metaPixel({ pixel_id: '' }), SPECS.meta_pixel), false, 'T14e missing id → not ready');
+
+// ── T16 PRECEDENCE: measured failure OUTRANKS a config prediction ───────────
+// Regression for the review's reproduced probes. `misconfigured` used to sit
+// ahead of failing/outage, so a pixel drowning in real failures rendered as a
+// calm amber "Not ready" instead of red.
+{
+  // T16a: misconfigured (no token) AND 500 conversions stranded in the queue.
+  const p = only({
+    pixels: [metaPixel({ config: {} })],
+    counts: counts('meta', {}),
+    queueDepth: [{ kind: 'meta_pixel', n: 500 }],
+  });
+  eq(p.status, 'outage', 'T16a misconfigured + stuck queue → outage (red), NOT misconfigured');
+  eq(p.tone, 'danger', 'T16a renders red, not amber');
+  eq(p.queued_now, 500, 'T16a stranded count carried');
+}
+{
+  // T16b: misconfigured (no token) AND 400 failed sends.
+  const p = only({
+    pixels: [metaPixel({ config: {} })],
+    counts: counts('meta', { failed: 400 }),
+  });
+  eq(p.status, 'failing', 'T16b misconfigured + failed sends → failing (red), NOT misconfigured');
+  eq(p.tone, 'danger', 'T16b renders red, not amber');
+}
+{
+  // T16c: the branch must still fire when there is NO contradicting evidence.
+  const p = only({ pixels: [metaPixel({ config: {} })], counts: [] });
+  eq(p.status, 'misconfigured', 'T16c misconfigured still wins over no_traffic (unchanged)');
+}
+{
+  // T16d: failures AND a backlog with zero sends → outage outranks failing,
+  // because the events are preserved for retry and that is the actionable read.
+  const p = only({
+    pixels: [metaPixel()],
+    counts: counts('meta', { failed: 9 }),
+    queueDepth: [{ kind: 'meta_pixel', n: 4 }],
+  });
+  eq(p.status, 'outage', 'T16d failed + backlog + zero sends → outage, not failing');
+}
+{
+  // T16e: an open breaker still outranks everything below it.
+  const p = only({
+    pixels: [metaPixel({ config: {} })],
+    counts: counts('meta', { failed: 50 }),
+    queueDepth: [{ kind: 'meta_pixel', n: 50 }],
+    breakers: [{ scope_id: `${FID}:px_meta1`, fails: 5, open_until: '2026-08-09T12:10:00.000Z' }],
+  });
+  eq(p.status, 'outage', 'T16e open breaker still wins');
+  eq(p.breaker.state, 'open', 'T16e breaker reported open');
+}
+{
+  // T16f: severity ranks must agree with the branch order, or the funnel
+  // roll-up would disagree with the per-pixel verdicts.
+  ok(STATUS_RANK.outage > STATUS_RANK.failing, 'T16f rank: outage > failing');
+  ok(STATUS_RANK.failing > STATUS_RANK.misconfigured, 'T16f rank: failing > misconfigured');
+  ok(STATUS_RANK.misconfigured > STATUS_RANK.degraded, 'T16f rank: misconfigured > degraded');
+  ok(STATUS_RANK.degraded > STATUS_RANK.no_traffic, 'T16f rank: degraded > no_traffic');
+  ok(STATUS_RANK.no_traffic > STATUS_RANK.healthy, 'T16f rank: no_traffic > healthy');
+}
+
+// ── T17 BREAKER COPY — the lapsed-cooldown contradiction (review m6) ────────
+{
+  // Open: note states the open state and the fail count.
+  const p = only({
+    pixels: [metaPixel()],
+    counts: counts('meta', { sent: 1 }),
+    breakers: [{ scope_id: `${FID}:px_meta1`, fails: 6, open_until: '2026-08-09T12:10:00.000Z' }],
+  });
+  eq(p.breaker.cooldown_lapsed, false, 'T17a an OPEN breaker is not "cooldown lapsed"');
+  eq(p.breaker.note,
+    'Circuit breaker open after 6 consecutive endpoint failures — events are queued, not sent.',
+    'T17a open copy');
+}
+{
+  // THE CONTRADICTION: fails >= threshold but the cooldown has elapsed. The old
+  // copy said "7 consecutive failures — the breaker opens at 5" beside a
+  // 'closed' state.
+  const p = only({
+    pixels: [metaPixel()],
+    counts: counts('meta', { sent: 3 }),
+    breakers: [{ scope_id: `${FID}:px_meta1`, fails: 7, open_until: '2026-08-09T11:00:00.000Z' }],
+  });
+  eq(p.breaker.state, 'closed', 'T17b lapsed cooldown reads closed');
+  eq(p.breaker.cooldown_lapsed, true, 'T17b cooldown_lapsed flagged');
+  eq(p.breaker.note, 'Cooldown lapsed after 7 consecutive failures — delivery is retrying.', 'T17b lapsed copy');
+  ok(!/opens at/.test(p.breaker.note), 'T17b copy no longer claims "the breaker opens at 5" while closed');
+}
+{
+  // Below the threshold, never opened: the "opens at N" copy is correct here.
+  const p = only({
+    pixels: [metaPixel()],
+    counts: counts('meta', { sent: 3 }),
+    breakers: [{ scope_id: `${FID}:px_meta1`, fails: 2, open_until: null }],
+  });
+  eq(p.breaker.cooldown_lapsed, false, 'T17c below threshold is not lapsed');
+  eq(p.breaker.note, '2 consecutive failures recorded — the breaker opens at 5.', 'T17c approaching-threshold copy');
+}
+{
+  const p = only({
+    pixels: [metaPixel()],
+    counts: counts('meta', { sent: 3 }),
+    breakers: [{ scope_id: `${FID}:px_meta1`, fails: 1, open_until: null }],
+  });
+  eq(p.breaker.note, '1 consecutive failure recorded — the breaker opens at 5.', 'T17d singular grammar');
+}
+{
+  const p = only({ pixels: [metaPixel()], counts: counts('meta', { sent: 3 }) });
+  eq(p.breaker.note, null, 'T17e a clean breaker emits NO note (nothing to explain)');
+  eq(p.breaker.cooldown_lapsed, false, 'T17e clean breaker not lapsed');
+}
+
+// ── T18 TOTALS: ledger sum vs instantaneous gauge (review M3) ───────────────
+{
+  const d = shape({
+    pixels: [metaPixel(), { id: 'px_ga', kind: 'ga4', pixel_id: 'G-ABCD1234', mode: 's2s', enabled: true, config: { api_secret: 'enc:s' } }],
+    counts: [...counts('meta', { sent: 10, queued: 4 }), ...counts('ga4', { sent: 5, queued: 1 })],
+    queueDepth: [{ kind: 'meta_pixel', n: 7 }, { kind: 'ga4', n: 2 }],
+  });
+  eq(d.totals_24h.queued, 5, 'T18a totals_24h.queued is the LEDGER sum (4+1)');
+  eq(d.queued_now, 9, 'T18b queued_now is the LIVE depth (7+2), reported separately');
+  eq(d.totals_24h.queued_now, undefined, 'T18c the live gauge is NOT inside totals_24h');
+  eq(d.totals_24h.sent, 15, 'T18d ledger sums unaffected');
+}
 
 // ── T15 no-argument call must not throw ─────────────────────────────────────
 {

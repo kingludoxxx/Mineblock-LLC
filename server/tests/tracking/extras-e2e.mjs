@@ -91,6 +91,18 @@ const F = {
   custom: 'fnl_trx_custom',
 };
 const ALL = Object.values(F);
+
+// The routes now 404 on a funnel that does not exist (review m7), so every
+// scenario funnel needs a real row. ensureFunnelTables() runs inside the route
+// on first request, but seeding needs the table NOW.
+{
+  const { ensureTables: ensureFunnelTables } = await import('../../src/routes/funnels.js');
+  await ensureFunnelTables();
+}
+for (const fid of ALL) {
+  await sql`DELETE FROM funnels WHERE id = ${fid}`;
+  await sql`INSERT INTO funnels (id, slug, name) VALUES (${fid}, ${fid}, ${fid})`;
+}
 for (const fid of ALL) {
   await sql`DELETE FROM lb_pixels WHERE funnel_id = ${fid}`;
   await sql`DELETE FROM lb_tracking_events WHERE funnel_id = ${fid}`;
@@ -354,6 +366,148 @@ const health = async (fid) => {
   check('E13 custom PUT refused without funnels:access', b.status === 403, `${b.status} ${b.text?.slice(0, 160)}`);
 }
 
+// ── E14 PRECEDENCE probes, seeded end-to-end (review M2) ────────────────────
+// The exact two shapes the reviewer reproduced: a pixel with NO CAPI token
+// (misconfigured by config shape) that is ALSO drowning in real delivery
+// failures / stranded conversions. Measured evidence must beat the prediction.
+{
+  const FM = 'fnl_trx_m2queue';
+  const FF = 'fnl_trx_m2failed';
+  for (const fid of [FM, FF]) {
+    await sql`DELETE FROM lb_pixels WHERE funnel_id = ${fid}`;
+    await sql`DELETE FROM lb_tracking_events WHERE funnel_id = ${fid}`;
+    await sql`DELETE FROM lb_postback_queue WHERE funnel_id = ${fid}`;
+    await sql`INSERT INTO funnels (id, name, slug) VALUES (${fid}, ${fid}, ${fid}) ON CONFLICT (id) DO NOTHING`;
+    // config '{}' = NO capi_token → serverChannelReady false → misconfigured.
+    await sql`INSERT INTO lb_pixels (id, funnel_id, kind, pixel_id, mode, enabled, config)
+              VALUES (${'px_' + fid}, ${fid}, 'meta_pixel', '778899001', 'hybrid', TRUE, ${sql.json({})})`;
+  }
+  // Probe 1: misconfigured + 12 conversions stranded in the retry queue.
+  for (let i = 0; i < 12; i++) {
+    await sql`INSERT INTO lb_postback_queue (id, funnel_id, scope_id, status, envelope, pixel_row_id, attempts, next_at, created_at)
+              VALUES (${'pq_m2_' + i}, ${FM}, ${`${FM}:px_${FM}`}, 'queued', ${sql.json({ i })}, ${'px_' + FM}, 1, NOW(), NOW())`;
+  }
+  {
+    const { d } = await health(FM);
+    const p = d?.pixels?.[0];
+    check('E14a misconfigured + stuck queue → outage, NOT misconfigured', p?.status === 'outage', JSON.stringify(p?.status));
+    check('E14a renders RED not amber', p?.tone === 'danger', JSON.stringify(p?.tone));
+    check('E14a stranded depth reported (12)', p?.queued_now === 12, JSON.stringify(p?.queued_now));
+    check('E14a server_channel_ready still honestly false', p?.server_channel_ready === false, JSON.stringify(p?.server_channel_ready));
+    check('E14a funnel roll-up is outage', d?.overall === 'outage', JSON.stringify(d?.overall));
+  }
+  // Probe 2: misconfigured + 20 failed sends, no backlog.
+  for (let i = 0; i < 20; i++) await ev(FF, 'error', 'http_401: invalid token', '30 minutes');
+  {
+    const { d } = await health(FF);
+    const p = d?.pixels?.[0];
+    check('E14b misconfigured + failed sends → failing, NOT misconfigured', p?.status === 'failing', JSON.stringify(p?.status));
+    check('E14b renders RED not amber', p?.tone === 'danger', JSON.stringify(p?.tone));
+    check('E14b 24h failed === 20', p?.windows?.h24?.failed === 20, JSON.stringify(p?.windows?.h24));
+    check('E14b last_error surfaced', p?.last_error === 'http_401: invalid token', JSON.stringify(p?.last_error));
+  }
+  // Control: same misconfigured pixel, NO contradicting evidence → misconfigured.
+  await sql`DELETE FROM lb_tracking_events WHERE funnel_id = ${FF}`;
+  {
+    const { d } = await health(FF);
+    const p = d?.pixels?.[0];
+    check('E14c misconfigured with no evidence against it → misconfigured', p?.status === 'misconfigured', JSON.stringify(p?.status));
+    check('E14c names the missing credential', Array.isArray(p?.missing) && p.missing.includes('capi_token'), JSON.stringify(p?.missing));
+  }
+  for (const fid of [FM, FF]) {
+    await sql`DELETE FROM lb_postback_queue WHERE funnel_id = ${fid}`;
+    await sql`DELETE FROM lb_pixels WHERE funnel_id = ${fid}`;
+    await sql`DELETE FROM lb_tracking_events WHERE funnel_id = ${fid}`;
+    await sql`DELETE FROM funnels WHERE id = ${fid}`;
+  }
+}
+
+// ── E15 breaker copy composed server-side (review m6) ───────────────────────
+{
+  const scope = `${F.breaker}:${pxId('breaker')}`;
+  // Lapsed cooldown: fails above the threshold, open_until in the PAST.
+  await sql`UPDATE lb_postback_breakers SET fails = 7, open_until = NOW() - INTERVAL '5 minutes' WHERE scope_id = ${scope}`;
+  const { d } = await health(F.breaker);
+  const b = d?.pixels?.[0]?.breaker;
+  check('E15 lapsed cooldown reads closed', b?.state === 'closed', JSON.stringify(b));
+  check('E15 cooldown_lapsed flagged', b?.cooldown_lapsed === true, JSON.stringify(b));
+  check('E15 copy says retrying, not "opens at 5"',
+    b?.note === 'Cooldown lapsed after 7 consecutive failures — delivery is retrying.', JSON.stringify(b?.note));
+  check('E15 no self-contradicting copy', !/opens at/.test(String(b?.note)), JSON.stringify(b?.note));
+}
+
+// ── E16 totals: ledger sum vs live gauge (review M3) ────────────────────────
+{
+  await sql`INSERT INTO lb_postback_queue (id, funnel_id, scope_id, status, envelope, pixel_row_id, attempts, next_at, created_at)
+            VALUES ('pq_m3_1', ${F.healthy}, ${`${F.healthy}:${pxId('healthy')}`}, 'queued', ${sql.json({})}, ${pxId('healthy')}, 1, NOW(), NOW())`;
+  await ev(F.healthy, 'queued', 'retry scheduled', '1 hour');
+  const { d } = await health(F.healthy);
+  check('E16 totals_24h.queued is the LEDGER count (1)', d?.totals_24h?.queued === 1, JSON.stringify(d?.totals_24h));
+  check('E16 queued_now is the LIVE depth (1), reported separately', d?.queued_now === 1, JSON.stringify(d?.queued_now));
+  check('E16 live gauge is NOT inside totals_24h', d?.totals_24h?.queued_now === undefined, JSON.stringify(d?.totals_24h));
+  await sql`DELETE FROM lb_postback_queue WHERE funnel_id = ${F.healthy}`;
+}
+
+// ── E17 nonexistent funnel → 404 on all three routes (review m7) ────────────
+{
+  const GHOST = 'fnl_trx_does_not_exist';
+  await sql`DELETE FROM funnels WHERE id = ${GHOST}`;
+  const a = await req('GET', `/${GHOST}/tracking/health`);
+  check('E17 health on a nonexistent funnel → 404', a.status === 404, `${a.status} ${a.text?.slice(0, 120)}`);
+  check('E17 404 code is funnel_not_found', a.j?.error?.code === 'funnel_not_found', JSON.stringify(a.j?.error));
+  const b = await req('GET', `/${GHOST}/tracking/custom`);
+  check('E17 custom GET on a nonexistent funnel → 404', b.status === 404, String(b.status));
+  const c = await req('PUT', `/${GHOST}/tracking/custom`, { head_html: '<x>' });
+  check('E17 custom PUT on a nonexistent funnel → 404', c.status === 404, String(c.status));
+  // THE POINT: the refused PUT must not have created an orphan row.
+  const orphan = await sql`SELECT count(*)::int n FROM lb_tracking_custom_code WHERE funnel_id = ${GHOST}`;
+  check('E17 no orphan row written (write amplification killed)', orphan[0].n === 0, JSON.stringify(orphan[0]));
+}
+
+// ── E18 funnel id is no longer silently truncated (review n8) ───────────────
+{
+  // A 70-char id: the old `.slice(0, 64)` would have chopped it into a
+  // different id, matching nothing and — worse — never lining up with a
+  // breaker scope built from the full value.
+  const LONG = 'fnl_' + 'x'.repeat(66); // 70 chars
+  await sql`INSERT INTO funnels (id, name, slug) VALUES (${LONG}, 'long', ${'s' + Date.now()}) ON CONFLICT (id) DO NOTHING`;
+  const r = await req('GET', `/${LONG}/tracking/health`);
+  check('E18 a 70-char funnel id resolves (no truncation) → 200', r.status === 200, `${r.status} ${r.text?.slice(0, 160)}`);
+  const w = await req('PUT', `/${LONG}/tracking/custom`, { head_html: '<long/>' });
+  check('E18 custom PUT stores under the FULL id', w.status === 200, String(w.status));
+  const stored = await sql`SELECT funnel_id FROM lb_tracking_custom_code WHERE funnel_id = ${LONG}`;
+  check('E18 stored key is the untruncated id', stored[0]?.funnel_id === LONG, JSON.stringify(stored[0]?.funnel_id?.length));
+  // Over the hard bound → 400, not a silent truncate.
+  const over = 'f'.repeat(200);
+  const ro = await req('GET', `/${over}/tracking/health`);
+  check('E18 an over-length id → 400 invalid_funnel_id', ro.status === 400 && ro.j?.error?.code === 'invalid_funnel_id', `${ro.status} ${JSON.stringify(ro.j?.error)}`);
+  await sql`DELETE FROM lb_tracking_custom_code WHERE funnel_id = ${LONG}`;
+  await sql`DELETE FROM funnels WHERE id = ${LONG}`;
+}
+
+// ── E19 updated_by surfaced on GET (review item 6) ──────────────────────────
+{
+  await req('PUT', `/${F.custom}/tracking/custom`, { head_html: '<who/>' });
+  const g = await req('GET', `/${F.custom}/tracking/custom`);
+  check('E19 GET surfaces updated_by', g.j?.data?.updated_by === 'u_trx_test', JSON.stringify(g.j?.data?.updated_by));
+}
+
+// ── E20 the lb_tracking_events prune actually deletes (review m5) ───────────
+{
+  const { pruneExpired } = await import('../../src/services/trackingSweeps.js');
+  await sql`INSERT INTO lb_tracking_events (funnel_id, platform, pixel_id, event_name, event_id, status, source, idk, ts)
+            VALUES (${F.healthy}, 'meta', 'x', 'Purchase', 'e_ancient', 'sent', 'relay', ${sql.json([])}, NOW() - INTERVAL '200 days'),
+                   (${F.healthy}, 'meta', 'x', 'Purchase', 'e_recent', 'sent', 'relay', ${sql.json([])}, NOW() - INTERVAL '10 days')`;
+  const before = await sql`SELECT count(*)::int n FROM lb_tracking_events WHERE event_id IN ('e_ancient','e_recent')`;
+  check('E20 both fixture rows present before prune', before[0].n === 2, JSON.stringify(before[0]));
+  await pruneExpired();
+  const after = await sql`SELECT event_id FROM lb_tracking_events WHERE event_id IN ('e_ancient','e_recent')`;
+  const ids = after.map((r) => r.event_id);
+  check('E20 the 200-day-old row is pruned', !ids.includes('e_ancient'), JSON.stringify(ids));
+  check('E20 the 10-day-old row SURVIVES (order forensics preserved)', ids.includes('e_recent'), JSON.stringify(ids));
+  await sql`DELETE FROM lb_tracking_events WHERE event_id IN ('e_ancient','e_recent')`;
+}
+
 // ── cleanup ─────────────────────────────────────────────────────────────────
 for (const fid of ALL) {
   await sql`DELETE FROM lb_pixels WHERE funnel_id = ${fid}`;
@@ -361,6 +515,7 @@ for (const fid of ALL) {
   await sql`DELETE FROM lb_postback_breakers WHERE funnel_id = ${fid}`;
   await sql`DELETE FROM lb_postback_queue WHERE funnel_id = ${fid}`;
   await sql`DELETE FROM lb_tracking_custom_code WHERE funnel_id = ${fid}`;
+  await sql`DELETE FROM funnels WHERE id = ${fid}`;
 }
 await sql`DELETE FROM user_roles WHERE user_id IN ('u_trx_test', 'u_trx_noperm')`;
 await sql`DELETE FROM roles WHERE id IN ('r_trx_test', 'r_trx_noperm')`;
