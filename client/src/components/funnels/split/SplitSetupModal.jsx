@@ -10,13 +10,14 @@
 // the entry arm, not adding an arm — can create an exposure or a credit row.
 // The ledger is written by real buyer traffic and by the settle path, nowhere
 // else. That is what makes the numbers in the results modal mean anything.
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { X, Monitor, Shuffle, Pencil, Copy, Plus, AlertTriangle, Loader2 } from 'lucide-react';
+import { X, Monitor, Shuffle, Pencil, Copy, Plus, AlertTriangle, Loader2, ExternalLink } from 'lucide-react';
 import api from '../../../services/api';
+import usePageThumbnail from '../usePageThumbnail';
 import {
   fetchSplitTest, patchSplitTest, patchSplitArm, addSplitArm, setSplitEntryArm,
-  fetchEligiblePages, armLetter, weightSum, fmtDate, handlePath, num,
+  fetchEligiblePages, armLetter, weightSum, fmtDate, handlePath, num, armLiveUrl,
 } from './splitApi';
 
 const ERROR_COPY = {
@@ -50,6 +51,9 @@ export default function SplitSetupModal({ open, onClose, funnel, testId, onTestC
   const [handleDraft, setHandleDraft] = useState('');
   const [weightDrafts, setWeightDrafts] = useState({});
   const [importOpen, setImportOpen] = useState(false);
+  // Per-PAGE inline refusals (slug collision etc.) — prose that stays on the
+  // card until the next commit, never a toast that vanishes.
+  const [pageErrors, setPageErrors] = useState({});
 
   const funnelId = funnel?.id;
 
@@ -65,6 +69,7 @@ export default function SplitSetupModal({ open, onClose, funnel, testId, onTestC
       setEligible(e);
       setHandleDraft(t?.handle || '');
       setWeightDrafts(Object.fromEntries((t?.arms || []).map((a) => [a.id, String(num(a.weight) ?? 0)])));
+      setPageErrors({});
     } catch (err) {
       setError(errText(err, 'Failed to load this split test'));
     } finally {
@@ -138,6 +143,75 @@ export default function SplitSetupModal({ open, onClose, funnel, testId, onTestC
     } finally { setBusy(false); }
   }, [weightDrafts, testId, onTestChanged, load]);
 
+  // 2-ARM SLIDER COMMIT — one drag sets BOTH weights, sum locked to 100.
+  // Same PATCH-per-arm contract as saveWeight; nothing new server-side.
+  const saveWeightPair = useCallback(async (v) => {
+    if (liveArms.length !== 2) return;
+    const [a, b] = liveArms;
+    const w = Math.min(100, Math.max(0, Math.round(num(v) ?? 50)));
+    if (w === num(a.weight) && 100 - w === num(b.weight)) return;
+    setBusy(true); setError(null);
+    try {
+      await patchSplitArm(testId, a.id, { weight: w });
+      await patchSplitArm(testId, b.id, { weight: 100 - w });
+      setTest((t) => ({
+        ...t,
+        arms: t.arms.map((x) =>
+          x.id === a.id ? { ...x, weight: w } : x.id === b.id ? { ...x, weight: 100 - w } : x
+        ),
+      }));
+      setWeightDrafts((d) => ({ ...d, [a.id]: String(w), [b.id]: String(100 - w) }));
+      onTestChanged?.();
+    } catch (err) {
+      setError(errText(err, 'Failed to save the weights'));
+      load();
+    } finally { setBusy(false); }
+  }, [liveArms, testId, onTestChanged, load]);
+
+  // PAGE-LEVEL edits (name / slug / seo-title) go through the funnels pages
+  // PATCH. A refusal (e.g. a slug collision, a 409 with prose) lands in
+  // pageErrors[pageId] and stays inline on the card. Returns the updated page
+  // row, or null when the server refused (the caller reconciles its draft).
+  const patchPage = useCallback(async (page, patch) => {
+    if (!page?.id) return null;
+    setBusy(true);
+    setPageErrors((e) => ({ ...e, [page.id]: null }));
+    try {
+      const res = await api.patch(`/funnels/${funnelId}/pages/${page.id}`, patch);
+      const updated = res.data?.data;
+      if (updated) {
+        // Reconcile the eligible-pages projection in place — a full reload
+        // would blank every draft the operator is mid-way through.
+        setEligible((e) => ({
+          ...e,
+          pages: (e.pages || []).map((p) =>
+            p.id === updated.id
+              ? {
+                  ...p,
+                  title: updated.title,
+                  slug: updated.slug,
+                  seo: updated.seo || {},
+                  updated_at: updated.updated_at,
+                  status: updated.status,
+                  is_home: updated.is_home,
+                }
+              : p
+          ),
+        }));
+      }
+      onTestChanged?.();
+      return updated || null;
+    } catch (err) {
+      // funnels.js answers { error: '<prose>' } (not { error: { code } }).
+      const prose = err?.response?.data?.error;
+      setPageErrors((e) => ({
+        ...e,
+        [page.id]: typeof prose === 'string' && prose ? prose : 'Failed to save the page',
+      }));
+      return null;
+    } finally { setBusy(false); }
+  }, [funnelId, onTestChanged]);
+
   const makeEntry = useCallback(async (arm) => {
     if (arm.is_entry) return;
     setBusy(true); setError(null);
@@ -204,25 +278,21 @@ export default function SplitSetupModal({ open, onClose, funnel, testId, onTestC
     if (!srcPage) { setError('No source page to duplicate — add a page to this funnel first.'); return; }
     setBusy(true); setError(null);
     try {
-      const suffix = Math.random().toString(16).slice(2, 6);
-      const res = await api.post(`/funnels/${funnelId}/pages`, {
-        title: `${srcPage.title || 'Page'} copy`,
-        slug: `/${srcPage.type || 'page'}-${suffix}`,
-        type: srcPage.type || 'generic',
-      });
+      // ATOMIC server-side copy: page row + blocks + escape-hatch fields land
+      // together or not at all (POST .../duplicate). The old 3-call composite
+      // swallowed a failed blocks PATCH and could silently arm an EMPTY page.
+      const res = await api.post(`/funnels/${funnelId}/pages/${srcPage.id}/duplicate`);
       const np = res.data?.data;
-      // Carry the blocks over. Non-fatal: an arm with an empty page is still a
-      // valid arm, and failing the whole add would strand the created page.
-      try {
-        const full = await api.get(`/funnels/${funnelId}`);
-        const src = (full.data?.data?.pages || []).find((p) => p.id === srcPage.id);
-        if (src) await api.patch(`/funnels/${funnelId}/pages/${np.id}`, { blocks: src.blocks ?? [] });
-      } catch { /* non-fatal — the arm still exists with an empty page */ }
       await addSplitArm(testId, { arm_key: nextArmKey(), weight: 0, page_id: np.id });
       await load();
       onTestChanged?.();
     } catch (err) {
-      setError(errText(err, 'Failed to duplicate a page for the new arm'));
+      // The duplicate route answers { error: '<prose>' }; the arms route
+      // answers { error: { code } } — surface whichever refused.
+      const prose = err?.response?.data?.error;
+      setError(typeof prose === 'string' && prose
+        ? prose
+        : errText(err, 'Failed to duplicate a page for the new arm'));
     } finally { setBusy(false); }
   }, [liveArms, pageById, funnelId, testId, nextArmKey, load, onTestChanged]);
 
@@ -283,7 +353,12 @@ export default function SplitSetupModal({ open, onClose, funnel, testId, onTestC
             <>
               <section className="space-y-4">
                 <div>
-                  <h3 className="text-sm font-semibold text-text-primary">What&apos;s being tested</h3>
+                  <h3 className="flex items-center gap-2 text-sm font-semibold text-text-primary">
+                    <span className="inline-flex items-center justify-center w-5 h-5 rounded-md bg-bg-elevated border border-border-default text-[11px] font-semibold text-text-muted">
+                      1
+                    </span>
+                    What&apos;s being tested
+                  </h3>
                   <p className="mt-1 text-xs text-text-muted">
                     One route, one domain, and the arms it serves. Preview shows an arm without touching live traffic.
                   </p>
@@ -335,6 +410,23 @@ export default function SplitSetupModal({ open, onClose, funnel, testId, onTestC
                   </div>
                 </div>
 
+                {/* 2-arm weight slider (reference look). One drag sets BOTH
+                    weights, locked to a 100% total; 3+ arms keep the per-arm
+                    numeric inputs on the cards instead. */}
+                {liveArms.length === 2 && (
+                  <WeightSlider
+                    arms={liveArms}
+                    draft={weightDrafts[liveArms[0].id]}
+                    onDraft={(v) => setWeightDrafts((d) => ({
+                      ...d,
+                      [liveArms[0].id]: String(v),
+                      [liveArms[1].id]: String(100 - v),
+                    }))}
+                    onCommit={(v) => saveWeightPair(v)}
+                    disabled={busy}
+                  />
+                )}
+
                 {/* Weight warning */}
                 {!wOk && liveArms.length > 0 && (
                   <div className="flex items-start gap-2 px-3 py-2 rounded-lg border border-amber-500/20 bg-amber-500/10 text-xs text-amber-400">
@@ -354,12 +446,17 @@ export default function SplitSetupModal({ open, onClose, funnel, testId, onTestC
                       arm={arm}
                       letter={armLetter(i)}
                       page={arm.page_id ? pageById.get(arm.page_id) : null}
+                      test={test}
+                      funnel={funnel}
                       weightDraft={weightDrafts[arm.id] ?? ''}
                       onWeightDraft={(v) => setWeightDrafts((d) => ({ ...d, [arm.id]: v }))}
                       onWeightCommit={() => saveWeight(arm)}
+                      showWeightInput={liveArms.length !== 2}
                       onPreview={() => previewArm(arm)}
                       onEntry={() => makeEntry(arm)}
                       onEdit={() => editArm(arm)}
+                      onPagePatch={patchPage}
+                      pageError={arm.page_id ? pageErrors[arm.page_id] : null}
                       disabled={busy}
                     />
                   ))}
@@ -471,42 +568,147 @@ export default function SplitSetupModal({ open, onClose, funnel, testId, onTestC
   );
 }
 
+// ── 2-arm traffic slider ───────────────────────────────────────────────────
+// "Split Traffic By [% Percentage]" — reference look. The draft moves live
+// while dragging; the PATCHes fire once on release (pointer up / blur), one
+// per arm, through the existing weight contract.
+function WeightSlider({ arms, draft, onDraft, onCommit, disabled }) {
+  const v = Math.min(100, Math.max(0, Math.round(num(draft) ?? num(arms[0]?.weight) ?? 50)));
+  return (
+    <div className="space-y-1.5">
+      <label htmlFor="split-weight-slider" className="block text-xs font-medium text-text-muted">
+        Split Traffic By{' '}
+        <span className="px-1.5 py-0.5 rounded-md bg-bg-elevated border border-border-default text-[11px] text-text-primary">
+          % Percentage
+        </span>
+      </label>
+      <div className="flex items-center gap-3">
+        <span className="text-[11px] font-mono tabular-nums text-text-muted whitespace-nowrap">A · {v}%</span>
+        <input
+          id="split-weight-slider"
+          type="range"
+          min="0"
+          max="100"
+          step="1"
+          value={v}
+          onChange={(e) => onDraft(Math.round(Number(e.target.value)))}
+          onPointerUp={(e) => onCommit(Number(e.currentTarget.value))}
+          onBlur={(e) => onCommit(Number(e.currentTarget.value))}
+          disabled={disabled}
+          aria-label="Traffic split between arm A and arm B, percent to A"
+          className="flex-1 accent-emerald-500 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+        />
+        <span className="text-[11px] font-mono tabular-nums text-text-muted whitespace-nowrap">B · {100 - v}%</span>
+      </div>
+      <p className="text-[11px] text-text-faint">Drag to set both weights — they always total 100%.</p>
+    </div>
+  );
+}
+
 // ── One arm ────────────────────────────────────────────────────────────────
 function ArmCard({
-  arm, letter, page, weightDraft, onWeightDraft, onWeightCommit,
-  onPreview, onEntry, onEdit, disabled,
+  arm, letter, page, test, funnel, weightDraft, onWeightDraft, onWeightCommit,
+  showWeightInput, onPreview, onEntry, onEdit, onPagePatch, pageError, disabled,
 }) {
-  const inputRef = useRef(null);
+  const thumbUrl = usePageThumbnail(
+    page?.id && funnel?.id ? { id: page.id, funnel_id: funnel.id, updated_at: page.updated_at } : null
+  );
+
+  // Name + slug drafts, reconciled from the page row (never from the
+  // optimistic value — same rule as the handle/weight drafts above). The
+  // reconcile is an adjust-during-render, not an effect: when the server's
+  // value moves, the draft snaps to it in the same render pass.
+  const [nameDraft, setNameDraft] = useState(page?.title || '');
+  const [slugDraft, setSlugDraft] = useState((page?.slug || '').replace(/^\//, ''));
+  const [prevPage, setPrevPage] = useState({ title: page?.title, slug: page?.slug });
+  if (page?.title !== prevPage.title || page?.slug !== prevPage.slug) {
+    setPrevPage({ title: page?.title, slug: page?.slug });
+    setNameDraft(page?.title || '');
+    setSlugDraft((page?.slug || '').replace(/^\//, ''));
+  }
+
+  // "Use name as title" — the page's DOCUMENT title. renderPageHtml resolves
+  // it as seo.title || site title || page.title, so ticked = no seo.title (the
+  // name flows through) and unticking PINS the current title into seo.title so
+  // later renames stop moving it.
+  const seoTitle = typeof page?.seo?.title === 'string' && page.seo.title ? page.seo.title : null;
+  const useNameAsTitle = !seoTitle;
+
+  const commitName = async () => {
+    const v = nameDraft.trim();
+    if (!page || !v || v === page.title) { setNameDraft(page?.title || ''); return; }
+    const updated = await onPagePatch(page, { title: v });
+    if (!updated) setNameDraft(page?.title || '');
+  };
+
+  const commitSlug = async () => {
+    if (!page) return;
+    const next = `/${slugDraft.trim().replace(/^\//, '')}`;
+    if (next === page.slug) return;
+    const updated = await onPagePatch(page, { slug: next });
+    if (!updated) setSlugDraft((page?.slug || '').replace(/^\//, ''));
+  };
+
+  const toggleUseName = async (checked) => {
+    if (!page) return;
+    const seo = { ...(page.seo || {}) };
+    if (checked) delete seo.title;
+    else seo.title = seoTitle || page.title || '';
+    await onPagePatch(page, { seo });
+  };
+
+  // View live — the REAL public URL (fires pixels, counts an impression; the
+  // legend below the modal says so). Every part crosses a charset guard in
+  // armLiveUrl; when no safe link exists the button renders disabled instead.
+  const liveUrl = armLiveUrl({
+    isEntry: Boolean(arm.is_entry),
+    handle: test?.handle,
+    domain: test?.domain || funnel?.custom_domain || '',
+    funnelSlug: funnel?.slug,
+    pageSlug: page?.slug,
+  });
+
   const iconBtn =
     'p-1.5 rounded-md text-text-muted hover:text-text-primary hover:bg-bg-hover transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed';
+  const fieldCls = `w-full px-2.5 py-1.5 text-sm bg-bg-elevated border border-border-default rounded-lg
+    text-text-primary placeholder:text-text-faint
+    focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent transition-colors
+    disabled:opacity-40 disabled:cursor-not-allowed`;
 
   return (
     <div
-      className={`w-56 shrink-0 rounded-xl border bg-bg-elevated/40 p-3 space-y-2 ${
+      className={`w-64 shrink-0 rounded-xl border bg-bg-elevated/40 p-3 space-y-2 ${
         arm.is_entry ? 'border-emerald-500/40' : 'border-border-default'
       }`}
     >
-      {/* Thumbnail placeholder + letter + weight */}
-      <div className="relative h-24 rounded-lg border border-border-subtle bg-gradient-to-br from-white/[0.04] to-transparent flex items-center justify-center">
-        <span className="inline-flex items-center justify-center w-8 h-8 rounded-lg bg-bg-card border border-border-default text-sm font-bold text-text-primary">
+      {/* Live page thumbnail (gradient placeholder until it lands) + letter + weight */}
+      <div className="relative h-24 rounded-lg border border-border-subtle overflow-hidden bg-gradient-to-br from-white/[0.04] to-transparent flex items-center justify-center">
+        {thumbUrl && (
+          <img src={thumbUrl} alt="" draggable={false} className="absolute inset-0 w-full h-full object-cover object-top" />
+        )}
+        <span className="relative inline-flex items-center justify-center w-8 h-8 rounded-lg bg-bg-card/90 border border-border-default text-sm font-bold text-text-primary">
           {letter}
         </span>
         <div className="absolute top-1.5 right-1.5 flex items-center gap-0.5 px-1 py-0.5 rounded-md bg-bg-card/90 border border-border-default">
-          <input
-            ref={inputRef}
-            type="number"
-            min="0"
-            max="100"
-            step="1"
-            value={weightDraft}
-            onChange={(e) => onWeightDraft(e.target.value)}
-            onBlur={onWeightCommit}
-            onKeyDown={(e) => e.key === 'Enter' && e.currentTarget.blur()}
-            disabled={disabled}
-            aria-label={`Arm ${letter} traffic weight, percent`}
-            className="w-9 bg-transparent text-right text-[11px] tabular-nums text-text-primary focus:outline-none
-              [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
-          />
+          {showWeightInput ? (
+            <input
+              type="number"
+              min="0"
+              max="100"
+              step="1"
+              value={weightDraft}
+              onChange={(e) => onWeightDraft(e.target.value)}
+              onBlur={onWeightCommit}
+              onKeyDown={(e) => e.key === 'Enter' && e.currentTarget.blur()}
+              disabled={disabled}
+              aria-label={`Arm ${letter} traffic weight, percent`}
+              className="w-9 bg-transparent text-right text-[11px] tabular-nums text-text-primary focus:outline-none
+                [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+            />
+          ) : (
+            // 2-arm mode: the slider above owns the weights; the badge reads.
+            <span className="text-[11px] tabular-nums text-text-primary">{num(arm.weight) ?? 0}</span>
+          )}
           <span className="text-[11px] text-text-faint">%</span>
         </div>
         {arm.is_entry && (
@@ -517,18 +719,92 @@ function ArmCard({
         )}
       </div>
 
-      {/* Page identity */}
-      <div className="min-w-0">
-        <div className="text-sm font-medium text-text-primary truncate">
-          {page?.title || (arm.page_id ? 'Page not on this funnel' : 'No page yet')}
-        </div>
-        <div className="text-[11px] text-text-faint font-mono truncate">{page?.slug || '—'}</div>
-        {arm.is_entry && (
-          <div className="mt-0.5 text-[10px] font-semibold uppercase tracking-wide text-emerald-400/80">
-            Default arm
+      {page ? (
+        <>
+          {/* Name + document-title control (reference: "Lead Page Name") */}
+          <div className="space-y-1">
+            <label htmlFor={`arm-name-${arm.id}`} className="block text-[11px] font-medium text-text-muted">
+              Lead Page Name
+            </label>
+            <input
+              id={`arm-name-${arm.id}`}
+              value={nameDraft}
+              onChange={(e) => setNameDraft(e.target.value)}
+              onBlur={commitName}
+              onKeyDown={(e) => e.key === 'Enter' && e.currentTarget.blur()}
+              placeholder="Untitled"
+              autoComplete="off"
+              disabled={disabled}
+              className={fieldCls}
+            />
+            <label className="flex items-center gap-1.5 text-[11px] text-text-muted cursor-pointer">
+              <input
+                type="checkbox"
+                checked={useNameAsTitle}
+                onChange={(e) => toggleUseName(e.target.checked)}
+                disabled={disabled}
+                className="accent-emerald-500 cursor-pointer"
+              />
+              Use name as title
+            </label>
           </div>
-        )}
-      </div>
+
+          {/* Slug (reference: "Published Page Name") */}
+          <div className="space-y-1">
+            <label htmlFor={`arm-slug-${arm.id}`} className="block text-[11px] font-medium text-text-muted">
+              Published Page Name
+            </label>
+            <div className="flex items-stretch">
+              <span className="inline-flex items-center px-2 rounded-l-lg border border-r-0 border-border-default bg-bg-elevated text-sm text-text-faint font-mono">/</span>
+              <input
+                id={`arm-slug-${arm.id}`}
+                value={slugDraft}
+                onChange={(e) => setSlugDraft(e.target.value)}
+                onBlur={commitSlug}
+                onKeyDown={(e) => e.key === 'Enter' && e.currentTarget.blur()}
+                placeholder="page"
+                autoComplete="off"
+                spellCheck={false}
+                disabled={disabled}
+                className={`${fieldCls} rounded-l-none font-mono`}
+              />
+            </div>
+          </div>
+
+          {/* The server's refusal, inline and persistent (slug collisions land here) */}
+          {pageError && (
+            <p className="flex items-start gap-1.5 text-[11px] text-red-400 leading-snug">
+              <AlertTriangle className="w-3.5 h-3.5 mt-px shrink-0" />
+              <span>{pageError}</span>
+            </p>
+          )}
+
+          {/* Default (entry) radio — maps to our ENTRY arm, moved atomically
+              server-side (POST /:id/arms/:armId/entry). The radio is just the
+              control; the semantics stay exactly the entry arm's. */}
+          <label className="flex items-center gap-1.5 text-[11px] text-text-muted cursor-pointer">
+            <input
+              type="radio"
+              name={`split-entry-${test?.id || 'test'}`}
+              checked={Boolean(arm.is_entry)}
+              onChange={() => onEntry()}
+              disabled={disabled || Boolean(arm.is_entry)}
+              className="accent-emerald-500 cursor-pointer"
+            />
+            Set as Default Page
+            {arm.is_entry && (
+              <span className="text-[10px] font-semibold uppercase tracking-wide text-emerald-400/80">· entry</span>
+            )}
+          </label>
+        </>
+      ) : (
+        <div className="min-w-0">
+          <div className="text-sm font-medium text-text-primary truncate">
+            {arm.page_id ? 'Page not on this funnel' : 'No page yet'}
+          </div>
+          <div className="text-[11px] text-text-faint font-mono truncate">—</div>
+        </div>
+      )}
 
       {/* Per-arm actions */}
       <div className="flex items-center gap-0.5 pt-0.5 border-t border-border-subtle">
@@ -547,6 +823,28 @@ function ArmCard({
         <button type="button" className={iconBtn} title="Edit page in the builder" onClick={onEdit} disabled={disabled}>
           <Pencil className="w-4 h-4" />
         </button>
+        {liveUrl ? (
+          <a
+            href={liveUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            className={`${iconBtn} ml-auto`}
+            title={arm.is_entry
+              ? 'View live — opens the split route (re-splits, fires pixels, counts an impression)'
+              : 'View live — opens this arm’s public URL (fires pixels, counts an impression)'}
+          >
+            <ExternalLink className="w-4 h-4" />
+          </a>
+        ) : (
+          <button
+            type="button"
+            className={`${iconBtn} ml-auto`}
+            disabled
+            title="View live unavailable — no safe public URL for this arm yet"
+          >
+            <ExternalLink className="w-4 h-4" />
+          </button>
+        )}
       </div>
     </div>
   );

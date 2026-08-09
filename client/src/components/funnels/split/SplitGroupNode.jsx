@@ -13,10 +13,13 @@
 //     would 400 and take the whole canvas layout with it. Removing the handles
 //     makes that unreachable rather than merely unlikely.
 //
-//  2. THE CAPTION SAYS WHAT THE NUMBERS ARE NOT. "lifetime · not the verdict"
-//     is there because a per-arm number on a canvas card is exactly the thing
-//     an operator reads as a result. These tiles are unwindowed and carry no
-//     significance test; the verdict lives in the results modal.
+//  2. THE CAPTION SAYS WHAT THE NUMBERS ARE NOT. "since created · not the
+//     verdict" is there because a per-arm number on a canvas card is exactly
+//     the thing an operator reads as a result. The tiles are windowed from the
+//     test's created_at (the canvas fetch passes from=created_at; the ledger
+//     fallback only ever contains post-creation rows, so the caption is true
+//     in both modes) and carry no significance test; the verdict lives in the
+//     results modal.
 //
 //  The third tile is ORDERS, not CTR. The reference tool shows CTR, but neither
 //  source can produce one: the split ledger has never seen a click, and the
@@ -27,6 +30,7 @@
 import { memo } from 'react';
 import { BarChart3, Settings, SlidersHorizontal, Shuffle, Eye } from 'lucide-react';
 import { DASH } from './splitApi';
+import usePageThumbnail from '../usePageThumbnail';
 
 const ACCENT = '#22c55e';
 
@@ -44,9 +48,10 @@ function SplitGroupNodeInner({ data, selected }) {
         boxShadow: selected ? `0 0 0 1px ${ACCENT}55, 0 8px 24px rgba(0,0,0,0.45)` : undefined,
       }}
     >
-      {/* Toolbar — on hover OR select, so it is reachable without selecting */}
+      {/* Toolbar — on hover OR select, so it is reachable without selecting.
+          Below the group frame (reference look), never over the header. */}
       <div
-        className={`absolute -top-9 left-0 right-0 flex items-center justify-center transition-opacity ${
+        className={`absolute -bottom-9 left-0 right-0 flex items-center justify-center transition-opacity ${
           selected ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'
         }`}
       >
@@ -80,49 +85,63 @@ function SplitGroupNodeInner({ data, selected }) {
         {arms.length === 0 && (
           <div className="w-40 py-6 text-center text-[11px] text-text-faint">No live arms</div>
         )}
-        {arms.map((arm) => (
-          <div
-            key={arm.id}
-            className="w-40 shrink-0 rounded-lg border bg-bg-elevated/40 overflow-hidden"
-            style={{ borderColor: arm.is_entry ? `${ACCENT}66` : 'rgba(255,255,255,0.08)' }}
-          >
-            {/* Preview placeholder + letter + entry marker */}
-            <div className="relative h-16 flex items-center justify-center bg-gradient-to-br from-white/[0.04] to-transparent">
-              <span className="inline-flex items-center justify-center w-7 h-7 rounded-md bg-bg-card border border-border-default text-xs font-bold text-text-primary">
-                {arm.letter}
-              </span>
-              {arm.is_entry ? (
-                <span
-                  className="absolute top-1 left-1 inline-flex items-center gap-1 px-1 py-0.5 rounded text-[8px] font-semibold uppercase tracking-wide border"
-                  style={{ background: `${ACCENT}26`, color: ACCENT, borderColor: `${ACCENT}4d` }}
-                  title="Entry arm — served at the bare split route"
-                >
-                  <Shuffle className="w-2.5 h-2.5" /> Entry
-                </span>
-              ) : (
-                <Eye className="absolute top-1 left-1 w-3 h-3 text-text-faint" aria-label="Variant arm" />
-              )}
-            </div>
-
-            {/* Page identity */}
-            <div className="px-2 pt-1.5 min-w-0">
-              <div className="text-[11px] text-text-primary truncate">{arm.title || 'No page'}</div>
-              <div className="text-[10px] text-text-faint font-mono truncate">{arm.slug || DASH}</div>
-            </div>
-
-            {/* Footer metrics */}
-            <div className="mt-1.5 grid grid-cols-3 border-t border-border-subtle divide-x divide-[rgba(255,255,255,0.06)]">
-              <Tile label="Visitors" value={arm.visitors} />
-              <Tile label="Orders" value={arm.orders} />
-              <Tile label="CVR" value={arm.cvr} />
-            </div>
-          </div>
-        ))}
+        {arms.map((arm) => <ArmTile key={arm.id} arm={arm} />)}
       </div>
 
       {/* Caption */}
       <div className="px-3 pb-2">
-        <span className="text-[10px] font-mono text-text-faint">lifetime · not the verdict</span>
+        <span className="text-[10px] font-mono text-text-faint">since created · not the verdict</span>
+      </div>
+    </div>
+  );
+}
+
+// One arm tile. A component (not inline JSX in the map) because the thumbnail
+// hook must run per arm, and hooks cannot live inside a loop body.
+function ArmTile({ arm }) {
+  const thumbUrl = usePageThumbnail(
+    arm.page_id && arm.funnel_id
+      ? { id: arm.page_id, funnel_id: arm.funnel_id, updated_at: arm.page_updated_at }
+      : null
+  );
+  return (
+    <div
+      className="w-40 shrink-0 rounded-lg border bg-bg-elevated/40 overflow-hidden"
+      style={{ borderColor: arm.is_entry ? `${ACCENT}66` : 'rgba(255,255,255,0.08)' }}
+    >
+      {/* Live page thumbnail (placeholder gradient until it lands) + letter +
+          entry marker — the badges stay overlaid on top of the image. */}
+      <div className="relative h-16 flex items-center justify-center overflow-hidden bg-gradient-to-br from-white/[0.04] to-transparent">
+        {thumbUrl && (
+          <img src={thumbUrl} alt="" draggable={false} className="absolute inset-0 w-full h-full object-cover object-top" />
+        )}
+        <span className="relative inline-flex items-center justify-center w-7 h-7 rounded-md bg-bg-card/90 border border-border-default text-xs font-bold text-text-primary">
+          {arm.letter}
+        </span>
+        {arm.is_entry ? (
+          <span
+            className="absolute top-1 left-1 inline-flex items-center gap-1 px-1 py-0.5 rounded text-[8px] font-semibold uppercase tracking-wide border"
+            style={{ background: `${ACCENT}26`, color: ACCENT, borderColor: `${ACCENT}4d` }}
+            title="Entry arm — served at the bare split route"
+          >
+            <Shuffle className="w-2.5 h-2.5" /> Entry
+          </span>
+        ) : (
+          <Eye className="absolute top-1 left-1 w-3 h-3 text-text-faint" aria-label="Variant arm" />
+        )}
+      </div>
+
+      {/* Page identity */}
+      <div className="px-2 pt-1.5 min-w-0">
+        <div className="text-[11px] text-text-primary truncate">{arm.title || 'No page'}</div>
+        <div className="text-[10px] text-text-faint font-mono truncate">{arm.slug || DASH}</div>
+      </div>
+
+      {/* Footer metrics */}
+      <div className="mt-1.5 grid grid-cols-3 border-t border-border-subtle divide-x divide-[rgba(255,255,255,0.06)]">
+        <Tile label="Visitors" value={arm.visitors} />
+        <Tile label="Orders" value={arm.orders} />
+        <Tile label="CVR" value={arm.cvr} />
       </div>
     </div>
   );

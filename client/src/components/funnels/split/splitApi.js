@@ -83,6 +83,11 @@ export async function fetchFunnelSplitTests(funnelId) {
   return res.data?.data || [];
 }
 
+export async function createSplitTest(body) {
+  const res = await api.post('/split-tests', body);
+  return res.data?.data || null;
+}
+
 export async function fetchSplitTest(testId) {
   const res = await api.get(`/split-tests/${encodeURIComponent(testId)}`);
   return res.data?.data || null;
@@ -379,6 +384,44 @@ export function isSafeHandle(h) {
 /** The public path for a handle, or null when it is not link-safe. */
 export function handlePath(h) {
   return isSafeHandle(h) ? `/${h}` : null;
+}
+
+// A page slug is stored as '/' or '/segment'. The server's write-side bound is
+// PAGE_SLUG_RE in routes/funnels.js — this is its READ-side twin (plus a length
+// cap): a slug that does not match is rendered as text, never as an href.
+export const SLUG_RE = /^\/$|^\/[a-z0-9-]{1,128}$/;
+export function isSafeSlug(s) {
+  return typeof s === 'string' && SLUG_RE.test(s);
+}
+
+// A domain is a HOST, never a URL (mirrors the server's normDomain bound).
+// Anything else must never be composed into an https:// origin.
+export const DOMAIN_RE = /^(?=.{1,253}$)[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$/;
+export function isSafeDomain(d) {
+  return typeof d === 'string' && DOMAIN_RE.test(d.toLowerCase());
+}
+
+/**
+ * The LIVE public URL for one arm, or null when no safe link exists.
+ *   entry arm  → https://{test.domain || funnel default domain}/{handle}
+ *                (the bare split route — it re-splits and counts an impression)
+ *   variant    → the arm page's own public URL: {domain}{slug} on a custom
+ *                domain, else the app-served /f/{funnel.slug}{slug} path.
+ * Every part crosses its charset guard before touching the href; a part that
+ * fails leaves the caller rendering inert text instead of a link.
+ */
+export function armLiveUrl({ isEntry, handle, domain, funnelSlug, pageSlug }) {
+  const host = isSafeDomain(domain || '') ? String(domain).toLowerCase() : null;
+  if (isEntry) {
+    if (!isSafeHandle(handle)) return null;
+    return host ? `https://${host}/${handle}` : `/${handle}`;
+  }
+  if (!isSafeSlug(pageSlug)) return null;
+  const suffix = pageSlug === '/' ? '' : pageSlug;
+  if (host) return `https://${host}${suffix || '/'}`;
+  // Funnel slugs are bounded by FUNNEL_SLUG_RE on write; read-side twin here.
+  if (typeof funnelSlug !== 'string' || !/^[a-z0-9-]{1,128}$/.test(funnelSlug)) return null;
+  return `/f/${funnelSlug}${suffix}`;
 }
 
 /** Arm letter from its index: A, B, C … then AA (never runs out, never NaN). */

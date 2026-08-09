@@ -29,15 +29,34 @@ export default function SplitResultsModal({ open, onClose, test }) {
   // Default window: the day the test was created → today. The experiment view
   // is defined as "only traffic from that day onward", so the default IS that
   // statement rather than a rolling 7/30 days that would silently exclude it.
+  // The presets are shortcuts that WRITE this same range; only 'custom'
+  // reveals the raw from/to inputs.
+  const [preset, setPreset] = useState('created'); // 'created' | '7d' | '30d' | 'custom'
   const [range, setRange] = useState(() => ({ from: '', to: '' }));
   const [state, setState] = useState({ loading: true, available: false, reason: null, data: null });
 
+  const presetRange = useCallback((p) => {
+    const today = isoDay(new Date());
+    if (p === '7d' || p === '30d') {
+      const d = new Date();
+      d.setDate(d.getDate() - (p === '7d' ? 6 : 29)); // window INCLUDES today
+      return { from: isoDay(d), to: today };
+    }
+    const start = createdAt ? isoDay(new Date(createdAt)) : today;
+    return { from: start && start <= today ? start : today, to: today };
+  }, [createdAt]);
+
   useEffect(() => {
     if (!open) return;
-    const today = isoDay(new Date());
-    const start = createdAt ? isoDay(new Date(createdAt)) : today;
-    setRange({ from: start && start <= today ? start : today, to: today });
-  }, [open, createdAt]);
+    setPreset('created');
+    setRange(presetRange('created'));
+  }, [open, presetRange]);
+
+  const pickPreset = useCallback((p) => {
+    setPreset(p);
+    // 'custom' keeps whatever window is showing — it only reveals the inputs.
+    if (p !== 'custom') setRange(presetRange(p));
+  }, [presetRange]);
 
   const load = useCallback(async () => {
     if (!testId) return;
@@ -160,27 +179,45 @@ export default function SplitResultsModal({ open, onClose, test }) {
             </p>
             <div className="flex items-end gap-2">
               <label className="block">
-                <span className="block text-[10px] uppercase tracking-wide text-text-faint mb-0.5">From</span>
-                <input
-                  type="date"
-                  value={range.from}
-                  max={range.to || undefined}
-                  onChange={(e) => setRange((r) => ({ ...r, from: e.target.value }))}
+                <span className="block text-[10px] uppercase tracking-wide text-text-faint mb-0.5">Window</span>
+                <select
+                  value={preset}
+                  onChange={(e) => pickPreset(e.target.value)}
                   className="px-2 py-1 text-xs bg-bg-elevated border border-border-default rounded-md text-text-primary
                     focus:outline-none focus:border-accent cursor-pointer"
-                />
+                >
+                  <option value="created">Since created</option>
+                  <option value="7d">Last 7 days</option>
+                  <option value="30d">Last 30 days</option>
+                  <option value="custom">Custom</option>
+                </select>
               </label>
-              <label className="block">
-                <span className="block text-[10px] uppercase tracking-wide text-text-faint mb-0.5">To</span>
-                <input
-                  type="date"
-                  value={range.to}
-                  min={range.from || undefined}
-                  onChange={(e) => setRange((r) => ({ ...r, to: e.target.value }))}
-                  className="px-2 py-1 text-xs bg-bg-elevated border border-border-default rounded-md text-text-primary
-                    focus:outline-none focus:border-accent cursor-pointer"
-                />
-              </label>
+              {preset === 'custom' && (
+                <>
+                  <label className="block">
+                    <span className="block text-[10px] uppercase tracking-wide text-text-faint mb-0.5">From</span>
+                    <input
+                      type="date"
+                      value={range.from}
+                      max={range.to || undefined}
+                      onChange={(e) => setRange((r) => ({ ...r, from: e.target.value }))}
+                      className="px-2 py-1 text-xs bg-bg-elevated border border-border-default rounded-md text-text-primary
+                        focus:outline-none focus:border-accent cursor-pointer"
+                    />
+                  </label>
+                  <label className="block">
+                    <span className="block text-[10px] uppercase tracking-wide text-text-faint mb-0.5">To</span>
+                    <input
+                      type="date"
+                      value={range.to}
+                      min={range.from || undefined}
+                      onChange={(e) => setRange((r) => ({ ...r, to: e.target.value }))}
+                      className="px-2 py-1 text-xs bg-bg-elevated border border-border-default rounded-md text-text-primary
+                        focus:outline-none focus:border-accent cursor-pointer"
+                    />
+                  </label>
+                </>
+              )}
             </div>
           </div>
 
