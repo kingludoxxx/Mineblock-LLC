@@ -137,7 +137,14 @@ router.post('/touch', async (req, res) => {
     const ref = String(b.referrer || '').slice(0, 1024);
     // Fire-and-forget; swallow — a tracking failure must never surface.
     const [touch] = await Promise.all([
-      recordTouch(funnelId, pageOf(b), b.vid, url, ref),
+      // Device class + country ride the touch (UA parsed locally; the IP is
+      // used in-memory for a country code and NEVER persisted — see
+      // trackingAttribution.resolveCountry).
+      recordTouch(funnelId, pageOf(b), b.vid, url, ref, {
+        ua: req.get('user-agent') || '',
+        ip: clientIp(req),
+        cfCountry: req.get('cf-ipcountry') || '',
+      }),
       recordFirstSeen(funnelId, b.vid, url),
     ]);
     return res.json({ ok: true, deduped: Boolean(touch && touch.deduped) });
