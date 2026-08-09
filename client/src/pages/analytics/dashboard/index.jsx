@@ -16,6 +16,22 @@ import DashboardView from './DashboardView.jsx';
 import useDashboardData from './useDashboardData.js';
 import { daysAgoIso, todayIso } from './dashFormat.js';
 
+/**
+ * THE FUNNEL LIVE VIEW'S ROUTE, PINNED.
+ *
+ * App.jsx mounts LiveViewPage at `live-view`, NOT at `live` — `live` is the
+ * Performance lane's LivePage, gated on a different permission
+ * (`live-metrics:access`). This lane branched when the funnel page still owned
+ * `live`, and the rename landed on main afterwards; the header button would
+ * have sent operators to a different page behind a gate most of them fail,
+ * which reads as "Live view is broken" rather than "the link is wrong".
+ *
+ * The constant is asserted against App.jsx's source by
+ * ./__checks__/formatterContract.mjs, so the next rename fails a harness
+ * instead of a click.
+ */
+export const LIVE_VIEW_PATH = '/app/live-view';
+
 export default function AnalyticsDashboardPage() {
   const navigate = useNavigate();
   const [params, setParams] = useSearchParams();
@@ -107,7 +123,7 @@ export default function AnalyticsDashboardPage() {
       onRangeChange={onRangeChange}
       onRefresh={refresh}
       onOpenExplorer={() => navigate('explorer')}
-      onOpenLive={() => navigate('/app/live')}
+      onOpenLive={() => navigate(LIVE_VIEW_PATH)}
       onDrillMetric={onDrillMetric}
     />
   );

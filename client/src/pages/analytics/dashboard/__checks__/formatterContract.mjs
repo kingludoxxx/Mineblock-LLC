@@ -26,6 +26,7 @@ import {
   shortDay, spanDays, todayIso, tzLabel, fmtDeduction,
 } from '../dashFormat.js';
 import { readFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
@@ -432,6 +433,60 @@ ok(apiHasKey(capK.upsell, 'abandoned'),
 ok(!apiHasKey(capK.cur, 'items_sold'),
   'H9 `items_sold` is absent from this build — the card must render nothing, not an em dash');
 ok(MONEY_METRICS.includes('net_sales'), 'H9 net_sales is a recognised money metric');
+
+/* ── I. THE ROUTE PINS ───────────────────────────────────────────────────────
+ *
+ * Two links this page owns point at routes ANOTHER file declares. A rename over
+ * there is silent over here: the button keeps working, it just goes somewhere
+ * else. Both are pinned against App.jsx's actual source.
+ *
+ * This is not hypothetical — `live-view` WAS `live` when this lane branched, and
+ * `live` is now the Performance lane's page behind `live-metrics:access`. The
+ * header button would have sent operators to a different page behind a gate
+ * most of them fail, which reads as "Live view is broken".
+ */
+const LOCAL_APP_JSX = readFileSync(resolve(HERE_DIR, '../../../../App.jsx'), 'utf8');
+/* READ FROM SOURCE, NOT IMPORTED. `await import('../index.jsx')` cannot work in
+ * node — it is JSX — and the `.catch(() => ({}))` that hid that made the pin
+ * FAIL OPEN: LIVE_VIEW_PATH came back undefined, the comparison was skipped,
+ * and the suite reported green while asserting nothing. A guard that cannot run
+ * is worse than no guard, because it is counted. */
+const INDEX_SRC = readFileSync(resolve(HERE_DIR, '../index.jsx'), 'utf8');
+const livePathMatch = INDEX_SRC.match(/export const LIVE_VIEW_PATH = '([^']+)'/);
+ok(!!livePathMatch, 'I the page exports LIVE_VIEW_PATH (the pin has something to check)');
+const LIVE_VIEW_PATH = livePathMatch ? livePathMatch[1] : null;
+
+// The dashboard's own mount point, in this branch's copy.
+ok(/path="analytics\/\*"/.test(LOCAL_APP_JSX),
+  'I App.jsx mounts this workspace at analytics/* (one additive route line)');
+
+/* ⚠️ THE PIN IS AGAINST **main**, NOT AGAINST THIS BRANCH'S COPY.
+ *
+ * The Live View route line belongs to another lane, so this lane deliberately
+ * does not touch it — which means this branch still carries whatever App.jsx
+ * said when it was cut, while the integration target has moved on. Pinning to
+ * the local copy would assert a path that will not exist after the merge.
+ * Falls back to the local file when git is unavailable. */
+const appJsxFor = (ref) => {
+  try {
+    return execFileSync('git', ['show', `${ref}:client/src/App.jsx`], {
+      cwd: resolve(HERE_DIR, '../../../../../..'), stdio: ['ignore', 'pipe', 'ignore'],
+    }).toString();
+  } catch {
+    return null;
+  }
+};
+const TARGET_APP_JSX = appJsxFor('main') || LOCAL_APP_JSX;
+const liveRoute = TARGET_APP_JSX.match(/<Route path="([^"]+)"[^\n]*?<LiveViewPage\s*\/>/);
+ok(!!liveRoute, 'I the integration target declares a route for LiveViewPage');
+ok(LIVE_VIEW_PATH !== null, 'I …and it was found');
+if (liveRoute && LIVE_VIEW_PATH) {
+  const declared = `/app/${liveRoute[1]}`;
+  eq(LIVE_VIEW_PATH, declared,
+    `I the header's Live view button points where main actually mounts it (${declared})`);
+  ok(declared !== '/app/live',
+    'I …and NOT at /app/live, which main now gives to a different page behind live-metrics:access');
+}
 
 console.log(`\nRESULT: ${pass} passed, ${fail} failed\n`);
 process.exit(fail ? 1 : 0);
