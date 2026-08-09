@@ -9,6 +9,7 @@
 // typed into a prop can never execute in the admin surface.
 import { useMemo } from 'react';
 import { CreditCard, ReceiptText, Film, Image as ImageIcon, Code2 } from 'lucide-react';
+import { bumpHeadline, bumpUnconfigured, parseInlineMarkup } from './builderModel';
 
 const T = {
   text: '#374151',
@@ -376,26 +377,86 @@ export default function BlockPreview({ block, pageCss = '' }) {
           {p.fine_print ? <p style={{ color: T.faint, fontSize: 11, marginTop: 10 }}>{String(p.fine_print)}</p> : null}
         </section>
       );
-    case 'order_bump':
+    // ORDER BUMP. Two visibly different states, because the difference is
+    // whether this block can take money:
+    //   UNCONFIGURED (no variant_id) — dashed outline + the assign hint. The
+    //     server refuses this bump with 422 bump_not_chargeable, so the canvas
+    //     must not draw it as a working offer.
+    //   CONFIGURED — product chip, bold offer name, "from <price>" line.
+    // CANVAS ONLY: funnelRender.js is integrator-owned and unchanged.
+    case 'order_bump': {
+      const unconfigured = bumpUnconfigured(p);
+      const accent = String(p.offer_name_color || '').trim() || '#f59e0b';
+      const headline = bumpHeadline(p);
+      const priceText = p.price != null && String(p.price).trim() !== '' ? String(p.price).trim() : '';
+      const qty = Number.isFinite(Number(p.quantity)) && Number(p.quantity) > 1 ? Number(p.quantity) : null;
       return (
-        <div style={{ border: '2px dashed #f59e0b', borderRadius: 12, background: '#fffbeb', padding: '16px 18px' }}>
-          <label style={{ display: 'flex', alignItems: 'flex-start', gap: 10 }}>
-            <input type="checkbox" checked={p.checked === true} readOnly style={{ marginTop: 3, width: 18, height: 18, accentColor: '#f59e0b', pointerEvents: 'none' }} />
-            <span style={{ flex: 1, fontWeight: 600, color: T.dark, fontSize: 14 }}>
-              {String(p.label || 'Yes! Add this one-time offer to my order')}
+        <div
+          style={{
+            position: 'relative',
+            border: unconfigured ? '2px dashed #f59e0b' : `2px solid ${accent}`,
+            borderRadius: 12,
+            background: '#fffbeb',
+            padding: '16px 18px',
+          }}
+        >
+          {!unconfigured && (
+            <span
+              style={{
+                position: 'absolute', top: -9, right: 12, padding: '1px 7px', borderRadius: 999,
+                background: accent, color: '#fff', fontSize: 9, fontWeight: 700,
+                textTransform: 'uppercase', letterSpacing: '0.06em',
+              }}
+            >
+              Product
             </span>
-            {p.price != null && String(p.price).trim() !== '' && (
-              <span style={{ fontWeight: 700, color: T.dark, whiteSpace: 'nowrap', fontSize: 14 }}>{String(p.price)}</span>
+          )}
+          <label style={{ display: 'flex', alignItems: 'flex-start', gap: 10 }}>
+            <input
+              type="checkbox"
+              checked={p.checked === true}
+              readOnly
+              style={{ marginTop: 3, width: 18, height: 18, accentColor: accent, pointerEvents: 'none' }}
+            />
+            <span style={{ flex: 1, color: T.dark, fontSize: 14 }}>
+              {p.offer_name != null && String(p.offer_name).trim() !== '' && (
+                <strong style={{ color: accent, marginRight: 6 }}>{String(p.offer_name).trim()}</strong>
+              )}
+              <span style={{ fontWeight: 600 }}>{headline}</span>
+            </span>
+            {priceText && (
+              <span style={{ fontWeight: 700, color: T.dark, whiteSpace: 'nowrap', fontSize: 14 }}>{priceText}</span>
             )}
           </label>
+
           {p.description != null && String(p.description).trim() !== '' && (
-            <p style={{ margin: '8px 0 0 28px', color: T.faint, fontSize: 13 }}>{String(p.description)}</p>
+            // <b>/<u> only, rendered as REACT ELEMENTS around auto-escaped
+            // text — this file's no-dangerouslySetInnerHTML invariant holds.
+            // The PUBLISHED page still escapes the whole string until the
+            // renderer half lands — noted in the delivery report.
+            <p style={{ margin: '8px 0 0 28px', color: T.faint, fontSize: 13 }}>
+              {parseInlineMarkup(p.description).map((seg, si) => {
+                let node = seg.text;
+                if (seg.underline) node = <u key="u">{node}</u>;
+                if (seg.bold) node = <strong key="b">{node}</strong>;
+                return <span key={si}>{node}</span>;
+              })}
+            </p>
           )}
-          <div style={{ marginLeft: 28, marginTop: 6, fontSize: 11, color: T.faint }}>
-            Visual block — the checkbox does not charge yet
-          </div>
+
+          {unconfigured ? (
+            <div style={{ marginLeft: 28, marginTop: 6, fontSize: 11, color: '#b45309', fontWeight: 600 }}>
+              Assign a Shopify product in the block settings
+            </div>
+          ) : (
+            <div style={{ marginLeft: 28, marginTop: 6, fontSize: 11, color: T.faint }}>
+              {priceText ? `from ${priceText}` : 'priced live from Shopify'}
+              {qty ? ` · ${qty} per order` : ''}
+            </div>
+          )}
         </div>
       );
+    }
     case 'shipping_method': {
       const opts = (Array.isArray(p.options) ? p.options : []).filter((o) => o && typeof o === 'object' && !Array.isArray(o));
       return (

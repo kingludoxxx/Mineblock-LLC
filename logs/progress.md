@@ -2439,3 +2439,50 @@ MADE). Upsell settle day = created_at::date, documented in loadMoneyWindow
 (DECISION MADE).
 STATUS: COMPLETE
 ---
+
+---
+TIMESTAMP: 2026-08-09 20:05
+TASK: BUILDER UX PARITY lane (feat/builder-ux)
+BUILT: Page-builder parity pass against the reference tool. Right panel with
+nothing selected is now PAGE settings ("Page" header + select-a-block hint,
+GENERAL group, slug-collision refusal prose next to the field, About-this-page
+copy). Left panel Outline rebuilt on a pure buildOutline() helper with row
+columns nested at depth 1 (non-movable, parent index) and reorder reusing the
+canvas onReorder/DRAG_MIME. Top bar gained a Scan button opening the existing
+ClonePageModal, a tablet device stub disabled with title "coming with tablet
+breakpoints", and a Saved/Save-changes chip that is clickable to flush. Canvas
+block hover toolbar gained duplicate + delete (reusing the page's block ops)
+and blocks emit data-blk-name. Code view REWRITTEN to mirror funnel-os
+LBCodeTab: two sub-tabs (Full HTML | CSS), one marker-delimited document each
+(@HEAD/@BODY-TOP/@BLOCKS/@BODY-END + per-block @block/@col markers), undebounced
+typing, dirty compare, explicit Save + Cmd/Ctrl+S, Refresh-with-confirm, Format;
+Monaco replaced by a textarea + highlight overlay using the repo's existing
+dependency-free highlightHtml/highlightCss. Order Bump Content tab rebuilt to
+the operator's field-exact spec (Shopify product picker -> props.variant_id,
+auto checkbox headline, offer name, b/u description, quantity, ticked-by-default,
+offer-name colour) with an unconfigured/configured canvas split. New authed
+read-only server route GET /api/v1/shopify-variants/search proxying Shopify
+Admin GraphQL. express_checkout became an insertable display placeholder.
+TESTED: 3 new harnesses — builder-model.mjs (84), code-doc.mjs (69),
+variant-search.mjs (73) — all green, all driven by execution. Regressions
+re-run: page-versions 93/93, page-duplicate 34/34, clone-page scan-create
+92/92, version-format 26/26, breakpoint-render 49/49, money-path order-bump
+18/18 + 8 further money-path suites. vite build run twice, clean both times.
+eslint multiset identical to main (175 problems, zero new).
+OUTPUT: two real bugs were caught BY THE TESTS and fixed before commit —
+bumpHeadline(null) threw because `= {}` only defaults `undefined`, and an
+attribute-bearing <b> assertion revealed the inline-markup parser needed its
+claim restated. review-regression.mjs and upsell-page.mjs (46/3) fail
+BYTE-IDENTICALLY on main — pre-existing, not this lane.
+DECISIONS: (1) The bump description parser returns SEGMENTS, not an HTML
+string, so BlockPreview's no-dangerouslySetInnerHTML invariant holds — hostile
+input cannot become markup rather than merely being filtered (DECISION MADE).
+(2) custom_js round-trips inside a tagged <script data-lb="page-js"> instead of
+being concatenated into body-end as the reference does, making the split exact
+(DECISION MADE). (3) A block absent from the document but present now is
+PRESERVED, not dropped as the reference documents — knownIds distinguishes "no
+marker" from "never described" (DECISION MADE). (4) Per-block code is editable
+only where markup IS a prop; the server renderer is not re-implemented client
+side (DECISION MADE, boundary stated in the UI).
+STATUS: COMPLETE
+---

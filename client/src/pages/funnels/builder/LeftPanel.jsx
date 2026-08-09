@@ -1,7 +1,8 @@
 // PAGE BUILDER — left panel: Elements palette | Outline.
 import { useState } from 'react';
-import { GripVertical, Trash2, Sparkles } from 'lucide-react';
+import { GripVertical, Trash2, Sparkles, CornerDownRight } from 'lucide-react';
 import { BLOCK_DEFS, CATEGORIES, PALETTE_ORDER, blockLabel } from './blockRegistry';
+import { buildOutline } from './builderModel';
 
 export const DRAG_MIME = 'application/x-puure-block';
 
@@ -47,6 +48,7 @@ function PaletteItem({ type, onAdd }) {
 }
 
 function ElementsTab({ onAdd }) {
+  const [aiNote, setAiNote] = useState(false);
   return (
     <div className="p-3 space-y-4 overflow-y-auto">
       {CATEGORIES.map((cat) => (
@@ -60,72 +62,99 @@ function ElementsTab({ onAdd }) {
         </div>
       ))}
 
-      {/* AI stub — visible, disabled, coming soon. Do not wire.
-          (AI Developer moved to the top bar per the reference layout.) */}
-      <div className="pt-2 border-t border-border-subtle">
+      {/* AI stub — full-width at the palette bottom, per the reference layout.
+          It is a STUB and says so: clicking states what is missing rather than
+          pretending to generate. The AI Developer panel in the top bar is the
+          working surface today. */}
+      <div className="pt-2 border-t border-border-subtle space-y-1.5">
         <button
-          disabled
-          title="Coming soon"
-          className="w-full flex items-center gap-2 px-3 py-2 rounded-lg border border-border-default bg-bg-elevated text-text-faint opacity-50 cursor-not-allowed text-xs"
+          onClick={() => setAiNote((n) => !n)}
+          className="w-full flex items-center gap-2 px-3 py-2 rounded-lg border border-border-default bg-bg-elevated text-text-muted hover:text-text-primary cursor-pointer text-xs"
         >
           <Sparkles className="w-3.5 h-3.5" /> AI: generate a block
-          <span className="ml-auto text-[9px] uppercase tracking-wider">soon</span>
+          <span className="ml-auto text-[9px] uppercase tracking-wider text-text-faint">soon</span>
         </button>
+        {aiNote && (
+          <p className="text-[11px] text-text-faint leading-relaxed px-1">
+            Coming with the AI media rollout. Until then, use <strong className="text-text-muted">AI Developer</strong> in
+            the top bar — it edits the blocks you already have.
+          </p>
+        )}
       </div>
     </div>
   );
 }
 
+// OUTLINE — the block tree. Rows come from the pure buildOutline() helper
+// (builderModel.js), which is what the node harness exercises; this component
+// only renders and wires drag/click onto them.
+//
+// Reordering REUSES THE CANVAS MECHANISM: the same onReorder(from, to) the
+// canvas drop handler calls, and the same DRAG_MIME payload, so a row can be
+// dragged out of the outline and dropped straight onto the canvas. Nothing
+// here is a second implementation of move.
 function OutlineTab({ blocks, selectedId, onSelect, onReorder, onDelete }) {
   const [dragIdx, setDragIdx] = useState(null);
-  const [overIdx, setOverIdx] = useState(null);
+  const [overKey, setOverKey] = useState(null);
+  const rows = buildOutline(blocks, blockLabel);
 
   return (
     <div className="p-2 overflow-y-auto">
-      {!blocks.length && (
+      {!rows.length && (
         <div className="p-4 text-xs text-text-faint text-center">No blocks yet — drag elements onto the canvas.</div>
       )}
-      {blocks.map((b, i) => {
-        const def = BLOCK_DEFS[b.type];
+      {rows.map((r) => {
+        const def = BLOCK_DEFS[r.type];
         const Icon = def?.icon;
+        // Child rows (a row block's columns) are labels, not handles: they
+        // select the parent and never carry an independent move.
+        const draggable = r.movable && !!r.id;
         return (
           <div
-            key={b.id}
-            draggable
-            onDragStart={(e) => {
-              setDragIdx(i);
+            key={r.key}
+            draggable={draggable}
+            onDragStart={draggable ? (e) => {
+              setDragIdx(r.index);
               e.dataTransfer.effectAllowed = 'move';
               // also allow dropping outline rows onto the canvas
-              e.dataTransfer.setData(DRAG_MIME, JSON.stringify({ kind: 'move', id: b.id }));
-            }}
-            onDragEnd={() => { setDragIdx(null); setOverIdx(null); }}
+              e.dataTransfer.setData(DRAG_MIME, JSON.stringify({ kind: 'move', id: r.id }));
+            } : undefined}
+            onDragEnd={() => { setDragIdx(null); setOverKey(null); }}
             onDragOver={(e) => {
-              if (dragIdx === null) return;
+              if (dragIdx === null || !r.movable) return;
               e.preventDefault();
-              setOverIdx(i);
+              setOverKey(r.key);
             }}
             onDrop={(e) => {
               e.preventDefault();
-              if (dragIdx !== null && dragIdx !== i) onReorder(dragIdx, i);
+              if (dragIdx !== null && r.movable && dragIdx !== r.index) onReorder(dragIdx, r.index);
               setDragIdx(null);
-              setOverIdx(null);
+              setOverKey(null);
             }}
-            onClick={() => onSelect(b.id)}
-            className={`group flex items-center gap-2 px-2 py-1.5 rounded-md cursor-pointer text-xs mb-0.5
-              ${selectedId === b.id ? 'bg-accent/10 text-text-primary border border-accent/40' : 'text-text-muted hover:bg-bg-hover border border-transparent'}
-              ${overIdx === i && dragIdx !== null && dragIdx !== i ? 'border-t-2 border-t-accent' : ''}`}
+            onClick={() => r.id && onSelect(r.id)}
+            style={{ paddingLeft: 8 + r.depth * 14 }}
+            className={`group flex items-center gap-2 pr-2 py-1.5 rounded-md text-xs mb-0.5
+              ${r.id ? 'cursor-pointer' : 'cursor-default'}
+              ${selectedId && selectedId === r.id
+                ? 'bg-accent/10 text-text-primary border border-accent/40'
+                : 'text-text-muted hover:bg-bg-hover border border-transparent'}
+              ${overKey === r.key && dragIdx !== null && dragIdx !== r.index ? 'border-t-2 border-t-accent' : ''}`}
           >
-            <GripVertical className="w-3 h-3 text-text-faint shrink-0 cursor-grab" />
+            {r.movable
+              ? <GripVertical className="w-3 h-3 text-text-faint shrink-0 cursor-grab" />
+              : <CornerDownRight className="w-3 h-3 text-text-faint shrink-0" />}
             {Icon && <Icon className="w-3.5 h-3.5 shrink-0" />}
-            <span className="truncate flex-1">{blockLabel(b)}</span>
-            <span className="text-[9px] text-text-faint font-mono shrink-0">{b.type}</span>
-            <button
-              onClick={(e) => { e.stopPropagation(); onDelete(b.id); }}
-              className="opacity-0 group-hover:opacity-100 text-text-faint hover:text-danger cursor-pointer shrink-0"
-              title="Delete block"
-            >
-              <Trash2 className="w-3 h-3" />
-            </button>
+            <span className="truncate flex-1">{r.label}</span>
+            <span className="text-[9px] text-text-faint font-mono shrink-0">{r.type}</span>
+            {r.movable && r.id && (
+              <button
+                onClick={(e) => { e.stopPropagation(); onDelete(r.id); }}
+                className="opacity-0 group-hover:opacity-100 text-text-faint hover:text-danger cursor-pointer shrink-0"
+                title="Delete block"
+              >
+                <Trash2 className="w-3 h-3" />
+              </button>
+            )}
           </div>
         );
       })}
