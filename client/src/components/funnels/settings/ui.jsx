@@ -1,6 +1,6 @@
 // Shared presentational bits for the Funnel Settings modal.
 import { useState } from 'react';
-import { Eye, EyeOff, Loader2 } from 'lucide-react';
+import { Eye, EyeOff, Loader2, Trash2 } from 'lucide-react';
 import { STATUS_PRESENTATION } from './gatewayMeta';
 
 const TONES = {
@@ -83,7 +83,7 @@ export function CredentialField({ field, currentSet, currentValue, value, onChan
 
   const placeholder = isSecret
     ? currentSet
-      ? 'Currently •••• SET — type to replace, blank keeps it'
+      ? field.setPlaceholder || 'Currently •••• SET — type to replace, blank keeps it'
       : field.placeholder
     : field.placeholder;
 
@@ -101,7 +101,7 @@ export function CredentialField({ field, currentSet, currentValue, value, onChan
                 className="ml-1 text-text-faint hover:text-danger cursor-pointer normal-case tracking-normal"
                 title="Clear this credential"
               >
-                Clear
+                <Trash2 className="w-3.5 h-3.5" />
               </button>
             )}
           </span>

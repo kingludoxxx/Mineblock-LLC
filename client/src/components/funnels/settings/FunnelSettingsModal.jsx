@@ -70,8 +70,8 @@ export default function FunnelSettingsModal({ open, onClose, funnel, initialSect
   const render = () => {
     switch (section) {
       case 'general': return <GeneralSection funnel={funnel} onFunnelUpdated={onFunnelUpdated} />;
-      case 'fonts': return <FontsSection />;
-      case 'domains': return <DomainsSection />;
+      case 'fonts': return <FontsSection funnel={funnel} onFunnelUpdated={onFunnelUpdated} />;
+      case 'domains': return <DomainsSection funnel={funnel} onFunnelUpdated={onFunnelUpdated} />;
       case 'payments': return <PaymentsSection funnelId={funnelId} />;
       case 'products': return <ProductsSection />;
       case 'shipping': return <ShippingSection />;
@@ -79,7 +79,7 @@ export default function FunnelSettingsModal({ open, onClose, funnel, initialSect
       case 'tracking': return <TrackingSection />;
       case 'tracking-health': return <TrackingHealthSection />;
       case 'custom-tracking': return <CustomTrackingSection />;
-      case 'scripts': return <ScriptsSection />;
+      case 'scripts': return <ScriptsSection funnel={funnel} onFunnelUpdated={onFunnelUpdated} />;
       case 'redirects': return <RedirectsSection funnel={funnel} />;
       case 'health': return <HealthSection funnelId={funnelId} />;
       default: return null;

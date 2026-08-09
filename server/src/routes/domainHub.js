@@ -271,6 +271,17 @@ router.delete('/:domain', async (req, res) => {
       confirm: req.body?.confirm, actor: actorOf(req),
     });
     if (!result.ok) return fail(res, result.status || 500, result.error);
+    // FUNNEL-SETTINGS Domains tab (additive): funnels.custom_domain marks a
+    // funnel's PRIMARY domain; detaching that domain must not leave the
+    // pointer dangling. Fail-open — a repair miss never blocks the detach.
+    try {
+      await pgQuery(
+        `UPDATE funnels SET custom_domain = NULL, updated_at = NOW() WHERE custom_domain = $1`,
+        [result.domain]
+      );
+    } catch (repairErr) {
+      console.error('[domainHub] custom_domain clear after detach failed:', repairErr.message);
+    }
     res.json({ data: { detached: result.domain } });
   } catch (err) {
     console.error('[domainHub] detach failed:', err);
