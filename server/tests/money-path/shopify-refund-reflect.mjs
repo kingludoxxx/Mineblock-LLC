@@ -161,6 +161,107 @@ const reset = () => { mock.txMode = 'ok'; mock.refundMode = 'ok'; mock.transacti
   check('T7 disabled → skipped, no POST', r.skipped === 'disabled' && mock.refundCalls.length === 0, JSON.stringify(r));
 }
 
+// ══ INBOUND direction — a Shopify-admin refund triggers the REAL gateway refund ══
+const { handleInboundShopifyRefund } = await import('../../src/services/shopifyRefund.js');
+const q2 = (text, params = []) => sql.unsafe(text, params);
+async function seedInbound(sessionId, shopifyOrderId, { status = 'paid', refunds = [] } = {}) {
+  await sql`DELETE FROM co_shopify_refunds WHERE session_id = ${sessionId}`;
+  await sql`DELETE FROM co_orders WHERE session_id = ${sessionId}`;
+  await sql`DELETE FROM co_sessions WHERE id = ${sessionId}`;
+  await sql`INSERT INTO co_sessions ${sql({ id: sessionId, funnel_id: 'fn_inb', status, gateway: 'whop', gateway_session_id: 'pay_inb_' + sessionId, total: 4.97, subtotal: 4.97, currency: 'USD', line_items: sql.json([]), customer: sql.json({}), refunds: sql.json(refunds) })}`;
+  await sql`INSERT INTO co_orders (id, session_id, idempotency_key, gateway, total, currency, shopify_order_id)
+            VALUES (${'coo_' + sessionId}, ${sessionId}, ${'idem_' + sessionId}, 'whop', 4.97, 'USD', ${String(shopifyOrderId)})`;
+}
+const calls = [];
+const okRefundFn = async (creds, args) => { calls.push({ creds, args }); return { ok: true, status: 'refunded' }; };
+const failRefundFn = async () => ({ ok: false, error: 'gateway_down' });
+const cred = async () => 'apik_test';
+
+// I1: full refund created in Shopify → gateway refund issued (full → amount null)
+{
+  calls.length = 0; await seedInbound('cin_full', 9901);
+  const r = await handleInboundShopifyRefund(
+    { id: 501, order_id: 9901, note: '', transactions: [{ kind: 'refund', amount: '4.97' }] },
+    { query: q2, refundFn: okRefundFn, resolveCred: cred }
+  );
+  check('I1 inbound full → gateway refund called once', r.ok === true && calls.length === 1, JSON.stringify(r));
+  check('I1 full amount passed as null (full refund)', calls[0].args.amount === null && calls[0].args.paymentId === 'pay_inb_cin_full', JSON.stringify(calls[0].args));
+  const [row] = await sql`SELECT status FROM co_shopify_refunds WHERE session_id='cin_full' AND ref='shp:501'`;
+  check('I1 claim marked inbound_gateway_refunded', row?.status === 'inbound_gateway_refunded', JSON.stringify(row));
+}
+// I2: PARTIAL refund → partial amount forwarded
+{
+  calls.length = 0; await seedInbound('cin_part', 9902);
+  await handleInboundShopifyRefund(
+    { id: 502, order_id: 9902, note: '', transactions: [{ kind: 'refund', amount: '2.00' }] },
+    { query: q2, refundFn: okRefundFn, resolveCred: cred }
+  );
+  check('I2 partial amount forwarded (2.00)', calls[0]?.args.amount === 2, JSON.stringify(calls[0]?.args));
+}
+// I3: LOOP BREAKER — our own reflected refund is skipped
+{
+  calls.length = 0; await seedInbound('cin_loop', 9903);
+  const r = await handleInboundShopifyRefund(
+    { id: 503, order_id: 9903, note: 'Refunded at gateway (rf_x) — money already returned; Shopify books-only. [puure-reflected]', transactions: [{ kind: 'refund', amount: '4.97' }] },
+    { query: q2, refundFn: okRefundFn, resolveCred: cred }
+  );
+  check('I3 own reflection skipped, NO gateway call', r.skipped === 'own_reflection' && calls.length === 0, JSON.stringify(r));
+}
+// I4: exactly-once — same Shopify refund id redelivered → one gateway call
+{
+  calls.length = 0; await seedInbound('cin_dup', 9904);
+  const payload = { id: 504, order_id: 9904, note: '', transactions: [{ kind: 'refund', amount: '4.97' }] };
+  const a = await handleInboundShopifyRefund(payload, { query: q2, refundFn: okRefundFn, resolveCred: cred });
+  const b = await handleInboundShopifyRefund(payload, { query: q2, refundFn: okRefundFn, resolveCred: cred });
+  check('I4 redelivery: one call, second skipped', a.ok && b.skipped === 'already_handled' && calls.length === 1, JSON.stringify({ a, b, calls: calls.length }));
+}
+// I5: session already refunded at the gateway → no second refund
+{
+  calls.length = 0; await seedInbound('cin_done', 9905, { status: 'refunded', refunds: [{ id: 'rf_1', amount: 4.97 }] });
+  const r = await handleInboundShopifyRefund(
+    { id: 505, order_id: 9905, note: '', transactions: [{ kind: 'refund', amount: '4.97' }] },
+    { query: q2, refundFn: okRefundFn, resolveCred: cred }
+  );
+  check('I5 already-refunded session → skipped, no call', r.skipped === 'gateway_already_refunded' && calls.length === 0, JSON.stringify(r));
+}
+// I6: non-checkout order (no co_orders row) → clean skip
+{
+  calls.length = 0;
+  const r = await handleInboundShopifyRefund(
+    { id: 506, order_id: 777777, note: '', transactions: [{ kind: 'refund', amount: '9.99' }] },
+    { query: q2, refundFn: okRefundFn, resolveCred: cred }
+  );
+  check('I6 non-checkout order skipped', r.skipped === 'not_a_checkout_order' && calls.length === 0, JSON.stringify(r));
+}
+// I7: gateway failure → claim marked failed + session parked for review
+{
+  calls.length = 0; await seedInbound('cin_fail', 9907);
+  const r = await handleInboundShopifyRefund(
+    { id: 507, order_id: 9907, note: '', transactions: [{ kind: 'refund', amount: '4.97' }] },
+    { query: q2, refundFn: failRefundFn, resolveCred: cred }
+  );
+  const [row] = await sql`SELECT status FROM co_shopify_refunds WHERE session_id='cin_fail' AND ref='shp:507'`;
+  const [sessR] = await sql`SELECT needs_review_reason FROM co_sessions WHERE id='cin_fail'`;
+  check('I7 gateway failure → failed claim + review parked', r.ok === false && String(row?.status).startsWith('inbound_failed') && String(sessR?.needs_review_reason || '').includes('shopify_refund_gateway_failed'), JSON.stringify({ row, sessR }));
+}
+// I8: OUTBOUND loop breaker — reflection skips when Shopify already refunded
+{
+  reset(); await seedOrder('cor_ext', 8899);
+  mock.transactions = [
+    { id: 9001, kind: 'sale', status: 'success', amount: '4.97', gateway: 'whop' },
+    { id: 9002, kind: 'refund', status: 'success', amount: '4.97', gateway: 'whop' },
+  ];
+  const r = await reflectRefundToShopify({ sessionId: 'cor_ext', ref: 'rf_ext', amount: 4.97 });
+  const [row] = await sql`SELECT status, error FROM co_shopify_refunds WHERE session_id='cor_ext' AND ref='rf_ext'`;
+  check('I8 reflection no-ops when Shopify already refunded (no POST)', r.ok === true && r.external === true && mock.refundCalls.length === 0, JSON.stringify(r));
+  check('I8 claim reflected with already-refunded note', row?.status === 'reflected' && row?.error === 'already_refunded_in_shopify', JSON.stringify(row));
+}
+for (const sid of ['cin_full','cin_part','cin_loop','cin_dup','cin_done','cin_fail','cor_ext']) {
+  await sql`DELETE FROM co_shopify_refunds WHERE session_id = ${sid}`;
+  await sql`DELETE FROM co_orders WHERE session_id = ${sid}`;
+  await sql`DELETE FROM co_sessions WHERE id = ${sid}`;
+}
+
 // cleanup
 for (const s of ['cor_full', 'cor_part', 'cor_idem', 'cor_race', 'cor_none', 'cor_notx', 'cor_500', 'cor_dis']) {
   await sql`DELETE FROM co_shopify_refunds WHERE session_id = ${s}`;

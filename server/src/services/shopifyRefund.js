@@ -57,7 +57,10 @@ function buildRefundBody(parent, useAmount, ref) {
       // The money is already back on the card via the gateway; this is a books
       // entry, so no customer email and no inventory restock.
       notify: false,
-      note: `Refunded at gateway${ref ? ` (${ref})` : ''} — money already returned; Shopify books-only.`,
+      // 'puure-reflected' is the LOOP-BREAKER marker: the refunds/create
+      // webhook skips refunds carrying it, so a reflection can never trigger
+      // an inbound gateway refund of its own.
+      note: `Refunded at gateway${ref ? ` (${ref})` : ''} — money already returned; Shopify books-only. [puure-reflected]`,
       transactions: [
         {
           parent_id: parent.id,
@@ -158,6 +161,18 @@ export async function reflectRefundToShopify({ sessionId, ref, amount }) {
     }
 
     const useAmount = refundAmountFor(parent, amount);
+    // LOOP-BREAKER, inbound direction: if Shopify's books already carry refund
+    // transactions covering this amount (an operator refunded in the Shopify
+    // admin, which is what triggered the gateway refund we are now
+    // reflecting), there is nothing to reflect — POSTing again would double
+    // the books or be refused. Mark reflected and stop.
+    const alreadyRefunded = (tx.body?.transactions || [])
+      .filter((t) => t?.kind === 'refund' && t?.status === 'success')
+      .reduce((s2, t) => s2 + (Number(t.amount) || 0), 0);
+    if (alreadyRefunded + 0.01 >= useAmount) {
+      await markClaim(sessionId, ref, { status: 'reflected', error: 'already_refunded_in_shopify' });
+      return { ok: true, external: true };
+    }
     const r = await shopifyReq('POST', `orders/${encodeURIComponent(shopifyOrderId)}/refunds.json`, buildRefundBody(parent, useAmount, ref));
     if (!r.ok) {
       await markClaim(sessionId, ref, { status: 'needs_reconcile', error: `refund:${r.kind}:${r.detail || ''}`.slice(0, 300) });
@@ -171,6 +186,115 @@ export async function reflectRefundToShopify({ sessionId, ref, amount }) {
     // NEVER throw into the webhook path. Best-effort bookkeeping only.
     try { await markClaim(sessionId, ref, { status: 'needs_reconcile', error: `exception:${err.message}`.slice(0, 300) }); } catch { /* noop */ }
     return { ok: false, kind: 'exception', detail: err.message };
+  }
+}
+
+/**
+ * INBOUND direction — a refund created IN SHOPIFY (admin UI / app) triggers
+ * the REAL gateway refund, so staff can refund from either surface.
+ * Wired from the refunds/create webhook. Exactly-once via the same
+ * co_shopify_refunds claim table (ref = 'shp:<refund_id>'); refunds carrying
+ * the reflection marker are OUR OWN books-entries and are skipped (loop
+ * breaker); Whop-side idempotency (deterministic Idempotency-Key in
+ * refundPayment) is the final double-money backstop. NEVER throws.
+ *
+ * @param {object} refund — the refunds/create webhook payload.
+ * @param {object} [deps] — { query, refundFn, resolveCred } injectable.
+ * @returns {Promise<{ok:boolean, skipped?:string, kind?:string}>}
+ */
+export async function handleInboundShopifyRefund(refund, deps = {}) {
+  const query = deps.query || pgQuery;
+  try {
+    const refundId = String(refund?.id || '');
+    const orderId = String(refund?.order_id || '');
+    if (!refundId || !orderId) return { ok: false, skipped: 'bad_payload' };
+    if (String(refund?.note || '').includes('[puure-reflected]')) {
+      return { ok: true, skipped: 'own_reflection' };
+    }
+    await ensureCheckoutTables();
+
+    // Only orders WE mirrored have a session behind them.
+    const [ord] = await query(
+      `SELECT session_id FROM co_orders WHERE shopify_order_id = $1 LIMIT 1`,
+      [orderId]
+    );
+    if (!ord?.session_id) return { ok: true, skipped: 'not_a_checkout_order' };
+    const [session] = await query(
+      `SELECT id, funnel_id, status, gateway, gateway_session_id, total, refunds
+       FROM co_sessions WHERE id = $1`,
+      [ord.session_id]
+    );
+    if (!session) return { ok: false, skipped: 'session_missing' };
+    if (String(session.gateway || '').toLowerCase() !== 'whop' || !session.gateway_session_id) {
+      return { ok: true, skipped: 'not_whop' };
+    }
+
+    // Amount = the refund's own money transactions (partials supported);
+    // refund_line_items subtotal is the fallback for zero-transaction edits.
+    let amount = (Array.isArray(refund.transactions) ? refund.transactions : [])
+      .filter((t) => t?.kind === 'refund')
+      .reduce((s2, t) => s2 + (Number(t.amount) || 0), 0);
+    if (!(amount > 0)) {
+      amount = (Array.isArray(refund.refund_line_items) ? refund.refund_line_items : [])
+        .reduce((s2, li) => s2 + (Number(li.subtotal) || 0), 0);
+    }
+    amount = round2(amount);
+    if (!(amount > 0)) return { ok: true, skipped: 'no_money_in_refund' };
+
+    // Exactly-once claim BEFORE any gateway call.
+    const claim = await query(
+      `INSERT INTO co_shopify_refunds (session_id, ref, shopify_order_id, amount, status)
+       VALUES ($1, $2, $3, $4, 'inbound_claimed')
+       ON CONFLICT (session_id, ref) DO NOTHING
+       RETURNING session_id`,
+      [session.id, `shp:${refundId}`, orderId, amount]
+    );
+    if (!claim.length) return { ok: true, skipped: 'already_handled' };
+
+    // Skip when the gateway side is already covered (session ledger).
+    const priorRefunded = (Array.isArray(session.refunds) ? session.refunds : [])
+      .reduce((s2, r) => s2 + (Number(r?.amount) || 0), 0);
+    if (session.status === 'refunded' || priorRefunded + 0.01 >= Number(session.total)) {
+      await query(
+        `UPDATE co_shopify_refunds SET status = 'inbound_already_refunded', updated_at = NOW()
+         WHERE session_id = $1 AND ref = $2`, [session.id, `shp:${refundId}`]
+      );
+      return { ok: true, skipped: 'gateway_already_refunded' };
+    }
+
+    const resolveCred = deps.resolveCred
+      || (await import('./gatewayConfigs.js')).resolveCredential;
+    const refundFn = deps.refundFn
+      || (await import('./gateways/whop.js')).refundPayment;
+    const apiKey = await resolveCred(session.funnel_id || '', 'whop', 'api_key');
+    const isFull = Math.abs(amount - Number(session.total)) <= 0.01;
+    const r = await refundFn({ api_key: apiKey }, {
+      paymentId: session.gateway_session_id,
+      amount: isFull ? null : amount,
+    });
+    if (!r.ok) {
+      await query(
+        `UPDATE co_shopify_refunds SET status = $3, updated_at = NOW()
+         WHERE session_id = $1 AND ref = $2`,
+        [session.id, `shp:${refundId}`, `inbound_failed:${String(r.error || '').slice(0, 80)}`]
+      );
+      await query(
+        `UPDATE co_sessions SET needs_review_reason = $2, updated_at = NOW()
+         WHERE id = $1 AND needs_review_reason IS NULL`,
+        [session.id, `shopify_refund_gateway_failed:${refundId}`.slice(0, 300)]
+      );
+      return { ok: false, kind: 'gateway_refund_failed' };
+    }
+    await query(
+      `UPDATE co_shopify_refunds SET status = 'inbound_gateway_refunded', updated_at = NOW()
+       WHERE session_id = $1 AND ref = $2`, [session.id, `shp:${refundId}`]
+    );
+    // The Whop refund webhook now does the ledger work (applyRefund flips the
+    // session; the reflection sees Shopify already refunded and no-ops).
+    return { ok: true, refunded: amount };
+  } catch (err) {
+    console.error('[shopifyRefund] inbound handler failed (non-fatal):', err.message);
+    return { ok: false, kind: 'exception' };
   }
 }
 

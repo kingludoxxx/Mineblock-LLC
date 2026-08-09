@@ -10,6 +10,7 @@ import {
   MIN_ORDER_NUMBER,
 } from './kpiSystem.js';
 import { upsertOrderFromShopify } from './orders.js';
+import { handleInboundShopifyRefund } from '../services/shopifyRefund.js';
 
 const router = Router();
 
@@ -176,9 +177,29 @@ router.post('/orders', async (req, res) => {
       return;
     }
 
-    const allowedTopics = ['orders/create', 'orders/updated', 'orders/paid'];
+    const allowedTopics = ['orders/create', 'orders/updated', 'orders/paid', 'refunds/create'];
     if (!allowedTopics.includes(topic)) {
       logger.info(`[Shopify Webhook] Ignoring topic: ${topic}`);
+      return;
+    }
+
+    // A refund created IN SHOPIFY (admin UI) triggers the REAL gateway refund
+    // — staff can refund from either surface. Loop-safe: our own reflected
+    // refunds carry the [puure-reflected] note marker and are skipped inside;
+    // exactly-once via the co_shopify_refunds claim. Fire-and-forget — the
+    // webhook was already acked above and a handler failure must never make
+    // Shopify retry into a double-refund path (the claim guards that too).
+    if (topic === 'refunds/create') {
+      try {
+        const refund = JSON.parse(rawBody);
+        handleInboundShopifyRefund(refund).then((r) => {
+          logger.info(`[Shopify Webhook] refunds/create handled: ${JSON.stringify(r)}`);
+        }).catch((err) => {
+          logger.error(`[Shopify Webhook] refunds/create failed: ${err.message}`);
+        });
+      } catch (err) {
+        logger.error(`[Shopify Webhook] refunds/create parse failed: ${err.message}`);
+      }
       return;
     }
 
@@ -222,7 +243,7 @@ router.post('/register', authenticate, async (req, res) => {
     const baseUrl = process.env.RENDER_EXTERNAL_URL || process.env.PUBLIC_APP_URL || 'http://localhost:3000';
     const webhookAddress = `${baseUrl}/api/v1/shopify-webhook/orders`;
 
-    const topics = ['orders/create', 'orders/updated', 'orders/paid'];
+    const topics = ['orders/create', 'orders/updated', 'orders/paid', 'refunds/create'];
     const results = [];
 
     for (const topic of topics) {
