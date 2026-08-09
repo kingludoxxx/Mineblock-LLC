@@ -116,9 +116,10 @@ router.get('/funnels/overview', async (req, res, next) => {
 
 /**
  * GET /funnel/:funnelId/live — THE CANVAS LIVE CHIP FEED.
- * {live, unique_today}: distinct visitors in the last 5 minutes / since UTC
- * midnight, from lb_touches. Sits on the existing (funnel_id, ts DESC) index;
- * no DDL here (trackingSchema.js owns lb_touches).
+ * {live, unique_today}: distinct visitors in the last 5 minutes / since
+ * REPORT-TZ midnight (Europe/Madrid — see services/reportTz.js), from
+ * lb_touches. Sits on the existing (funnel_id, ts DESC) index; no DDL here
+ * (trackingSchema.js owns lb_touches).
  */
 router.get('/funnel/:funnelId/live', async (req, res, next) => {
   try {

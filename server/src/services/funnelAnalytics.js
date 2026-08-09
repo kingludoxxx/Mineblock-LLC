@@ -127,9 +127,12 @@
 //   denominator but not the numerator, so a short window slightly UNDERSTATES
 //   CVR. Every funnel report has this property; widening the window shrinks it.
 //
-//   All bounds are HALF-OPEN [from 00:00:00Z, to+1d 00:00:00Z) in UTC, so the
-//   `to` day is fully included exactly once and no row is double-counted at a
-//   boundary.
+//   All bounds are HALF-OPEN [start-of-`from`, start-of-`to`+1d) where "start of
+//   day" is REPORT-TZ midnight (Europe/Madrid — see reportTz.js), expressed as
+//   a UTC instant. The `to` day is fully included exactly once and no row is
+//   double-counted at a boundary. STORAGE stays UTC; only the bounds and the
+//   day keys live in the report timezone, so a 23:30Z order lands on the same
+//   Madrid day here as it does in funnelCosts / funnelSpend.
 //
 // ── AOV ────────────────────────────────────────────────────────────────────
 //   aov_post_upsell = net_revenue ÷ orders   (net of refunds, over
@@ -192,6 +195,7 @@
 import { analyticsQuery } from './analyticsDb.js';
 import { buildVerdict, varianceFromSums, MIN_RATE_SAMPLE, STAT_METHOD } from './analyticsStats.js';
 import { SPLIT_DELIVERY_WIRED } from './splitResolver.js';
+import { reportDayKey, reportDayStartIso, reportDaysAgo, REPORT_TZ } from './reportTz.js';
 
 // THE predicate. Every revenue read in this file interpolates this constant and
 // nothing else, so there is exactly one place to audit.
@@ -229,30 +233,40 @@ const idOf = (v, max = 120) => String(v ?? '').trim().slice(0, max);
  *          |{ok:false, error:string}}
  */
 export function parseWindow({ from, to } = {}) {
-  const today = new Date();
-  const defTo = today.toISOString().slice(0, 10);
-  const defFrom = new Date(today.getTime() - 29 * 86_400_000).toISOString().slice(0, 10);
+  // Defaults are REPORT-TZ days: "today" is the operator's Madrid today, not a
+  // UTC today that flips two hours early. reportDaysAgo is pure calendar
+  // arithmetic on day strings, so the 29-day default span is DST-proof.
+  const defTo = reportDayKey();
+  const defFrom = reportDaysAgo(29, defTo);
   const f = from === undefined || from === null || from === '' ? defFrom : String(from);
   const t = to === undefined || to === null || to === '' ? defTo : String(to);
 
   if (!DATE_RE.test(f) || !DATE_RE.test(t)) return { ok: false, error: 'invalid_date_format' };
 
-  // Parse as UTC midnight. `new Date('2026-01-32')` is Invalid Date, and
-  // Date.UTC-based round-tripping rejects '2026-02-31' (which Date would
+  // VALIDITY is checked against UTC midnight, which is a pure calendar
+  // round-trip and independent of any timezone: `new Date('2026-01-32')` is
+  // Invalid Date, and the round-trip rejects '2026-02-31' (which Date would
   // silently roll to March 3) — a rolled date would quietly report the wrong
-  // window instead of erroring.
-  const fromTs = new Date(`${f}T00:00:00.000Z`);
-  const toStart = new Date(`${t}T00:00:00.000Z`);
-  if (Number.isNaN(fromTs.getTime()) || Number.isNaN(toStart.getTime())) {
+  // window instead of erroring. These probes are NEVER used as bounds.
+  const fromProbe = new Date(`${f}T00:00:00.000Z`);
+  const toProbe = new Date(`${t}T00:00:00.000Z`);
+  if (Number.isNaN(fromProbe.getTime()) || Number.isNaN(toProbe.getTime())) {
     return { ok: false, error: 'invalid_date' };
   }
-  if (fromTs.toISOString().slice(0, 10) !== f || toStart.toISOString().slice(0, 10) !== t) {
+  if (fromProbe.toISOString().slice(0, 10) !== f || toProbe.toISOString().slice(0, 10) !== t) {
     return { ok: false, error: 'invalid_date' };
   }
-  if (toStart < fromTs) return { ok: false, error: 'to_before_from' };
+  if (toProbe < fromProbe) return { ok: false, error: 'to_before_from' };
 
-  // Half-open right edge: the `to` day is included in full, exactly once.
-  const toTs = new Date(toStart.getTime() + 86_400_000);
+  // BOUNDS are REPORT-TZ midnights expressed as UTC instants (storage stays
+  // UTC). Half-open right edge: the `to` day is included in full, exactly once.
+  // The right edge is the report-tz start of the DAY AFTER `to` — computed with
+  // reportDayStartIso, never `fromTs + 86_400_000`, because a DST transition
+  // day is 23h or 25h long and a fixed 24h step would clip or double-count it.
+  const fromTs = new Date(reportDayStartIso(f));
+  const toTs = new Date(reportDayStartIso(reportDaysAgo(-1, t)));
+  // Elapsed ms ÷ 86.4e6 is off by at most ±1h across any span, so rounding
+  // recovers the exact calendar day count even across DST.
   const days = Math.round((toTs - fromTs) / 86_400_000);
   // A huge window is a performance foot-gun (a full seq scan over lb_touches),
   // so it is refused rather than served slowly.
@@ -807,7 +821,10 @@ export async function getFunnelOverview({ funnelId, from, to }, { query = analyt
     funnel: funnel
       ? { id: funnel.id, slug: funnel.slug, name: funnel.name, status: funnel.status }
       : { id: fid, slug: null, name: null, status: null },
-    window: { from: w.from, to: w.to, days: w.days, basis: 'UTC half-open [from, to+1d)' },
+    window: {
+      from: w.from, to: w.to, days: w.days,
+      timezone: REPORT_TZ, basis: 'report-tz half-open [from, to+1d)',
+    },
     totals: {
       visitors,
       visitors_basis: 'distinct lb_touches.vid across the whole funnel (NOT the sum of page visitors)',
@@ -1105,7 +1122,10 @@ export async function getSplitResults(
   let windowClampedToEpoch = false;
   if (deliveryEpochAt && deliveryEpochAt.getTime() > w.fromTs.getTime()) {
     w.fromTs = deliveryEpochAt;
-    w.from = deliveryEpochAt.toISOString().slice(0, 10);
+    // The PUBLISHED day key for the clamped edge is a report-tz day, so a
+    // 23:30Z epoch labels the Madrid day the operator sees it on. The BOUND
+    // (w.fromTs) stays the exact epoch instant — the clamp is not widened.
+    w.from = reportDayKey(deliveryEpochAt);
     windowClampedToEpoch = true;
   }
 
@@ -1319,7 +1339,10 @@ export async function getSplitResults(
       enabled: test.enabled,
       archived: test.archived,
     },
-    window: { from: w.from, to: w.to, days: w.days, basis: 'UTC half-open [from, to+1d)' },
+    window: {
+      from: w.from, to: w.to, days: w.days,
+      timezone: REPORT_TZ, basis: 'report-tz half-open [from, to+1d)',
+    },
     arms,
     totals,
     verdict,
@@ -1417,7 +1440,10 @@ export async function getFunnelsOverviewBatch({ from, to } = {}, { query = analy
   const ids = funnels.map((f) => f.id);
   if (!ids.length) {
     return {
-      window: { from: w.from, to: w.to, days: w.days, basis: 'UTC half-open [from, to+1d)' },
+      window: {
+        from: w.from, to: w.to, days: w.days,
+        timezone: REPORT_TZ, basis: 'report-tz half-open [from, to+1d)',
+      },
       funnels: [],
       warnings,
       degraded: warnings.length > 0,
@@ -1646,7 +1672,10 @@ export async function getFunnelsOverviewBatch({ from, to } = {}, { query = analy
   });
 
   return {
-    window: { from: w.from, to: w.to, days: w.days, basis: 'UTC half-open [from, to+1d)' },
+    window: {
+      from: w.from, to: w.to, days: w.days,
+      timezone: REPORT_TZ, basis: 'report-tz half-open [from, to+1d)',
+    },
     funnels: rows,
     meta: {
       money_predicate: "paid_at IS NOT NULL AND status IN ('paid','refunded')",
@@ -1663,13 +1692,13 @@ export async function getFunnelsOverviewBatch({ from, to } = {}, { query = analy
 /**
  * Live counter for the canvas chip.
  *   live         = COUNT(DISTINCT vid) in the last 5 minutes
- *   unique_today = COUNT(DISTINCT vid) since UTC midnight
+ *   unique_today = COUNT(DISTINCT vid) since REPORT-TZ midnight
  * Both reads sit on the existing idx_lb_touches_funnel (funnel_id, ts DESC)
  * index — no new index is created here (the DDL belongs to trackingSchema.js;
  * the existing composite covers both range scans).
  *
- * The two counts are INDEPENDENT scans on purpose: a touch at 23:58 UTC is
- * "live" at 00:01 but not "today", so nesting one filter inside the other
+ * The two counts are INDEPENDENT scans on purpose: a touch at 23:58 report-tz
+ * is "live" at 00:01 but not "today", so nesting one filter inside the other
  * would undercount `live` across the midnight boundary.
  */
 export async function getFunnelLive({ funnelId } = {}, { query = analyticsQuery } = {}) {
@@ -1677,16 +1706,20 @@ export async function getFunnelLive({ funnelId } = {}, { query = analyticsQuery 
   if (!fid) return { error: 'invalid_funnel_id' };
 
   const warnings = [];
+  // Report-tz midnight is computed HERE and BOUND as a parameter rather than
+  // expressed as `AT TIME ZONE 'Europe/Madrid'` in SQL: reportTz.js is the one
+  // authority for the zone, and putting the zone name in a query string would
+  // fork it into a second place that no test covers.
+  const todayStart = new Date(reportDayStartIso(reportDayKey()));
   const row = await safeRead('lb_touches', warnings, async () => {
     const [r] = await query(
       `SELECT
          (SELECT COUNT(DISTINCT vid) FROM lb_touches
           WHERE funnel_id = $1 AND ts >= NOW() - INTERVAL '5 minutes')::bigint AS live,
          (SELECT COUNT(DISTINCT vid) FROM lb_touches
-          WHERE funnel_id = $1
-            AND ts >= date_trunc('day', NOW() AT TIME ZONE 'utc') AT TIME ZONE 'utc')::bigint
+          WHERE funnel_id = $1 AND ts >= $2)::bigint
            AS unique_today`,
-      [fid]
+      [fid, todayStart]
     );
     return r;
   }, null);
@@ -1696,9 +1729,10 @@ export async function getFunnelLive({ funnelId } = {}, { query = analyticsQuery 
     live: row ? int(row.live) : null,
     unique_today: row ? int(row.unique_today) : null,
     as_of: new Date().toISOString(),
+    timezone: REPORT_TZ,
     basis: {
       live: 'distinct lb_touches.vid, last 5 minutes',
-      unique_today: 'distinct lb_touches.vid since UTC midnight',
+      unique_today: 'distinct lb_touches.vid since report-tz midnight',
     },
     warnings,
     degraded: warnings.length > 0,
