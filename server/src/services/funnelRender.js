@@ -92,13 +92,13 @@ const PLACEHOLDER_TYPES = new Set([
   'stripe_checkout',
   'nmi_checkout',
   'express_checkout',
-  'product',
-  'order_bump',
   'checkout_template',
-  'shipping_method',
   'form',
   'quiz_embed',
 ]);
+// EDITOR-PARITY slice: `product`, `order_bump` and `shipping_method` moved out
+// of the placeholder set — they now have real (VISUAL-only) cases in the
+// switch below. They carry NO charging logic; see each case's comment.
 
 // Commerce block types that require the checkout runtime + page context
 // (funnel_id / page_id) to be emitted into the document. Presence of any of
@@ -604,8 +604,179 @@ function renderBlockInner(block) {
         `</section>`
       );
     }
+    // ── EDITOR-PARITY slice: new block renderers (additive). All three are
+    //    VISUAL blocks: `price` values are DISPLAY STRINGS exactly like
+    //    storefront_grid — no money math happens here and nothing below can
+    //    feed the charge. Real amounts stay server-side on the whop money path.
+    case 'order_bump': {
+      // Bordered offer card: checkbox + label + price from props. The checkbox
+      // is display-only for now — wiring a bump into the charge is a later
+      // slice; this block deliberately carries NO charging logic.
+      const label = esc(
+        String(p.label || 'Yes! Add this one-time offer to my order')
+      );
+      const price =
+        p.price != null && String(p.price).trim()
+          ? `<span class='lb-bump-price' style='font-weight:700;color:#111827;white-space:nowrap'>${esc(String(p.price))}</span>`
+          : '';
+      const bumpDesc =
+        p.description != null && String(p.description).trim()
+          ? `<p class='lb-bump-desc' style='margin:8px 0 0 28px;color:#6b7280;font-size:0.9rem'>${esc(String(p.description))}</p>`
+          : '';
+      const checked = p.checked === true ? " checked='checked'" : '';
+      return (
+        `<div class='lb-order-bump' style='border:2px dashed #f59e0b;border-radius:12px;background:#fffbeb;padding:16px 18px;margin:16px 0'>` +
+        `<label style='display:flex;align-items:flex-start;gap:10px;cursor:pointer'>` +
+        `<input type='checkbox' class='lb-bump-check'${checked} style='margin-top:3px;width:18px;height:18px;accent-color:#f59e0b'/>` +
+        `<span class='lb-bump-label' data-el='label' style='flex:1;font-weight:600;color:#111827'>${label}</span>` +
+        price +
+        `</label>` +
+        bumpDesc +
+        `</div>`
+      );
+    }
+    case 'shipping_method': {
+      // Radio list from props.options [{label, price}]. Visual selection only —
+      // shipping amounts are display strings; totals stay server-side.
+      const opts = (Array.isArray(p.options) ? p.options : []).filter(
+        isPlainObject
+      );
+      if (!opts.length) return `<!-- shipping_method: no options configured -->`;
+      // Per-block radio group so two shipping blocks never cross-select.
+      const group = esc(String((block || {}).id || 'ship'));
+      const shipRows = opts
+        .map(
+          (o, i) =>
+            `<label class='lb-ship-opt' style='display:flex;align-items:center;gap:10px;padding:12px 14px;border:1px solid #e5e7eb;border-radius:10px;margin:8px 0;cursor:pointer;background:#fff'>` +
+            `<input type='radio' name='lb-ship-${group}'${i === 0 ? " checked='checked'" : ''}/>` +
+            `<span data-el='label' style='flex:1;color:#374151'>${esc(String(o.label ?? ''))}</span>` +
+            `<span class='lb-ship-price' style='font-weight:600;color:#111827'>${esc(String(o.price ?? ''))}</span>` +
+            `</label>`
+        )
+        .join('');
+      const shipTitle =
+        p.title != null && String(p.title).trim()
+          ? `<div class='lb-ship-title' style='font-weight:700;color:#111827;margin-bottom:4px'>${esc(String(p.title))}</div>`
+          : '';
+      return `<div class='lb-shipping-method' style='margin:16px 0'>${shipTitle}${shipRows}</div>`;
+    }
+    case 'product': {
+      // Static product card: image + name + description + display price + CTA.
+      const prodImg = p.image
+        ? `<img class='lb-productblk-img' src='${safeHref(p.image)}' alt='' loading='lazy' style='width:100%;max-width:320px;border-radius:10px;display:block;margin:0 auto 12px'/>`
+        : '';
+      const prodName = esc(String(p.name || p.title || 'Product'));
+      const prodDesc =
+        p.description != null && String(p.description).trim()
+          ? `<p class='lb-productblk-desc' style='color:#6b7280;margin:4px 0 0'>${esc(String(p.description))}</p>`
+          : '';
+      const prodPrice =
+        p.price != null && String(p.price).trim()
+          ? `<div class='lb-productblk-price' style='font-weight:700;font-size:1.15rem;color:#111827;margin-top:8px'>${esc(String(p.price))}</div>`
+          : '';
+      const prodCta =
+        p.cta_text != null && String(p.cta_text).trim()
+          ? `<div style='margin-top:12px'><a class='lb-btn' data-el='cta' href='${safeHref(p.href || '#')}'>${esc(String(p.cta_text))}</a></div>`
+          : '';
+      return (
+        `<article class='lb-productblk' style='border:1px solid #e5e7eb;border-radius:12px;background:#fff;padding:20px;margin:16px 0;text-align:center;max-width:460px;margin-left:auto;margin-right:auto'>` +
+        prodImg +
+        `<h3 data-el='item_name' style='margin:0'>${prodName}</h3>` +
+        prodDesc +
+        prodPrice +
+        prodCta +
+        `</article>`
+      );
+    }
     default:
       return `<!-- unknown block type: ${esc(String(t))} -->`;
+  }
+}
+
+// ── EDITOR-PARITY slice (additive): generic per-block style application. ────
+// Blocks may carry props.style — written by the builder's Style/Advanced
+// inspector tabs — and renderBlock() annotates the existing .lb-blk wrapper
+// with a sanitized inline style + optional classes. Same posture as the
+// 'section' case's cssVal: style-attribute values get HTML-DECODED by the
+// browser before the CSS parser runs, so quotes/braces/angle brackets are
+// stripped OUTRIGHT (these are lengths/colors/font names, which never
+// legitimately contain them). Numeric channels are parsed + clamped. A style
+// object that yields nothing leaves the wrapper byte-identical to before.
+const BLOCK_STYLE_LEN_KEYS = [
+  ['width', 'width'],
+  ['height', 'height'],
+  ['min_width', 'min-width'],
+  ['min_height', 'min-height'],
+  ['max_width', 'max-width'],
+  ['max_height', 'max-height'],
+  ['margin', 'margin'],
+  ['padding', 'padding'],
+];
+
+export function blockStyleWrap(rawProps) {
+  const none = { styleAttr: '', classes: '' };
+  try {
+    const p = isPlainObject(rawProps) ? rawProps : {};
+    const s = isPlainObject(p.style) ? p.style : null;
+    if (!s) return none;
+    // Metachar strip (NOT escape) — see the 'section' case comment.
+    const cssv = (v, max) =>
+      String(v).slice(0, max).replace(/["'`;{}<>\\]/g, '').trim();
+    const decls = [];
+    for (const [key, cssName] of BLOCK_STYLE_LEN_KEYS) {
+      if (s[key] != null && String(s[key]).trim() !== '') {
+        const v = cssv(s[key], 60);
+        if (v) decls.push(`${cssName}:${v}`);
+      }
+    }
+    const z = parseInt(s.z_index, 10);
+    if (Number.isFinite(z)) {
+      // position:relative so z-index actually participates in stacking.
+      decls.push(`position:relative;z-index:${Math.max(-9999, Math.min(z, 9999))}`);
+    }
+    if (s.bg != null && String(s.bg).trim() !== '') {
+      const v = cssv(s.bg, 300);
+      if (v) decls.push(`background:${v}`);
+    }
+    if (s.text_color != null && String(s.text_color).trim() !== '') {
+      const v = cssv(s.text_color, 60);
+      if (v) decls.push(`color:${v}`);
+    }
+    if (s.font_family != null && String(s.font_family).trim() !== '') {
+      const v = cssv(s.font_family, 120);
+      if (v) decls.push(`font-family:${v}`);
+    }
+    if (s.font_weight != null && String(s.font_weight).trim() !== '') {
+      const v = cssv(s.font_weight, 12);
+      if (v) decls.push(`font-weight:${v}`);
+    }
+    const fs = Number(s.font_size);
+    if (Number.isFinite(fs)) decls.push(`font-size:${Math.max(4, Math.min(fs, 300))}px`);
+    const lh = Number(s.line_height);
+    if (Number.isFinite(lh)) decls.push(`line-height:${Math.max(0.1, Math.min(lh, 10))}`);
+    const ls = Number(s.letter_spacing);
+    if (Number.isFinite(ls)) decls.push(`letter-spacing:${Math.max(-50, Math.min(ls, 100))}px`);
+
+    const classes = [];
+    if (s.css_class != null && String(s.css_class).trim() !== '') {
+      // Class names only — [A-Za-z0-9_-] plus spaces between multiple classes.
+      const cls = String(s.css_class)
+        .replace(/[^A-Za-z0-9_\- ]/g, '')
+        .trim()
+        .slice(0, 120);
+      if (cls) classes.push(cls);
+    }
+    if (s.hide_desktop === true) classes.push('lb-hide-desktop');
+    if (s.hide_mobile === true) classes.push('lb-hide-mobile');
+
+    return {
+      styleAttr: decls.length ? ` style='${decls.join(';')}'` : '',
+      classes: classes.length ? ` ${classes.join(' ')}` : '',
+    };
+  } catch {
+    // Fail open, like every other block path — a hostile style object must
+    // degrade to "no styling", never break the serve.
+    return none;
   }
 }
 
@@ -630,9 +801,13 @@ export function renderBlock(block) {
     String((isPlainObject(rawProps) ? rawProps : {}).block_name || '')
   ).trim();
   const nameAttr = bname ? ` data-blk-name='${bname}'` : '';
+  // EDITOR-PARITY slice (additive): sanitized props.style → wrapper annotation.
+  // blockStyleWrap() returns empty strings when props.style is absent, so
+  // pages without styled blocks stay byte-identical.
+  const sw = blockStyleWrap(rawProps);
   if (!bid) return inner;
   return (
-    `<div class='lb-blk' data-blk-id='${bid}' data-blk-type='${btype}'${nameAttr}>` +
+    `<div class='lb-blk${sw.classes}' data-blk-id='${bid}' data-blk-type='${btype}'${nameAttr}${sw.styleAttr}>` +
     `${inner}</div>`
   );
 }
@@ -727,6 +902,9 @@ img { max-width: 100%; height: auto; }
 .lb-whop-mount { min-height: 40px; margin: 8px 0 16px; }
 .lb-checkout-error { color: #b91c1c; background: #fef2f2; border: 1px solid #fecaca; border-radius: 8px; padding: 10px 12px; margin: 8px 0; font-size: 0.95rem; }
 .lb-checkout-fallback { display: block; width: 100%; text-align: center; border: 0; cursor: pointer; font-size: 1rem; box-sizing: border-box; }
+/* EDITOR-PARITY slice (appended): per-block visibility toggles (props.style) */
+@media (min-width: 768px) { .lb-hide-desktop { display: none !important; } }
+@media (max-width: 767px) { .lb-hide-mobile { display: none !important; } }
 `;
 
 // ---------------------------------------------------------------------------

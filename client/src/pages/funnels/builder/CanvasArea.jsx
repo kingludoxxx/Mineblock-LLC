@@ -3,9 +3,10 @@
 //   click-to-select · drag-to-reorder · drop-from-palette · hover quick-insert
 //   between blocks · double-click inline text editing (heading/text/button).
 import { useEffect, useRef, useState } from 'react';
-import { Plus, GripVertical } from 'lucide-react';
+import { Plus, GripVertical, Eye, EyeOff } from 'lucide-react';
 import BlockPreview from './BlockPreview';
 import { BLOCK_DEFS, blockLabel } from './blockRegistry';
+import { styleToCanvas, hiddenOnDevice } from './styleUtils';
 import { DRAG_MIME } from './LeftPanel';
 
 const QUICK_TYPES = ['heading', 'text', 'button', 'image', 'divider', 'spacer', 'section', 'custom_html'];
@@ -82,6 +83,8 @@ export default function CanvasArea({
   onMove,
   onProp,
   showOutlines,
+  onToggleOutlines,
+  device,
   deviceWidth,
   atLimit,
   pageCss,
@@ -126,10 +129,27 @@ export default function CanvasArea({
 
   return (
     <div className="flex-1 min-w-0 overflow-y-auto bg-bg-main relative" onDragOver={handleDragOver} onDrop={handleDrop} onDragLeave={() => setDropIndex(null)}>
-      <div className="py-8 px-4 flex justify-center min-h-full">
+      <div className="py-4 px-4 flex flex-col items-center min-h-full">
+        {/* Canvas chips — outlines toggle + block/device counter */}
+        <div className="flex items-center gap-2 mb-3 self-center">
+          <button
+            onClick={onToggleOutlines}
+            className={`flex items-center gap-1.5 px-2.5 py-1 rounded-full border text-[11px] font-medium cursor-pointer transition-colors
+              ${showOutlines
+                ? 'border-sky-400/60 text-sky-500 bg-sky-400/10'
+                : 'border-border-default text-text-faint hover:text-text-primary'}`}
+            title="Toggle dashed block outlines on the canvas"
+          >
+            {showOutlines ? <Eye className="w-3 h-3" /> : <EyeOff className="w-3 h-3" />}
+            Outlines: {showOutlines ? 'On' : 'Off'}
+          </button>
+          <span className="px-2.5 py-1 rounded-full border border-border-default text-[11px] text-text-faint font-medium">
+            {blocks.length} block{blocks.length === 1 ? '' : 's'} · {device}
+          </span>
+        </div>
         {/* Light buyer-theme page surface */}
         <div
-          className="transition-all duration-200 shadow-2xl rounded-lg overflow-visible self-start"
+          className="transition-all duration-200 shadow-2xl rounded-lg overflow-visible self-center"
           style={{ width: deviceWidth, maxWidth: '100%', background: '#ffffff', minHeight: 480 }}
         >
           <div ref={listRef} className="p-5" onClick={() => onSelect(null)}>
@@ -145,6 +165,9 @@ export default function CanvasArea({
               const def = BLOCK_DEFS[b.type];
               const selected = selectedId === b.id;
               const inlineProp = def?.inlineEditProp;
+              // Style-inspector values (props.style) mirrored on the canvas.
+              const blkStyle = styleToCanvas(b.props);
+              const hiddenHere = hiddenOnDevice(b.props, device);
               return (
                 <div key={b.id}>
                   <QuickInsert index={i} onInsert={onInsertAt} disabled={atLimit} />
@@ -172,6 +195,8 @@ export default function CanvasArea({
                       outlineOffset: 2,
                       margin: '6px 0',
                       cursor: 'pointer',
+                      ...(hiddenHere ? { opacity: 0.35 } : null),
+                      ...(blkStyle || null),
                     }}
                   >
                     {/* Hover/selected block chrome */}
@@ -182,6 +207,7 @@ export default function CanvasArea({
                     >
                       <GripVertical className="w-2.5 h-2.5 cursor-grab" />
                       {blockLabel(b)}
+                      {hiddenHere && <span className="normal-case tracking-normal">· hidden on {device}</span>}
                     </div>
                     {editingId === b.id && inlineProp ? (
                       <InlineEditor

@@ -10,13 +10,13 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import {
   ArrowLeft, ExternalLink, Check, Loader2, Undo2, Redo2,
-  Smartphone, Tablet, Monitor, UploadCloud, Eye, EyeOff, AlertCircle, X,
+  Smartphone, Tablet, Monitor, UploadCloud, AlertCircle, X, Bot,
 } from 'lucide-react';
 import api from '../../../services/api';
 import Button from '../../../components/ui/Button';
 import { typeMeta } from '../../../components/funnels/pageTypes';
 import useHistory from './useHistory';
-import { createBlock, withIds, newBlockId, BLOCKS_MAX_COUNT } from './blockRegistry';
+import { createBlock, withIds, newBlockId, isInsertable, BLOCKS_MAX_COUNT } from './blockRegistry';
 import LeftPanel from './LeftPanel';
 import RightPanel from './RightPanel';
 import CanvasArea from './CanvasArea';
@@ -139,6 +139,7 @@ export default function PageBuilderPage() {
   const atLimit = blocks.length >= BLOCKS_MAX_COUNT;
 
   const insertAt = useCallback((index, type) => {
+    if (!isInsertable(type)) return; // soon-entries can never be inserted
     if (blocksRef.current.length >= BLOCKS_MAX_COUNT) return;
     const blk = createBlock(type);
     commit((prev) => {
@@ -346,15 +347,6 @@ export default function PageBuilderPage() {
           })}
         </div>
 
-        {/* Outlines toggle */}
-        <button
-          onClick={() => setShowOutlines((o) => !o)}
-          title={showOutlines ? 'Hide block outlines' : 'Show block outlines'}
-          className="p-1.5 rounded-md text-text-muted hover:text-text-primary hover:bg-bg-hover cursor-pointer"
-        >
-          {showOutlines ? <Eye className="w-4 h-4" /> : <EyeOff className="w-4 h-4" />}
-        </button>
-
         {/* Undo / redo */}
         <div className="flex gap-0.5">
           <button
@@ -385,6 +377,16 @@ export default function PageBuilderPage() {
           {saveChip.icon && <saveChip.icon className={`w-3.5 h-3.5 ${saveChip.spin ? 'animate-spin' : ''}`} />}
           {saveChip.text}
         </span>
+
+        {/* AI Developer — visible, disabled, coming soon. Do not wire. */}
+        <button
+          disabled
+          title="soon"
+          className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold
+            bg-emerald-600/80 text-white opacity-60 cursor-not-allowed"
+        >
+          <Bot className="w-3.5 h-3.5" /> AI Developer
+        </button>
 
         <Button variant="secondary" size="sm" onClick={openPreview}>
           <ExternalLink className="w-3.5 h-3.5" /> Preview
@@ -426,6 +428,8 @@ export default function PageBuilderPage() {
               onMove={moveBlock}
               onProp={updateProp}
               showOutlines={showOutlines}
+              onToggleOutlines={() => setShowOutlines((o) => !o)}
+              device={device}
               deviceWidth={deviceWidth}
               atLimit={atLimit}
               pageCss={code.custom_css}
@@ -434,6 +438,7 @@ export default function PageBuilderPage() {
               block={selectedBlock}
               meta={meta}
               funnel={funnel}
+              blocksCount={blocks.length}
               onMeta={onMeta}
               onProp={(key, value) => selectedBlock && updateProp(selectedBlock.id, key, value)}
               onDelete={() => selectedBlock && deleteBlock(selectedBlock.id)}
