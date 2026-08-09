@@ -3132,3 +3132,63 @@ is verified by build, lint, 39 executable assertions over the real client module
 and the B7 structural check against the shipped JSX.
 STATUS: COMPLETE
 ---
+
+---
+TIMESTAMP: 2026-08-10 03:40
+TASK: Split-test statistics — final gate (GATING 1/2 + 2 small + 1 deferred)
+BUILT: GATING 1: both headline builders (splitStats' winner headline and
+analyticsStats.buildVerdict's) independently wrote (conf*100).toFixed(1), and
+(0.9999*100).toFixed(1) is the string "100.0" — so the largest string on the
+panel claimed flat certainty directly above cells reading ">99.99%", in both the
+lifetime panel and the windowed banner of the same modal. Replaced with one
+shared formatConfidencePct in analyticsStats (the module both already import),
+which is now the only place a confidence becomes a string. The rule is stated in
+terms of the DISPLAYED value — whenever it would round to 100 at the requested
+precision, the bound renders — because a naive >=1 check misses 0.9999 at 1dp,
+the exact value both caps produce. GATING 2: the day-by-day query keyed
+exposures to the exposure day and money to the credit row's own day; those
+normally agree but diverge on an explicit day override, a retry re-credit, a
+void's own date or a rebuilt rollup, splitting a cohort into a false measured
+zero on one day and a hidden dash on the next. The money CTE now joins back to
+the session's exposure row for both day and arm (1:1 by rule 1). SMALL: the
+not_ready body is per-arm accurate instead of asserting both floors against
+every thin arm; Bonferroni narration explains the corrected bar, and narrates
+the transition when a caller supplies previousComparisons. DEFERRED: the
+two-denominators residual documented in-code at the point the second denominator
+is produced, with where the fix belongs (the windowed payload, analytics lane).
+TESTED: statistics.mjs 398/398 (362 before this round, +36). P16 drives BOTH
+server-side builders to the capped value and asserts the rendered string, with
+positive controls on each (an ordinary winner at 97.1% must still print a
+numeric confidence — without that the assertions would pass on a builder that
+had stopped printing confidence at all). P17 asserts arm a is not told to get
+exposures and arm b is not told to get orders, that 3 arms state the corrected
+bar, that 2 arms invent no sentence, and that supplied history narrates the
+tightening. C12 is the reviewer's fixture: two arms with identical lifetime
+figures differing only in credit-day stamp; it asserts the lag is genuinely
+present before asserting one day cell on the exposure day with byte-identical
+shapes. Regressions all identical to baseline: verifySplitTesting 48/48,
+verifySplitUiGuards 25/25, split-delivery 33/33, verifyFunnelAnalytics 212
+passed/1 failed (the same pre-existing DST failure, unchanged by the
+analyticsStats edit). vite build exit 0; eslint 2 pre-existing errors, 0 added,
+0 warnings.
+OUTPUT: 398/398; 48/48; 25/25; 33/33; 212+1; VITE_EXIT=0. Two more bugs caught
+BY EXECUTION: (a) formatConfidencePct(null) returned "0.0%" because Number(null)
+is 0 and finite — a withheld confidence would have rendered as a confident zero,
+the null-vs-0 confusion reintroduced inside the formatter written to fix a
+different honesty bug; (b) two of my own new assertions were arithmetically
+wrong (a positive-control fixture that was not actually a winner, and
+1000/50 asserted as 2.00 rather than 20.00) — the code was right both times.
+DECISIONS: (1) The shared formatter lives in analyticsStats rather than
+splitStats because splitStats already imports from it and the reverse would
+invert the dependency. (2) The display rule is expressed on the FORMATTED value,
+not the raw one, so it cannot be defeated by a change of precision. (3) The FULL
+OUTER JOIN is kept in the daily query even though the cohort key makes the money
+side unable to invent a day: a credit whose exposure row was lost must surface
+as a visible anomaly rather than be silently dropped by an inner join.
+(4) Bonferroni narration takes two forms because the module is pure and has no
+memory; with one comparison no sentence is invented at all. (5) The
+two-denominators reconciliation was NOT built — it joins two lanes' data and
+belongs on the analytics-lane payload; CLAUDE.md section 5 says coordinate
+rather than cross, so it is documented in-code instead.
+STATUS: COMPLETE
+---
