@@ -30,6 +30,7 @@ import splitTestsRoutes from './splitTests.js';
 import trackingAdminRoutes from './trackingAdmin.js';
 import domainHubRoutes from './domainHub.js';
 import funnelAnalyticsRoutes from './funnelAnalytics.js';
+import liveViewRoutes from './liveView.js';
 
 const mountRoutes = (app) => {
   app.use('/api/v1/users', userRoutes);
@@ -67,6 +68,7 @@ const mountRoutes = (app) => {
   // server-side statement_timeout and no circuit-breaker participation, so a
   // slow report can never starve or trip the money path's shared pool.
   app.use('/api/v1/funnel-analytics', funnelAnalyticsRoutes);
+  app.use('/api/v1/live', liveViewRoutes); // LIVE-VIEW LANE: single additive mount (SSE + snapshot, isolated analytics pool)
 };
 
 export default mountRoutes;
