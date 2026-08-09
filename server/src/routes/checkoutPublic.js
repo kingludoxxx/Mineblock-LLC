@@ -583,9 +583,9 @@ router.post('/whop/create-session', async (req, res) => {
     }
     // Guarded on 'processing' — see the Stripe mint above.
     await pgQuery(
-      `UPDATE co_sessions SET gateway = 'whop', gateway_session_id = $2, updated_at = NOW()
+      `UPDATE co_sessions SET gateway = 'whop', gateway_session_id = $2, gateway_plan_id = $3, updated_at = NOW()
        WHERE id = $1 AND status = 'processing'`,
-      [session.id, result.session_id]
+      [session.id, result.session_id, result.plan_id || null]
     );
     return res.json({
       success: true,
@@ -1154,17 +1154,44 @@ router.post('/session/:id/discount', async (req, res) => {
       amount = v.amount;
     }
     const total = round2(Math.max(0, subtotal - amount) + Number(s.shipping) + Number(s.tax));
+    // Whop cannot charge below $1 — refuse a code that would, with a clear
+    // message, rather than strand an unchargeable session.
+    if (code && total < 1) {
+      return res.status(422).json({ success: false, error: { code: 'code_total_too_low' } });
+    }
     await pgQuery(
       `UPDATE co_sessions
          SET discount_code = $2, discount_amount = $3, total = $4, updated_at = NOW()
        WHERE id = $1 AND status = 'processing'`,
       [id, code, amount, total]
     );
+    // IN-PLACE price update on the live payment session (verified: PATCH
+    // /plans/:id changes what the already-loaded frame charges). Success means
+    // the client must NOT rebuild the frame — the typed card survives. Any
+    // failure falls back to the re-mint path (frame rebuild) and says so.
+    let frameUpdate = 'remint';
+    try {
+      const [g] = await pgQuery(
+        `SELECT funnel_id, gateway, gateway_plan_id FROM co_sessions WHERE id = $1`, [id]
+      );
+      if (g && g.gateway === 'whop' && g.gateway_plan_id) {
+        const { resolveCredential } = await import('../services/gatewayConfigs.js');
+        const whopGw2 = await import('../services/gateways/whop.js');
+        const up = await whopGw2.updatePlanPrice(
+          { api_key: await resolveCredential(g.funnel_id || '', 'whop', 'api_key') },
+          { planId: g.gateway_plan_id, amount: total }
+        );
+        if (up.ok) frameUpdate = 'in_place';
+      }
+    } catch (err) {
+      console.error('[checkout] in-place plan update failed (fallback to remint):', err.message);
+    }
     return res.json({
       success: true,
       data: {
         discount_code: code,
         discount_amount: amount,
+        frame_update: frameUpdate,
         totals: { subtotal, shipping: Number(s.shipping), tax: Number(s.tax), discount: amount, total },
       },
     });

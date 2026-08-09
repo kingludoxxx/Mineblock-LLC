@@ -1670,7 +1670,10 @@ const CKT_TEMPLATE_JS = `(function(){
       if(d.discount_code){msg2('Code '+d.discount_code+' applied - you saved '+money2(d.discount_amount),false);}
       else{msg2('Code removed.',false);}
       updateSummary2(d.totals);
-      remintFrame2();
+      /* 'in_place' = the server already changed what the EXISTING frame will
+         charge (plan price PATCHed) - the frame, and the card typed into it,
+         stay untouched. Only a fallback 'remint' rebuilds the frame. */
+      if(d.frame_update!=='in_place'){remintFrame2();}
     })
     .catch(function(){applyBtn.disabled=false;applyBtn.textContent=prev;msg2('Could not check that code - try again.',true);});
   }

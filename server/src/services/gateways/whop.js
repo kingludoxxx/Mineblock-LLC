@@ -136,6 +136,25 @@ export async function createCheckoutSession(creds, {
 }
 
 /**
+ * Update the price of an existing (hidden, one-time) plan IN PLACE — verified
+ * live: PATCH /plans/:id {initial_price} → 200 and the already-loaded embed
+ * charges the new amount at submit. This is what lets a discount code change
+ * the total WITHOUT re-creating the payment frame (which would erase the card
+ * the buyer already typed).
+ */
+export async function updatePlanPrice(creds, { planId, amount }) {
+  const pid = String(planId || '').trim();
+  if (!pid) return { ok: false, error: 'plan_required' };
+  if (amount == null || Number(amount) < 1.0) return { ok: false, error: 'amount_below_minimum' };
+  if (!creds?.api_key) return { ok: false, error: 'not_configured' };
+  const res = await whopFetch(creds.api_key, 'PATCH', `/plans/${encodeURIComponent(pid)}`, {
+    body: { initial_price: Number(amount) }, sandbox: creds.sandbox,
+  });
+  if (res.ok) return { ok: true, price: res.json?.initial_price };
+  return { ok: false, error: res.error || `http_${res.status}`, detail: (res.text || '').slice(0, 200) };
+}
+
+/**
  * Verify a Whop webhook per the Standard-Webhooks spec. Headers (lowercase):
  * webhook-id, webhook-timestamp, webhook-signature ("v1,<b64>" space-parts).
  * HMAC-SHA256 over "{id}.{ts}.{raw}"; two key derivations are tried because
