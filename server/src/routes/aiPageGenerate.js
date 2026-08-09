@@ -11,8 +11,15 @@
 // TWO-PHASE generation against the Anthropic API (@anthropic-ai/sdk):
 //   1. ARCHITECTURE — a forced tool call returns {page_title, sections[]}.
 //   2. SECTIONS — one request per section returns self-contained HTML
-//      (inline styles allowed, NO <script> — any that appear are stripped
-//      server-side with the same posture as pageClone's cleaner).
+//      (inline styles allowed), sanitized server-side BEFORE it is sent.
+//
+// SANITIZATION IS STRICTER THAN pageClone's cleaner — deliberately. Cloned
+// pages are operator-pasted; generated pages are model output steerable via
+// a free-text brief, and /page-clone/create + funnelRender ship props.html
+// to the PUBLIC page verbatim. So sanitizeGeneratedHtml() removes script/
+// iframe/object/embed/base/form, strips every on* handler attribute, and
+// neutralizes javascript:/data: URLs in href/src/srcset/action/style —
+// while preserving the lb-ai-image placeholder contract.
 //
 // Images are NEVER generated here. Where a section needs one, the model
 // emits the placeholder contract
@@ -51,28 +58,174 @@ const RL_MAX = 10;
 const RL_WINDOW_SEC = 600;
 
 // ---------------------------------------------------------------------------
-// Script stripping — same posture as pageClone's cleanHtml (steps 2): whole
-// <script>…</script> blocks, stray self-closing opens, and (belt) any bare
-// unclosed <script …> open tag. Exported for the harness.
+// sanitizeGeneratedHtml — linear quote-aware scanner (same tag-walking
+// approach as the client tokenizers), STRICTER than pageClone's cleaner:
+//   - <script>/<iframe>/<object> removed WITH their content; <embed>/<base>
+//     tags removed; <form> tags unwrapped (open/close dropped, children kept
+//     — the submit surface and its action go away, visible copy stays)
+//   - every on* attribute stripped (any case, any quoting, `onerror =` too)
+//   - javascript:/vbscript:/unknown-scheme URLs dropped from href/src/srcset/
+//     action/formaction/poster/xlink:href (entity + control-char tricks
+//     decoded first); data: allowed ONLY as data:image/* and ONLY in
+//     src/srcset/poster/data-src
+//   - url(javascript:…), url(data:non-image…) and expression() neutralized
+//     inside <style> bodies and style="" attributes
+// The lb-ai-image contract (class + data-ai-image-prompt + data-aspect)
+// passes through untouched. Exported for the harness.
 // ---------------------------------------------------------------------------
-export function stripScripts(html) {
-  let out = String(html);
+const REMOVE_WITH_CONTENT = new Set(['script', 'iframe', 'object']);
+const REMOVE_TAG_ONLY = new Set(['embed', 'base', 'form']); // form = unwrap
+const URL_ATTRS = new Set([
+  'href', 'src', 'action', 'formaction', 'poster', 'xlink:href', 'data-href', 'data-src',
+]);
+const DATA_IMAGE_OK = new Set(['src', 'srcset', 'poster', 'data-src']);
+
+// Find the '>' that ends a tag starting at `start`, honouring quoted values.
+function findTagEnd(src, start) {
+  let quote = null;
+  for (let i = start; i < src.length; i += 1) {
+    const c = src[i];
+    if (quote) {
+      if (c === quote) quote = null;
+    } else if (c === '"' || c === "'") {
+      quote = c;
+    } else if (c === '>') {
+      return i;
+    }
+  }
+  return -1;
+}
+
+// Decode the entity/control-char tricks browsers forgive before scheme checks
+// (`jav&#x61;script:`, `java\tscript:`, `&Tab;` …).
+const decodeForSchemeCheck = (value) =>
+  String(value)
+    .replace(/&#x([0-9a-f]+);?/gi, (_, h) => {
+      try { return String.fromCodePoint(parseInt(h, 16)); } catch { return ''; }
+    })
+    .replace(/&#(\d+);?/g, (_, d) => {
+      try { return String.fromCodePoint(Number(d)); } catch { return ''; }
+    })
+    .replace(/&tab;/gi, '\t')
+    .replace(/&newline;/gi, '\n')
+    .replace(/&colon;/gi, ':')
+    .replace(/&amp;/gi, '&')
+    // eslint-disable-next-line no-control-regex
+    .replace(/[\u0000-\u0020]+/g, '');
+
+function isSafeUrl(value, attrLower) {
+  const cleaned = decodeForSchemeCheck(value);
+  const m = cleaned.match(/^([a-zA-Z][a-zA-Z0-9+.-]*):/);
+  if (!m) return true; // relative path, fragment, protocol-relative
+  const scheme = m[1].toLowerCase();
+  if (scheme === 'data') {
+    return DATA_IMAGE_OK.has(attrLower) && /^data:image\//i.test(cleaned);
+  }
+  return scheme === 'http' || scheme === 'https' || scheme === 'mailto' || scheme === 'tel';
+}
+
+// Neutralize the CSS-side vectors; layout CSS passes through untouched.
+export function sanitizeCss(css) {
+  return String(css)
+    .replace(/expression\s*\(/gi, 'blocked(')
+    .replace(/url\(\s*(['"]?)\s*(?:javascript|vbscript)[^)]*\)/gi, 'url()')
+    .replace(/url\(\s*(['"]?)\s*data:(?!image\/)[^)]*\)/gi, 'url()');
+}
+
+// Rebuild one open tag from its parsed attributes, dropping the unsafe ones.
+function sanitizeTag(raw) {
+  const head = raw.match(/^<[a-zA-Z][a-zA-Z0-9:-]*/)[0];
+  let rest = raw.slice(head.length);
+  const tail = rest.match(/\/?\s*>$/)?.[0] ?? '>';
+  rest = rest.slice(0, rest.length - tail.length);
+
+  let out = head;
+  const attrRe = /([^\s=>/'"]+)(\s*=\s*("[^"]*"|'[^']*'|[^\s>]*))?/g;
+  let a;
+  while ((a = attrRe.exec(rest))) {
+    const name = a[1];
+    const lower = name.toLowerCase();
+    if (lower.startsWith('on')) continue; // every handler attribute
+    if (a[2] === undefined) { out += ` ${name}`; continue; } // boolean attr
+    const rawVal = a[3] ?? '';
+    const quote = rawVal[0] === '"' || rawVal[0] === "'" ? rawVal[0] : '';
+    let val = quote ? rawVal.slice(1, -1) : rawVal;
+
+    if (lower === 'srcset') {
+      const kept = val
+        .split(',')
+        .map((e) => e.trim())
+        .filter(Boolean)
+        .filter((entry) => isSafeUrl(entry.split(/\s+/)[0], 'srcset'));
+      if (!kept.length) continue;
+      val = kept.join(', ');
+    } else if (URL_ATTRS.has(lower)) {
+      if (!isSafeUrl(val, lower)) continue;
+    } else if (lower === 'style') {
+      val = sanitizeCss(val);
+    }
+    out += quote
+      ? ` ${name}=${quote}${val}${quote}`
+      : ` ${name}="${val.replace(/"/g, '&quot;')}"`;
+  }
+  return out + tail;
+}
+
+export function sanitizeGeneratedHtml(html) {
+  const src = String(html);
+  let out = '';
   let removed = 0;
-  out = out.replace(/<script\b[^>]*>[\s\S]*?<\/script\s*>/gi, () => {
-    removed += 1;
-    return '';
-  });
-  out = out.replace(/<script\b[^>]*\/\s*>/gi, () => {
-    removed += 1;
-    return '';
-  });
-  // A truncated/unclosed <script …> open tag would swallow the rest of the
-  // document in a browser — drop the tag itself (and its orphan close).
-  out = out.replace(/<script\b[^>]*>/gi, () => {
-    removed += 1;
-    return '';
-  });
-  out = out.replace(/<\/script\s*>/gi, '');
+  let i = 0;
+  while (i < src.length) {
+    if (src[i] !== '<') {
+      const next = src.indexOf('<', i);
+      const stop = next === -1 ? src.length : next;
+      out += src.slice(i, stop);
+      i = stop;
+      continue;
+    }
+    if (src.startsWith('<!--', i)) {
+      const end = src.indexOf('-->', i + 4);
+      const stop = end === -1 ? src.length : end + 3;
+      out += src.slice(i, stop);
+      i = stop;
+      continue;
+    }
+    const end = findTagEnd(src, i);
+    if (end === -1) { out += src.slice(i); break; } // unterminated — inert text
+    const raw = src.slice(i, end + 1);
+    const m = raw.match(/^<(\/?)([a-zA-Z][a-zA-Z0-9:-]*)/);
+    if (!m) { out += raw; i = end + 1; continue; } // doctype / decl
+    const isClose = m[1] === '/';
+    const name = m[2].toLowerCase();
+    const selfClosed = /\/\s*>$/.test(raw);
+    i = end + 1;
+
+    if (REMOVE_WITH_CONTENT.has(name)) {
+      removed += 1;
+      if (!isClose && !selfClosed) {
+        const close = src.slice(i).match(new RegExp(`</${name}\\s*>`, 'i'));
+        i = close ? i + close.index + close[0].length : src.length;
+      }
+      continue;
+    }
+    if (REMOVE_TAG_ONLY.has(name)) { removed += 1; continue; } // unwrap
+    if (isClose) { out += raw; continue; }
+
+    out += sanitizeTag(raw);
+
+    if (name === 'style' && !selfClosed) {
+      const close = src.slice(i).match(/<\/style\s*>/i);
+      const body = close ? src.slice(i, i + close.index) : src.slice(i);
+      out += sanitizeCss(body);
+      if (close) {
+        out += close[0];
+        i += close.index + close[0].length;
+      } else {
+        i = src.length;
+      }
+    }
+  }
   return { html: out, removed };
 }
 
@@ -241,10 +394,35 @@ export async function generateHandler(req, res) {
     res.setHeader('X-Accel-Buffering', 'no');
     res.flushHeaders?.();
 
+    // Client disconnect aborts the in-flight Anthropic call too — no point
+    // finishing a build nobody is reading. NOTE: on a streaming response the
+    // reliable disconnect signal is `res` 'close' with writableEnded still
+    // false (`req` 'close' fires at message completion in modern Node, not
+    // on connection teardown).
     let aborted = false;
-    req.on('close', () => {
-      aborted = true;
-    });
+    const upstream = new AbortController();
+    const onGone = () => {
+      if (!res.writableEnded && !aborted) {
+        aborted = true;
+        upstream.abort();
+      }
+    };
+    res.on('close', onGone);
+    req.on('error', onGone);
+
+    // Per-request timeout on every model call (default 120s; env-overridable
+    // so the harness can exercise the timeout path); maxRetries 1 bounds a
+    // flaky upstream to two attempts instead of the SDK's default three. A
+    // hung call fails the phase with a clean error event instead of holding
+    // the stream open forever.
+    const CALL_TIMEOUT_MS =
+      Number(process.env.AI_GENERATE_CALL_TIMEOUT_MS) > 0
+        ? Number(process.env.AI_GENERATE_CALL_TIMEOUT_MS)
+        : 120_000;
+    const timeoutSecs = Math.round(CALL_TIMEOUT_MS / 1000);
+    const callOpts = { signal: upstream.signal, timeout: CALL_TIMEOUT_MS, maxRetries: 1 };
+    const isTimeout = (err) =>
+      err?.name === 'APIConnectionTimeoutError' || /timed?\s?out/i.test(err?.message || '');
 
     const send = (obj) => {
       if (!aborted && !res.writableEnded) res.write(`${JSON.stringify(obj)}\n`);
@@ -267,14 +445,19 @@ export async function generateHandler(req, res) {
         tools: [ARCHITECTURE_TOOL],
         tool_choice: { type: 'tool', name: 'emit_page_architecture' },
         messages: [{ role: 'user', content: archUserPrompt(brief, brand) }],
-      });
+      }, callOpts);
       const block = (msg.content || []).find(
         (b) => b.type === 'tool_use' && b.name === 'emit_page_architecture'
       );
       arch = block?.input;
     } catch (err) {
+      if (aborted) return undefined; // client hung up — nothing to report to
       console.error('[ai-generate] architecture call failed:', err?.message || err);
-      return fail('The model could not design the page architecture — try again.');
+      return fail(
+        isTimeout(err)
+          ? `The architecture phase timed out after ${timeoutSecs}s — try again.`
+          : 'The model could not design the page architecture — try again.'
+      );
     }
     if (!arch || !Array.isArray(arch.sections) || !arch.sections.length) {
       return fail('The model returned no page architecture — try a more specific brief.');
@@ -304,19 +487,22 @@ export async function generateHandler(req, res) {
           messages: [
             { role: 'user', content: sectionUserPrompt({ brief, brand, pageTitle, sections, index: i }) },
           ],
-        });
+        }, callOpts);
         raw = (msg.content || [])
           .filter((b) => b.type === 'text')
           .map((b) => b.text)
           .join('');
       } catch (err) {
+        if (aborted) return undefined; // client hung up — nothing to report to
         console.error(`[ai-generate] section ${i + 1} failed:`, err?.message || err);
         return fail(
-          `Section ${i + 1} ("${sections[i].name}") failed mid-build — the ${emitted} finished section${emitted === 1 ? '' : 's'} above are still usable.`
+          isTimeout(err)
+            ? `Section ${i + 1} ("${sections[i].name}") timed out after ${timeoutSecs}s — the ${emitted} finished section${emitted === 1 ? '' : 's'} above are still usable.`
+            : `Section ${i + 1} ("${sections[i].name}") failed mid-build — the ${emitted} finished section${emitted === 1 ? '' : 's'} above are still usable.`
         );
       }
 
-      const { html } = stripScripts(unfence(raw));
+      const { html } = sanitizeGeneratedHtml(unfence(raw));
       const trimmed = html.trim();
       if (!trimmed) {
         return fail(`Section ${i + 1} ("${sections[i].name}") came back empty — try again.`);

