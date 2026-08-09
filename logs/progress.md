@@ -2987,3 +2987,80 @@ stale-funnel guards already prevent the observable bug (wrong funnel's data
 painting) and aborting is an optimisation, not a correctness fix.
 STATUS: COMPLETE
 ---
+
+---
+TIMESTAMP: 2026-08-09 23:59
+TASK: AI Developer extras — parity with the reference tool (branch feat/ai-developer-extras)
+BUILT: Four extras on top of the AI Developer panel. (1) MODEL PICKER: the server
+already enforced an allowlist but did not expose it, so the panel hardcoded a
+copy; added GET /api/v1/ai-developer/models serving the list + default, and the
+panel now populates from it with the local list kept only as a fallback. (2)
+SCREENSHOTS: added a magic-number content-type sniff (PNG/JPEG/GIF/WEBP) that
+refuses a blob whose bytes contradict its declared media_type, since that string
+is relayed to Anthropic verbatim; caps moved to the brief's 4MB x 2. (3)
+ATTACHED-CONTEXT CHIPS: resolveAttachment derives the chip's type and excerpt
+from the page's REAL blocks so a spoofed `kind` cannot make the chip lie; the
+resolved value rides the system prompt, the done frame, the stored turn, and a
+per-message chip in the transcript; detaching is now reversible. (4) PERSISTED
+THREAD: new self-contained schema owner server/src/services/aiDeveloperSchema.js
+(ensureTables pattern) — table lb_ai_dev_chats, ONE ROW PER MESSAGE, bounded to
+the newest 50 by a prune in the same transaction as the insert; GET/DELETE
+/chat, both funnel-pinned; reads tolerate BOTH jsonb shapes. Image BYTES are
+never persisted, only a count.
+TESTED: Three new harnesses in server/tests/ai-developer/, all in-process.
+validation.mjs (130) covers the pure parts: allowlist membership, the sniffer,
+caps, resolveAttachment, thread bounding, both-shapes jsonb, and that nothing in
+the store path can carry image bytes. thread-routes.mjs (57) mounts the REAL
+router on embedded PG: round-trip, the 50-bound keeping the NEWEST 50, the
+cross-funnel 404 deleting NOTHING, archived-page 404, jsonb_typeof = object.
+chat-turn.mjs (44) drives a full SSE turn against a MOCK Anthropic server.
+EDGE CASES RUN (all pass): thread write throws mid-turn (table renamed away) —
+the turn still streams and still delivers its reply; thread read throws — clean
+500 that leaks no relation name, and the endpoint recovers with no wedged state;
+ANTHROPIC_API_KEY missing — clean 503; a refused model / mismatched image /
+off-page attachment costs ZERO Anthropic calls (the mock counts them); double
+DELETE returns 0 rather than erroring; null/empty/unstorable appends write
+nothing without throwing.
+OUTPUT: 130/130 + 57/57 + 44/44 = 231/231 new. Regressions all green:
+ai-ops-wiring 31/31, builder-model 181/181, page-versions 93/93, code-doc
+107/107, version-format 26/26, breakpoint-render 49/49, variant-search 94/94.
+vite build 0 errors (865ms, 2700 modules). eslint 0 errors 0 warnings on the
+panel and PageBuilderPage. Commits 20dcffd (server) + 21024ed (client), 6 files,
++1648/-49. None of funnelRender.js / checkoutPublic.js / funnels.js / app.js
+touched. git merge-tree against the ADVANCED main exits 0 — merges cleanly.
+DECISIONS:
+(1) DECISION MADE — image bytes are PASS-THROUGH ONLY, never persisted. The
+reference (lb_ai_developer_service._upload_images) uploads operator screenshots
+to object storage and stores their URLs; we store only image_count. The
+conservative choice: no new blob lifecycle, no retention question, no way for a
+stored thread to leak a screenshot. Cost: a rehydrated turn shows "N screenshots
+(not stored)" instead of thumbnails, which the panel says explicitly.
+(2) DECISION MADE — image caps set to the brief's 4MB x 2. Per-image ceiling is
+UP from 2MB (a loosening) but count is DOWN from 5, so the worst-case accepted
+payload FALLS from 10MB to 8MB. Flagged because raising any existing cap is a
+weakening in isolation.
+(3) DECISION MADE — ONE ROW PER MESSAGE rather than the reference's single doc
+with an embedded array. The bound becomes a DELETE in the insert's transaction,
+which removes the read-modify-write window where two concurrent turns each
+append to a stale copy and one is lost.
+(4) DECISION MADE — GET/DELETE /chat take page_id/funnel_id as QUERY params, not
+a body, so DELETE carries no body.
+(5) Not built: the reference's /chat/applied and /memory endpoints. Out of the
+brief's scope; noted rather than silently skipped.
+TWO DEFECTS FOUND BY EXECUTION, NOT REVIEW:
+(a) jsonb double-encoding. Under postgres.js, `$n::jsonb` on a JSON-text param
+sends the string ALREADY JSON-encoded, so the column held a jsonb STRING:
+jsonb_typeof answered 'string' and attachment->>'block_id' answered NULL — the
+chip would have silently lost its target on every read. Fixed to `$n::text::jsonb`
+(probed both forms directly: ::jsonb -> 'string', ::text::jsonb -> 'object').
+Worth recording: the FIRST harness run PASSED a byte-order comparison of the
+round-tripped attachment precisely BECAUSE a stored string round-trips
+byte-identically. Real jsonb reorders keys — the reorder is what exposed the bug,
+and the "passing" assertion had been masking it. The assertion is canonical now.
+(b) Model-allowlist coercion hole. The check ran on String(body.model), and
+String(['claude-fable-5']) is 'claude-fable-5' — as is the output of an object
+with a hand-written toString. Either would satisfy includes() and select a model
+the caller never legally named. Now requires typeof === 'string'. Coercion is
+not membership.
+STATUS: COMPLETE
+---
