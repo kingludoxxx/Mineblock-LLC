@@ -222,6 +222,78 @@ function CanvasInner() {
 
   useEffect(() => { loadSplits(); }, [loadSplits]);
 
+  // ---- Per-page metrics overlay + live counter ----------------------------
+  // The canvas overlay feed: GET /funnel-analytics/funnel/:id/overview with
+  // the DEFAULT window (the server defaults to the last 30 days). Each node
+  // gets { visitors, ctr, cvr } keyed by page_id; null renders "—", never 0
+  // (null = could not measure). Refreshed every 60s. Additive: if the
+  // endpoint is unreachable the canvas still renders every page.
+  const [pageMetrics, setPageMetrics] = useState({}); // page_id -> {visitors, ctr, cvr}
+  const [liveStats, setLiveStats] = useState(null); // {live, unique_today} | null
+
+  // STALE-RESPONSE GUARD: navigating funnel A → funnel B can leave A's fetch
+  // in flight; without a check its late response would overwrite B's numbers
+  // with A's. Capture the funnel id at request time and drop any response
+  // whose id no longer matches the mounted one.
+  const metricsIdRef = useRef(id);
+  useEffect(() => {
+    metricsIdRef.current = id;
+  }, [id]);
+
+  const loadMetrics = useCallback(async () => {
+    const fid = id;
+    try {
+      const res = await api.get(`/funnel-analytics/funnel/${fid}/overview`);
+      if (metricsIdRef.current !== fid) return; // stale — a different funnel is mounted now
+      const rows = res.data?.pages || [];
+      setPageMetrics(
+        Object.fromEntries(
+          rows.map((p) => [p.page_id, { visitors: p.visitors, ctr: p.ctr, cvr: p.cvr }])
+        )
+      );
+    } catch {
+      // Metrics are an overlay — a failed read leaves the last known values.
+    }
+  }, [id]);
+
+  const loadLive = useCallback(async () => {
+    const fid = id;
+    try {
+      const res = await api.get(`/funnel-analytics/funnel/${fid}/live`);
+      if (metricsIdRef.current !== fid) return; // stale — a different funnel is mounted now
+      const d = res.data || {};
+      setLiveStats(
+        typeof d.live === 'number' || typeof d.unique_today === 'number'
+          ? { live: d.live, unique_today: d.unique_today }
+          : null
+      );
+    } catch {
+      if (metricsIdRef.current === fid) setLiveStats(null);
+    }
+  }, [id]);
+
+  useEffect(() => {
+    // Reset before the first load for this funnel so the previous funnel's
+    // numbers never render against the new funnel's pages.
+    setPageMetrics({});
+    setLiveStats(null);
+    loadMetrics();
+    loadLive();
+    const mTimer = setInterval(loadMetrics, 60_000);
+    const lTimer = setInterval(loadLive, 30_000);
+    return () => { clearInterval(mTimer); clearInterval(lTimer); };
+  }, [loadMetrics, loadLive]);
+
+  // Thread the metric rows into page node data (same pattern as the split
+  // tiles: data flows in via setNodes, the node component only renders).
+  useEffect(() => {
+    setNodes((nds) =>
+      nds.map((n) =>
+        isSplitNode(n) ? n : { ...n, data: { ...n.data, metrics: pageMetrics[n.id] || null } }
+      )
+    );
+  }, [pageMetrics, setNodes]);
+
   // Keep deviceSize live on every node (cosmetic width toggle).
   useEffect(() => {
     setNodes((nds) => nds.map((n) => ({ ...n, data: { ...n.data, deviceSize } })));
@@ -700,10 +772,18 @@ function CanvasInner() {
             <span className="px-1 py-0.5 rounded bg-bg-elevated text-[9px] uppercase tracking-wide">not default</span>
           </span>
 
-          {/* Live chip */}
-          <span className="flex items-center gap-1.5 px-2 py-1 rounded-md bg-bg-elevated text-xs text-text-muted">
-            <span className="w-1.5 h-1.5 rounded-full bg-success animate-pulse" />
-            — live · — today
+          {/* Live chip — distinct visitors last 5 min · distinct today (UTC),
+              polled every 30s from /funnel-analytics/funnel/:id/live. Null
+              (endpoint down / tracking degraded) renders "—", never 0. */}
+          <span
+            className="flex items-center gap-1.5 px-2 py-1 rounded-md bg-bg-elevated text-xs text-text-muted"
+            title="Distinct visitors: last 5 minutes · today (UTC)"
+          >
+            <span
+              className={`w-1.5 h-1.5 rounded-full ${liveStats && liveStats.live > 0 ? 'bg-success animate-pulse' : 'bg-text-faint'}`}
+            />
+            {typeof liveStats?.live === 'number' ? liveStats.live : '—'} live ·{' '}
+            {typeof liveStats?.unique_today === 'number' ? liveStats.unique_today : '—'} unique today
           </span>
 
           <button className="p-1.5 rounded-md text-text-muted hover:text-text-primary hover:bg-bg-hover cursor-pointer" title="Analytics (soon)">

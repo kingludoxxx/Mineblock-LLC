@@ -463,6 +463,13 @@ async function readMoney(query, funnelId, w) {
   // The two regex guards are not decoration: `(r->>'at')::timestamptz` throws
   // on a malformed entry and Postgres has no try_cast, so one bad JSONB row
   // would take down the whole report. A row that fails is skipped and counted.
+  //
+  // ⚠️ THE jsonb_typeof GUARD IS LOAD-BEARING TOO: jsonb_array_elements THROWS
+  // ('cannot extract elements from a scalar') when `refunds` is a non-array
+  // jsonb value, and the regex guards never run because the LATERAL itself
+  // dies. The typeof predicate references only `s`, so Postgres applies it at
+  // the co_sessions scan BEFORE the lateral is evaluated — a corrupt row is
+  // filtered out instead of killing every funnel's money in the same read.
   const dedupeClause = hasLedger
     ? `AND NOT EXISTS (
          SELECT 1 FROM lb_split_credits v
@@ -478,6 +485,7 @@ async function readMoney(query, funnelId, w) {
      CROSS JOIN LATERAL jsonb_array_elements(s.refunds) r
      WHERE s.funnel_id = $1
        AND ${MONEY_MOVED_SQL}
+       AND jsonb_typeof(s.refunds) = 'array'
        AND r->>'at' ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}'
        AND r->>'amount' ~ '^-?[0-9]+(\\.[0-9]+)?$'
        AND (r->>'at')::timestamptz >= $2
@@ -486,14 +494,25 @@ async function readMoney(query, funnelId, w) {
      GROUP BY s.page_id`,
     [funnelId, w.fromTs, w.toTs]
   );
+  // Malformed = individual entries failing the shape guards PLUS whole
+  // `refunds` values that are not arrays at all (each such session counts as
+  // one malformed entry — its contents, if any, are unreadable by definition).
   const [skipped] = await query(
-    `SELECT COUNT(*)::bigint AS n
-     FROM co_sessions s
-     CROSS JOIN LATERAL jsonb_array_elements(s.refunds) r
-     WHERE s.funnel_id = $1
-       AND ${MONEY_MOVED_SQL}
-       AND NOT (r->>'at' ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}'
-                AND r->>'amount' ~ '^-?[0-9]+(\\.[0-9]+)?$')`,
+    `SELECT
+       (SELECT COUNT(*)::bigint
+        FROM co_sessions s
+        CROSS JOIN LATERAL jsonb_array_elements(s.refunds) r
+        WHERE s.funnel_id = $1
+          AND ${MONEY_MOVED_SQL}
+          AND jsonb_typeof(s.refunds) = 'array'
+          AND NOT (r->>'at' ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}'
+                   AND r->>'amount' ~ '^-?[0-9]+(\\.[0-9]+)?$'))
+     + (SELECT COUNT(*)::bigint
+        FROM co_sessions s
+        WHERE s.funnel_id = $1
+          AND ${MONEY_MOVED_SQL}
+          AND s.refunds IS NOT NULL
+          AND jsonb_typeof(s.refunds) <> 'array') AS n`,
     [funnelId]
   );
   // Legs we KNOW were reversed but whose amount is nowhere in the database:
@@ -731,8 +750,27 @@ export async function getFunnelOverview({ funnelId, from, to }, { query = analyt
         traffic: traffic ? trafficPages.get(id) || { visitors: 0, pageviews: 0, advanced_visitors: 0 } : null,
         moneyRow: moneyData ? moneyPages.get(id) || {} : null,
       })
-    )
-    .sort((a, b) => num(b.net_revenue) - num(a.net_revenue) || num(b.visitors) - num(a.visitors));
+    );
+
+  // ⚠️ NULL-page money MUST NOT VANISH. A money-moved session can carry
+  // page_id NULL (minted with no page reference). The batch rollup groups by
+  // funnel_id and therefore COUNTS it; if this per-funnel report dropped the
+  // NULL group (totals here are summed over page rows), the two surfaces would
+  // publish DIFFERENT money for the same funnel. It is surfaced as a synthetic
+  // '(no page)' row instead: page_id stays null, so the canvas overlay — which
+  // keys nodes by page_id — simply never overlays it, and nothing crashes.
+  // (readTraffic excludes NULL page_id in SQL, so only money can land here.)
+  const nullMoney = moneyData ? moneyPages.get(null) ?? moneyPages.get(undefined) : undefined;
+  if (nullMoney) {
+    rows.push(
+      derivePageMetrics({
+        page: { page_id: null, slug: null, title: '(no page)', type: null },
+        traffic: traffic ? { visitors: 0, pageviews: 0, advanced_visitors: 0 } : null,
+        moneyRow: nullMoney,
+      })
+    );
+  }
+  rows.sort((a, b) => num(b.net_revenue) - num(a.net_revenue) || num(b.visitors) - num(a.visitors));
 
   // Totals are computed from the SAME rows, except visitors — which is its own
   // funnel-wide distinct count, NOT a sum (the harness asserts this).
@@ -1326,6 +1364,341 @@ export async function getSplitResults(
       rate_sample_floor: MIN_RATE_SAMPLE,
       currency: currencies.size > 1 || currencyCount > 1 ? null : ([...currencies][0] ?? 'USD'),
       mixed_currency: currencies.size > 1 || currencyCount > 1,
+    },
+    warnings,
+    degraded: warnings.length > 0,
+  };
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// BATCH ROLLUP + LIVE COUNTER (additive — the Funnels-list metrics view and
+// the canvas live chip). READ-ONLY like everything else in this file.
+// ═══════════════════════════════════════════════════════════════════════════
+
+/**
+ * GET-/funnels/overview backing: one metric row per NON-ARCHIVED funnel, in
+ * ONE pass per source instead of N× getFunnelOverview (which is ~8 queries per
+ * funnel on a max-2 pool — 25 funnels would be 200 sequential queries).
+ *
+ * The money predicates MIRROR the per-funnel overview EXACTLY:
+ *   • orders/base revenue: MONEY_MOVED_SQL, windowed on paid_at
+ *   • upsell legs at ('settled','refunded') — a partial refund must not
+ *     delete the leg (see the header block)
+ *   • upsell reversals from the void ledger, deduped on
+ *     (session, charge, refund_key) with MAX(-value)
+ *   • base refunds from refunds[], windowed on the entry's own date, with
+ *     Whop upsell duplicates excluded via refund_key
+ * The only difference is GROUP BY s.funnel_id instead of s.page_id.
+ *
+ * VISITORS SEMANTICS (mirrors the overview totals): `visitors` is the RAW
+ * funnel-wide distinct count — identical in meaning to the per-funnel
+ * overview's totals.visitors. The order-floor clamp is published separately as
+ * `visitors_clamped` + `visitors_is_clamped`; rates (cvr/ctr) use the clamped
+ * denominator, the headline count never silently does.
+ *
+ * ctr here is the FUNNEL-level step-through/submit proxy (same labelling
+ * contract as per-page ctr: `ctr_is_proxy` is always true):
+ *   step_through = distinct vids that touched ≥2 DISTINCT pages ÷ visitors
+ *   submit_rate  = distinct submit vids ÷ visitors
+ *   ctr = max of the two — a lower bound, never an over-report.
+ */
+export async function getFunnelsOverviewBatch({ from, to } = {}, { query = analyticsQuery } = {}) {
+  const w = parseWindow({ from, to });
+  if (!w.ok) return { error: w.error };
+
+  const warnings = [];
+
+  // The row skeleton: every non-archived funnel appears, even with zero data.
+  const funnels = await safeRead('funnels', warnings, () =>
+    query(
+      `SELECT id, slug, name, status, created_at, updated_at
+       FROM funnels WHERE NOT archived ORDER BY updated_at DESC LIMIT 200`
+    ), []);
+  const ids = funnels.map((f) => f.id);
+  if (!ids.length) {
+    return {
+      window: { from: w.from, to: w.to, days: w.days, basis: 'UTC half-open [from, to+1d)' },
+      funnels: [],
+      warnings,
+      degraded: warnings.length > 0,
+    };
+  }
+
+  // ── Traffic (its own failure domain) ──
+  const traffic = await safeRead('lb_touches', warnings, () =>
+    query(
+      `WITH pv AS (
+         SELECT funnel_id, vid, COUNT(DISTINCT page_id) AS pages_touched
+         FROM lb_touches
+         WHERE funnel_id = ANY($1) AND ts >= $2 AND ts < $3
+         GROUP BY funnel_id, vid
+       )
+       SELECT funnel_id,
+              COUNT(*)::bigint                                    AS visitors,
+              COUNT(*) FILTER (WHERE pages_touched > 1)::bigint   AS advanced_visitors
+       FROM pv GROUP BY funnel_id`,
+      [ids, w.fromTs, w.toTs]
+    ), null);
+
+  // ── Money (co_* — its own failure domain, one safeRead for the group so a
+  //    partial money picture is never published) ──
+  const moneyData = await safeRead('co_sessions', warnings, async () => {
+    const orders = await query(
+      `SELECT s.funnel_id,
+              COUNT(*)::bigint                   AS orders,
+              COALESCE(SUM(s.total), 0)          AS base_revenue,
+              COUNT(DISTINCT s.currency)::bigint AS currency_count,
+              MIN(s.currency)                    AS currency
+       FROM co_sessions s
+       WHERE s.funnel_id = ANY($1) AND s.paid_at >= $2 AND s.paid_at < $3
+         AND ${MONEY_MOVED_SQL}
+       GROUP BY s.funnel_id`,
+      [ids, w.fromTs, w.toTs]
+    );
+    const submits = await query(
+      `SELECT s.funnel_id,
+              COUNT(*)::bigint AS submits,
+              COUNT(DISTINCT s.vid) FILTER (WHERE s.vid IS NOT NULL AND s.vid <> '')::bigint
+                AS submit_visitors
+       FROM co_sessions s
+       WHERE s.funnel_id = ANY($1) AND s.created_at >= $2 AND s.created_at < $3
+       GROUP BY s.funnel_id`,
+      [ids, w.fromTs, w.toTs]
+    );
+    const upsells = await query(
+      `SELECT s.funnel_id,
+              COALESCE(SUM(c.amount) FILTER (WHERE c.status IN ('settled','refunded')), 0)
+                AS upsell_revenue
+       FROM co_upsell_charges c
+       JOIN co_sessions s ON s.id = c.session_id
+       WHERE s.funnel_id = ANY($1) AND s.paid_at >= $2 AND s.paid_at < $3
+         AND ${MONEY_MOVED_SQL}
+       GROUP BY s.funnel_id`,
+      [ids, w.fromTs, w.toTs]
+    );
+    const [reg] = await query(`SELECT to_regclass('public.lb_split_credits') IS NOT NULL AS present`);
+    const hasLedger = Boolean(reg?.present);
+    const upsellRefunds = hasLedger
+      ? await query(
+          `WITH v AS (
+             SELECT session_id, charge_id, refund_key,
+                    MAX(-value) AS amt, MIN(created_at) AS ts
+             FROM lb_split_credits
+             WHERE kind = 'void'
+             GROUP BY session_id, charge_id, refund_key
+           )
+           SELECT s.funnel_id, COALESCE(SUM(v.amt), 0) AS upsell_refunded
+           FROM v
+           JOIN co_upsell_charges c ON c.id = v.charge_id AND c.session_id = v.session_id
+           JOIN co_sessions s        ON s.id = v.session_id
+           WHERE s.funnel_id = ANY($1) AND ${MONEY_MOVED_SQL}
+             AND v.ts >= $2 AND v.ts < $3
+           GROUP BY s.funnel_id`,
+          [ids, w.fromTs, w.toTs]
+        )
+      : [];
+    const dedupeClause = hasLedger
+      ? `AND NOT EXISTS (
+           SELECT 1 FROM lb_split_credits v
+           JOIN co_upsell_charges uc ON uc.id = v.charge_id AND uc.session_id = v.session_id
+           WHERE v.kind = 'void' AND v.session_id = s.id AND v.refund_key = r->>'id'
+         )`
+      : '';
+    // ⚠️ jsonb_typeof GUARD — same reasoning as the per-funnel read, but the
+    // blast radius here is WORSE: this is one query over EVERY funnel, so a
+    // single corrupt `refunds` value on one funnel would throw, safeRead would
+    // null the whole money group, and every funnel's money would read "—".
+    // The typeof predicate references only `s`, so it is applied at the scan,
+    // before the LATERAL can die on a scalar.
+    const refunds = await query(
+      `SELECT s.funnel_id,
+              COALESCE(SUM((r->>'amount')::numeric), 0) AS base_refunded
+       FROM co_sessions s
+       CROSS JOIN LATERAL jsonb_array_elements(s.refunds) r
+       WHERE s.funnel_id = ANY($1)
+         AND ${MONEY_MOVED_SQL}
+         AND jsonb_typeof(s.refunds) = 'array'
+         AND r->>'at' ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}'
+         AND r->>'amount' ~ '^-?[0-9]+(\\.[0-9]+)?$'
+         AND (r->>'at')::timestamptz >= $2
+         AND (r->>'at')::timestamptz <  $3
+         ${dedupeClause}
+       GROUP BY s.funnel_id`,
+      [ids, w.fromTs, w.toTs]
+    );
+    // Same computation the per-funnel overview does: reversed upsell legs
+    // whose amount exists NOWHERE (status='refunded', no void ledger row — a
+    // non-split funnel on the Stripe path). While non-zero, that funnel's net
+    // revenue is an UPPER BOUND, and the batch must say so like the overview
+    // does — dropping the qualifier here made the same number look measured
+    // in one surface and bounded in the other.
+    const unmeasured = await query(
+      `SELECT s.funnel_id, COUNT(*)::bigint AS n
+       FROM co_upsell_charges c
+       JOIN co_sessions s ON s.id = c.session_id
+       WHERE s.funnel_id = ANY($1) AND s.paid_at >= $2 AND s.paid_at < $3
+         AND ${MONEY_MOVED_SQL} AND c.status = 'refunded'
+         ${hasLedger
+           ? `AND NOT EXISTS (SELECT 1 FROM lb_split_credits v
+                              WHERE v.kind = 'void' AND v.charge_id = c.id AND v.session_id = c.session_id)`
+           : ''}
+       GROUP BY s.funnel_id`,
+      [ids, w.fromTs, w.toTs]
+    );
+    return { orders, submits, upsells, upsellRefunds, refunds, unmeasured, hasLedger };
+  }, null);
+
+  const byId = (rows) => new Map((rows || []).map((r) => [r.funnel_id, r]));
+  const tMap = traffic ? byId(traffic) : null;
+  const oMap = moneyData ? byId(moneyData.orders) : null;
+  const sMap = moneyData ? byId(moneyData.submits) : null;
+  const uMap = moneyData ? byId(moneyData.upsells) : null;
+  const urMap = moneyData ? byId(moneyData.upsellRefunds) : null;
+  const rMap = moneyData ? byId(moneyData.refunds) : null;
+  const unMap = moneyData ? byId(moneyData.unmeasured) : null;
+
+  const rows = funnels.map((f) => {
+    const t = tMap ? tMap.get(f.id) || { visitors: 0, advanced_visitors: 0 } : null;
+    const o = oMap ? oMap.get(f.id) || {} : null;
+    const s = sMap ? sMap.get(f.id) || {} : null;
+    const u = uMap ? uMap.get(f.id) || {} : null;
+    const ur = urMap ? urMap.get(f.id) || {} : null;
+    const rr = rMap ? rMap.get(f.id) || {} : null;
+    const un = unMap ? unMap.get(f.id) || {} : null;
+
+    const trackingOk = t !== null;
+    const moneyOk = o !== null;
+
+    const visitorsRaw = trackingOk ? int(t.visitors) : null;
+    const advanced = trackingOk ? int(t.advanced_visitors) : null;
+    const orders = moneyOk ? int(o.orders) : null;
+    const submitVisitors = moneyOk ? int(s.submit_visitors) : null;
+
+    const baseRevenue = moneyOk ? money(o.base_revenue) : null;
+    const upsellRevenue = moneyOk ? money(u.upsell_revenue) : null;
+    const grossRevenue = moneyOk ? money(num(baseRevenue) + num(upsellRevenue)) : null;
+    const refunded = moneyOk ? money(num(rr.base_refunded) + num(ur.upsell_refunded)) : null;
+    const netRevenue = moneyOk ? money(num(grossRevenue) - num(refunded)) : null;
+
+    // THE CLAMP, published HONESTLY: `visitors` is the RAW distinct count —
+    // the same figure the per-funnel overview totals publish, so the two
+    // surfaces can never drift on the headline number. The clamp (you cannot
+    // buy without visiting) still exists for RATES, and is published beside
+    // the raw truth as `visitors_clamped` with an explicit
+    // `visitors_is_clamped` flag instead of silently replacing it.
+    const visitorsClamped = trackingOk ? Math.max(visitorsRaw, int(orders)) : null;
+    const visitorsIsClamped = trackingOk ? visitorsClamped > visitorsRaw : null;
+
+    const cvr = trackingOk && moneyOk ? rate(orders, Math.max(visitorsClamped, orders)) : null;
+
+    // Funnel-level CTR proxy (labelled, lower bound) — withheld below the floor.
+    let ctr = null;
+    let ctrBasis = 'no_data';
+    if (trackingOk && visitorsClamped >= MIN_RATE_SAMPLE) {
+      const st = rate(advanced, visitorsClamped) ?? 0;
+      const su = moneyOk ? (rate(submitVisitors, visitorsClamped) ?? 0) : 0;
+      if (st >= su) {
+        ctr = st;
+        ctrBasis = 'step_through_proxy';
+      } else {
+        ctr = su;
+        ctrBasis = 'checkout_submit_proxy';
+      }
+    } else if (trackingOk) {
+      ctrBasis = 'sample_below_floor';
+    }
+
+    let aovPost = null;
+    let aovPre = null;
+    if (moneyOk && orders > 0) {
+      aovPost = money(netRevenue / orders);
+      const pre = netRevenue / orders - num(upsellRevenue) / orders;
+      if (pre >= 0) aovPre = money(pre);
+    }
+
+    return {
+      funnel_id: f.id,
+      slug: f.slug,
+      name: f.name,
+      status: f.status,
+      created_at: f.created_at,
+      updated_at: f.updated_at,
+      visitors: visitorsRaw,
+      visitors_clamped: visitorsClamped,
+      visitors_is_clamped: visitorsIsClamped,
+      orders,
+      cvr,
+      ctr,
+      ctr_is_proxy: true,
+      ctr_basis: ctrBasis,
+      gross_revenue: grossRevenue,
+      net_revenue: netRevenue,
+      refunded,
+      aov_pre_upsell: aovPre,
+      aov_post_upsell: aovPost,
+      // Same qualifier the overview meta carries: reversed upsell legs with no
+      // measured amount anywhere ⇒ net is an upper bound, not a measurement.
+      upsell_refunds_unmeasured: moneyOk ? int(un.n) : null,
+      net_revenue_is_upper_bound: moneyOk ? int(un.n) > 0 : null,
+      currency: moneyOk ? (o.currency ?? null) : null,
+      mixed_currency: moneyOk ? int(o.currency_count) > 1 : null,
+    };
+  });
+
+  return {
+    window: { from: w.from, to: w.to, days: w.days, basis: 'UTC half-open [from, to+1d)' },
+    funnels: rows,
+    meta: {
+      money_predicate: "paid_at IS NOT NULL AND status IN ('paid','refunded')",
+      ctr_note:
+        'CTR is a labelled PROXY (funnel-level): max(step-through across pages, ' +
+        'checkout-submit rate) — a LOWER BOUND, never a measured click-through.',
+      archived_excluded: true,
+    },
+    warnings,
+    degraded: warnings.length > 0,
+  };
+}
+
+/**
+ * Live counter for the canvas chip.
+ *   live         = COUNT(DISTINCT vid) in the last 5 minutes
+ *   unique_today = COUNT(DISTINCT vid) since UTC midnight
+ * Both reads sit on the existing idx_lb_touches_funnel (funnel_id, ts DESC)
+ * index — no new index is created here (the DDL belongs to trackingSchema.js;
+ * the existing composite covers both range scans).
+ *
+ * The two counts are INDEPENDENT scans on purpose: a touch at 23:58 UTC is
+ * "live" at 00:01 but not "today", so nesting one filter inside the other
+ * would undercount `live` across the midnight boundary.
+ */
+export async function getFunnelLive({ funnelId } = {}, { query = analyticsQuery } = {}) {
+  const fid = idOf(funnelId, 64);
+  if (!fid) return { error: 'invalid_funnel_id' };
+
+  const warnings = [];
+  const row = await safeRead('lb_touches', warnings, async () => {
+    const [r] = await query(
+      `SELECT
+         (SELECT COUNT(DISTINCT vid) FROM lb_touches
+          WHERE funnel_id = $1 AND ts >= NOW() - INTERVAL '5 minutes')::bigint AS live,
+         (SELECT COUNT(DISTINCT vid) FROM lb_touches
+          WHERE funnel_id = $1
+            AND ts >= date_trunc('day', NOW() AT TIME ZONE 'utc') AT TIME ZONE 'utc')::bigint
+           AS unique_today`,
+      [fid]
+    );
+    return r;
+  }, null);
+
+  return {
+    funnel_id: fid,
+    live: row ? int(row.live) : null,
+    unique_today: row ? int(row.unique_today) : null,
+    as_of: new Date().toISOString(),
+    basis: {
+      live: 'distinct lb_touches.vid, last 5 minutes',
+      unique_today: 'distinct lb_touches.vid since UTC midnight',
     },
     warnings,
     degraded: warnings.length > 0,

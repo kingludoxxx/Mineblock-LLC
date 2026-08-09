@@ -12,10 +12,18 @@ import {
 } from 'lucide-react';
 import { typeMeta, DEVICE_WIDTHS } from './pageTypes';
 
-// A single page on the canvas. Type-colored header, title, type label, two
-// placeholder stat chips, and a floating toolbar shown when selected. Two
-// source handles: the bottom one draws a `main` edge, the right (red) one a
-// `fallback` (decline) edge — this is how the operator marks a downsell path.
+// A single page on the canvas. Type-colored header, title, type label, three
+// metric chips (visitors / CTR / CVR from the analytics overlay), and a
+// floating toolbar shown when selected. Two source handles: the bottom one
+// draws a `main` edge, the right (red) one a `fallback` (decline) edge — this
+// is how the operator marks a downsell path.
+
+// null and 0 are DIFFERENT facts (see pages/analytics/format.js): null means
+// "could not measure" and renders as an em dash, never as 0.
+const isNil = (v) => v === null || v === undefined || (typeof v === 'number' && !Number.isFinite(v));
+const chipInt = (v) => (isNil(v) ? '—' : new Intl.NumberFormat('en-US').format(Math.round(Number(v))));
+const chipRate = (v) => (isNil(v) ? '—' : `${(Number(v) * 100).toFixed(1)}%`);
+
 function PageNodeInner({ data, selected }) {
   const page = data.page;
   const meta = typeMeta(page.type);
@@ -107,10 +115,28 @@ function PageNodeInner({ data, selected }) {
           </div>
         )}
 
-        {/* Placeholder stat chips */}
-        <div className="mt-2 flex items-center gap-1.5">
-          <span className="px-1.5 py-0.5 rounded bg-bg-elevated text-[10px] text-text-faint">— visitors</span>
-          <span className="px-1.5 py-0.5 rounded bg-bg-elevated text-[10px] text-text-faint">— CVR</span>
+        {/* Metric chips — fed by the analytics overlay via node data. An
+            absent/null value renders "—" (unmeasured), never 0. CTR is a
+            labelled proxy — the title says so. */}
+        <div className="mt-2 flex items-center gap-1.5 flex-wrap">
+          <span
+            className={`px-1.5 py-0.5 rounded bg-bg-elevated text-[10px] ${isNil(data.metrics?.visitors) ? 'text-text-faint' : 'text-text-muted'}`}
+            title="Distinct visitors on this page (last 30 days)"
+          >
+            {chipInt(data.metrics?.visitors)} visitors
+          </span>
+          <span
+            className={`px-1.5 py-0.5 rounded bg-bg-elevated text-[10px] ${isNil(data.metrics?.ctr) ? 'text-text-faint' : 'text-text-muted'}`}
+            title="CTR (proxy — lower bound: step-through / checkout-submit)"
+          >
+            {chipRate(data.metrics?.ctr)} CTR
+          </span>
+          <span
+            className={`px-1.5 py-0.5 rounded bg-bg-elevated text-[10px] ${isNil(data.metrics?.cvr) ? 'text-text-faint' : 'text-text-muted'}`}
+            title="Orders minted on this page ÷ page visitors"
+          >
+            {chipRate(data.metrics?.cvr)} CVR
+          </span>
         </div>
       </div>
 
