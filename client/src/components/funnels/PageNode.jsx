@@ -10,6 +10,7 @@ import {
   BarChart3,
   Home,
   Shuffle,
+  Library,
 } from 'lucide-react';
 import { typeMeta, DEVICE_WIDTHS } from './pageTypes';
 import usePageThumbnail from './usePageThumbnail';
@@ -59,6 +60,12 @@ function PageNodeInner({ data, selected }) {
             </button>
             <button className={toolbarBtn} title="Duplicate" onClick={() => data.onDuplicate?.(page)}>
               <Copy className="w-3.5 h-3.5" />
+            </button>
+            {/* Save this page into the cross-funnel page library as a reusable
+                snapshot. Sits next to Duplicate because it is the same verb at
+                a different scope: duplicate copies here, this copies out. */}
+            <button className={toolbarBtn} title="Save to page library" onClick={() => data.onSaveToLibrary?.(page)}>
+              <Library className="w-3.5 h-3.5" />
             </button>
             <button className={toolbarBtn} title="Create A/B test" onClick={() => data.onSplitTest?.(page)}>
               <Shuffle className="w-3.5 h-3.5" />

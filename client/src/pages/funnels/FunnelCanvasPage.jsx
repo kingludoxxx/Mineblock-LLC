@@ -39,6 +39,7 @@ import {
   Copy as CopyIcon,
   Shuffle,
   SlidersHorizontal,
+  Library,
 } from 'lucide-react';
 import api from '../../services/api';
 import Button from '../../components/ui/Button';
@@ -49,6 +50,11 @@ import FunnelSettingsModal from '../../components/funnels/settings/FunnelSetting
 import SplitGroupNode from '../../components/funnels/split/SplitGroupNode';
 import SplitSetupModal from '../../components/funnels/split/SplitSetupModal';
 import ClonePageModal from '../../components/funnels/ClonePageModal';
+import PageLibraryPanel, {
+  DND_FUNNEL_PAGE, DND_LIBRARY_ENTRY,
+} from '../../components/funnels/PageLibraryPanel';
+import SaveToLibraryModal from '../../components/funnels/SaveToLibraryModal';
+import { pageCountLabel } from '../../components/funnels/pageLibraryModel';
 import SplitResultsModal from '../../components/funnels/split/SplitResultsModal';
 import SplitQuickCreateModal from '../../components/funnels/split/SplitQuickCreateModal';
 import {
@@ -118,6 +124,12 @@ function CanvasInner() {
   const [nameDraft, setNameDraft] = useState('');
   const [creating, setCreating] = useState(false);
   const [cloneOpen, setCloneOpen] = useState(false);
+  // ---- Page library (flyout over the canvas + save-from-node modal) ----
+  const [libraryOpen, setLibraryOpen] = useState(false);
+  const [saveToLibraryPage, setSaveToLibraryPage] = useState(null);
+  // Bumped after a save so the flyout's Library tab refetches; a saved entry
+  // that only appears after a manual refresh reads as a failed save.
+  const [libraryVersion, setLibraryVersion] = useState(0);
   // ---- Split tests (A/B groups on this funnel) ----
   const [splits, setSplits] = useState([]);
   const [splitTiles, setSplitTiles] = useState({}); // testId -> { armKey: {visitors, orders, cvr} }
@@ -564,8 +576,66 @@ function CanvasInner() {
     [centerPosition, deviceSize, setNodes, pushHistory, persistFlow]
   );
 
+  // ---- Page library ----------------------------------------------------
+  // A library entry is instantiated SERVER-SIDE (POST /page-library/:id/clone
+  // creates the draft page and answers the row) — the same posture as
+  // clone-a-page, so the canvas only has to place the node it is handed.
+  const onLibraryCloned = useCallback(
+    (page, position = null) => {
+      if (!page?.id) {
+        // A 2xx without the page row is a shape we do not understand; pushing
+        // it into the canvas would render a ghost node.
+        setError('The library clone did not return a page — reload and check the pages list');
+        return;
+      }
+      const pos = position || centerPosition();
+      setPages((prev) => [...prev, page]);
+      setNodes((nds) => [
+        ...nds,
+        { id: page.id, type: 'page', position: pos, data: { page, deviceSize, ...actionsRef.current } },
+      ]);
+      pushHistory();
+      persistFlow(true);
+    },
+    [centerPosition, deviceSize, setNodes, pushHistory, persistFlow]
+  );
+
+  const cloneLibraryEntryAt = useCallback(
+    async (entryId, position) => {
+      setError(null);
+      try {
+        const res = await api.post(`/page-library/${entryId}/clone`, { funnel_id: id });
+        onLibraryCloned(res.data?.data, position);
+      } catch (err) {
+        const e = err.response?.data?.error;
+        setError(e?.detail || e?.code || 'Failed to add that library page');
+      }
+    },
+    [id, onLibraryCloned]
+  );
+
+  // Click a thumb in the flyout → select + center that node, matching the
+  // reference tool's onFocusPage.
+  const focusPage = useCallback(
+    (pageId) => {
+      const node = rf.getNodes().find((n) => n.id === pageId);
+      if (!node) return;
+      setNodes((nds) => nds.map((n) => ({ ...n, selected: n.id === pageId })));
+      const w = node.measured?.width ?? node.width ?? DEVICE_WIDTHS[deviceSize] ?? 240;
+      const h = node.measured?.height ?? node.height ?? 260;
+      rf.setCenter(node.position.x + w / 2, node.position.y + h / 2, {
+        zoom: Math.max(rf.getZoom(), 0.9),
+        duration: 300,
+      });
+    },
+    [rf, setNodes, deviceSize]
+  );
+
+  // `dropPosition` is supplied only by the page-library drag path — a dropped
+  // node must land under the cursor, not at the +40/+40 offset a toolbar
+  // duplicate uses.
   const duplicatePage = useCallback(
-    async (page) => {
+    async (page, dropPosition = null) => {
       setError(null);
       try {
         // Atomic server-side copy: page row + blocks + escape-hatch fields in
@@ -580,7 +650,9 @@ function CanvasInner() {
           return;
         }
         const src = rf.getNodes().find((n) => n.id === page.id);
-        const pos = src ? { x: src.position.x + 40, y: src.position.y + 40 } : centerPosition();
+        const pos =
+          dropPosition
+          || (src ? { x: src.position.x + 40, y: src.position.y + 40 } : centerPosition());
         setPages((prev) => [...prev, np]);
         setNodes((nds) => [
           ...nds,
@@ -593,6 +665,43 @@ function CanvasInner() {
       }
     },
     [id, rf, centerPosition, deviceSize, setNodes, pushHistory, persistFlow]
+  );
+
+  // Native HTML5 drop target for the page library's two drag contracts — the
+  // same mechanism the reference tool uses (not dnd-kit, not React Flow's own
+  // node dnd). Only the two MIME types this canvas understands call
+  // preventDefault; a file or a text selection dragged over the board keeps the
+  // browser's default behaviour.
+  //
+  // Declared AFTER duplicatePage on purpose: a useCallback dependency array is
+  // evaluated during render, so naming duplicatePage from above its own `const`
+  // would throw on the first paint, not on the first drop.
+  const onCanvasDragOver = useCallback((e) => {
+    const types = e.dataTransfer?.types || [];
+    if (types.includes(DND_FUNNEL_PAGE) || types.includes(DND_LIBRARY_ENTRY)) {
+      e.preventDefault();
+      e.dataTransfer.dropEffect = 'copy';
+    }
+  }, []);
+
+  const onCanvasDrop = useCallback(
+    (e) => {
+      const entryId = e.dataTransfer.getData(DND_LIBRARY_ENTRY);
+      const pageId = e.dataTransfer.getData(DND_FUNNEL_PAGE);
+      if (!entryId && !pageId) return;
+      e.preventDefault();
+      const flowPos = rf.screenToFlowPosition({ x: e.clientX, y: e.clientY });
+      // Centre the card under the cursor rather than hanging it off the
+      // pointer's top-left corner.
+      const position = { x: flowPos.x - (DEVICE_WIDTHS[deviceSize] || 240) / 2, y: flowPos.y - 60 };
+      if (entryId) {
+        cloneLibraryEntryAt(entryId, position);
+        return;
+      }
+      const src = pages.find((p) => p.id === pageId);
+      if (src) duplicatePage(src, position);
+    },
+    [rf, pages, deviceSize, cloneLibraryEntryAt, duplicatePage]
   );
 
   const deletePage = useCallback(
@@ -638,6 +747,7 @@ function CanvasInner() {
     onDuplicate: duplicatePage,
     onDelete: deletePage,
     onSplitTest: (page) => setSplitQuickPage(page),
+    onSaveToLibrary: (page) => setSaveToLibraryPage(page),
   };
   useEffect(() => {
     // Page actions belong to page nodes only — a split group node carries its
@@ -907,30 +1017,40 @@ function CanvasInner() {
                     <span className="block text-[11px] text-text-faint leading-tight">Paste code · HTML · file upload</span>
                   </span>
                 </button>
-                {[
-                  { label: 'Page library', subtitle: 'Drag to clone' },
-                ].map((item) => (
-                  <div
-                    key={item.label}
-                    className="w-full flex items-start gap-2.5 px-2.5 py-2 rounded-lg text-left opacity-40 cursor-not-allowed"
-                    title="Coming soon"
-                  >
-                    <Plus className="w-4 h-4 mt-0.5 text-text-faint shrink-0" />
-                    <span className="min-w-0">
-                      <span className="flex items-center gap-1.5 text-sm text-text-muted leading-tight">
-                        {item.label}
-                        <span className="px-1 py-0.5 rounded bg-bg-elevated text-[9px] uppercase text-text-faint">soon</span>
-                      </span>
-                      <span className="block text-[11px] text-text-faint leading-tight">{item.subtitle}</span>
+                {/* Page library — the flyout opens over the canvas, anchored
+                    bottom-left next to this rail. [data-page-library-trigger]
+                    is what the flyout's outside-click handler looks for so this
+                    same button toggles it closed instead of the two fighting
+                    (close → reopen) over one click. */}
+                <button
+                  data-page-library-trigger
+                  onClick={() => setLibraryOpen((v) => !v)}
+                  aria-expanded={libraryOpen}
+                  className={`w-full flex items-start gap-2.5 px-2.5 py-2 rounded-lg text-left border transition-colors cursor-pointer ${
+                    libraryOpen
+                      ? 'bg-bg-hover border-border-default'
+                      : 'border-transparent hover:bg-bg-hover hover:border-border-default'
+                  }`}
+                >
+                  <Library className="w-4 h-4 mt-0.5 text-text-muted shrink-0" />
+                  <span className="min-w-0">
+                    <span className="block text-sm text-text-primary leading-tight">Page library</span>
+                    <span className="block text-[11px] text-text-faint leading-tight">
+                      {pageCountLabel(pages)} · drag to clone
                     </span>
-                  </div>
-                ))}
+                  </span>
+                </button>
               </div>
             )}
           </div>
 
           {/* Canvas */}
-          <div ref={wrapperRef} className="flex-1 min-w-0 relative">
+          <div
+            ref={wrapperRef}
+            className="flex-1 min-w-0 relative"
+            onDragOver={onCanvasDragOver}
+            onDrop={onCanvasDrop}
+          >
             <ReactFlow
               nodes={nodes}
               edges={edges}
@@ -1000,6 +1120,21 @@ function CanvasInner() {
                 </Panel>
               )}
             </ReactFlow>
+
+            {/* Page library flyout — a sibling of <ReactFlow>, not a <Panel>,
+                so its own outside-click/Escape handling is not fighting the
+                canvas's pane events. Anchored bottom-left inside this
+                position:relative wrapper. */}
+            {libraryOpen && (
+              <PageLibraryPanel
+                onClose={() => setLibraryOpen(false)}
+                funnelId={id}
+                pages={pages}
+                onFocusPage={focusPage}
+                onCloned={(page) => onLibraryCloned(page)}
+                reloadToken={libraryVersion}
+              />
+            )}
           </div>
         </div>
       ) : view === 'pages' ? (
@@ -1057,6 +1192,21 @@ function CanvasInner() {
         funnelId={id}
         onCreated={onClonedPage}
       />
+
+      {saveToLibraryPage && (
+        <SaveToLibraryModal
+          // Keyed on the page: picking a different node while the modal is up
+          // remounts it, so the name field can never carry the previous page's
+          // title into this page's save.
+          key={saveToLibraryPage.id}
+          onClose={() => setSaveToLibraryPage(null)}
+          funnelId={id}
+          page={saveToLibraryPage}
+          // Bump the flyout's reload token so the new entry is there the moment
+          // the operator opens the Library tab — not one manual refresh later.
+          onSaved={() => setLibraryVersion((v) => v + 1)}
+        />
+      )}
     </div>
   );
 }
