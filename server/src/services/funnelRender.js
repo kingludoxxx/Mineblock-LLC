@@ -964,21 +964,35 @@ function prefillKey(){var b=billing();return emailValue()+'|'+b.name+'|'+b.line1
    as /^[^@s]+.../ and rejected every address containing the letter s,
    which is why the first live order never mounted a payment form.
    Plain string checks cannot be mangled by an escaping layer. */function valid(v){if(!v||v.indexOf(' ')!==-1)return false;var at=v.indexOf('@');if(at<1||at!==v.lastIndexOf('@'))return false;var dot=v.lastIndexOf('.');return dot>at+1&&dot<v.length-1;}
-/* GATED single mount — the exact flow that has charged real money. The frame
-   is created ONCE, by the loader's startup scan, only after the buyer has a
-   valid email + complete address: those values ride the iframe URL at
-   creation and this is the only frame the buyer's card ever touches (the
-   card-safe guard in remount() means address edits never rebuild it; only an
-   email change does). An eager empty-email frame was tried twice — the card
-   fields showed immediately, but submits produced ZERO payment attempts at
-   Whop (verified against their payments API) — so visibility loses to a
-   charge that actually completes. The placeholder explains what unlocks the
-   form; the delivery fields sit directly above it. */
-function doMount(){var v=emailValue();if(mounted||!valid(v)||!billingReady()){return;}mounted=true;
-  applyPrefill(billing(),v);
-  mount.setAttribute('data-fos-prefill-key',prefillKey());
-  mount.setAttribute('data-fos-baked-complete','1');
-  mount.setAttribute('data-fos-baked-email',v);
+/* SINGLE PINNED FRAME, mounted at page load — the reference CRM's model
+   (operator-verified: same Whop embed, own email field on the page, card
+   fields visible immediately). The frame is born COMPLETE with CRM-side
+   guest values baked into its URL — a per-session guest email and a neutral
+   address — because the embed only demands syntactically valid values at
+   creation; the buyer's REAL email/address live in OUR session (synced
+   server-side on every keystroke) and are what the Shopify order and the
+   confirmation email use, exactly as before. The frame is NEVER rebuilt
+   (data-fos-pinned): the card typed into it can never be wiped, and the
+   charge always runs on a loader-scan-created frame — the one creation path
+   proven to complete charges. Whop's own receipt would go to the guest
+   address (undeliverable, by design — our Shopify confirmation email is the
+   buyer's receipt). Payments still reconcile by co_session_id metadata. */
+function doMount(){if(mounted){return;}mounted=true;
+  var sid='';try{sid=(window.__fos_checkout.session||{}).session_id||'';}catch(e){}
+  var guestEmail='guest+'+(sid||'anon').replace(/[^a-z0-9_-]/gi,'').slice(0,40)+'@checkout.trypuure.co';
+  var v=emailValue();
+  var b=billing();
+  var bReal=billingReady();
+  applyPrefill({
+    name:(b.name||'Guest Checkout'),
+    line1:(bReal?b.line1:'1603 Capitol Ave Ste 415'),
+    line2:bReal?b.line2:'',
+    city:(bReal?b.city:'Cheyenne'),
+    state:(bReal?b.state:'WY'),
+    postal:(bReal?b.postal:'82001'),
+    country:(bReal?b.country:'US')
+  }, valid(v)?v:guestEmail);
+  mount.setAttribute('data-fos-pinned','1');
   mount.setAttribute('data-whop-checkout-session',embed.whop_session_id);
   /* Belt + braces with the plan's server-side redirect_url: also tell the
      EMBED where to send the buyer, so Whop's own default post-purchase
@@ -999,6 +1013,7 @@ function doMount(){var v=emailValue();if(mounted||!valid(v)||!billingReady()){re
    a slightly stale AVS hint, never a wrong receipt. This is the fix for:
    'I typed my card, went back to change the city, and the card vanished.' */
 function remount(){var v=emailValue();if(!mounted||!valid(v)||!billingReady()){return;}
+  if(mount.getAttribute('data-fos-pinned')==='1'){return;} /* ONE frame, forever — the typed card is sacred */
   var bakedComplete=mount.getAttribute('data-fos-baked-complete')==='1';
   var bakedEmail=mount.getAttribute('data-fos-baked-email')||'';
   if(bakedComplete&&bakedEmail===v){return;} /* card-safe: address-only edits never touch the frame */
