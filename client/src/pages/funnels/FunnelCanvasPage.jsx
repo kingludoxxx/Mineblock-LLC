@@ -97,7 +97,12 @@ function CanvasInner() {
   const [pages, setPages] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
-  const [view, setView] = useState('canvas'); // 'canvas' | 'pages'
+  // FUNNEL-SETTINGS lane (additive): ?view=pages|redirects deep-links straight
+  // to a tab — used by the settings modal's "Manage on the canvas" links.
+  const [view, setView] = useState(() => {
+    const v = new URLSearchParams(window.location.search).get('view');
+    return v === 'pages' || v === 'redirects' ? v : 'canvas';
+  }); // 'canvas' | 'pages' | 'redirects'
   const [paletteOpen, setPaletteOpen] = useState(true);
   const [deviceSize, setDeviceSize] = useState('M');
   const [zoomPct, setZoomPct] = useState(100);

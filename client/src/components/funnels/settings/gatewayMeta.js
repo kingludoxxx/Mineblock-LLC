@@ -12,7 +12,7 @@ export const GATEWAY_META = {
     fields: [
       { key: 'api_key', kind: 'secret', label: 'API key', placeholder: 'whop API key' },
       { key: 'company_id', kind: 'plain', label: 'Company ID', placeholder: 'biz_…' },
-      { key: 'webhook_secret', kind: 'secret', label: 'Webhook signing secret', placeholder: 'ws_… / whsec_…' },
+      { key: 'webhook_secret', kind: 'secret', label: 'Webhook signing secret', placeholder: 'ws_… / whsec_…', setPlaceholder: 'Leave blank to keep current secret' },
       { key: 'plan_id', kind: 'plain', label: 'Plan ID (optional)', placeholder: 'plan_…', optional: true },
     ],
   },

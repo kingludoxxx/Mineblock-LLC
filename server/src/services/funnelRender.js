@@ -1244,6 +1244,14 @@ export function renderPageHtml(page, funnel, pagesById) {
   // upsell above); pages without them stay byte-identical.
   const pageTypeScripts = pageTypeRuntimeScripts(blocks, funnel, page);
 
+  // FUNNEL-SETTINGS slice (append-only): funnel-level settings drive extra,
+  // fully self-contained head/body emissions (brand colors, fonts, funnel
+  // head/body code, checkout enhancements). With an empty/absent settings
+  // blob BOTH helpers return '' and the document stays byte-identical.
+  const fnlSettings = funnelSettingsOf(funnel);
+  const settingsHeadExtras = funnelSettingsHead(fnlSettings);
+  const settingsBodyExtras = funnelSettingsBodyEnd(fnlSettings);
+
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -1262,7 +1270,7 @@ ${og ? `<meta property="og:image" content="${esc(og)}"/>` : ''}
 <style>${THEME_CSS}</style>
 ${pageCss ? `<style id="lb-page-css">${pageCss}</style>` : ''}
 ${flowScript}
-${headHtml}
+${headHtml}${settingsHeadExtras}
 </head>
 <body>
 ${customHtml}
@@ -1273,7 +1281,7 @@ ${checkoutScript}
 ${upsellScript}
 ${pageTypeScripts}
 ${pageJs ? `<script>${pageJs}</script>` : ''}
-${bodyEndHtml}
+${bodyEndHtml}${settingsBodyExtras}
 </body>
 </html>`;
 }
@@ -2420,3 +2428,285 @@ export default {
   quizPageTemplate,
   advertorialPageTemplate,
 };
+
+// =============================================================================
+// FUNNEL-SETTINGS ADDITIONS (feat/funnel-settings-parity) — APPEND-ONLY BLOCK.
+//
+// Everything below is new, self-contained, and driven exclusively by the
+// funnels.settings JSONB blob (validated at write time in routes/funnels.js
+// validateFunnelSettings). None of it touches the existing checkout / embed /
+// submit / promo runtimes above — those are frozen. renderPageHtml consumes
+// these helpers via two adjacent interpolations (${settingsHeadExtras} /
+// ${settingsBodyExtras}) that emit '' for an empty settings blob, keeping
+// every existing page byte-identical.
+//
+// EMITTED-CODE RULE (known bug class in this file): all client-side code below
+// is built from PLAIN string concatenation — the emitted JS contains no regex
+// literals, no backslashes, no backticks and no ${} sequences. Attribute
+// selectors use the unquoted form ([name=address1]) so no quote-escaping is
+// ever needed.
+// =============================================================================
+
+// The settings blob for a funnel row — {} unless it is a plain object.
+export function funnelSettingsOf(funnel) {
+  const s = (funnel || {}).settings;
+  return isPlainObject(s) ? s : {};
+}
+
+// Strict hex color gate (#rgb / #rrggbb / #rrggbbaa). Anything else — including
+// a hostile "#111}</style><script>…" — emits nothing at all.
+function isHexColor(v) {
+  return typeof v === 'string' && /^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$/.test(v);
+}
+
+// Visitor-page font allowlist. The stored value is a KEY into this map — the
+// emitted <link>/<style> only ever contains these server-side constants, so a
+// hostile settings.fonts.family can never reach the document (unknown keys
+// emit nothing). 'google' is the css2 family fragment; web-safe fonts have none.
+export const FUNNEL_FONTS = {
+  default: { label: 'Theme default', css: '', google: '' },
+  inter: { label: 'Inter', css: "'Inter',system-ui,sans-serif", google: 'Inter:wght@400;600;700' },
+  roboto: { label: 'Roboto', css: "'Roboto',system-ui,sans-serif", google: 'Roboto:wght@400;500;700' },
+  'open-sans': { label: 'Open Sans', css: "'Open Sans',system-ui,sans-serif", google: 'Open+Sans:wght@400;600;700' },
+  lato: { label: 'Lato', css: "'Lato',system-ui,sans-serif", google: 'Lato:wght@400;700' },
+  montserrat: { label: 'Montserrat', css: "'Montserrat',system-ui,sans-serif", google: 'Montserrat:wght@400;600;700' },
+  poppins: { label: 'Poppins', css: "'Poppins',system-ui,sans-serif", google: 'Poppins:wght@400;600;700' },
+  'playfair-display': { label: 'Playfair Display', css: "'Playfair Display',Georgia,serif", google: 'Playfair+Display:wght@400;600;700' },
+  merriweather: { label: 'Merriweather', css: "'Merriweather',Georgia,serif", google: 'Merriweather:wght@400;700' },
+  georgia: { label: 'Georgia (web-safe)', css: 'Georgia,serif', google: '' },
+  arial: { label: 'Arial (web-safe)', css: 'Arial,Helvetica,sans-serif', google: '' },
+};
+
+// <head> emissions: brand-color CSS variables, the visitor-page font override
+// (+ Google Fonts <link> when needed) and the funnel-level head code escape
+// hatch (verbatim — same trusted-operator posture as page head_html).
+// NOTE: no !important on the font override — explicit page CSS (e.g. the
+// checkout template's input font) deliberately keeps priority.
+export function funnelSettingsHead(settings) {
+  let out = '';
+  try {
+    if (!isPlainObject(settings)) return '';
+    const bc = isPlainObject(settings.brand_colors) ? settings.brand_colors : {};
+    const decls = [];
+    if (isHexColor(bc.primary)) decls.push('--brand-primary:' + bc.primary);
+    if (isHexColor(bc.secondary)) decls.push('--brand-secondary:' + bc.secondary);
+    if (decls.length) {
+      out += '\n<style id="lb-brand-colors">:root{' + decls.join(';') + '}</style>';
+    }
+    const famKey = isPlainObject(settings.fonts) ? String(settings.fonts.family || '') : '';
+    const font = Object.prototype.hasOwnProperty.call(FUNNEL_FONTS, famKey) ? FUNNEL_FONTS[famKey] : null;
+    if (font && font.css) {
+      if (font.google) {
+        out += '\n<link rel="preconnect" href="https://fonts.googleapis.com"/>' +
+          '<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin="anonymous"/>' +
+          '<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=' + font.google + '&amp;display=swap"/>';
+      }
+      out += '\n<style id="lb-funnel-font">body,main,input,select,textarea,button{font-family:' + font.css + '}</style>';
+    }
+    if (typeof settings.custom_head_code === 'string' && settings.custom_head_code) {
+      out += '\n' + settings.custom_head_code;
+    }
+  } catch (err) {
+    // Fail-open: settings trouble must never 500 a public page.
+    return out;
+  }
+  return out;
+}
+
+// Body-end emissions: the two checkout-enhancement runtimes (each emitted only
+// when its toggle is on) and the funnel-level body-end code escape hatch.
+export function funnelSettingsBodyEnd(settings) {
+  let out = '';
+  try {
+    if (!isPlainObject(settings)) return '';
+    const co = isPlainObject(settings.checkout) ? settings.checkout : {};
+    if (co.address_autocomplete === true) {
+      const key = typeof co.maps_api_key === 'string' ? co.maps_api_key.trim() : '';
+      // No key stored → emit nothing; the plain inputs keep working (fail-open).
+      if (key) out += '\n' + googleAddressScript(key);
+    }
+    if (co.intl_phone === true) {
+      out += '\n' + intlPhoneScript();
+    }
+    if (typeof settings.custom_body_end_code === 'string' && settings.custom_body_end_code) {
+      out += '\n' + settings.custom_body_end_code;
+    }
+  } catch (err) {
+    return out;
+  }
+  return out;
+}
+
+// ── Google address autocomplete ─────────────────────────────────────────────
+// Loads the Maps JS + Places library ONLY when the page actually has a
+// [name=address1] input (so non-checkout pages never load Google), attaches
+// an Autocomplete, and on selection fills address1/city/state/postal/country
+// by setting .value and dispatching input+change+blur — the checkout
+// template's own sync logic reacts to those events naturally; no existing
+// function is ever called directly. Every step is try/guarded: any failure
+// leaves the plain inputs working.
+//
+// The stored key is embedded after encodeURIComponent (plus %27 for the
+// single quote, which encodeURIComponent leaves alone) — the resulting
+// charset cannot close the string literal, the script tag, or the URL.
+function googleAddressScript(key) {
+  const encKey = encodeURIComponent(String(key)).replace(/'/g, '%27');
+  const lines = [
+    '(function(){try{',
+    "function ready(fn){if(document.readyState!=='loading'){fn();}else{document.addEventListener('DOMContentLoaded',fn);}}",
+    'ready(function(){try{',
+    "var input=document.querySelector('[name=address1]');",
+    'if(!input){return;}',
+    'window.__fosPlacesInit=function(){try{',
+    'if(!window.google||!window.google.maps||!window.google.maps.places){return;}',
+    "var ac=new window.google.maps.places.Autocomplete(input,{types:['address']});",
+    "ac.addListener('place_changed',function(){try{",
+    'var place=ac.getPlace();',
+    'if(!place||!place.address_components){return;}',
+    'var parts={};',
+    'for(var i=0;i<place.address_components.length;i++){',
+    'var comp=place.address_components[i];',
+    'for(var j=0;j<comp.types.length;j++){parts[comp.types[j]]=comp;}',
+    '}',
+    "function pick(type,useShort){var c=parts[type];if(!c){return '';}var v=useShort?c.short_name:c.long_name;return v?String(v):'';}",
+    "function fire(el){try{el.dispatchEvent(new Event('input',{bubbles:true}));}catch(e){}try{el.dispatchEvent(new Event('change',{bubbles:true}));}catch(e){}try{el.dispatchEvent(new Event('blur'));}catch(e){}}",
+    'function setField(name,val){',
+    'if(!val){return;}',
+    "var el=document.querySelector('[name='+name+']');",
+    'if(!el){return;}',
+    "if(el.tagName==='SELECT'){",
+    'var ok=false;',
+    'for(var k=0;k<el.options.length;k++){if(el.options[k].value===val){ok=true;break;}}',
+    'if(!ok){return;}',
+    '}',
+    'el.value=val;',
+    'fire(el);',
+    '}',
+    "var num=pick('street_number',false);",
+    "var route=pick('route',false);",
+    "var line1=num&&route?num+' '+route:(route||num);",
+    'if(!line1&&place.name){line1=String(place.name);}',
+    "setField('address1',line1);",
+    "var city=pick('locality',false)||pick('postal_town',false)||pick('sublocality_level_1',false);",
+    "setField('city',city);",
+    "setField('state',pick('administrative_area_level_1',true));",
+    "setField('postal',pick('postal_code',false));",
+    "setField('country',pick('country',true));",
+    '}catch(e){}});',
+    '}catch(e){}};',
+    "var s=document.createElement('script');",
+    's.async=true;s.defer=true;',
+    "s.src='https://maps.googleapis.com/maps/api/js?key=" + encKey + "&libraries=places&callback=__fosPlacesInit';",
+    's.onerror=function(){};',
+    '(document.head||document.body).appendChild(s);',
+    '}catch(e){}});',
+    '}catch(e){}})();',
+  ];
+  return '<script id="lb-gmaps-autocomplete">' + lines.join('\n') + '</script>';
+}
+
+// ── International phone input ───────────────────────────────────────────────
+// No external dependency. Prepends a country <select> (flag emoji + dial code)
+// before [name=phone] — replacing the checkout template's static 🇺🇸 +1 chip
+// when present — updates the input's placeholder with a per-country example,
+// and on blur prefixes the dial code into the value (dispatching input+change
+// so the template's own session sync picks it up). Values here are a server
+// constant with a JSON-safe charset (no quotes/backslashes/angle brackets),
+// so JSON.stringify embeds them without generating a single escape.
+const INTL_PHONE_COUNTRIES = [
+  ['US', '🇺🇸', '+1', '(555) 123-4567'],
+  ['CA', '🇨🇦', '+1', '(555) 123-4567'],
+  ['GB', '🇬🇧', '+44', '7911 123456'],
+  ['IT', '🇮🇹', '+39', '312 345 6789'],
+  ['AU', '🇦🇺', '+61', '412 345 678'],
+  ['DE', '🇩🇪', '+49', '1512 3456789'],
+  ['FR', '🇫🇷', '+33', '6 12 34 56 78'],
+  ['ES', '🇪🇸', '+34', '612 34 56 78'],
+  ['MX', '🇲🇽', '+52', '55 1234 5678'],
+  ['BR', '🇧🇷', '+55', '11 91234 5678'],
+  ['NL', '🇳🇱', '+31', '6 12345678'],
+  ['NZ', '🇳🇿', '+64', '21 123 4567'],
+  ['IE', '🇮🇪', '+353', '85 123 4567'],
+  ['PT', '🇵🇹', '+351', '912 345 678'],
+  ['CH', '🇨🇭', '+41', '78 123 45 67'],
+  ['AT', '🇦🇹', '+43', '664 123456'],
+  ['BE', '🇧🇪', '+32', '470 12 34 56'],
+  ['SE', '🇸🇪', '+46', '70 123 45 67'],
+  ['NO', '🇳🇴', '+47', '406 12 345'],
+  ['DK', '🇩🇰', '+45', '32 12 34 56'],
+  ['FI', '🇫🇮', '+358', '41 2345678'],
+  ['PL', '🇵🇱', '+48', '512 345 678'],
+  ['CZ', '🇨🇿', '+420', '601 123 456'],
+  ['GR', '🇬🇷', '+30', '691 234 5678'],
+  ['RO', '🇷🇴', '+40', '712 034 567'],
+  ['HU', '🇭🇺', '+36', '20 123 4567'],
+  ['JP', '🇯🇵', '+81', '90 1234 5678'],
+  ['KR', '🇰🇷', '+82', '10 1234 5678'],
+  ['SG', '🇸🇬', '+65', '8123 4567'],
+  ['AE', '🇦🇪', '+971', '50 123 4567'],
+  ['ZA', '🇿🇦', '+27', '71 123 4567'],
+  ['IN', '🇮🇳', '+91', '81234 56789'],
+];
+
+function intlPhoneScript() {
+  const lines = [
+    '(function(){try{',
+    'var LIST=' + JSON.stringify(INTL_PHONE_COUNTRIES) + ';',
+    "function ready(fn){if(document.readyState!=='loading'){fn();}else{document.addEventListener('DOMContentLoaded',fn);}}",
+    'ready(function(){try{',
+    "var input=document.querySelector('[name=phone]');",
+    'if(!input){return;}',
+    "var sel=document.createElement('select');",
+    "sel.id='lb-intl-dial';",
+    "sel.setAttribute('autocomplete','off');",
+    "sel.setAttribute('aria-label','Country code');",
+    "sel.style.border='1.5px solid #cfcfcf';",
+    "sel.style.borderRight='0';",
+    "sel.style.borderRadius='8px 0 0 8px';",
+    "sel.style.background='#fff';",
+    "sel.style.color='#374151';",
+    "sel.style.fontSize='15px';",
+    "sel.style.padding='0 8px';",
+    "sel.style.maxWidth='110px';",
+    'for(var i=0;i<LIST.length;i++){',
+    "var opt=document.createElement('option');",
+    'opt.value=LIST[i][0];',
+    "opt.setAttribute('data-dial',LIST[i][2]);",
+    "opt.setAttribute('data-ph',LIST[i][3]);",
+    "opt.textContent=LIST[i][1]+' '+LIST[i][2];",
+    'sel.appendChild(opt);',
+    '}',
+    'var parent=input.parentNode;',
+    'var pre=null;',
+    'if(parent){',
+    'var kids=parent.children;',
+    'for(var k=0;k<kids.length;k++){',
+    "var cn=String(kids[k].className||'');",
+    "if(cn.indexOf('ckt-phone-prefix')>-1){pre=kids[k];break;}",
+    '}',
+    '}',
+    'if(pre&&parent){parent.replaceChild(sel,pre);}',
+    'else if(parent){parent.insertBefore(sel,input);}',
+    'function current(){return sel.options[sel.selectedIndex];}',
+    'function applyPlaceholder(){try{',
+    'var opt=current();if(!opt){return;}',
+    "input.placeholder=opt.getAttribute('data-dial')+' '+opt.getAttribute('data-ph');",
+    '}catch(e){}}',
+    "sel.addEventListener('change',function(){applyPlaceholder();try{input.focus();}catch(e){}});",
+    'applyPlaceholder();',
+    "input.addEventListener('blur',function(){try{",
+    "var v=String(input.value||'');",
+    "var compact='';",
+    "for(var i=0;i<v.length;i++){if(v.charAt(i)!==' '){compact=compact+v.charAt(i);}}",
+    'if(!compact){return;}',
+    "if(compact.charAt(0)==='+'){return;}",
+    'var opt=current();if(!opt){return;}',
+    "input.value=opt.getAttribute('data-dial')+' '+v;",
+    "try{input.dispatchEvent(new Event('input',{bubbles:true}));}catch(e){}",
+    "try{input.dispatchEvent(new Event('change',{bubbles:true}));}catch(e){}",
+    '}catch(e){}});',
+    '}catch(e){}});',
+    '}catch(e){}})();',
+  ];
+  return '<script id="lb-intl-phone">' + lines.join('\n') + '</script>';
+}

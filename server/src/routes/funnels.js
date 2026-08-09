@@ -61,6 +61,13 @@ async function createTables() {
   await pgQuery(
     `CREATE UNIQUE INDEX IF NOT EXISTS uq_funnels_slug ON funnels (slug) WHERE NOT archived`
   );
+  // FUNNEL-SETTINGS slice: additive operator settings blob (brand colors,
+  // asset URLs, checkout-enhancement toggles, fonts, funnel-level code).
+  // ALTER … IF NOT EXISTS so existing databases pick the column up on the
+  // next request, same pattern as the CREATE TABLE IF NOT EXISTS above.
+  await pgQuery(
+    `ALTER TABLE funnels ADD COLUMN IF NOT EXISTS settings JSONB DEFAULT '{}'`
+  );
 
   await pgQuery(`
     CREATE TABLE IF NOT EXISTS funnel_pages (
@@ -210,6 +217,44 @@ function validateBlocks(blocks) {
   return scanValue(blocks, 0);
 }
 
+// FUNNEL-SETTINGS slice: bound + scan the operator settings object before it
+// is stored. Two-tier bound (DECISION MADE): the funnel-level code fields
+// (custom_head_code / custom_body_end_code) follow the ESCAPE-HATCH posture —
+// 2MB each, verbatim operator code — while everything else in the blob
+// (colors, urls, toggles, fonts) must fit in 32KB serialized, so a runaway
+// client can never bloat every public render's funnel row. Same proto-key
+// scan as blocks — this exact payload is what renderPageHtml will walk.
+const SETTINGS_CODE_FIELDS = ['custom_head_code', 'custom_body_end_code'];
+const SETTINGS_CODE_MAX = ESCAPE_HATCH_MAX; // 2MB, same cap as page escape hatches
+const SETTINGS_MAX_BYTES = 32 * 1024; // 32KB for the structured remainder
+
+export function validateFunnelSettings(settings) {
+  if (!isPlainObject(settings)) return 'settings must be an object';
+  const protoErr = scanValue(settings, 0);
+  if (protoErr) return `settings: ${protoErr}`;
+  for (const field of SETTINGS_CODE_FIELDS) {
+    if (settings[field] !== undefined) {
+      if (typeof settings[field] !== 'string')
+        return `settings.${field} must be a string`;
+      if (Buffer.byteLength(settings[field], 'utf8') > SETTINGS_CODE_MAX)
+        return `settings.${field} exceeds the 2MB limit`;
+    }
+  }
+  const rest = {};
+  for (const key of Object.keys(settings)) {
+    if (!SETTINGS_CODE_FIELDS.includes(key)) rest[key] = settings[key];
+  }
+  let serialized;
+  try {
+    serialized = JSON.stringify(rest);
+  } catch {
+    return 'settings must be serializable JSON';
+  }
+  if (Buffer.byteLength(serialized, 'utf8') > SETTINGS_MAX_BYTES)
+    return 'settings exceed the 32KB limit';
+  return null;
+}
+
 // Escape LIKE metacharacters so ?q=% cannot act as a wildcard.
 const escapeLike = (s) => String(s).replace(/[\\%_]/g, '\\$&');
 
@@ -333,7 +378,7 @@ router.get('/:id', async (req, res) => {
   }
 });
 
-// PATCH /api/v1/funnels/:id — { name?, slug?, status?, default_page_id?, seo? }
+// PATCH /api/v1/funnels/:id — { name?, slug?, status?, default_page_id?, seo?, settings? }
 router.patch('/:id', async (req, res) => {
   try {
     await ensureTables();
@@ -404,6 +449,15 @@ router.patch('/:id', async (req, res) => {
       if (seoErr) return res.status(400).json({ error: `seo: ${seoErr}` });
       sets.push(`seo = $${i}`);
       params.push(body.seo); // postgres.js serializes JSONB itself — pass raw
+      i += 1;
+    }
+    if (body.settings !== undefined) {
+      // FUNNEL-SETTINGS slice: whole-object replace, same semantics as seo —
+      // the client reads the current blob, merges, and PATCHes it back.
+      const settingsErr = validateFunnelSettings(body.settings);
+      if (settingsErr) return res.status(400).json({ error: settingsErr });
+      sets.push(`settings = $${i}`);
+      params.push(body.settings); // raw object — postgres.js serializes JSONB
       i += 1;
     }
     if (!sets.length) return res.status(400).json({ error: 'No fields to update' });
