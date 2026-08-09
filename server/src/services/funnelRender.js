@@ -897,15 +897,19 @@ function sessErr(code){if(code==='pricing_unavailable')return 'Payment is tempor
 function embedErr(code){if(code==='gateway_not_configured')return 'Checkout is not fully set up yet. Please contact support.';if(code==='session_not_payable')return 'This checkout session has expired. Please refresh the page.';if(code==='gateway_error')return 'The payment provider is temporarily unavailable. Please try again shortly.';return 'We could not start the payment ('+code+').';}
 function mountEmbed(root,embed){try{var mount=root.querySelector('[data-fos-whop-mount]');if(!mount||!embed.whop_session_id){return;}
 /* REMOUNT primitive. Decoded from Whop's index.js: eh(node) SKIPS any node
-   whose data-whop-checkout-mounted is set, and a node's removal deregisters
-   its frame — so re-inserting a DEEP clone (old iframe child + mounted marker
-   riding along) yields a dead, unregistered frame. A SHALLOW clone with the
-   loader's two markers stripped is a genuinely fresh mount: the observer
-   (live after index.js's initial scan) creates AND registers the new frame
-   (identifiedFrames.set(id, iframe)) because the node id is read at creation. */
+   whose data-whop-checkout-mounted is set, so the clone must be SHALLOW with
+   the loader's markers stripped. And the id must be FRESH each generation:
+   replaceChild yields one mutation record whose ADD registers the new frame
+   under the node id and whose REMOVAL teardown then deletes by the old node's
+   identifier — with a reused id the delete wipes the registration that was
+   just made (verified live: fresh iframe, empty identifiedFrames). A unique
+   per-generation id makes the teardown delete only the OLD key. The submit
+   handler targets mount.id, never a hard-coded string. */
+var mountSeq=0;
 function activate(){var fresh=mount.cloneNode(false);
   fresh.removeAttribute('data-whop-checkout-mounted');
   fresh.removeAttribute('data-whop-checkout-identifier');
+  mountSeq+=1;fresh.id='puure-checkout-g'+mountSeq;
   mount.parentNode.replaceChild(fresh,mount);mount=fresh;}
 /* The embed ships a COMPLETE checkout of its own (dark, browser-locale, its own
    email + billing + price + TOS + CTA). Dropped into our page that is a second
@@ -1490,7 +1494,7 @@ const CKT_TEMPLATE_JS = `(function(){
           if(mount.scrollIntoView){mount.scrollIntoView({behavior:'smooth',block:'center'});}
           /* Awaited: the order is built from the session, so the address must
              be stored BEFORE the charge settles. */
-          syncCustomer().then(function(){window.wco.submit('puure-checkout');});
+          syncCustomer().then(function(){window.wco.submit(mount.id||'puure-checkout');});
           setTimeout(function(){done('If your card details are incomplete, correct them above and try again.');},8000);
         }catch(e){done('Could not submit the payment form.');}
         return;
