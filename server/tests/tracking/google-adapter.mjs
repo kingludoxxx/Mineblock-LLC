@@ -98,12 +98,15 @@ await sql`INSERT INTO user_roles (user_id, role_id) VALUES ('u_ga4_test', 'r_ga4
 const trackingAdminRouter = (await import('../../src/routes/trackingAdmin.js')).default;
 const trackingPublicRouter = (await import('../../src/routes/trackingPublic.js')).default;
 const { TRACKING_NETWORKS } = await import('../../src/routes/trackingAdmin.js');
-const { decryptSecret } = await import('../../src/services/gatewayConfigs.js');
+const { decryptSecret, encryptSecret } = await import('../../src/services/gatewayConfigs.js');
 const { ensureTrackingTables } = await import('../../src/services/trackingSchema.js');
 const { ensureCheckoutTables } = await import('../../src/services/checkoutSchema.js');
-const { firePurchaseConversion } = await import('../../src/services/trackingService.js');
+const { firePurchaseConversion, fireUpsellPurchaseConversion } = await import('../../src/services/trackingService.js');
 const { trackingHeadScript } = await import('../../src/services/trackingRuntime.js');
-const { ga4EventName, ga4ClientId, ga4CollectUrl, redactTokens } = await import('../../src/services/trackingDelivery.js');
+const {
+  ga4EventName, ga4ClientId, ga4CollectUrl, redactTokens,
+  ga4DebugActive, dryRunReason, deliverToPixel, runDelivery, retryable,
+} = await import('../../src/services/trackingDelivery.js');
 await ensureTrackingTables();
 await ensureCheckoutTables();
 
@@ -223,16 +226,28 @@ await wipe();
 
 // ── G2: google_ads — registered but DORMANT ─────────────────────────────────
 {
+  // review HIGH #2b: customer_id is this row's IDENTITY and must be validated,
+  // never free text. It may be ABSENT (staging credentials) but never garbage.
+  const junk = await req('PUT', `/${FID}/networks/google_ads`, { customer_id: '../../etc/passwd' });
+  check('G2 path-traversal customer_id → 400 invalid_customer_id',
+    junk.status === 400 && junk.j?.error?.code === 'invalid_customer_id', JSON.stringify(junk.j));
+  const short = await req('PUT', `/${FID}/networks/google_ads`, { customer_id: '712000123' });
+  check('G2 9-digit (Meta-pixel-shaped) customer_id → 400',
+    short.status === 400 && short.j?.error?.code === 'invalid_customer_id', JSON.stringify(short.j));
+  const staged = await req('PUT', `/${FID}/networks/google_ads`, { developer_token: 'DEVTOK_AAA111' });
+  check('G2 credentials may be staged with NO customer_id → 200', staged.status === 200, JSON.stringify(staged.j));
+
   const put = await req('PUT', `/${FID}/networks/google_ads`, {
     customer_id: '123-456-7890', conversion_action_id: '987654321',
     developer_token: 'DEVTOK_AAA111', refresh_token: 'RFTOK_BBB222',
   });
   const n = put.j?.data?.network;
-  check('G2 google_ads PUT accepted with NO id → 200', put.status === 200, JSON.stringify(put.j));
+  check('G2 google_ads PUT → 200', put.status === 200, JSON.stringify(put.j));
   check('G2 GET/PUT view says not_active', n?.not_active === true, JSON.stringify(n));
   check('G2 new google_ads row lands DISABLED', n?.enabled === false, JSON.stringify(n?.enabled));
-  check('G2 plain fields round-trip',
-    n?.customer_id === '123-456-7890' && n?.conversion_action_id === '987654321', JSON.stringify(n));
+  check('G2 dashed customer_id NORMALIZED to canonical 10 digits',
+    n?.customer_id === '1234567890' && n?.pixel_id === '1234567890', JSON.stringify(n));
+  check('G2 conversion_action_id round-trips', n?.conversion_action_id === '987654321', JSON.stringify(n));
   check('G2 both tokens masked as *_set',
     n?.developer_token_set === true && n?.refresh_token_set === true
     && n?.developer_token === undefined && n?.refresh_token === undefined, JSON.stringify(n));
@@ -245,8 +260,9 @@ await wipe();
     JSON.stringify(Object.keys(cfg)));
   check('G2 tokens decrypt back',
     decryptSecret(cfg.developer_token) === 'DEVTOK_AAA111' && decryptSecret(cfg.refresh_token) === 'RFTOK_BBB222');
-  check('G2 identifiers stored in the CLEAR (not secrets)',
-    cfg.customer_id === '123-456-7890' && cfg.conversion_action_id === '987654321', JSON.stringify(cfg));
+  check('G2 conversion_action_id stored in the CLEAR (not a secret)',
+    cfg.conversion_action_id === '987654321', JSON.stringify(cfg));
+  check('G2 customer_id stored canonical in the id column', rows[0]?.pixel_id === '1234567890', rows[0]?.pixel_id);
   check('G2 dormant row is s2s (never a browser mode)', rows[0]?.mode === 's2s', rows[0]?.mode);
 
   const get = await req('GET', `/${FID}/networks/google_ads`);
@@ -433,7 +449,282 @@ const seedPaid = async (suffix, funnelId, total = 49.5) => {
   check('G8 runtime still emits the meta loader (unchanged)', head.includes('fbevents.js'));
 }
 
+// ═══ ADVERSARIAL-REVIEW FIXES ═══════════════════════════════════════════════
+
+// ── R1 (HIGH #1): GA4 debug mode VALIDATES but does not INGEST ──────────────
+// Scoring a debug hit as 'sent' would burn the (pixel_id, event_id) claim and
+// dedupe that conversion away forever. It must not claim, not report sent, and
+// the SAME event must still deliver once the flag is off.
+{
+  const RID = 'fnl_ga4dbg';
+  ALL.push(RID);
+  await sql`DELETE FROM lb_pixels WHERE funnel_id = ${RID}`;
+  await sql`DELETE FROM lb_tracking_events WHERE funnel_id = ${RID}`;
+  await sql`DELETE FROM lb_postback_queue WHERE funnel_id = ${RID}`;
+  const MID2 = 'G-DBGCLAIM1';
+  await sql`DELETE FROM lb_tracking_sent WHERE pixel_id = ${MID2}`;
+  await sql`INSERT INTO lb_pixels (id, funnel_id, kind, pixel_id, mode, enabled, config)
+            VALUES ('px_ga4_dbgclaim', ${RID}, 'ga4', ${MID2}, 's2s', TRUE,
+                    ${sql.json({ api_secret: encryptSecret(SECRET) })})`;
+  const sid = await seedPaid('dbgclaim', RID, 77.25);
+
+  process.env.GA4_MP_DEBUG = '1';
+  check('R1 ga4DebugActive() true in development', ga4DebugActive() === true);
+  check('R1 dryRunReason names the dry run',
+    dryRunReason({ kind: 'ga4' }) === 'debug_mode_no_ingest', dryRunReason({ kind: 'ga4' }));
+  check('R1 a meta row is NOT a dry run', dryRunReason({ kind: 'meta_pixel' }) === '');
+  mpMode = 204;                       // a VALID payload: debug answers with NO validationMessages
+  const before = hits.length;
+  const rDbg = await firePurchaseConversion(sid, { source: 'webhook' });
+  check('R1 debug fire returns debug_validated (NOT sent)',
+    rDbg.results?.[0]?.result === 'debug_validated', JSON.stringify(rDbg.results));
+  check('R1 the validation hit WAS made', hits.length === before + 1, String(hits.length - before));
+  const claim0 = await sql`SELECT COUNT(*)::int AS n FROM lb_tracking_sent WHERE pixel_id = ${MID2} AND event_id = ${'pur_' + sid}`;
+  check('R1 NO claim row was burned', claim0[0].n === 0, JSON.stringify(claim0[0]));
+  const ev0 = await sql`SELECT status, error FROM lb_tracking_events WHERE funnel_id = ${RID} AND event_id = ${'pur_' + sid}`;
+  check('R1 ledger row is skipped/debug_mode_no_ingest (never sent)',
+    ev0[0]?.status === 'skipped' && ev0[0]?.error === 'debug_mode_no_ingest', JSON.stringify(ev0[0]));
+
+  // A queued row must be HELD, not settled 'done', while debug is on.
+  await sql`INSERT INTO lb_postback_queue (id, funnel_id, scope_id, status, envelope, pixel_row_id, attempts, next_at, created_at)
+            VALUES ('pbq_dbghold', ${RID}, ${RID + ':px_ga4_dbgclaim'}, 'queued',
+                    ${sql.json({ event_name: 'Purchase', event_id: 'pur_held_1', custom_data: { value: 5, currency: 'USD', order_id: 'co_held_1' }, idk: ['em'] })},
+                    'px_ga4_dbgclaim', 1, NOW() - INTERVAL '1 minute', NOW())`;
+  const drainDbg = await runDelivery({ limit: 50 });
+  const heldRow = await sql`SELECT status, last_error FROM lb_postback_queue WHERE id = 'pbq_dbghold'`;
+  check('R1 a queued row is HELD (still queued), never marked done under debug',
+    heldRow[0]?.status === 'queued' && heldRow[0]?.last_error === 'held:debug_mode_no_ingest',
+    JSON.stringify(heldRow[0]) + JSON.stringify(drainDbg));
+
+  // Flag OFF → the very same event actually delivers.
+  delete process.env.GA4_MP_DEBUG;
+  check('R1 ga4DebugActive() false once unset', ga4DebugActive() === false);
+  const before2 = hits.length;
+  const rLive = await firePurchaseConversion(sid, { source: 'webhook' });
+  check('R1 SAME event delivers after the flag is off (not deduped away)',
+    rLive.results?.[0]?.result === 'sent', JSON.stringify(rLive.results));
+  check('R1 a real MP hit was made', hits.length === before2 + 1, String(hits.length - before2));
+  const claim1 = await sql`SELECT COUNT(*)::int AS n FROM lb_tracking_sent WHERE pixel_id = ${MID2} AND event_id = ${'pur_' + sid}`;
+  check('R1 the claim is taken only by the REAL send', claim1[0].n === 1, JSON.stringify(claim1[0]));
+
+  // production refuses the flag outright
+  process.env.GA4_MP_DEBUG = '1';
+  process.env.NODE_ENV = 'production';
+  check('R1 GA4_MP_DEBUG is REFUSED in production', ga4DebugActive() === false);
+  process.env.NODE_ENV = 'development';
+  delete process.env.GA4_MP_DEBUG;
+  await sql`DELETE FROM lb_postback_queue WHERE funnel_id = ${RID}`;
+}
+
+// ── R2 (HIGH #2): a colliding pixel_id must not let an UNWIRED kind steal the
+// claim and silently suppress the real Meta purchase.
+{
+  const CID = 'fnl_ga4coll';
+  ALL.push(CID);
+  const SHARED = '7120001234';   // legal Meta pixel id AND a legal 10-digit Google customer id
+  await sql`DELETE FROM lb_pixels WHERE funnel_id = ${CID}`;
+  await sql`DELETE FROM lb_tracking_events WHERE funnel_id = ${CID}`;
+  await sql`DELETE FROM lb_tracking_sent WHERE pixel_id = ${SHARED}`;
+  // google_ads inserted FIRST so serverPixels hands it to the loop FIRST —
+  // the adversarial order, where a claim-before-dispatch bug would fire.
+  await sql`INSERT INTO lb_pixels (id, funnel_id, kind, pixel_id, mode, enabled, config)
+            VALUES ('px_coll_gads', ${CID}, 'google_ads', ${SHARED}, 's2s', TRUE, ${sql.json({ conversion_action_id: '1' })})`;
+  await sql`INSERT INTO lb_pixels (id, funnel_id, kind, pixel_id, mode, enabled, config)
+            VALUES ('px_coll_meta', ${CID}, 'meta_pixel', ${SHARED}, 's2s', TRUE, ${sql.json({ capi_token: 'META_PLAIN_TOK' })})`;
+  const order = await sql`SELECT kind FROM lb_pixels WHERE funnel_id = ${CID} AND enabled = TRUE AND mode IN ('s2s','hybrid')`;
+  check('R2 fixture: the UNWIRED kind is served first (adversarial order)',
+    order[0]?.kind === 'google_ads', JSON.stringify(order.map((x) => x.kind)));
+
+  // Point the Meta sender at the mock too, so the real send can succeed.
+  process.env.TRACKING_RELAY_OVERRIDE_URL = `http://127.0.0.1:${MP_PORT}/meta/events`;
+  const sid = await seedPaid('coll', CID, 31);
+  const r = await firePurchaseConversion(sid, { source: 'webhook' });
+  delete process.env.TRACKING_RELAY_OVERRIDE_URL;
+  const byKind = Object.fromEntries((r.results || []).map((x, i) => [order[i]?.kind, x.result]));
+  check('R2 the UNWIRED google_ads row dead-letters kind_not_wired',
+    byKind.google_ads === 'dead:kind_not_wired', JSON.stringify(r.results));
+  check('R2 the REAL Meta purchase still DELIVERS (claim not stolen)',
+    byKind.meta_pixel === 'sent', JSON.stringify(r.results));
+  const claims = await sql`SELECT COUNT(*)::int AS n FROM lb_tracking_sent WHERE pixel_id = ${SHARED} AND event_id = ${'pur_' + sid}`;
+  check('R2 exactly ONE claim row exists, and Meta owns it', claims[0].n === 1, JSON.stringify(claims[0]));
+}
+
+// ── R3 (HIGH #3): one poisoned queue row must not abort the drain tick ──────
+{
+  const PID = 'fnl_ga4drain';        // unique (funnel_id, kind) ⇒ one ga4 row per funnel
+  const PID2 = 'fnl_ga4drain2';
+  ALL.push(PID, PID2);
+  await sql`DELETE FROM lb_pixels WHERE funnel_id = ANY(${[PID, PID2]})`;
+  await sql`DELETE FROM lb_postback_queue WHERE funnel_id = ANY(${[PID, PID2]})`;
+  await sql`DELETE FROM lb_tracking_events WHERE funnel_id = ANY(${[PID, PID2]})`;
+  // POISON: a row whose settle overflows INT on `attempts` — the settle UPDATE
+  // throws INSIDE the per-row body, which is exactly the shape that used to
+  // kill the tick and strand the row in 'sending' for 30 minutes.
+  await sql`INSERT INTO lb_pixels (id, funnel_id, kind, pixel_id, mode, enabled, config)
+            VALUES ('px_drain_bad', ${PID}, 'ga4', 'G-DRAINBAD1', 's2s', TRUE, '{}')`;
+  await sql`INSERT INTO lb_pixels (id, funnel_id, kind, pixel_id, mode, enabled, config)
+            VALUES ('px_drain_good', ${PID2}, 'ga4', 'G-DRAINGOOD', 's2s', TRUE,
+                    ${sql.json({ api_secret: encryptSecret(SECRET) })})`;
+  await sql`INSERT INTO lb_postback_queue (id, funnel_id, scope_id, status, envelope, pixel_row_id, attempts, next_at, created_at)
+            VALUES ('pbq_poison', ${PID}, ${PID + ':px_drain_bad'}, 'queued',
+                    ${sql.json({ event_name: 'Purchase', event_id: 'pur_poison', custom_data: { value: 1, currency: 'USD', order_id: 'co_poison' }, idk: ['em'] })},
+                    'px_drain_bad', 2147483647, NOW() - INTERVAL '10 minutes', NOW())`;
+  await sql`INSERT INTO lb_postback_queue (id, funnel_id, scope_id, status, envelope, pixel_row_id, attempts, next_at, created_at)
+            VALUES ('pbq_good', ${PID2}, ${PID2 + ':px_drain_good'}, 'queued',
+                    ${sql.json({ event_name: 'Purchase', event_id: 'pur_drain_good', custom_data: { value: 9, currency: 'USD', order_id: 'co_drain_good' }, idk: ['em'] })},
+                    'px_drain_good', 1, NOW() - INTERVAL '5 minutes', NOW())`;
+  mpMode = 204;
+  const before = hits.length;
+  const out = await runDelivery({ limit: 50 });   // poisoned row is FIRST (older next_at)
+  check('R3 the tick SURVIVED a throwing row', out && out.due === 2, JSON.stringify(out));
+  check('R3 the poisoned row was counted as errored', out.errored === 1, JSON.stringify(out));
+  const poison = await sql`SELECT status, last_error FROM lb_postback_queue WHERE id = 'pbq_poison'`;
+  check('R3 the poisoned row SETTLED (never stranded in sending)',
+    poison[0]?.status === 'dead' && String(poison[0]?.last_error || '').startsWith('internal:'),
+    JSON.stringify(poison[0]));
+  const good = await sql`SELECT status FROM lb_postback_queue WHERE id = 'pbq_good'`;
+  check('R3 the GOOD row still processed in the same tick', good[0]?.status === 'done', JSON.stringify(good[0]));
+  check('R3 the good row really hit MP', hits.length === before + 1, String(hits.length - before));
+}
+
+// ── R4 (HIGH #3b): a malformed GA4_MP_OVERRIDE_URL is rejected at module load
+{
+  const { spawnSync } = await import('child_process');
+  const mod = new URL('../../src/services/trackingDelivery.js', import.meta.url).pathname;
+  const script = `import { ga4CollectUrl } from ${JSON.stringify(mod)};\nconsole.log(ga4CollectUrl('G-TEST1234','SEK'));`;
+  const child = spawnSync(process.execPath, ['--input-type=module', '-e', script], {
+    env: { ...process.env, GA4_MP_OVERRIDE_URL: 'http://not a url:::/x', GA4_MP_DEBUG: '' },
+    encoding: 'utf8', timeout: 20000,
+  });
+  const stdout = String(child.stdout || '');
+  const stderr = String(child.stderr || '');
+  // NB the child prints dotenv banner noise before our line — match, don't anchor.
+  check('R4 a malformed override falls back to the REAL MP endpoint',
+    stdout.includes('https://www.google-analytics.com/mp/collect?measurement_id=G-TEST1234')
+    && !stdout.includes('not%20a%20url'), stdout.trim().slice(-200) + ' | ' + stderr.slice(-200));
+  check('R4 the child logged the refusal loudly',
+    /GA4_MP_OVERRIDE_URL is not a valid/.test(stdout + stderr), (stdout + stderr).slice(-200));
+}
+
+// ── R5 (MEDIUM #4): relayed custom_data is validated, not trusted ───────────
+{
+  const VID2 = 'fnl_ga4san';
+  ALL.push(VID2);
+  await sql`DELETE FROM lb_pixels WHERE funnel_id = ${VID2}`;
+  await sql`DELETE FROM lb_tracking_sent WHERE pixel_id = 'G-SANITIZE1'`;
+  const px = { id: 'px_ga4_san', funnel_id: VID2, kind: 'ga4', pixel_id: 'G-SANITIZE1', mode: 's2s',
+    config: { api_secret: encryptSecret(SECRET) } };
+  await sql`INSERT INTO lb_pixels (id, funnel_id, kind, pixel_id, mode, enabled, config)
+            VALUES (${px.id}, ${px.funnel_id}, 'ga4', ${px.pixel_id}, 's2s', TRUE, ${sql.json(px.config)})`;
+  mpMode = 204;
+  const before = hits.length;
+  await deliverToPixel({
+    funnelId: VID2, pixel: px, eventName: 'Purchase', eventId: 'pur_san_1',
+    userData: { em: 'x' }, idk: ['em'],
+    customData: { value: 'not-a-number', currency: 'US', order_id: 'co_san_1', items: [{ evil: '<script>' }] },
+    source: 'webhook',
+  });
+  const p = hits[hits.length - 1]?.payload || {};
+  const prm = p.events?.[0]?.params || {};
+  check('R5 one hit made', hits.length === before + 1, String(hits.length - before));
+  check('R5 NaN value is OMITTED, never sent as null', prm.value === undefined && !('value' in prm), JSON.stringify(prm));
+  check('R5 a non-ISO currency is OMITTED', prm.currency === undefined, JSON.stringify(prm));
+  check('R5 items[] is NEVER passed through', prm.items === undefined
+    && !JSON.stringify(p).includes('evil'), JSON.stringify(prm));
+  // an explicit 0 is legitimate and must survive
+  const before2 = hits.length;
+  await deliverToPixel({
+    funnelId: VID2, pixel: px, eventName: 'Purchase', eventId: 'pur_san_zero',
+    userData: { em: 'x' }, idk: ['em'],
+    customData: { value: 0, currency: 'usd', order_id: 'co_san_zero' }, source: 'webhook',
+  });
+  const prm2 = hits[hits.length - 1]?.payload?.events?.[0]?.params || {};
+  check('R5 an explicit 0 value survives', prm2.value === 0, JSON.stringify(prm2));
+  check('R5 lowercase currency is normalized to USD', prm2.currency === 'USD', JSON.stringify(prm2));
+  check('R5 second hit made', hits.length === before2 + 1);
+
+  // client_id must NOT come from an attacker-chosen order_id on relayed events
+  const forged = ga4ClientId({ event_id: 'cl_forged', custom_data: { order_id: 'co_ga4_ok_victim' } });
+  const victim = ga4ClientId({ event_id: 'pur_co_ga4_ok_victim', custom_data: { order_id: 'co_ga4_ok_victim' } });
+  check('R5 a cl_ beacon CANNOT graft onto a real order\'s GA4 user',
+    forged !== victim && /^\d+\.\d+$/.test(forged), `${forged} vs ${victim}`);
+  check('R5 envelope.vid wins when present (ready for the GTM phase)',
+    ga4ClientId({ vid: 'v_abc', event_id: 'cl_x', custom_data: { order_id: 'co_1' } })
+    === ga4ClientId({ vid: 'v_abc' }), 'vid not preferred');
+
+  // ── R6 (LOW #12): the no_client_id failure path, end to end ──────────────
+  const before3 = hits.length;
+  const rNo = await deliverToPixel({
+    funnelId: VID2, pixel: px, eventName: 'Purchase', eventId: '',
+    userData: { em: 'x' }, idk: ['em'], customData: {}, source: 'webhook',
+  });
+  check('R6 no derivable client_id → dead:no_client_id', rNo === 'dead:no_client_id', String(rNo));
+  check('R6 nothing was sent', hits.length === before3, `delta=${hits.length - before3}`);
+}
+
+// ── R7 (MEDIUM #5): an upsell shares the parent's GA4 user/session ──────────
+{
+  const UID = 'fnl_ga4ups';
+  ALL.push(UID);
+  const MID3 = 'G-UPSELL0001';
+  await sql`DELETE FROM lb_pixels WHERE funnel_id = ${UID}`;
+  await sql`DELETE FROM lb_tracking_sent WHERE pixel_id = ${MID3}`;
+  await sql`INSERT INTO lb_pixels (id, funnel_id, kind, pixel_id, mode, enabled, config)
+            VALUES ('px_ga4_ups', ${UID}, 'ga4', ${MID3}, 's2s', TRUE,
+                    ${sql.json({ api_secret: encryptSecret(SECRET) })})`;
+  const sid = await seedPaid('ups', UID, 60);
+  mpMode = 204;
+  hits.length = 0;
+  await firePurchaseConversion(sid, { source: 'webhook' });
+  const rUp = await fireUpsellPurchaseConversion(sid, 'uc_w4', 19, { source: 'webhook' });
+  check('R7 the upsell fired', rUp.ok === true && rUp.fired === 1, JSON.stringify(rUp));
+  check('R7 two MP hits', hits.length === 2, String(hits.length));
+  const [main, up] = hits.map((h) => h.payload);
+  check('R7 upsell shares the parent client_id (same GA4 user)',
+    main.client_id === up.client_id, `${main?.client_id} vs ${up?.client_id}`);
+  check('R7 upsell shares the parent session_id',
+    main.events[0].params.session_id === up.events[0].params.session_id);
+  check('R7 but transaction_id still distinguishes the two conversions',
+    main.events[0].params.transaction_id === `pur_${sid}`
+    && up.events[0].params.transaction_id === `pur_${sid}_u_uc_w4`,
+    JSON.stringify([main.events[0].params.transaction_id, up.events[0].params.transaction_id]));
+}
+
+// ── R8 (LOWs #7, #9, #10): redaction breadth, unknown kinds, 3xx terminal ───
+{
+  check('R8 redactTokens masks developer_token',
+    !redactTokens('{"developer_token":"DEVTOK_AAA111"}').includes('DEVTOK_AAA111'),
+    redactTokens('{"developer_token":"DEVTOK_AAA111"}'));
+  check('R8 redactTokens masks refresh_token in a URL',
+    !redactTokens('https://x/y?refresh_token=RFTOK_BBB222&z=1').includes('RFTOK_BBB222'),
+    redactTokens('https://x/y?refresh_token=RFTOK_BBB222&z=1'));
+  check('R8 redaction preserves the following query param',
+    redactTokens('https://x/y?refresh_token=RF&z=1').includes('z=1'),
+    redactTokens('https://x/y?refresh_token=RF&z=1'));
+  check('R8 redactTokens masks capi_token', !redactTokens('capi_token=ABC123').includes('ABC123'));
+  check('R8 redaction is idempotent',
+    redactTokens(redactTokens('api_secret=XYZ')) === redactTokens('api_secret=XYZ'),
+    redactTokens(redactTokens('api_secret=XYZ')));
+  check('R8 a 3xx is TERMINAL (redirect:manual is deliberate)', retryable({ status: 302 }) === false);
+  check('R8 a 5xx is still retryable', retryable({ status: 500 }) === true);
+
+  const UKF = 'fnl_ga4unk';
+  ALL.push(UKF);
+  await sql`DELETE FROM lb_pixels WHERE funnel_id = ${UKF}`;
+  await sql`INSERT INTO lb_pixels (id, funnel_id, kind, pixel_id, mode, enabled, config)
+            VALUES ('px_unk_1', ${UKF}, 'klingon_pixel', '999', 's2s', TRUE, '{}')`;
+  const s = await req('GET', `/${UKF}/tracking/summary`);
+  check('R8 summary reports unknown kinds as a COUNT',
+    JSON.stringify(s.j?.data?.unknown_kinds) === '[{"kind":"klingon_pixel","rows":1}]',
+    JSON.stringify(s.j?.data?.unknown_kinds));
+  const s2 = await req('GET', `/${DID}/tracking/summary`);
+  check('R8 a healthy funnel reports an EMPTY unknown_kinds bucket',
+    Array.isArray(s2.j?.data?.unknown_kinds) && s2.j.data.unknown_kinds.length === 0,
+    JSON.stringify(s2.j?.data?.unknown_kinds));
+}
+
 // ── cleanup ─────────────────────────────────────────────────────────────────
+await sql`DELETE FROM lb_tracking_sent WHERE pixel_id IN ('G-DBGCLAIM1','7120001234','G-SANITIZE1','G-UPSELL0001','G-DRAINGOOD','G-DRAINBAD1')`;
 await wipe();
 await sql`DELETE FROM user_roles WHERE user_id = 'u_ga4_test'`;
 await sql`DELETE FROM roles WHERE id = 'r_ga4_test'`;

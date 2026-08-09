@@ -64,9 +64,15 @@ export const TRACKING_NETWORKS = {
     modes: ['s2s'],
     defaultMode: 's2s',
     readySecret: 'api_secret',
-    // Honest capability note, surfaced on every read (GA4 MP answers 204 to
-    // everything it accepts — see trackingDelivery.sendGa4).
-    deliveryNote: 'GA4 Measurement Protocol returns 204 for every accepted hit and gives NO per-event validation: a sent_24h count proves the hit was accepted by the endpoint, NOT that GA4 recorded the conversion. Validate payloads against the MP debug endpoint (GA4_MP_DEBUG=1).',
+    // Honest capability note, surfaced on every read. Two limitations the
+    // operator cannot see from the counters alone (review HIGH #1c + MEDIUM #6):
+    //   1. MP answers 204 to everything it accepts, so 'sent' means ACCEPTED,
+    //      not RECORDED; and the debug endpoint that would validate a payload
+    //      INGESTS NOTHING, so it must never be pointed at a live funnel.
+    //   2. The client_id is derived server-side (no gtag in this phase), so
+    //      GA4's user/session counts from this adapter do not join real browser
+    //      sessions — conversions are right, audience metrics are not.
+    deliveryNote: 'GA4 Measurement Protocol returns 204 for every accepted hit and gives NO per-event validation: sent_24h proves the endpoint ACCEPTED the hit, not that GA4 recorded the conversion. The MP debug endpoint (GA4_MP_DEBUG=1) only validates payload SHAPE — it records nothing and must never be enabled for a live funnel; it is refused outright in production. Also: this adapter derives its own client_id server-side, so GA4 user/session counts from it are NOT joinable to real browser sessions until the tag-manager phase ships gtag — transaction totals are accurate, audience/session metrics are not.',
   },
   // Google Ads — REGISTERED BUT DORMANT. The write surface accepts and stores
   // the credentials (encrypted) so an operator can stage them, but there is NO
@@ -76,14 +82,23 @@ export const TRACKING_NETWORKS = {
   google_ads: {
     network: 'google',
     secrets: ['developer_token', 'refresh_token'],
-    plain: ['customer_id', 'conversion_action_id'],
-    idField: 'pixel_id',
+    plain: ['conversion_action_id'],
+    // Review HIGH #2b: the customer id IS this row's identity, so it lives in
+    // the pixel_id column and is VALIDATED — it must never be a free-text
+    // field. Google Ads customer ids are exactly 10 digits, conventionally
+    // written 123-456-7890; dashes are stripped before validation and storage,
+    // so the stored form is canonical. idOptional means the id MAY BE ABSENT
+    // (credentials can be staged before the account id is known) — it does NOT
+    // mean 'anything goes': when present it must match idRe.
+    idField: 'customer_id',
+    idRe: /^\d{10}$/,
+    idNormalize: (v) => v.replace(/[-\s]/g, ''),
     idOptional: true,
     modes: ['s2s'],
     defaultMode: 's2s',
     defaultEnabled: false,
     notActive: true,
-    deliveryNote: 'Registered but NOT wired: credentials are stored, nothing is delivered. Enabling this row does not send conversions — a fire dead-letters as kind_not_wired.',
+    deliveryNote: 'Registered but NOT wired: credentials are stored, nothing is delivered. Enabling this row does not send conversions — a fire dead-letters as kind_not_wired without taking a delivery claim.',
   },
 };
 const DEFAULT_MODES = ['native', 's2s', 'hybrid'];
@@ -204,7 +219,10 @@ router.put('/:funnelId/networks/:kind', async (req, res) => {
     // generic pixel_id; both write the SAME column.
     const idField = idFieldOf(spec);
     const rawId = b[idField] !== undefined ? b[idField] : b.pixel_id;
-    const pixelId = rawId === undefined ? undefined : String(rawId || '').trim().slice(0, 64);
+    let pixelId = rawId === undefined ? undefined : String(rawId || '').trim().slice(0, 64);
+    // Normalize BEFORE validating and storing, so the stored id is canonical
+    // (google_ads: '123-456-7890' → '1234567890').
+    if (pixelId !== undefined && pixelId !== '' && spec.idNormalize) pixelId = spec.idNormalize(pixelId);
     if (pixelId !== undefined && pixelId !== '' && spec.idRe && !spec.idRe.test(pixelId)) {
       return res.status(400).json({ success: false, error: { code: invalidIdCode(spec) } });
     }
@@ -361,7 +379,28 @@ router.get('/:funnelId/tracking/summary', async (req, res) => {
         click_id_params: paramsByNetwork[spec.network] || [],
       };
     });
-    return res.json({ success: true, data: { networks } });
+    // Review LOW #9: rows can exist for kinds the registry does not know — a
+    // hand-inserted row, or a kind removed from the registry while its rows
+    // survive. They are invisible in `networks` (which iterates the REGISTRY),
+    // so the summary would silently under-report what is actually in the table.
+    // Report them as a COUNT ONLY: we can honestly say a row exists and that
+    // nothing delivers for it, and nothing more.
+    const unknownKinds = pixelRows
+      .filter((r) => !TRACKING_NETWORKS[r.kind])
+      .reduce((acc, r) => {
+        const hit = acc.find((x) => x.kind === r.kind);
+        if (hit) hit.rows++; else acc.push({ kind: r.kind, rows: 1 });
+        return acc;
+      }, []);
+    return res.json({
+      success: true,
+      data: {
+        networks,
+        // Empty in every healthy funnel. Non-empty = rows exist that NO adapter
+        // serves; a fire against one dead-letters as kind_not_wired.
+        unknown_kinds: unknownKinds,
+      },
+    });
   } catch (err) {
     console.error('[trackingAdmin] summary failed:', err.message);
     return res.status(500).json({ success: false, error: { code: 'internal_error' } });
