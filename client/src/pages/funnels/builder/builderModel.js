@@ -732,17 +732,34 @@ export function localInputFromIso(value) {
   return `${year}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`;
 }
 
+// Strips a SECONDS component (and any fraction) from a datetime-local string,
+// leaving `YYYY-MM-DDTHH:MM`. Anchored on the whole shape so it can only ever
+// remove a third `:SS` group — a naive `/:\d{2}$/` would eat the MINUTES off
+// `2026-06-15T12:00`.
+const LOCAL_SECONDS_TAIL_RE = /^(\d{4,}-\d{2}-\d{2}T\d{2}:\d{2}):\d{2}(?:\.\d+)?$/;
+
 /**
  * DST honesty check for a value the operator just picked.
  *
- * Twice a year a local wall-clock time is either impossible (the spring-forward
- * gap — 02:30 simply does not happen) or ambiguous (the fall-back hour happens
- * twice). `Date.parse` resolves both silently, so the picker would snap to a
- * different time than the one typed with no explanation. Round-tripping the
- * value detects it: if what comes back out is not what went in, the stored
- * instant is not the wall clock the operator asked for.
+ * WHAT THIS DETECTS: the spring-forward GAP. Once a year a local wall clock
+ * time simply does not happen (02:30 on the changeover date), and `Date.parse`
+ * resolves it silently to a different time — so the picker would snap an hour
+ * without explanation. Round-tripping catches it: what comes back out is not
+ * what went in.
  *
- * @returns {null|{stored:string}} null when the pick round-trips exactly.
+ * WHAT THIS DOES NOT DETECT, and the copy must not claim it does: the
+ * AMBIGUOUS fall-back hour. When 02:30 happens twice, both occurrences render
+ * back as the same local string, so the round trip is clean and nothing fires.
+ * Verified in Europe/Madrid — 2026-10-25T02:00, T02:30 and T01:30 all return
+ * null, and the stored instant is the FIRST (pre-change) occurrence. That is a
+ * real silent choice; it is simply not one this check can see.
+ *
+ * SECONDS ARE NOT AN ANOMALY. The picker is minute-resolution (step=60), so a
+ * value carrying `:30` seconds round-trips to a string one component shorter.
+ * Comparing raw would have raised a DST warning on every such value.
+ *
+ * @returns {null|{stored:string}} null when the pick round-trips to the same
+ *          wall-clock MINUTE.
  */
 export function localInputAnomaly(value) {
   const raw = typeof value === 'string' ? value.trim() : '';
@@ -750,7 +767,8 @@ export function localInputAnomaly(value) {
   const iso = isoFromLocalInput(raw);
   if (!iso) return null;
   const back = localInputFromIso(iso);
-  return back === raw ? null : { stored: back };
+  const atMinute = raw.replace(LOCAL_SECONDS_TAIL_RE, '$1');
+  return back === atMinute ? null : { stored: back };
 }
 
 /**

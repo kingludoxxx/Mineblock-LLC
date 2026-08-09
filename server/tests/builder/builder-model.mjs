@@ -744,6 +744,37 @@ ok(Object.isFrozen(WIRING_KEYS), 'F4: the floor is frozen — a caller cannot wi
   ok(moveWouldChangeColumns(reordered, 0, 1), 'F5 cols: a change in column ORDER is flagged too');
 }
 
+{
+  // F5-2. THE STALE-MESSAGE INVARIANT.
+  //
+  // The blocked-move prose names a specific before/after column set, so it
+  // must not outlive the data it describes. The panel clears it whenever the
+  // `value` prop changes identity — which only works if every remedying edit
+  // actually PRODUCES a new array. That is the claim under test here; it is
+  // what makes the render-phase clear fire for Add column (the remedy the
+  // message itself prescribes), row removal and cell edits alike.
+  const mixed = [{ feature: 'a', Us: '1' }, { feature: 'b', Them: '2' }];
+  ok(addComparisonColumn(mixed, 'Them') !== mixed, 'F5-2: Add column — the prescribed remedy — yields a NEW array, so the stale message clears');
+  ok(removeListRow(mixed, 1) !== mixed, 'F5-2: removing a row yields a NEW array, so the stale message clears');
+  ok(setListCell(mixed, 0, 'Us', 'x') !== mixed, 'F5-2: editing a cell yields a NEW array, so the stale message clears');
+  ok(removeComparisonColumn(mixed, 'Us') !== mixed, 'F5-2: removing a column yields a NEW array, so the stale message clears');
+  ok(moveWouldChangeColumns(mixed, 0, 1), 'F5-2: before any remedy the move is blocked');
+  const remedied = addComparisonColumn(mixed, 'Them');
+  ok(remedied.every((r) => 'Them' in r), 'F5-2: Add column writes the named key onto EVERY row');
+  // NOTE THE PARTIAL CASE, found by this assertion failing: one Add column
+  // does not make a heterogeneous table homogeneous. Row 1 gains `Them` but
+  // still lacks `Us`, and a spread keeps each row's own key ORDER — so the
+  // move can still be blocked afterwards. That is precisely why the message
+  // must not be STORED: it is recomputed against current data on the next
+  // attempt, with whatever the column sets are by then.
+  ok(moveWouldChangeColumns(remedied, 0, 1),
+    'F5-2: a PARTIAL remedy can still be blocked — so a stored message would have been stale AND wrong');
+  // Fully homogeneous — same keys in the same order — is never blocked.
+  const homogeneous = [{ feature: 'a', Us: '1', Them: '' }, { feature: 'b', Us: '', Them: '2' }];
+  ok(!moveWouldChangeColumns(homogeneous, 0, 1),
+    'F5-2: once every row carries the same columns in the same order, the move is allowed');
+}
+
 // ===========================================================================
 // Countdown deadline — the picker is LOCAL, the stored prop is a UTC instant,
 // and funnelRender's emitted runtime parses it with Date.parse.
@@ -856,30 +887,74 @@ ok(Object.isFrozen(WIRING_KEYS), 'F4: the floor is frozen — a caller cannot wi
   eq(localInputAnomaly(null), null, 'F4 dst: a null pick reports nothing');
   eq(localInputAnomaly('garbage'), null, 'F4 dst: an unparseable pick is not a DST anomaly (it is handled as invalid)');
 
-  // Sweep a year of 30-minute local times; any that does not round-trip is a
-  // clock change. In a DST zone there is at least one; in UTC there is none,
-  // and the assertion below is written to hold either way.
-  const offenders = [];
-  for (let day = 0; day < 366 && offenders.length < 3; day += 1) {
-    const base = new Date(2026, 0, 1 + day, 0, 0, 0);
-    for (let half = 0; half < 48; half += 1) {
-      const d = new Date(base.getTime());
-      d.setHours(Math.floor(half / 2), (half % 2) * 30, 0, 0);
-      const p = (n) => (n < 10 ? '0' : '') + n;
-      const v = `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(Math.floor(half / 2))}:${p((half % 2) * 30)}`;
-      const a = localInputAnomaly(v);
-      if (a) { offenders.push([v, a.stored]); break; }
+  // Sweep a FIXED grid of local times; any that does not round-trip is a clock
+  // change. A DST zone has at least one, UTC has none — and the harness must
+  // emit the SAME NUMBER OF ASSERTIONS either way, or "317 expected" stops
+  // being a usable merge gate the moment CI runs in a different zone. So the
+  // sweep size is asserted, and BOTH branches below assert exactly once.
+  const p2 = (n) => (n < 10 ? '0' : '') + n;
+  const candidates = [];
+  for (let day = 0; day < 365; day += 1) {
+    const d = new Date(2026, 0, 1 + day, 12, 0, 0);
+    for (const [hh, mm] of [[1, 30], [2, 0], [2, 30], [3, 0]]) {
+      candidates.push(`${d.getFullYear()}-${p2(d.getMonth() + 1)}-${p2(d.getDate())}T${p2(hh)}:${p2(mm)}`);
     }
   }
+  eq(candidates.length, 1460, 'F4 dst: the sweep examined a fixed 1460 candidate local times');
+  const offenders = candidates
+    .map((v) => [v, localInputAnomaly(v)])
+    .filter(([, a]) => a)
+    .map(([v, a]) => [v, a.stored]);
   const zone = Intl.DateTimeFormat().resolvedOptions().timeZone;
-  if (offenders.length) {
-    ok(offenders.every(([, stored]) => typeof stored === 'string' && stored !== ''),
-      `F4 dst: every non-round-tripping local time reports what WAS stored (zone ${zone}, e.g. ${offenders[0][0]} → ${offenders[0][1]})`);
-    ok(offenders.every(([v, stored]) => v !== stored),
-      'F4 dst: the reported stored value differs from the pick — which is the whole warning');
-  } else {
-    ok(true, `F4 dst: no clock changes exist in zone ${zone}, so no anomaly can be reported (vacuously correct)`);
+  // Exactly two assertions, whatever the zone. In a no-DST zone `offenders` is
+  // empty and `every` is vacuously true — which is the correct claim there.
+  ok(offenders.every(([, stored]) => typeof stored === 'string' && stored !== ''),
+    `F4 dst: every non-round-tripping local time reports what WAS stored (zone ${zone}, ${offenders.length} found${offenders.length ? `, e.g. ${offenders[0][0]} → ${offenders[0][1]}` : ''})`);
+  ok(offenders.every(([v, stored]) => v !== stored),
+    'F4 dst: the reported stored value always differs from the pick — which is the whole warning');
+}
+
+{
+  // F4-2. SECONDS ARE NOT A CLOCK CHANGE. The picker is minute-resolution
+  // (step=60), so a value carrying seconds round-trips one component shorter.
+  // Comparing raw made every :30 value raise a false DST warning.
+  eq(localInputAnomaly('2026-06-15T12:00:30'), null, 'F4-2 dst: a SECONDS component is not a DST anomaly');
+  eq(localInputAnomaly('2026-06-15T12:00:00'), null, 'F4-2 dst: an explicit :00 seconds component is not an anomaly');
+  eq(localInputAnomaly('2026-06-15T12:00:30.500'), null, 'F4-2 dst: fractional seconds are not an anomaly');
+  eq(localInputAnomaly('2026-06-15T12:00'), null, 'F4-2 dst: the minute-precision form is still clean');
+  // ...and the minute-stripping must not eat the MINUTES off a bare value: a
+  // naive /:\d{2}$/ would turn 12:00 into 12, which round-trips to nothing.
+  eq(localInputAnomaly('2026-06-15T00:00'), null, 'F4-2 dst: midnight (:00 minutes) is not mangled by the seconds strip');
+  // A real gap is STILL reported even when the value carries seconds.
+  const gap = [];
+  for (let day = 0; day < 365; day += 1) {
+    const d = new Date(2026, 0, 1 + day, 12, 0, 0);
+    const pz = (n) => (n < 10 ? '0' : '') + n;
+    const v = `${d.getFullYear()}-${pz(d.getMonth() + 1)}-${pz(d.getDate())}T02:30`;
+    if (localInputAnomaly(v)) { gap.push(v); }
   }
+  ok(gap.every((v) => localInputAnomaly(`${v}:00`) !== null),
+    `F4-2 dst: a genuine gap is still detected when the value carries seconds (${gap.length} gap day(s) in this zone)`);
+}
+
+{
+  // F4-3. The AMBIGUOUS fall-back hour is NOT detected — both occurrences
+  // render back as the same local string, so the round trip is clean. Pinned
+  // so the UI copy can never drift back into claiming otherwise.
+  const ambiguous = [];
+  for (let day = 0; day < 365; day += 1) {
+    const d = new Date(2026, 0, 1 + day, 12, 0, 0);
+    const pz = (n) => (n < 10 ? '0' : '') + n;
+    const stamp = `${d.getFullYear()}-${pz(d.getMonth() + 1)}-${pz(d.getDate())}`;
+    // A fall-back day is one where a local hour maps to two instants: the
+    // offset at 00:00 differs from the offset at 12:00 the NEXT day is not a
+    // reliable probe, so detect it directly via the UTC gap across the hour.
+    const a = new Date(`${stamp}T01:30:00`).getTime();
+    const b = new Date(`${stamp}T03:30:00`).getTime();
+    if (b - a === 3 * 3600000) ambiguous.push(`${stamp}T02:30`);
+  }
+  ok(ambiguous.every((v) => localInputAnomaly(v) === null),
+    `F4-3 dst: the ambiguous fall-back hour round-trips cleanly and is NOT reported (${ambiguous.length} such day(s) in this zone)`);
 }
 
 {

@@ -199,7 +199,23 @@ function RowsField({ field, value, onChange }) {
 
   return (
     <div className="space-y-2">
-      {rows.length === 0 && <EmptyRows what={rowLabel.toLowerCase() + 's'} />}
+      {rows.length === 0 && (
+        <>
+          <EmptyRows what={rowLabel.toLowerCase() + 's'} />
+          {/* The per-field notes (which link is sanitized, which is only
+              escaped) live on the first row's fields — so with no rows they
+              vanished exactly when an operator is deciding what to type. */}
+          {itemFields.some((f) => f.help) && (
+            <div className="px-2 space-y-1">
+              {itemFields.filter((f) => f.help).map((f) => (
+                <p key={f.key} className="text-[11px] text-text-faint leading-relaxed">
+                  <span className="text-text-muted">{f.label}:</span> {f.help}
+                </p>
+              ))}
+            </div>
+          )}
+        </>
+      )}
       {rows.map((row, i) => (
         <RowCard
           key={i}
@@ -243,23 +259,43 @@ function RowsField({ field, value, onChange }) {
 function CompareRowsField({ value, onChange }) {
   const rows = listRows(value);
   const cols = comparisonColumns(rows);
-  // Bumped whenever a rename is REFUSED. It rides in the input's key, which
-  // forces a remount so the box snaps back to the stored name — an
-  // uncontrolled input keyed only on the (unchanged) column name would keep
-  // the rejected text on screen while the data said otherwise, making the
-  // panel's own "snaps back" promise false.
-  const [refusalNonce, setRefusalNonce] = useState(0);
+  // PER-COLUMN nonce. Bumped when THAT column's rename is refused, and it
+  // rides only in that column's key. A single shared counter remounted every
+  // column input at once, so refusing a rename in one box destroyed the focus
+  // and the uncommitted text in whichever sibling the operator had just
+  // clicked into.
+  const [refusalNonces, setRefusalNonces] = useState({});
+  const bumpRefusal = (col) => setRefusalNonces((m) => ({ ...m, [col]: (m[col] || 0) + 1 }));
+
   // Prose for a reorder that was BLOCKED because it would have rewritten the
-  // published headers. Cleared by the next successful move.
+  // published headers.
+  //
+  // CLEARED WHENEVER THE DATA MOVES, not just on the next successful move.
+  // The message names a specific before/after column set, so it stops being
+  // true the moment anything is edited — and the edit it most invites (Add
+  // column, the remedy the message itself prescribes) used to leave it on
+  // screen asserting a column change that no longer applied. Adjusted DURING
+  // RENDER, the same pattern PageSettings uses for the slug; an effect would
+  // render once with the stale message and then immediately re-render.
   const [moveBlocked, setMoveBlocked] = useState(null);
+  const [lastSeenValue, setLastSeenValue] = useState(value);
+  if (value !== lastSeenValue) {
+    setLastSeenValue(value);
+    if (moveBlocked) setMoveBlocked(null);
+  }
+
   const write = (next) => { if (next !== rows) onChange(next); };
 
   const renameColumn = (from, typed) => {
     const next = renameComparisonColumn(rows, from, typed);
     if (next === rows) {
-      // Refused (blank / duplicate / `feature`) — or simply unchanged. Either
-      // way the stored name is what must be on screen.
-      if (String(typed).trim() !== from) setRefusalNonce((n) => n + 1);
+      // Refused (blank / duplicate / `feature`) or a no-change edit. Either
+      // way the STORED name is what must be on screen — so the test is
+      // "does the box still hold something other than the stored name?",
+      // compared RAW. Comparing trimmed let ' Us ' through: the rename is
+      // refused as a duplicate, the trimmed text equals the stored name, no
+      // remount fired, and the box kept the padded text it had rejected.
+      if (String(typed) !== from) bumpRefusal(from);
       return;
     }
     onChange(next);
@@ -309,10 +345,10 @@ function CompareRowsField({ value, onChange }) {
           </p>
         ) : (
           cols.map((c) => (
-            // key includes refusalNonce so a REJECTED rename remounts the box
-            // and restores the stored name; the name alone would not change on
-            // a refusal, so the typed text would survive.
-            <div key={`${c}:${refusalNonce}`} className="flex items-center gap-1.5">
+            // key includes THIS column's nonce so a REJECTED rename remounts
+            // only this box and restores the stored name; the name alone would
+            // not change on a refusal, so the typed text would survive.
+            <div key={`${c}:${refusalNonces[c] || 0}`} className="flex items-center gap-1.5">
               <input
                 defaultValue={c}
                 onBlur={(e) => renameColumn(c, e.target.value)}
@@ -332,10 +368,15 @@ function CompareRowsField({ value, onChange }) {
           ))
         )}
         {rows.length > 0 && <AddRowButton label="Add column" onClick={addColumn} />}
-        <p className="text-[11px] text-text-faint leading-relaxed">
-          A blank name, a duplicate, or the reserved word <code className="font-mono">feature</code> is
-          refused and the name snaps back — the published headers can never collide.
-        </p>
+        {/* The snap-back footnote describes renaming a column box. With no
+            rows there are no boxes, so it would be explaining a control that
+            is not on screen. */}
+        {rows.length > 0 && (
+          <p className="text-[11px] text-text-faint leading-relaxed">
+            A blank name, a duplicate, or the reserved word <code className="font-mono">feature</code> is
+            refused and the name snaps back — the published headers can never collide.
+          </p>
+        )}
       </div>
 
       {moveBlocked && (
@@ -425,8 +466,13 @@ function DateTimeField({ value, onChange }) {
 
   return (
     <div className="space-y-1.5">
+      {/* step=60 pins the control to MINUTE resolution, which is what
+          localInputAnomaly compares against. Without it a browser may offer a
+          seconds spinner, and every value carrying seconds would round-trip
+          one component shorter and raise a false DST warning. */}
       <input
         type="datetime-local"
+        step={60}
         value={local}
         onChange={(e) => pick(e.target.value)}
         className={inputCls}
@@ -460,9 +506,14 @@ function DateTimeField({ value, onChange }) {
       {dst && (
         <p className="flex items-start gap-1.5 text-[11px] text-amber-400/90 leading-snug">
           <AlertTriangle className="w-3 h-3 mt-0.5 shrink-0" />
+          {/* Says ONLY what the check can actually see. The ambiguous
+              fall-back hour round-trips cleanly, so it never reaches here —
+              claiming "or happens twice" would advertise a detection that
+              does not exist. */}
           <span>
-            That local time does not exist (or happens twice) on that date — the clocks change.
-            Stored as <code className="font-mono">{dst.stored.replace('T', ' ')}</code>.
+            The clocks change that day and that local time does not exist — it was stored
+            as <code className="font-mono">{dst.stored.replace('T', ' ')}</code> instead.
+            On the repeated hour after a clock change, the earlier of the two is used.
           </span>
         </p>
       )}
