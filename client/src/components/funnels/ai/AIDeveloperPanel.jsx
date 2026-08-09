@@ -59,7 +59,9 @@ async function consumeSse(response, onEvent) {
         else if (line.startsWith('data: ')) data += line.slice(6);
       }
       if (data) {
-        try { onEvent(event, JSON.parse(data)); } catch { /* skip bad frame */ }
+        // AWAITED: the done handler snapshots the page before applying ops,
+        // and the next frame must not be processed while that is in flight.
+        try { await onEvent(event, JSON.parse(data)); } catch { /* skip bad frame */ }
       }
     }
   }
@@ -149,6 +151,10 @@ export default function AIDeveloperPanel({
   // ---- send ----------------------------------------------------------------
   const busy = status !== 'idle';
 
+  // Serializes op batches: a second batch waits for the first to finish
+  // applying (snapshot included) before it touches the blocks.
+  const applyChainRef = useRef(null);
+
   const send = useCallback(async (textOverride) => {
     const text = (textOverride ?? input).trim();
     if (!text || busy) return;
@@ -198,7 +204,7 @@ export default function AIDeveloperPanel({
       }
 
       let acc = '';
-      await consumeSse(response, (event, data) => {
+      await consumeSse(response, async (event, data) => {
         if (event === 'text' && typeof data.text === 'string') {
           acc += data.text;
           setStreamText(acc);
@@ -214,7 +220,18 @@ export default function AIDeveloperPanel({
           }
         } else if (event === 'done') {
           sawDone = true;
-          if (Array.isArray(data.ops) && data.ops.length) onApplyOps(data.ops);
+          if (Array.isArray(data.ops) && data.ops.length) {
+            // AWAITED, and serialized against any earlier batch. onApplyOps
+            // now snapshots the page before it commits, so the "N edits
+            // applied" bubble must not appear until the ops are actually on
+            // the canvas — a bubble that leads the change tells the operator
+            // the edit landed while the rollback point is still being taken.
+            const chain = (applyChainRef.current || Promise.resolve())
+              .catch(() => {})
+              .then(() => onApplyOps(data.ops));
+            applyChainRef.current = chain;
+            await chain;
+          }
           setItems((prev) => [...prev, {
             id: newItemId(), type: 'assistant',
             text: data.reply || acc || 'Done.',

@@ -104,12 +104,19 @@ export default function VersionsDrawer({ funnelId, pageId, onClose, onRestored }
     setError(null);
     try {
       const res = await api.post(`/page-versions/${funnelId}/${pageId}/${id}/restore`, { confirm: true });
-      const page = res.data?.data?.page;
+      // Hand the editor the restore THE MOMENT the POST resolves — before the
+      // list refetch. load() is another round-trip, and every millisecond of
+      // it is a window in which the builder's debounced autosave can fire and
+      // PATCH the pre-restore blocks straight back over the restore.
+      //
+      // Called even when the body carried no page: the editor's handler
+      // cancels the pending write either way, and a missing page is its
+      // problem to surface, not a reason to leave a stale save armed.
+      onRestored?.(res.data?.data?.page || null);
       setArmedId(null);
       setConfirmText('');
       setPreviewId(null);
       await load();
-      if (page) onRestored?.(page);
     } catch (err) {
       setError(err.response?.data?.error || err.message || 'Restore failed');
     } finally {

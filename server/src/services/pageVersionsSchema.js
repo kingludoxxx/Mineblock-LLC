@@ -69,9 +69,15 @@ async function createTables(query) {
       title TEXT,
       label TEXT NOT NULL DEFAULT '',
       created_by TEXT,
+      bytes BIGINT,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )
   `);
+  // Existing databases pick the column up on the next request (same additive
+  // posture as funnels.settings). Rows written before this column exists keep
+  // bytes = NULL, and the client renders an absent size as an em dash rather
+  // than as "0 B" — an unknown size must never read as "this version is empty".
+  await query(`ALTER TABLE lb_page_versions ADD COLUMN IF NOT EXISTS bytes BIGINT`);
   // The one index the feature needs: the list endpoint and the retention
   // prune both walk (page_id, id DESC).
   await query(
@@ -106,14 +112,22 @@ async function createTables(query) {
  * @returns {Promise<object|null>} inserted row, or null when no live page
  *   with that (id, funnel_id) exists.
  */
-export async function snapshotCurrentPage(tx, { pageId, funnelId, label = '', createdBy = null }) {
+export async function snapshotCurrentPage(
+  tx,
+  { pageId, funnelId, label = '', createdBy = null, protectId = null }
+) {
   const inserted = await tx.unsafe(
     `INSERT INTO lb_page_versions
-       (page_id, funnel_id, blocks, custom_css, custom_js, seo, title, label, created_by)
-     SELECT id, funnel_id, blocks, custom_css, custom_js, seo, title, $3, $4
+       (page_id, funnel_id, blocks, custom_css, custom_js, seo, title, label, created_by, bytes)
+     SELECT id, funnel_id, blocks, custom_css, custom_js, seo, title, $3, $4,
+            octet_length(COALESCE(blocks::text, ''))
+              + octet_length(COALESCE(custom_css, ''))
+              + octet_length(COALESCE(custom_js, ''))
+              + octet_length(COALESCE(seo::text, ''))
+              + octet_length(COALESCE(title, ''))
        FROM funnel_pages
       WHERE id = $1 AND funnel_id = $2 AND NOT archived
-     RETURNING id, page_id, funnel_id, label, created_by, created_at`,
+     RETURNING id, page_id, funnel_id, label, created_by, bytes, created_at`,
     [pageId, funnelId, String(label || '').slice(0, LABEL_MAX), createdBy]
   );
   if (!inserted.length) return null;
@@ -121,16 +135,31 @@ export async function snapshotCurrentPage(tx, { pageId, funnelId, label = '', cr
   // Retention, same transaction. The subquery is the SAME (page_id, id DESC)
   // order the list endpoint reads, so "what survives" is exactly "what the
   // first page of the list would have shown".
+  //
+  // `protectId` is the version a RESTORE is reading right now. Without it, a
+  // restore of the OLDEST row on a page at the retention cap deletes that very
+  // row — the pre-restore snapshot pushes the page to 31, the prune trims back
+  // to the newest 30, and the oldest is exactly the one being restored. The
+  // call still succeeded and still reported restored_version_id, so the
+  // response pointed at a row that no longer existed.
+  //
+  // The protected row is kept IN ADDITION to the newest (RETENTION - 1), so
+  // the page still lands on exactly RETENTION rows — the prune takes the
+  // next-oldest instead. Protecting without lowering the limit would leave the
+  // page one row over cap.
+  const keep = protectId == null ? VERSION_RETENTION : VERSION_RETENTION - 1;
   await tx.unsafe(
     `DELETE FROM lb_page_versions
       WHERE page_id = $1
+        AND ($2::bigint IS NULL OR id <> $2::bigint)
         AND id NOT IN (
           SELECT id FROM lb_page_versions
            WHERE page_id = $1
+             AND ($2::bigint IS NULL OR id <> $2::bigint)
            ORDER BY id DESC
-           LIMIT ${VERSION_RETENTION}
+           LIMIT ${keep}
         )`,
-    [pageId]
+    [pageId, protectId == null ? null : String(protectId)]
   );
 
   return inserted[0];
@@ -140,15 +169,15 @@ export async function snapshotCurrentPage(tx, { pageId, funnelId, label = '', cr
 // megabyte per row — a 30-row list that carried them would be a 30MB
 // response for a sidebar that shows timestamps.
 //
-// `bytes` is the on-the-wire size of the snapshot's content (text octets),
-// NOT pg_column_size — which reports the TOASTed/compressed storage size and
-// would tell an operator their 400KB page is 40KB.
+// `bytes` is READ, not recomputed: it is measured once at INSERT and stored.
+// Recomputing it per list call meant casting every blocks column to text on
+// every open of the drawer — 30 rows of up-to-2MB JSONB detoasted to answer a
+// sidebar. It is the on-the-wire octet count of the snapshot's content, NOT
+// pg_column_size, which reports TOASTed/compressed storage and would tell an
+// operator their 400KB page is 40KB.
+//
+// block_count stays computed: jsonb_array_length reads the JSONB header only.
 export const VERSION_LIST_COLUMNS = `
-  id, label, created_by, created_at,
-  CASE WHEN jsonb_typeof(blocks) = 'array' THEN jsonb_array_length(blocks) ELSE 0 END AS block_count,
-  octet_length(COALESCE(blocks::text, ''))
-    + octet_length(COALESCE(custom_css, ''))
-    + octet_length(COALESCE(custom_js, ''))
-    + octet_length(COALESCE(seo::text, ''))
-    + octet_length(COALESCE(title, '')) AS bytes
+  id, label, created_by, created_at, bytes,
+  CASE WHEN jsonb_typeof(blocks) = 'array' THEN jsonb_array_length(blocks) ELSE 0 END AS block_count
 `;

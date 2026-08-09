@@ -73,8 +73,19 @@ export default function PageBuilderPage() {
 
   const dirtyRef = useRef(new Set());
   const timerRef = useRef(null);
-  const inFlightRef = useRef(false);
-  const queuedRef = useRef(false);
+  // Every flush() queues behind the previous one on this chain, so ONE PATCH
+  // is in flight at a time AND every caller awaits the true settle — including
+  // the follow-up write that used to be fired-and-forgotten via setTimeout.
+  // That mattered because autoSnapshot() awaits flush() before snapshotting:
+  // the old version returned immediately whenever a save was already in
+  // flight, so the snapshot could describe the DB as it was BEFORE the
+  // operator's last edit landed, and the deferred write then auto-persisted
+  // the AI batch that was supposed to stay a draft.
+  const flushChainRef = useRef(null);
+  const abortRef = useRef(null);
+  // Bumped by every restore. A PATCH whose epoch is stale must not apply its
+  // response — the page it was describing has been replaced underneath it.
+  const restoreEpochRef = useRef(0);
 
   // ---- load -----------------------------------------------------------------
   const load = useCallback(async () => {
@@ -102,11 +113,15 @@ export default function PageBuilderPage() {
   useEffect(() => { load(); }, [load]);
 
   // ---- autosave engine ------------------------------------------------------
-  const flush = useCallback(async () => {
-    if (inFlightRef.current) { queuedRef.current = true; return; }
+  const writeOnce = useCallback(async () => {
     const keys = Array.from(dirtyRef.current);
     if (!keys.length) return;
     dirtyRef.current = new Set();
+
+    // Pinned BEFORE the request. If a restore lands while this PATCH is in
+    // flight, the response describes a page state the operator has explicitly
+    // thrown away — applying it would silently undo the restore.
+    const epoch = restoreEpochRef.current;
 
     const payload = {};
     for (const k of keys) {
@@ -116,28 +131,41 @@ export default function PageBuilderPage() {
       else payload[k] = metaRef.current[k];
     }
 
-    inFlightRef.current = true;
+    const controller = new AbortController();
+    abortRef.current = controller;
     setSaveState('saving');
     try {
-      const res = await api.patch(`/funnels/${id}/pages/${pageId}`, payload);
+      const res = await api.patch(`/funnels/${id}/pages/${pageId}`, payload, {
+        signal: controller.signal,
+      });
+      if (restoreEpochRef.current !== epoch) return; // superseded — drop it
       setPage(res.data?.data || null);
       setSaveState('saved');
       setSaveError(null);
     } catch (err) {
+      // A save abandoned by a restore is not a failure to report, and its
+      // fields must NOT be re-dirtied: they describe the pre-restore page.
+      if (restoreEpochRef.current !== epoch) return;
       // Re-mark the failed fields dirty so the next edit (or Retry) resends
       // them — a rejected save must never silently drop edits or wedge.
       for (const k of keys) dirtyRef.current.add(k);
       setSaveState('error');
       setSaveError(err.response?.data?.error || err.message || 'Save failed');
     } finally {
-      inFlightRef.current = false;
-      if (queuedRef.current) {
-        queuedRef.current = false;
-        // Another edit landed while saving — persist the newest state.
-        setTimeout(() => { flush(); }, 0);
-      }
+      if (abortRef.current === controller) abortRef.current = null;
     }
   }, [id, pageId]);
+
+  // Serialized, and awaitable to the TRUE settle. A caller that awaits this
+  // has its edits on disk (or has seen them fail), which is the contract
+  // autoSnapshot depends on.
+  const flush = useCallback(async () => {
+    const run = (flushChainRef.current || Promise.resolve())
+      .catch(() => {})
+      .then(() => writeOnce());
+    flushChainRef.current = run;
+    await run;
+  }, [writeOnce]);
 
   const scheduleSave = useCallback((...fields) => {
     for (const f of fields) dirtyRef.current.add(f);
@@ -229,6 +257,7 @@ export default function PageBuilderPage() {
   const autoSnapshot = useCallback(async (label) => {
     const now = Date.now();
     if (now - lastAutoSnapRef.current < AUTO_SNAP_MIN_MS) return;
+    const previousSlot = lastAutoSnapRef.current;
     lastAutoSnapRef.current = now;
     try {
       if (timerRef.current) clearTimeout(timerRef.current);
@@ -238,6 +267,12 @@ export default function PageBuilderPage() {
       // Fail-open by design: a versioning hiccup must never stop the operator
       // from editing. The drawer's manual Snapshot button surfaces the real
       // error when they go looking.
+      //
+      // Give the slot BACK. Burning the 30s window on a snapshot that never
+      // happened is the worst of both worlds: the operator gets no version
+      // AND the next AI batch — the one most likely to need a rollback point —
+      // is refused a snapshot too.
+      lastAutoSnapRef.current = previousSlot;
     }
   }, [id, pageId, flush]);
 
@@ -289,9 +324,25 @@ export default function PageBuilderPage() {
   // the pre-restore blocks straight back over it and silently undo the whole
   // operation.
   const onVersionRestored = useCallback((p) => {
-    if (!p) return;
+    // FIRST, unconditionally, before anything can await: stop the debounce
+    // timer, drop every dirty field, abort any PATCH already on the wire and
+    // bump the epoch so its response is ignored if it lands anyway. This runs
+    // even when the response carried no page — a restore that succeeded
+    // server-side but returned an unreadable body must still not leave a
+    // pending write pointed at the content it replaced.
     if (timerRef.current) clearTimeout(timerRef.current);
+    timerRef.current = null;
     dirtyRef.current = new Set();
+    restoreEpochRef.current += 1;
+    if (abortRef.current) {
+      abortRef.current.abort();
+      abortRef.current = null;
+    }
+    if (!p) {
+      setSaveState('error');
+      setSaveError('Restored, but the updated page did not come back — reload to see it.');
+      return;
+    }
     setPage(p);
     setMeta({ title: p.title || '', slug: p.slug || '/', status: p.status || 'draft' });
     setCode({ custom_css: p.custom_css || '', custom_js: p.custom_js || '' });

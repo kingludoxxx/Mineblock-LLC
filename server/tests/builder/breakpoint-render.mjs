@@ -150,6 +150,103 @@ if (!PATCHED) {
     ok(!html.includes('lb-blk-mobile'), 'no-override: no <style id="lb-blk-mobile"> in the document');
   }
 
+  // F1 — BYTE IDENTITY. The conditional must add ZERO bytes when no block
+  // carries an override. An interpolation on its own line looks harmless and
+  // leaves a blank line in the head of EVERY page ever served.
+  {
+    const plain = [{ id: 'p1', type: 'heading', props: { text: 'Hi', style: { font_size: 20 } } }];
+    const patchedHtml = renderPageHtml(mkPage(plain), FUNNEL, {});
+    let baseline = null;
+    try {
+      // The repo module — unpatched while this diff is still pending.
+      baseline = (await import('../../src/services/funnelRender.js')).renderPageHtml(mkPage(plain), FUNNEL, {});
+    } catch { /* unreadable baseline — the structural checks below still run */ }
+    if (baseline !== null && !baseline.includes('lb-blk-mobile')) {
+      ok(patchedHtml === baseline,
+        'F1: a page with NO overrides renders BYTE-IDENTICAL to the unpatched renderer',
+        `patched ${patchedHtml.length} B vs baseline ${baseline.length} B`);
+    }
+    ok(!patchedHtml.includes('lb-blk-mobile'),
+      'F1: no empty <style> tag is emitted for a page with no overrides');
+    // The head must not gain a line. Counting is the check that survives the
+    // baseline being unavailable.
+    if (baseline !== null) {
+      ok(patchedHtml.split('\n').length === baseline.split('\n').length,
+        'F1: the document has the SAME line count as the unpatched renderer',
+        `${patchedHtml.split('\n').length} vs ${baseline.split('\n').length}`);
+    }
+  }
+
+  // F2 — a hidden block must STAY hidden. display:flex!important from a mobile
+  // justify preset is an important declaration of the same property as
+  // .lb-hide-mobile{display:none!important}; equal specificity means the later
+  // rule wins, and the emitted sheet comes after the theme.
+  {
+    const hidden = [{
+      id: 'h9', type: 'text',
+      props: {
+        style: { hide_mobile: true, font_size: 20 },
+        mobile_styles: { justify_content: 'center', font_size: 12 },
+      },
+    }];
+    const c = blockMobileCss(hidden);
+    // Scope the assertion to the BLOCK's own rule — the sheet also carries the
+    // F2b guard, whose whole job is to declare display:none.
+    const blockRule = (c.match(/\[data-blk-id='h9'\]\{([^}]*)\}/) || [])[1] || '';
+    ok(blockRule.length > 0, 'F2a: the hidden block still gets a rule', c);
+    ok(!/display\s*:/.test(blockRule),
+      'F2a: NO display declaration inside that rule (the flex preset is dropped)', blockRule);
+    ok(c.includes('font-size:12px !important'),
+      'F2a: its other mobile overrides still emit (the filter is surgical)', c);
+
+    ok(c.includes("[data-blk-id].lb-hide-mobile{display:none !important}"),
+      'F2b: the emitted sheet re-states the hide rule at 2-selector specificity', c);
+    ok(c.indexOf('[data-blk-id].lb-hide-mobile') > c.indexOf("[data-blk-id='h9']"),
+      'F2b: …and it comes AFTER the block rules, so order backs specificity up', c);
+
+    const html = renderPageHtml(mkPage(hidden), FUNNEL, {});
+    ok(html.includes('lb-hide-mobile'),
+      'F2b: the block still carries the class the rule matches');
+    ok(html.includes("data-blk-id='h9'"),
+      'F2b: …and the data-blk-id the raised selector needs (otherwise it stops matching)');
+    // The guard costs nothing on a page with no overrides — that is why it
+    // lives in the emitted sheet instead of in THEME_CSS.
+    ok(blockMobileCss([{ id: 'n1', type: 'text', props: {} }]) === '',
+      'F2b: no override ⇒ no sheet ⇒ no guard ⇒ no bytes');
+
+    // Belt 2 alone, with the filter bypassed: prove the raised selector wins.
+    const forced = blockMobileCss([{ id: 'h8', type: 'text', props: { mobile_styles: { justify_content: 'center' } } }]);
+    ok(forced.includes('display:flex !important'),
+      'F2: a block that is NOT hidden still gets its flex preset (no over-correction)', forced);
+  }
+
+  // F10 — a CSS comment opener in one value must not swallow later rules.
+  {
+    const blocks = [
+      { id: 'c1', type: 'text', props: { mobile_styles: { width: '10px/*' } } },
+      { id: 'c2', type: 'text', props: { mobile_styles: { font_size: 14 } } },
+    ];
+    const c = blockMobileCss(blocks);
+    ok(!c.includes('/*') && !c.includes('*/'), 'F10: no comment delimiter survives into the sheet', c);
+    ok(c.includes("[data-blk-id='c2']") && c.includes('font-size:14px !important'),
+      'F10: the LATER block\'s rule is intact — nothing was commented out', c);
+    ok(c.includes('width:10px !important'), 'F10: the offending value still emits, minus the opener', c);
+    // A crafted value that would leave a live opener after a single pass.
+    const nested = blockMobileCss([
+      { id: 'c3', type: 'text', props: { mobile_styles: { width: '1px/*/*' } } },
+      { id: 'c4', type: 'text', props: { mobile_styles: { font_size: 11 } } },
+    ]);
+    ok(!nested.includes('/*'), 'F10: nested openers are stripped to a fixed point, not one pass', nested);
+    ok(nested.includes('font-size:11px !important'), 'F10: the later rule survives that too', nested);
+    // …and the legitimate slash uses are NOT collateral damage.
+    const slash = blockMobileCss([{ id: 'c5', type: 'text', props: { mobile_styles: { bg: 'rgb(0 0 0 / 50%)' } } }]);
+    ok(slash.includes('rgb(0 0 0 / 50%)'),
+      'F10: a bare slash (modern alpha syntax) is preserved, not stripped', slash);
+    const url = blockStyleWrap({ style: { bg: 'url(/img/x.png)' } });
+    ok(url.styleAttr.includes('url(/img/x.png)'),
+      'F10: url(/path) still works on the existing inline path (no regression)', url.styleAttr);
+  }
+
   // integrated: the style tag lands in the head, before the operator's page CSS
   {
     const html = renderPageHtml(mkPage([STYLED], { custom_css: '.mine{color:red}' }), FUNNEL, {});

@@ -21,6 +21,14 @@
 //   • malformed versionId → 400, unknown versionId → 404
 //   • a non-string label → 400
 //   • a hostile __proto__ block payload cannot be restored (validateBlocks)
+//   • an ARCHIVED FUNNEL is refused by all four verbs (400), an unknown
+//     funnel by all four (404)
+//   • a versionId at and above the int8 ceiling answers 404, never 500
+//   • restoring the OLDEST version at the retention cap does not prune the
+//     row being restored (the prune takes the next-oldest instead)
+//   • the full-version GET applies the archived-page 404 the LIST verb does
+//   • bytes is STORED at insert, and a legacy row with a NULL bytes lists as
+//     null rather than as a fabricated 0
 //
 // Run:  node server/tests/builder/page-versions.mjs
 import postgres from 'postgres';
@@ -361,6 +369,143 @@ await refusalProbe(
   'non-array version',
   /must be an array/
 );
+
+// ---- F3: an ARCHIVED FUNNEL is closed to all four verbs -------------------
+// funnels.js refuses page mutations on an archived funnel (404 missing / 400
+// archived). Versioning holds the same line rather than half-opening on a
+// funnel every other surface treats as trashed.
+{
+  const fc = await freq('POST', '/', { name: 'Ver C', slug: 'ver-harness-c' });
+  const FC = fc.j?.data?.id;
+  const pc = await freq('POST', `/${FC}/pages`, { title: 'Archived funnel page', slug: '/', type: 'generic' });
+  const PC = pc.j?.data?.id;
+  const seed = await vreq('POST', `/${FC}/${PC}/snapshot`, { label: 'pre-archive-funnel' });
+  ok(seed.status === 201, 'archived funnel: a live funnel snapshots fine first', JSON.stringify(seed.status));
+  const VC = seed.j?.data?.id;
+
+  await sql`UPDATE funnels SET archived = TRUE WHERE id = ${FC}`;
+  const before = await sql`SELECT COUNT(*)::int AS n FROM lb_page_versions WHERE page_id = ${PC}`;
+
+  const snap = await vreq('POST', `/${FC}/${PC}/snapshot`, { label: 'post-archive-funnel' });
+  const list = await vreq('GET', `/${FC}/${PC}`);
+  const get = await vreq('GET', `/${FC}/${PC}/${VC}`);
+  const rest = await vreq('POST', `/${FC}/${PC}/${VC}/restore`, { confirm: true });
+  ok(snap.status === 400 && list.status === 400 && get.status === 400 && rest.status === 400,
+    'archived funnel: all four verbs answer 400',
+    JSON.stringify([snap.status, list.status, get.status, rest.status]));
+  ok([snap, list, get, rest].every((r) => /Funnel is archived/.test(String(r.j?.error || ''))),
+    'archived funnel: the message matches the funnels router wording',
+    JSON.stringify([snap.j?.error, list.j?.error, get.j?.error, rest.j?.error]));
+  const after = await sql`SELECT COUNT(*)::int AS n FROM lb_page_versions WHERE page_id = ${PC}`;
+  ok(before[0].n === after[0].n, 'archived funnel: nothing was written', `${before[0].n} -> ${after[0].n}`);
+
+  // …and an UNKNOWN funnel is a 404 on every verb, not a 400.
+  const g = 'fnl_does_not_exist';
+  const r404 = [
+    await vreq('POST', `/${g}/${PC}/snapshot`, {}),
+    await vreq('GET', `/${g}/${PC}`),
+    await vreq('GET', `/${g}/${PC}/${VC}`),
+    await vreq('POST', `/${g}/${PC}/${VC}/restore`, { confirm: true }),
+  ];
+  ok(r404.every((r) => r.status === 404), 'unknown funnel: all four verbs answer 404',
+    JSON.stringify(r404.map((r) => r.status)));
+}
+
+// ---- F4: the int8 ceiling is a MISSING row, not a server fault -------------
+{
+  const MAX = '9223372036854775807';        // int8 max — a legal bind, no such row
+  const OVER = '9223372036854775808';       // one past it — the bind itself throws
+  const atMax = await vreq('GET', `/${FA}/${P1}/${MAX}`);
+  const overMax = await vreq('GET', `/${FA}/${P1}/${OVER}`);
+  ok(atMax.status === 404, 'bigint: versionId AT the int8 ceiling → 404', JSON.stringify(atMax));
+  ok(overMax.status === 404, 'bigint: versionId ABOVE the int8 ceiling → 404, never 500', JSON.stringify(overMax));
+  const restOver = await vreq('POST', `/${FA}/${P1}/${OVER}/restore`, { confirm: true });
+  ok(restOver.status === 404, 'bigint: restoring above the ceiling → 404, never 500', JSON.stringify(restOver.status));
+  const twenty = await vreq('GET', `/${FA}/${P1}/${'9'.repeat(20)}`);
+  ok(twenty.status === 400, 'bigint: a 20-digit id is malformed (400), not a lookup', JSON.stringify(twenty.status));
+}
+
+// ---- F5: restoring the OLDEST row at the cap must not prune that row -------
+{
+  const p5 = await freq('POST', `/${FA}/pages`, { title: 'Retention restore', slug: '/retention-restore', type: 'generic' });
+  const P5 = p5.j?.data?.id;
+  await freq('PATCH', `/${FA}/pages/${P5}`, { blocks: [{ id: 'r1', type: 'text', props: { body: 'seed' } }] });
+  for (let i = 0; i < VERSION_RETENTION; i++) {
+    await vreq('POST', `/${FA}/${P5}/snapshot`, { label: `ret-${i}` });
+  }
+  const rows = await sql`SELECT id, label FROM lb_page_versions WHERE page_id = ${P5} ORDER BY id ASC`;
+  ok(rows.length === VERSION_RETENTION, `F5 seed: page sits exactly at the cap (${VERSION_RETENTION})`, String(rows.length));
+  const OLDEST = Number(rows[0].id);
+  const NEXT_OLDEST = Number(rows[1].id);
+
+  const r = await vreq('POST', `/${FA}/${P5}/${OLDEST}/restore`, { confirm: true });
+  ok(r.status === 200, 'F5: restoring the oldest version succeeds', JSON.stringify(r.status));
+  ok(Number(r.j?.data?.restored_version_id) === OLDEST, 'F5: it reports the oldest id', String(r.j?.data?.restored_version_id));
+
+  const survived = await sql`SELECT COUNT(*)::int AS n FROM lb_page_versions WHERE id = ${OLDEST}`;
+  ok(survived[0].n === 1,
+    'F5: the restored row SURVIVED the prune (restored_version_id points at a live row)', String(survived[0].n));
+  const gone = await sql`SELECT COUNT(*)::int AS n FROM lb_page_versions WHERE id = ${NEXT_OLDEST}`;
+  ok(gone[0].n === 0, 'F5: the prune took the NEXT-oldest instead', String(gone[0].n));
+  const total = await sql`SELECT COUNT(*)::int AS n FROM lb_page_versions WHERE page_id = ${P5}`;
+  ok(total[0].n === VERSION_RETENTION,
+    `F5: the page is still exactly at the cap (${VERSION_RETENTION}), not one over`, String(total[0].n));
+  // And it is still readable through the API, which is what the drawer does
+  // right after a restore.
+  const readBack = await vreq('GET', `/${FA}/${P5}/${OLDEST}`);
+  ok(readBack.status === 200, 'F5: the restored version is still fetchable', JSON.stringify(readBack.status));
+}
+
+// ---- F11: the full-version GET applies the archived-PAGE 404 too ----------
+{
+  const pz = await freq('POST', `/${FA}/pages`, { title: 'Archive for get', slug: '/archive-get', type: 'generic' });
+  const PZ = pz.j?.data?.id;
+  const s1 = await vreq('POST', `/${FA}/${PZ}/snapshot`, { label: 'pre' });
+  const VZ = s1.j?.data?.id;
+  const okBefore = await vreq('GET', `/${FA}/${PZ}/${VZ}`);
+  ok(okBefore.status === 200, 'F11: the version reads fine while the page is live', JSON.stringify(okBefore.status));
+  await sql`UPDATE funnel_pages SET archived = TRUE WHERE id = ${PZ}`;
+  const getAfter = await vreq('GET', `/${FA}/${PZ}/${VZ}`);
+  const listAfter = await vreq('GET', `/${FA}/${PZ}`);
+  ok(getAfter.status === 404 && listAfter.status === 404,
+    'F11: GET full version and LIST agree once the page is archived',
+    JSON.stringify([getAfter.status, listAfter.status]));
+}
+
+// ---- F12: bytes is STORED at insert, not recomputed per list --------------
+{
+  const pb2 = await freq('POST', `/${FA}/pages`, { title: 'Bytes', slug: '/bytes-check', type: 'generic' });
+  const PB2 = pb2.j?.data?.id;
+  const BLK = [{ id: 'x1', type: 'text', props: { body: 'measure me' } }];
+  await freq('PATCH', `/${FA}/pages/${PB2}`, { blocks: BLK, custom_css: '.a{}', title: 'Bytes' });
+  const snap = await vreq('POST', `/${FA}/${PB2}/snapshot`, { label: 'bytes' });
+  ok(snap.status === 201, 'F12 seed: snapshot taken', JSON.stringify(snap.status));
+
+  const stored = await sql`SELECT bytes FROM lb_page_versions WHERE id = ${Number(snap.j.data.id)}`;
+  ok(Number(stored[0].bytes) > 0, 'F12: bytes is persisted as a COLUMN at insert time', String(stored[0].bytes));
+
+  const list = await vreq('GET', `/${FA}/${PB2}`);
+  const row = (list.j?.data?.versions || [])[0];
+  ok(Number(row.bytes) === Number(stored[0].bytes), 'F12: the list reads the stored column verbatim',
+    `${row.bytes} vs ${stored[0].bytes}`);
+
+  // The size must still be TRUE, not just present: it is the octet count of
+  // the content, so it has to move when the content moves.
+  await freq('PATCH', `/${FA}/pages/${PB2}`, { blocks: [...BLK, { id: 'x2', type: 'text', props: { body: 'y'.repeat(500) } }] });
+  const snap2 = await vreq('POST', `/${FA}/${PB2}/snapshot`, { label: 'bytes-2' });
+  const stored2 = await sql`SELECT bytes FROM lb_page_versions WHERE id = ${Number(snap2.j.data.id)}`;
+  ok(Number(stored2[0].bytes) > Number(stored[0].bytes) + 400,
+    'F12: bytes tracks the actual content size', `${stored[0].bytes} -> ${stored2[0].bytes}`);
+
+  // A row written before the column existed carries NULL — the list must pass
+  // that through as null so the client renders an em dash, NOT a fabricated 0
+  // (which would read as "this version is empty").
+  await sql`UPDATE lb_page_versions SET bytes = NULL WHERE id = ${Number(snap.j.data.id)}`;
+  const list2 = await vreq('GET', `/${FA}/${PB2}`);
+  const legacy = (list2.j?.data?.versions || []).find((v) => Number(v.id) === Number(snap.j.data.id));
+  ok(legacy && legacy.bytes === null, 'F12: a legacy NULL bytes crosses the wire as null, never as 0',
+    JSON.stringify(legacy?.bytes));
+}
 
 console.log(`\n${pass} passed, ${fail} failed`);
 server.close();

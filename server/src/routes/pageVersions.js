@@ -36,7 +36,24 @@ const LIST_LIMIT = VERSION_RETENTION;
 
 // BIGSERIAL. A non-numeric path segment is a malformed request (400), not a
 // missing row (404): binding it would make Postgres throw and answer 500.
+//
+// The regex alone is not enough. It admits 19 digits, and 19 digits can exceed
+// int8 — Postgres then throws "value out of range" on the BIND, which surfaced
+// as a 500 for what is simply an id that cannot exist. Anything above the
+// bigint ceiling is a MISSING row (404), not a server fault.
 const VERSION_ID_RE = /^[1-9][0-9]{0,18}$/;
+const BIGINT_MAX = 9223372036854775807n;
+
+// Returns { error, status } or { versionId }.
+function readVersionId(raw) {
+  if (!VERSION_ID_RE.test(raw)) {
+    return { status: 400, error: 'versionId must be a positive integer' };
+  }
+  if (BigInt(raw) > BIGINT_MAX) {
+    return { status: 404, error: 'Version not found' };
+  }
+  return { versionId: raw };
+}
 
 const readLabel = (raw) => {
   if (raw == null) return { label: '' };
@@ -51,12 +68,33 @@ const ensureAll = async () => {
   await ensurePageVersionTables();
 };
 
+// An ARCHIVED FUNNEL is trashed, not merely hidden: funnels.js refuses every
+// page mutation on one (404 for a missing funnel, 400 for an archived one).
+// Versioning has to hold the same line, in BOTH directions — snapshotting a
+// trashed funnel's page manufactures new rows for content nobody can serve,
+// and restoring into one writes to a page the operator believes is gone. The
+// read verbs answer the same way rather than half-opening the feature on a
+// funnel every other surface treats as closed.
+//
+// Returns null when the caller may proceed, or a { status, error } to send.
+async function funnelGate(funnelId, verb) {
+  const rows = await pgQuery(`SELECT id, archived FROM funnels WHERE id = $1`, [funnelId]);
+  if (!rows.length) return { status: 404, error: 'Funnel not found' };
+  if (rows[0].archived) {
+    return { status: 400, error: `Funnel is archived — restore it before ${verb}` };
+  }
+  return null;
+}
+
 // ---------------------------------------------------------------------------
 // POST /:funnelId/:pageId/snapshot — { label? } → the new version's metadata
 // ---------------------------------------------------------------------------
 router.post('/:funnelId/:pageId/snapshot', async (req, res) => {
   try {
     await ensureAll();
+    const gate = await funnelGate(req.params.funnelId, 'snapshotting pages');
+    if (gate) return res.status(gate.status).json({ error: gate.error });
+
     const { label, error } = readLabel(req.body?.label);
     if (error) return res.status(400).json({ error });
 
@@ -86,6 +124,9 @@ router.post('/:funnelId/:pageId/snapshot', async (req, res) => {
 router.get('/:funnelId/:pageId', async (req, res) => {
   try {
     await ensureAll();
+    const gate = await funnelGate(req.params.funnelId, 'reading page versions');
+    if (gate) return res.status(gate.status).json({ error: gate.error });
+
     // Ownership is checked against the PAGE, not only the version rows: a
     // page with zero versions must answer 200 [] when it is yours and 404
     // when it is not — an empty list for both would leak nothing but would
@@ -121,14 +162,26 @@ router.get('/:funnelId/:pageId', async (req, res) => {
 router.get('/:funnelId/:pageId/:versionId', async (req, res) => {
   try {
     await ensureAll();
-    const { versionId } = req.params;
-    if (!VERSION_ID_RE.test(versionId)) {
-      return res.status(400).json({ error: 'versionId must be a positive integer' });
-    }
+    const gate = await funnelGate(req.params.funnelId, 'reading page versions');
+    if (gate) return res.status(gate.status).json({ error: gate.error });
+
+    const idCheck = readVersionId(req.params.versionId);
+    if (idCheck.error) return res.status(idCheck.status).json({ error: idCheck.error });
+    const { versionId } = idCheck;
+
+    // Same archived-page 404 the LIST verb applies. The content read below is
+    // still id-pinned to (version, page, funnel) and would be safe without
+    // this — but two reads of the same page answering differently because one
+    // checks the page and one does not is a seam, and seams get leaned on.
+    const pageRows = await pgQuery(
+      `SELECT id FROM funnel_pages WHERE id = $1 AND funnel_id = $2 AND NOT archived`,
+      [req.params.pageId, req.params.funnelId]
+    );
+    if (!pageRows.length) return res.status(404).json({ error: 'Page not found' });
 
     const rows = await pgQuery(
       `SELECT id, page_id, funnel_id, blocks, custom_css, custom_js, seo, title,
-              label, created_by, created_at
+              label, created_by, bytes, created_at
          FROM lb_page_versions
         WHERE id = $1 AND page_id = $2 AND funnel_id = $3`,
       [versionId, req.params.pageId, req.params.funnelId]
@@ -161,10 +214,13 @@ router.get('/:funnelId/:pageId/:versionId', async (req, res) => {
 router.post('/:funnelId/:pageId/:versionId/restore', async (req, res) => {
   try {
     await ensureAll();
-    const { funnelId, pageId, versionId } = req.params;
-    if (!VERSION_ID_RE.test(versionId)) {
-      return res.status(400).json({ error: 'versionId must be a positive integer' });
-    }
+    const { funnelId, pageId } = req.params;
+    const gate = await funnelGate(funnelId, 'restoring pages');
+    if (gate) return res.status(gate.status).json({ error: gate.error });
+
+    const idCheck = readVersionId(req.params.versionId);
+    if (idCheck.error) return res.status(idCheck.status).json({ error: idCheck.error });
+    const { versionId } = idCheck;
     // A restore is destructive to the on-screen state. It requires an
     // explicit boolean true — not 'true', not 1, not any truthy value that a
     // sloppy client could send by accident.
@@ -216,6 +272,11 @@ router.post('/:funnelId/:pageId/:versionId/restore', async (req, res) => {
         funnelId,
         label: 'before restore',
         createdBy: req.user?.id || null,
+        // The pre-restore snapshot pushes the page over the retention cap, and
+        // the prune that follows would otherwise be free to delete the very
+        // row we just read — leaving a successful restore reporting an id that
+        // no longer exists.
+        protectId: version.id,
       });
       if (!preSnap) return { status: 404, error: 'Page not found' };
 
