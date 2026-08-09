@@ -67,9 +67,11 @@ const isSplitNode = (n) => String(n?.id || '').startsWith(SPLIT_NODE_PREFIX);
 const randSuffix = () => Math.random().toString(16).slice(2, 6);
 
 // App-model edge {source,target,kind} -> React Flow edge (styled by kind).
+// Reference look: dashed green connector arrows on the main path; the
+// fallback (decline) path stays red-dashed so a downsell reads at a glance.
 function toRfEdge(e, idx) {
   const kind = e.kind === 'fallback' ? 'fallback' : 'main';
-  const color = kind === 'fallback' ? '#ef4444' : '#c9a84c';
+  const color = kind === 'fallback' ? '#ef4444' : '#22c55e';
   return {
     id: e.id || `edge_${kind}_${e.source}_${e.target}_${idx}`,
     source: e.source,
@@ -77,7 +79,7 @@ function toRfEdge(e, idx) {
     sourceHandle: kind === 'fallback' ? 'fallback' : 'main',
     data: { kind },
     animated: kind === 'main',
-    style: { stroke: color, strokeWidth: 2, strokeDasharray: kind === 'fallback' ? '6 4' : undefined },
+    style: { stroke: color, strokeWidth: 2, strokeDasharray: '6 4' },
     markerEnd: { type: MarkerType.ArrowClosed, color },
   };
 }

@@ -13,6 +13,7 @@ import {
   startStaticsQueueWorker,
   requestShutdown as requestStaticsQueueShutdown,
 } from './workers/staticsQueueWorker.js';
+import { closeBrowser as closeThumbBrowser } from './routes/pageThumbnails.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -215,6 +216,7 @@ const start = async () => {
     try { requestStaticsQueueShutdown(); } catch (e) { logger.error('statics queue shutdown error:', e.message); }
     server.close(async () => {
       logger.info('HTTP server closed');
+      try { await closeThumbBrowser(); logger.info('thumbnail chromium closed'); } catch (e) { logger.error('thumb browser close error:', e.message); }
       try { await pool.end(); logger.info('pg Pool drained'); } catch (e) { logger.error('pg Pool drain error:', e.message); }
       try { if (redis && typeof redis.quit === 'function') { await redis.quit(); logger.info('Redis disconnected'); } } catch (e) { logger.error('Redis disconnect error:', e.message); }
       process.exit(0);
