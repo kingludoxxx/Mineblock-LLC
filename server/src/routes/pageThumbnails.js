@@ -350,10 +350,15 @@ function sendJpeg(res, buf) {
 // GET /:funnelId/:pageId.png — the .png suffix keeps the URL image-shaped;
 // the body is JPEG (smaller at q60 than PNG for real pages) and the client
 // reads the blob's actual content type.
-router.get('/:funnelId/:pageId.png', async (req, res) => {
+// Plain param pattern — the ':pageId.png' suffix form matches on some
+// path-to-regexp versions and not others (bit us live: local harness green,
+// Render 404). Accept both URL shapes by stripping an optional .png/.jpg
+// suffix off the param instead of encoding it in the route.
+router.get('/:funnelId/:pageId', async (req, res) => {
   try {
     await ensureTables();
-    const { funnelId, pageId } = req.params;
+    const funnelId = String(req.params.funnelId);
+    const pageId = String(req.params.pageId).replace(/\.(png|jpg|jpeg)$/i, '');
 
     // Same read path as funnels.js / funnelPublic.js: funnel row + page row
     // scoped to the funnel, archived pages excluded.
