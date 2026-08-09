@@ -1,6 +1,6 @@
 // PAGE BUILDER — left panel: Elements palette | Outline.
 import { useState } from 'react';
-import { GripVertical, Trash2, Sparkles, Bot } from 'lucide-react';
+import { GripVertical, Trash2, Sparkles } from 'lucide-react';
 import { BLOCK_DEFS, CATEGORIES, PALETTE_ORDER, blockLabel } from './blockRegistry';
 
 export const DRAG_MIME = 'application/x-puure-block';
@@ -9,6 +9,21 @@ function PaletteItem({ type, onAdd }) {
   const def = BLOCK_DEFS[type];
   if (!def) return null;
   const Icon = def.icon;
+  if (def.soon) {
+    // Visible-disabled: unwired gateway checkouts (Whop-only platform).
+    return (
+      <button
+        disabled
+        title="Coming soon — Whop is the only wired gateway"
+        className="flex flex-col items-center gap-1.5 p-2.5 rounded-lg border border-border-default bg-bg-elevated
+          text-text-faint opacity-50 cursor-not-allowed text-center"
+      >
+        <Icon className="w-4 h-4" />
+        <span className="text-[11px] leading-tight">{def.label}</span>
+        <span className="text-[9px] uppercase tracking-wider font-semibold">soon</span>
+      </button>
+    );
+  }
   return (
     <button
       draggable
@@ -45,22 +60,15 @@ function ElementsTab({ onAdd }) {
         </div>
       ))}
 
-      {/* AI stubs — visible, disabled, coming soon. Do not wire. */}
-      <div className="pt-2 border-t border-border-subtle space-y-1.5">
+      {/* AI stub — visible, disabled, coming soon. Do not wire.
+          (AI Developer moved to the top bar per the reference layout.) */}
+      <div className="pt-2 border-t border-border-subtle">
         <button
           disabled
           title="Coming soon"
           className="w-full flex items-center gap-2 px-3 py-2 rounded-lg border border-border-default bg-bg-elevated text-text-faint opacity-50 cursor-not-allowed text-xs"
         >
           <Sparkles className="w-3.5 h-3.5" /> AI: generate a block
-          <span className="ml-auto text-[9px] uppercase tracking-wider">soon</span>
-        </button>
-        <button
-          disabled
-          title="Coming soon"
-          className="w-full flex items-center gap-2 px-3 py-2 rounded-lg border border-border-default bg-bg-elevated text-text-faint opacity-50 cursor-not-allowed text-xs"
-        >
-          <Bot className="w-3.5 h-3.5" /> AI Developer
           <span className="ml-auto text-[9px] uppercase tracking-wider">soon</span>
         </button>
       </div>

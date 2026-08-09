@@ -2,10 +2,13 @@
 //
 // Maps 1:1 to the block types the server renderer supports on this commit
 // (server/src/services/funnelRender.js renderBlockInner switch). Types the
-// renderer only renders as "not in this slice" placeholders (stripe_checkout,
-// nmi_checkout, express_checkout, product, order_bump, checkout_template,
-// shipping_method, form, quiz_embed) are deliberately OMITTED from the
-// palette — the editor must never insert a block the public page can't render.
+// renderer only renders as "not in this slice" placeholders (form, quiz_embed)
+// are deliberately OMITTED from the palette. The three unwired gateway
+// checkouts (stripe_checkout / nmi_checkout / express_checkout) appear as
+// VISIBLE-DISABLED "soon" entries (`soon: true`) — this platform is
+// Whop-only, so they can never be inserted. checkout_template inserts but
+// renders as an inert labelled placeholder on the public page (its def says
+// so); order_bump / shipping_method / product have real visual renderer cases.
 //
 // Money blocks (whop_checkout / order_summary / upsell_offer) split their
 // props into SAFE (copy/labels) and WIRING (variant/offer binding). Prices
@@ -35,6 +38,13 @@ import {
   CreditCard,
   ReceiptText,
   ArrowUpCircle,
+  Gift,
+  Truck,
+  LayoutTemplate,
+  Package,
+  Banknote,
+  Wallet,
+  Zap,
 } from 'lucide-react';
 
 export const BLOCKS_MAX_COUNT = 500; // mirror of server BLOCKS_MAX_COUNT
@@ -333,6 +343,88 @@ export const BLOCK_DEFS = {
     wiringNote:
       'The offer, image and PRICE are resolved server-side from the Offer ID (or the page default). No amount can be set from this editor.',
   },
+
+  // ---- EDITOR-PARITY additions ----------------------------------------------
+  // Visual commerce-adjacent blocks. Prices here are DISPLAY STRINGS only —
+  // nothing in these blocks can feed a charge (the server treats them the
+  // same way: static markup, esc()'d text, no money logic).
+  order_bump: {
+    label: 'Order Bump',
+    category: 'blocks',
+    icon: Gift,
+    defaults: () => ({
+      label: 'Yes! Add this one-time offer to my order',
+      description: 'Special one-time deal, only available right now.',
+      price: '$19.00',
+    }),
+    fields: [
+      { key: 'label', label: 'Label', kind: 'text' },
+      { key: 'description', label: 'Description', kind: 'textarea' },
+      {
+        key: 'price', label: 'Price (display text)', kind: 'text', placeholder: '$19.00',
+        help: 'Display only — this block has NO charging logic yet; the checkbox is visual.',
+      },
+      {
+        key: 'checked', label: 'Pre-checked', kind: 'select', coerce: 'bool',
+        options: [{ value: '', label: 'No' }, { value: 'true', label: 'Yes' }],
+      },
+    ],
+  },
+  shipping_method: {
+    label: 'Shipping Method',
+    category: 'blocks',
+    icon: Truck,
+    defaults: () => ({
+      title: 'Shipping method',
+      options: [
+        { label: 'Standard (5-7 days)', price: 'FREE' },
+        { label: 'Express (2-3 days)', price: '$9.95' },
+      ],
+    }),
+    fields: [
+      { key: 'title', label: 'Title', kind: 'text' },
+      {
+        key: 'options', label: 'Options', kind: 'json',
+        help: 'Array of { "label": "…", "price": "…" }. Prices are display strings — shipping totals stay server-side.',
+      },
+    ],
+  },
+  product: {
+    label: 'Product',
+    category: 'blocks',
+    icon: Package,
+    defaults: () => ({
+      name: 'Product name',
+      description: 'Short product description.',
+      price: '$49.00',
+      cta_text: 'Buy now',
+      href: '#fos-next',
+      image: '',
+    }),
+    fields: [
+      { key: 'image', label: 'Image URL', kind: 'url' },
+      { key: 'name', label: 'Name', kind: 'text' },
+      { key: 'description', label: 'Description', kind: 'textarea' },
+      { key: 'price', label: 'Price (display text)', kind: 'text', placeholder: '$49.00' },
+      { key: 'cta_text', label: 'CTA label', kind: 'text' },
+      { key: 'href', label: 'CTA link', kind: 'url', help: 'Use #fos-next to follow the funnel flow.' },
+    ],
+  },
+  checkout_template: {
+    label: 'Checkout Template',
+    category: 'blocks',
+    icon: LayoutTemplate,
+    defaults: () => ({}),
+    fields: [],
+    help:
+      'Renders as an inert labelled placeholder on the public page for now. For a live checkout use the Whop Checkout block (or create a page with the checkout type — it seeds the full template).',
+  },
+
+  // Unwired gateway checkouts — visible but DISABLED in the palette
+  // (`soon: true`). Whop is the only wired gateway on this platform.
+  stripe_checkout: { label: 'Stripe Checkout', category: 'blocks', icon: Banknote, soon: true, defaults: () => ({}), fields: [] },
+  nmi_checkout: { label: 'NMI Checkout', category: 'blocks', icon: Wallet, soon: true, defaults: () => ({}), fields: [] },
+  express_checkout: { label: 'Express Checkout', category: 'blocks', icon: Zap, soon: true, defaults: () => ({}), fields: [] },
 };
 
 // Palette ordering per category.
@@ -340,11 +432,20 @@ export const PALETTE_ORDER = {
   basic: ['heading', 'text', 'button', 'image', 'video', 'divider', 'spacer'],
   layout: ['section', 'row', 'custom_html'],
   blocks: [
-    'whop_checkout', 'order_summary', 'upsell_offer',
+    'whop_checkout', 'order_summary', 'order_bump', 'shipping_method',
+    'checkout_template', 'product', 'upsell_offer',
     'hero', 'list', 'checklist', 'testimonial', 'faq', 'ranking',
     'comparison_table', 'product_grid', 'table', 'countdown', 'sticky_cta', 'html',
+    // Visible-disabled (soon) — unwired gateways on a Whop-only platform.
+    'stripe_checkout', 'nmi_checkout', 'express_checkout',
   ],
 };
+
+// True when a palette type can actually be inserted (soon-entries cannot).
+export function isInsertable(type) {
+  const def = BLOCK_DEFS[type];
+  return !!def && !def.soon;
+}
 
 export function blockDef(type) {
   return BLOCK_DEFS[type] || null;

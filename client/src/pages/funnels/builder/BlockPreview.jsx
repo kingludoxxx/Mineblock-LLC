@@ -376,6 +376,71 @@ export default function BlockPreview({ block, pageCss = '' }) {
           {p.fine_print ? <p style={{ color: T.faint, fontSize: 11, marginTop: 10 }}>{String(p.fine_print)}</p> : null}
         </section>
       );
+    case 'order_bump':
+      return (
+        <div style={{ border: '2px dashed #f59e0b', borderRadius: 12, background: '#fffbeb', padding: '16px 18px' }}>
+          <label style={{ display: 'flex', alignItems: 'flex-start', gap: 10 }}>
+            <input type="checkbox" checked={p.checked === true} readOnly style={{ marginTop: 3, width: 18, height: 18, accentColor: '#f59e0b', pointerEvents: 'none' }} />
+            <span style={{ flex: 1, fontWeight: 600, color: T.dark, fontSize: 14 }}>
+              {String(p.label || 'Yes! Add this one-time offer to my order')}
+            </span>
+            {p.price != null && String(p.price).trim() !== '' && (
+              <span style={{ fontWeight: 700, color: T.dark, whiteSpace: 'nowrap', fontSize: 14 }}>{String(p.price)}</span>
+            )}
+          </label>
+          {p.description != null && String(p.description).trim() !== '' && (
+            <p style={{ margin: '8px 0 0 28px', color: T.faint, fontSize: 13 }}>{String(p.description)}</p>
+          )}
+          <div style={{ marginLeft: 28, marginTop: 6, fontSize: 11, color: T.faint }}>
+            Visual block — the checkbox does not charge yet
+          </div>
+        </div>
+      );
+    case 'shipping_method': {
+      const opts = (Array.isArray(p.options) ? p.options : []).filter((o) => o && typeof o === 'object' && !Array.isArray(o));
+      return (
+        <div>
+          {p.title != null && String(p.title).trim() !== '' && (
+            <div style={{ fontWeight: 700, color: T.dark, marginBottom: 4, fontSize: 14 }}>{String(p.title)}</div>
+          )}
+          {opts.length ? opts.map((o, i) => (
+            <label key={i} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '12px 14px', border: `1px solid ${T.border}`, borderRadius: 10, margin: '8px 0', background: '#fff' }}>
+              <input type="radio" checked={i === 0} readOnly style={{ pointerEvents: 'none' }} />
+              <span style={{ flex: 1, color: T.text, fontSize: 14 }}>{String(o.label ?? '')}</span>
+              <span style={{ fontWeight: 600, color: T.dark, fontSize: 14 }}>{String(o.price ?? '')}</span>
+            </label>
+          )) : (
+            <div style={{ color: T.faint, fontSize: 13 }}>No shipping options yet — add them in the panel.</div>
+          )}
+          <div style={{ fontSize: 11, color: T.faint }}>Display strings only — shipping totals stay server-side</div>
+        </div>
+      );
+    }
+    case 'product':
+      return (
+        <article style={{ border: `1px solid ${T.border}`, borderRadius: 12, background: '#fff', padding: 20, textAlign: 'center', maxWidth: 460, margin: '0 auto' }}>
+          {isHttpUrl(p.image)
+            ? <img src={String(p.image)} alt="" style={{ width: '100%', maxWidth: 320, borderRadius: 10, display: 'block', margin: '0 auto 12px' }} />
+            : <div style={{ maxWidth: 320, aspectRatio: '4/3', margin: '0 auto 12px', background: T.muted, borderRadius: 10, display: 'flex', alignItems: 'center', justifyContent: 'center', color: T.faint }}><ImageIcon size={20} /></div>}
+          <h3 style={{ margin: 0, color: T.dark, fontSize: 18 }}>{String(p.name || p.title || 'Product')}</h3>
+          {p.description != null && String(p.description).trim() !== '' && (
+            <p style={{ color: T.faint, margin: '4px 0 0', fontSize: 13 }}>{String(p.description)}</p>
+          )}
+          {p.price != null && String(p.price).trim() !== '' && (
+            <div style={{ fontWeight: 700, fontSize: 17, color: T.dark, marginTop: 8 }}>{String(p.price)}</div>
+          )}
+          {p.cta_text != null && String(p.cta_text).trim() !== '' && (
+            <div style={{ marginTop: 12 }}><Btn>{String(p.cta_text)}</Btn></div>
+          )}
+        </article>
+      );
+    case 'checkout_template':
+      return (
+        <div style={{ border: `1px dashed ${T.border}`, borderRadius: 10, padding: 18, textAlign: 'center', color: T.faint, fontSize: 13, background: T.muted }}>
+          Checkout Template — renders as an inert labelled placeholder on the public page.
+          Use the Whop Checkout block (or a checkout-type page) for a live checkout.
+        </div>
+      );
     default:
       return (
         <div style={{ border: `1px dashed ${T.border}`, borderRadius: 10, padding: 18, textAlign: 'center', color: T.faint, fontSize: 13, background: T.muted }}>
