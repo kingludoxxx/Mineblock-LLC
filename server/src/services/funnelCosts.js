@@ -1135,6 +1135,9 @@ export function variantRow(vc, rateIndex, today) {
     coverage: vc.coverage,
     pays_shipping: Boolean(vc.pays_shipping),
     kind_override: vc.kind_override ?? null,
+    // Contract v2 addendum (re-probe residual): the item-scope hook rides the
+    // wire so the drawer's Cost-group scope can enable when a group exists.
+    cost_item_id: vc.cost_item_id ?? null,
     units_per: Number(vc.units_per || 1),
     first_sold: vc.first_sold || '',
     detected_at: vc.detected_at,

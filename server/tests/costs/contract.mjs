@@ -99,7 +99,7 @@ await sql`INSERT INTO co_upsell_charges (id, session_id, offer_id, charge_id, am
 
 // ══ CONTRACT KEY SETS (cogs-contract-v2.md, verbatim) ══════════════════════
 const ROW_KEYS = ['variant_id', 'product_title', 'variant_title', 'image_url', 'contexts', 'funnels',
-  'revenue_30d', 'units_30d', 'price', 'coverage', 'pays_shipping', 'kind_override', 'units_per',
+  'revenue_30d', 'units_30d', 'price', 'coverage', 'pays_shipping', 'kind_override', 'cost_item_id', 'units_per',
   'first_sold', 'detected_at', 'updated_at', 'unit_cogs', 'cogs_source', 'ship', 'margin_pct'];
 const SHIP_KEYS = ['default', 'main', 'upsell', 'addon', 'bump'];
 const PNL_ROW_KEYS = ['fid', 'name', 'revenue', 'gross_sales', 'orders', 'cogs', 'fees', 'ship_cost',
