@@ -2219,3 +2219,32 @@ another session and its tab is PRODUCTION (puure-dashboard.onrender.com) —
 off-limits per revenue-page rule; verified by execution via harness instead.
 STATUS: COMPLETE
 ---
+
+---
+TIMESTAMP: 2026-08-09 18:55
+TASK: Tracking tab — adversarial-review fixes (2 MAJOR + 7 minor), feat/tracking-ui
+BUILT: F3 save serialization via new dependency-free serialQueue.js
+(makeSerialQueue: FIFO, non-wedging), all GENERAL controls disabled during
+in-flight saves, revert against server-confirmed ref, reseed suppressed
+mid-queue. F4 wired cards gated until /networks resolves + dirty-fields-only
+credentials PUT (omitted = keep server-side) + Save disabled when clean.
+F5 malformed-200 treated as error path. F2 isObj/saveFunnelPatch extracted to
+settingsPatch.js. F6 CredentialField optional autoComplete prop, token input
+uses new-password (Payments unchanged). F7 deliveries refresh keeps rows,
+button disabled+spins, inline error. F8 harness try/finally cleanup +
+EXPECTED_PASS=19 gate (skips now fail). F9 skipped/error color split, NaN
+value guard, honest unknown-network stub.
+TESTED: tracking-tab.mjs 19/19 including new queue unit tests (FIFO proven
+under inverted timing — slow job enqueued first still lands first; rejected
+job rejects its own promise, next job runs). patch-settings 22/22,
+render-settings 30/30, domains-tab 58/58. Vite build clean (657ms). ESLint
+delta vs main baseline: 0 new errors — same 4 pre-existing (line-shifted),
+every new/changed file clean (TrackingSection's earlier set-state-in-effect
+error eliminated by the F5 restructure).
+OUTPUT: commit 6595fa7 on feat/tracking-ui (not merged, not deployed).
+DECISIONS: Queue helper extracted to its own module (not settingsPatch.js)
+so the node harness imports it without dragging axios through Vite-style
+extensionless paths - DECISION MADE. Pass-count gate deliberately also trips
+when a new check lands without bumping EXPECTED_PASS - DECISION MADE.
+STATUS: COMPLETE
+---
