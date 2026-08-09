@@ -2484,6 +2484,55 @@ PRESERVED, not dropped as the reference documents — knownIds distinguishes "no
 marker" from "never described" (DECISION MADE). (4) Per-block code is editable
 only where markup IS a prop; the server renderer is not re-implemented client
 side (DECISION MADE, boundary stated in the UI).
+TIMESTAMP: 2026-08-09 21:05
+TASK: PLATFORM COMPLETENESS lane (funnel duplicate · trash/restore · health alerts v1)
+BUILT: (1) POST /api/v1/funnels/:id/duplicate {confirm:true} — COMPOSED from
+funnelTransfer's exportFunnel + importFunnel in one in-process flow, so the
+allowlist, the single-transaction page write, the home-invariant repair, the
+canvas-layout rebuild, the redirect sanitiser and the slug de-collision ladder
+are all inherited rather than reimplemented (funnels.js:894-1010). Refuses an
+archived source; copy is always a DRAFT named '<name> copy'. (2) POST
+/api/v1/funnels/:id/restore {confirm:true} (funnels.js:875-960) — clears
+`archived` and, when a live funnel has taken the slug (the partial unique index
+frees it on archive), RE-SLUGS with a suffix and reports it in `notes`, where
+the pre-existing archive route answers 409 and strands the operator. Idempotent
+on an already-live funnel. NO permanent delete added, server or client.
+(3) NEW services/healthAlerts.js + routes/healthAlerts.js — lb_health_alerts
+(ensure-on-demand), recordAlert/listAlerts/ackAlert exported for other services,
+a per-kind COOLDOWN, caps on message/context, an idempotent ack, and a 5-minute
+in-process sweep (HEALTH_ALERTS_SWEEP_DISABLED=1) checking postback queue depth
+>100, spend-sync stale >12h per source, and needs_review RISING (baseline-first,
+never alerting off a single observation). One mount line in routes/index.js.
+Client: Duplicate action + typed-confirm Trash tab/Restore on FunnelsPage;
+HealthAlertsPanel.jsx built standalone and UNMOUNTED (the Health surface lives
+in the contested sections.jsx:1141).
+TESTED: NEW server/tests/platform/platform.mjs — real routers, real
+authenticate + requirePermission, embedded PG 5433, 141 assertions. Edge cases
+driven: missing-confirm, string 'true' as confirm, 404s, 401s, 403 on a token
+lacking the permission, archived-source refusal, slug collision on restore,
+double-restore, double-ack, unknown alert id, oversized context, negative and
+non-numeric paging params, absurd limit, a sweep against a database where all
+three source tables are ABSENT, a still-stale feed (cooldown), a FALLING
+needs_review count, and empty-but-present source tables. Regression: existing
+funnel-transfer.mjs and page-duplicate.mjs re-run.
+OUTPUT: platform.mjs 141 passed / 0 failed (run twice, identical);
+funnel-transfer.mjs 121 passed / 0 failed; page-duplicate.mjs 34 passed / 0
+failed; client vite build ✓ 2670 modules, built in 701ms; eslint delta on
+FunnelsPage.jsx = 0 new problems (4 pre-existing before and after);
+HealthAlertsPanel.jsx eslint clean and separately compiled through vite (3
+modules transformed) because the main build tree-shakes an unmounted file;
+node --check clean on all five changed/new server files; routes/index.js boots
+and /api/v1/health-alerts answers 401 (mounted + gated).
+DECISIONS: (a) DECISION MADE — the alert routes are gated with the EXISTING
+('audit','read') permission rather than a new 'health-alerts' key, which no
+seeded role holds; the consequence (a Viewer can ack) is documented in
+routes/healthAlerts.js. (b) DECISION MADE — HealthAlertsPanel.jsx is NOT
+mounted: every mount point (sections.jsx, App.jsx, Sidebar.jsx) is outside this
+lane's fence. The one-line mount is written in the file header. (c) DECISION
+MADE — no retention/purge on lb_health_alerts; the cooldown bounds growth and
+the gap is stated in the service header rather than pretended away. (d) The
+funnels.js ↔ funnelTransfer.js import cycle is deliberate and verified by
+execution in BOTH module-evaluation orders.
 STATUS: COMPLETE
 ---
 
@@ -2554,5 +2603,60 @@ is never spliced into the auto-headline.
 DECISIONS: `label` is not seeded in defaults() any more — seeding the legacy
 key on a NEW block would put a value behind the headline field that the
 operator cannot see in the inspector (DECISION MADE).
+TIMESTAMP: 2026-08-09 21:40
+TASK: PLATFORM COMPLETENESS — adversarial review pass (H1, H2, M1-M5, L1-L6)
+BUILT: H1 — the client no longer drops the duplicate's `notes`: duplicateFunnel
+navigates immediately ONLY when there is nothing to report; any notes keep the
+operator on FunnelsPage with the server's sentences rendered and an explicit
+"Open the copy" button (restoreFunnel's pattern + a navigation affordance; the
+builder page is outside the fence). The predictive "e.g. Maps API key" bullet in
+DuplicateConfirmModal is gone — the client no longer guesses at a server-side
+allowlist it cannot see. H2 — minted a real permission via
+server/migrations/091_add_health_alerts_permission.sql (fence extension, 086-090
+pattern): Team - Full Access {read,ack}, Manager {read}, Viewer NOTHING. Router
+gates split: health-alerts:read on GET / and GET /meta, health-alerts:ack on
+POST /:id/ack and POST /sweep (sweep WRITES, so it is a write). The old header's
+"no seeded role would hold it" premise is disproven in-file by 086-090.
+M1 scopeId is a first-class recordAlert param; cooldown keys on (kind,
+context->>'scope_id'). M2 baseline persisted in lb_health_alert_state (kind PK)
++ an env-tunable absolute FLOOR (needs_review > 50) that needs no baseline.
+M3 runHealthAlertSweep({anchor}); POST /sweep defaults dry (anchor=false) so the
+panel's refresh evaluates and writes but never consumes the comparison point;
+the timer anchors. M5 cooldown made exclusive. M4 pre-COUNT before export +
+archived-pages note + the honesty paragraph now lists the caps. L1 name must be
+a string. L4 collapsible pretty-printed context + a NO-PII line in the call-site
+contract. L5 stale-response seq guard + offset clamp on ack. L6 metrics+trash
+note, note keys deduped, offset capped, limit null → default, ackAlert refuses
+with no actor, trash Load-more paging.
+TESTED: platform.mjs grown 141 → 199 assertions. The role matrix is driven
+through roles produced by EXECUTING migration 091 verbatim off disk (incl. an
+idempotence re-run). M5 is proven with FOUR REAL OS PROCESSES contending for one
+(kind, scope). M2's restart is simulated by re-importing the service module with
+a cache-busting query so every module-level variable resets. Full battery re-run.
+OUTPUT: platform.mjs 199 passed / 0 failed (run twice, identical);
+funnel-transfer.mjs 121/0; page-duplicate.mjs 34/0; seam-fixes.mjs 15/0;
+clone-page/scan-create.mjs 92/0; scripts/verifySplitTesting.mjs 48/0; vite build
+✓ 2670 modules, 699ms; eslint delta 0 (4 pre-existing before and after);
+HealthAlertsPanel.jsx eslint clean + compiled separately (3 modules);
+node --check clean on 5 files; both import-cycle orders load (MAX_PAGES=100
+readable across the cycle); routes/index.js mounts and answers 401.
+DECISIONS: (a) DECISION MADE — Viewer LOSES access to the alert feed (it moved
+off audit:read, which Viewer holds, onto health-alerts:read, which it is
+deliberately not granted). Documented in the route header, the migration, and
+asserted at platform.mjs A11/A14. (b) M4's sameDeployment cap relaxation
+(MAX_PAGES 100 → 500) is NOT DONE: it requires editing
+services/funnelTransfer.js, which the fence admits READ-ONLY and the extension
+covered only the migration. The pre-count refusal at 100 is in place and the
+limitation is written into the route's honesty paragraph. BLOCKED pending an
+explicit fence extension.
+TWO REAL BUGS THE HARNESS CAUGHT (both mine, both fixed): (1) JSON.stringify on
+a JSONB param stored a jsonb STRING SCALAR, so context->>'scope_id' was NULL on
+every row and the scoped cooldown matched NOTHING — the exact trap
+funnelTransfer.js:669 documents and my own comment warned about. (2) The
+reviewer-specified single-statement `INSERT … WHERE NOT EXISTS` cannot be made
+atomic even WITH an advisory lock: measured at 4 rows from 4 processes, because
+a statement's snapshot is taken BEFORE it blocks on the lock, so the waiter
+cannot see the row it waited for. Corrected to lock-then-read-then-write across
+statement boundaries inside one transaction (fresh snapshot per statement).
 STATUS: COMPLETE
 ---

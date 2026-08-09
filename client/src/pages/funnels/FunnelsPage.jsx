@@ -12,6 +12,9 @@ import {
   ArrowRight,
   Upload,
   Download,
+  Copy,
+  Trash2,
+  RotateCcw,
 } from 'lucide-react';
 import api from '../../services/api';
 import Button from '../../components/ui/Button';
@@ -136,6 +139,96 @@ function ExportConfirmModal({ pending, onCancel, onConfirm }) {
   );
 }
 
+// Shown before a funnel is copied.
+//
+// ⛔ THIS MODAL DOES NOT PREDICT WHAT WILL BE LEFT BEHIND. An earlier version
+// listed "e.g. the Maps API key" as an example — a GUESS, hardcoded on the
+// client, about a server-side allowlist it cannot see. It would have gone stale
+// the moment the allowlist changed, and it named a key the funnel might not
+// even have. The REAL list arrives in the response (`notes` / `stripped`) and
+// is rendered after the copy is made. What this modal states is only what is
+// true of EVERY duplicate: it is a draft, it is not the original, and the copy
+// is composed rather than byte-cloned so some configuration does not travel.
+function DuplicateConfirmModal({ funnel, busy, onCancel, onConfirm }) {
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4" onClick={busy ? undefined : onCancel}>
+      <div
+        className="w-full max-w-md bg-bg-card border border-border-default rounded-xl p-5"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-center justify-between mb-3">
+          <h2 className="text-lg font-semibold text-text-primary">Duplicate {funnel.name}?</h2>
+          <button onClick={onCancel} disabled={busy} className="text-text-muted hover:text-text-primary cursor-pointer disabled:opacity-40">
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+        <p className="text-sm text-text-muted mb-3">
+          Creates <span className="text-text-primary font-medium">{funnel.name} copy</span> as a
+          new <span className="text-text-primary">draft</span> with its own pages, canvas layout and redirects.
+        </p>
+        <ul className="text-xs text-text-faint space-y-1 pl-5 list-disc mb-4">
+          <li>The copy is never published and never carries a custom domain.</li>
+          <li>Analytics, orders and split tests stay with the original.</li>
+          <li>Some stored settings do not travel. We will list exactly which ones once the copy exists.</li>
+        </ul>
+        <div className="flex justify-end gap-2">
+          <Button variant="secondary" onClick={onCancel} disabled={busy}>Cancel</Button>
+          <Button onClick={onConfirm} loading={busy}>
+            <Copy className="w-4 h-4" /> Duplicate
+          </Button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// Restore puts a funnel back on a PUBLIC slug, so the confirmation is TYPED,
+// not a click: the operator has to name the funnel they mean. That is also the
+// only affordance in this trash view — there is deliberately NO permanent
+// delete, here or on the server. Archive is the only "delete" in this codebase
+// (funnels.js:875) and a trash screen is exactly where a second, irreversible
+// one would get added by reflex.
+function RestoreConfirmModal({ funnel, busy, onCancel, onConfirm }) {
+  const [typed, setTyped] = useState('');
+  const matches = typed.trim() === String(funnel.name).trim();
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4" onClick={busy ? undefined : onCancel}>
+      <div
+        className="w-full max-w-md bg-bg-card border border-border-default rounded-xl p-5"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-center justify-between mb-3">
+          <h2 className="text-lg font-semibold text-text-primary">Restore this funnel?</h2>
+          <button onClick={onCancel} disabled={busy} className="text-text-muted hover:text-text-primary cursor-pointer disabled:opacity-40">
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+        <p className="text-sm text-text-muted mb-3">
+          It returns to the funnels list as a draft. If another live funnel has taken
+          <span className="text-text-primary font-mono"> /{funnel.slug}</span> in the meantime,
+          this one comes back on a new slug and we will tell you what it is.
+        </p>
+        <label className="block text-xs uppercase tracking-wider text-text-faint mb-1.5">
+          Type <span className="text-text-primary normal-case font-medium">{funnel.name}</span> to confirm
+        </label>
+        <input
+          autoFocus
+          value={typed}
+          onChange={(e) => setTyped(e.target.value)}
+          className="w-full px-3 py-2 text-sm bg-bg-elevated border border-border-default rounded-md text-text-primary placeholder:text-text-faint focus:outline-none focus:border-border-strong mb-4"
+          placeholder={funnel.name}
+        />
+        <div className="flex justify-end gap-2">
+          <Button variant="secondary" onClick={onCancel} disabled={busy}>Cancel</Button>
+          <Button onClick={onConfirm} loading={busy} disabled={!matches}>
+            <RotateCcw className="w-4 h-4" /> Restore
+          </Button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function CreateFunnelModal({ onClose, onCreated }) {
   const [name, setName] = useState('');
   const [saving, setSaving] = useState(false);
@@ -236,7 +329,10 @@ function FlowThumbnail({ pages }) {
   );
 }
 
-function FunnelCard({ funnel, onOpen, onExport, exporting }) {
+// `trashMode` swaps the card's action set entirely rather than adding to it: a
+// trashed funnel cannot be exported or duplicated (the server refuses both),
+// so showing those buttons would only produce errors the operator has to read.
+function FunnelCard({ funnel, onOpen, onExport, exporting, onDuplicate, duplicating, onRestore, trashMode }) {
   const pages = orderedPages(funnel);
   const summary = pages.map((p) => typeMeta(p.type).label).join(' → ');
   return (
@@ -269,20 +365,44 @@ function FunnelCard({ funnel, onOpen, onExport, exporting }) {
         <span>{fmtDate(funnel.created_at)}</span>
       </div>
     </button>
-      <button
-        onClick={(e) => { e.stopPropagation(); onExport?.(funnel); }}
-        disabled={exporting}
-        title="Export as .json"
-        className="absolute top-2 right-2 p-1.5 rounded-md text-text-faint hover:text-text-primary
-          hover:bg-bg-elevated transition-colors cursor-pointer disabled:opacity-40 disabled:pointer-events-none"
-      >
-        <Download className="w-3.5 h-3.5" />
-      </button>
+      <div className="absolute top-2 right-2 flex items-center gap-0.5">
+        {trashMode ? (
+          <button
+            onClick={(e) => { e.stopPropagation(); onRestore?.(funnel); }}
+            title="Restore funnel"
+            className="p-1.5 rounded-md text-text-faint hover:text-text-primary
+              hover:bg-bg-elevated transition-colors cursor-pointer"
+          >
+            <RotateCcw className="w-3.5 h-3.5" />
+          </button>
+        ) : (
+          <>
+            <button
+              onClick={(e) => { e.stopPropagation(); onDuplicate?.(funnel); }}
+              disabled={duplicating}
+              title="Duplicate funnel"
+              className="p-1.5 rounded-md text-text-faint hover:text-text-primary
+                hover:bg-bg-elevated transition-colors cursor-pointer disabled:opacity-40 disabled:pointer-events-none"
+            >
+              <Copy className="w-3.5 h-3.5" />
+            </button>
+            <button
+              onClick={(e) => { e.stopPropagation(); onExport?.(funnel); }}
+              disabled={exporting}
+              title="Export as .json"
+              className="p-1.5 rounded-md text-text-faint hover:text-text-primary
+                hover:bg-bg-elevated transition-colors cursor-pointer disabled:opacity-40 disabled:pointer-events-none"
+            >
+              <Download className="w-3.5 h-3.5" />
+            </button>
+          </>
+        )}
+      </div>
     </div>
   );
 }
 
-function GridView({ funnels, onOpen, onCreate, onExport, exportingId }) {
+function GridView({ funnels, onOpen, onCreate, onExport, exportingId, onDuplicate, duplicatingId, onRestore, trashMode }) {
   return (
     <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
       {funnels.map((f) => (
@@ -292,15 +412,23 @@ function GridView({ funnels, onOpen, onCreate, onExport, exportingId }) {
           onOpen={() => onOpen(f)}
           onExport={onExport}
           exporting={exportingId === f.id}
+          onDuplicate={onDuplicate}
+          duplicating={duplicatingId === f.id}
+          onRestore={onRestore}
+          trashMode={trashMode}
         />
       ))}
-      <button
-        onClick={onCreate}
-        className="min-h-[172px] rounded-xl border border-dashed border-border-default hover:border-border-strong hover:bg-bg-hover transition-colors cursor-pointer flex flex-col items-center justify-center gap-2 text-text-muted hover:text-text-primary"
-      >
-        <Plus className="w-5 h-5" />
-        <span className="text-sm">New Funnel</span>
-      </button>
+      {/* No "New Funnel" tile in the trash view — the trash is a list of things
+          that already exist, and a create affordance there reads as a mistake. */}
+      {!trashMode && (
+        <button
+          onClick={onCreate}
+          className="min-h-[172px] rounded-xl border border-dashed border-border-default hover:border-border-strong hover:bg-bg-hover transition-colors cursor-pointer flex flex-col items-center justify-center gap-2 text-text-muted hover:text-text-primary"
+        >
+          <Plus className="w-5 h-5" />
+          <span className="text-sm">New Funnel</span>
+        </button>
+      )}
     </div>
   );
 }
@@ -592,11 +720,14 @@ function FunnelMetricsRow({ funnel, metrics: m, open, onToggle, onOpen, from, to
 
 // ── Page ────────────────────────────────────────────────────────────────────
 
+// 'archived' is the server-side flag; "Trash" is what an operator calls it.
+// The key stays `archived` because it IS the query parameter (`?archived=true`)
+// — renaming it would only mean translating it back before every request.
 const FILTERS = [
   { key: 'all', label: 'All' },
   { key: 'published', label: 'Published' },
   { key: 'draft', label: 'Draft' },
-  { key: 'archived', label: 'Archived' },
+  { key: 'archived', label: 'Trash', icon: Trash2 },
 ];
 
 const SORTS = [
@@ -604,6 +735,8 @@ const SORTS = [
   { key: 'updated', label: 'Date Updated' },
   { key: 'name', label: 'Name' },
 ];
+
+const FUNNEL_PAGE_SIZE = 100;
 
 const VIEWS = [
   { key: 'grid', icon: LayoutGrid, title: 'Grid view' },
@@ -623,6 +756,20 @@ export default function FunnelsPage() {
   // a single boolean would spin every row's icon at once.
   const [exportingId, setExportingId] = useState(null);
   const [rowError, setRowError] = useState(null);
+  // Duplicate and restore each have a confirm step, so the pending funnel and
+  // the in-flight id are separate: the modal stays up (and its button spins)
+  // while the request runs, so a slow copy cannot be double-submitted.
+  const [pendingDuplicate, setPendingDuplicate] = useState(null);
+  const [duplicatingId, setDuplicatingId] = useState(null);
+  const [pendingRestore, setPendingRestore] = useState(null);
+  const [restoringId, setRestoringId] = useState(null);
+  // Server-authored sentences (a rewritten slug, dropped settings keys). These
+  // are FACTS ABOUT WHAT HAPPENED, not decoration — they are shown until the
+  // operator's next action, never toasted away after three seconds.
+  const [notice, setNotice] = useState(null);
+  const [page, setPage] = useState(1);
+  const [hasMore, setHasMore] = useState(false);
+  const [appending, setAppending] = useState(false);
   const debounceRef = useRef(null);
   const [query, setQuery] = useState('');
   const [viewMode, setViewMode] = useState('grid'); // 'grid' | 'list' | 'metrics'
@@ -632,25 +779,40 @@ export default function FunnelsPage() {
   const [from, setFrom] = useState(() => daysAgoIso(29));
   const [to, setTo] = useState(() => todayIso());
 
-  const load = useCallback(async () => {
-    setLoading(true);
+  // GET /funnels has always been paged (page + limit, funnels.js:320) and this
+  // page always asked for exactly one page and showed whatever came back. On a
+  // list under the default that is invisible; on the 101st funnel — or a trash
+  // that has been filling up for a year — it silently hides rows, and the trash
+  // is the one view where a missing row means "I cannot get my funnel back".
+  // Hence an explicit Load more that APPENDS rather than replaces.
+  const load = useCallback(async (targetPage = 1, append = false) => {
+    if (append) setAppending(true);
+    else setLoading(true);
     setError(null);
     try {
-      const params = {};
+      const params = { page: targetPage, limit: FUNNEL_PAGE_SIZE };
       if (query) params.q = query;
       if (filter === 'archived') params.archived = 'true';
       const res = await api.get('/funnels', { params });
-      setFunnels(res.data?.data?.funnels || []);
+      const rows = res.data?.data?.funnels || [];
+      setFunnels((prev) => (append ? [...prev, ...rows] : rows));
+      setHasMore(targetPage < (res.data?.data?.pages || 1));
+      setPage(targetPage);
     } catch (err) {
       setError(err.response?.data?.error || 'Failed to load funnels');
-      setFunnels([]);
+      // An APPEND that fails must not throw away the rows already on screen —
+      // the operator loses their place for a failure that cost them nothing.
+      if (!append) setFunnels([]);
+      setHasMore(false);
     } finally {
       setLoading(false);
+      setAppending(false);
     }
   }, [query, filter]);
 
+  // A new filter or search term is a new list, always from page 1.
   useEffect(() => {
-    load();
+    load(1, false);
   }, [load]);
 
   const onSearch = (value) => {
@@ -741,6 +903,88 @@ export default function FunnelsPage() {
     }
   };
 
+  // ── DUPLICATE ────────────────────────────────────────────────────────────
+  // One POST. The whole copy — pages, blocks, canvas layout, redirects — is
+  // composed server-side inside ONE transaction, so there is no half-copied
+  // funnel to clean up if this request dies mid-flight.
+  //
+  // ⚠️ THE NAVIGATION USED TO EAT THE ANSWER. This handler previously called
+  // navigate() the instant the 201 landed, which unmounted this page and threw
+  // away `notes` — the server's list of what did NOT survive the copy (the
+  // stripped credential, any trashed pages left behind). The operator was told
+  // nothing and met the difference days later as a broken feature on the copy.
+  //
+  // So the rule is now: NOTES BEFORE NAVIGATION.
+  //   • No notes  → straight to the copy, exactly as before. Nothing to say.
+  //   • Any notes → stay here, render them, and offer an explicit "Open the
+  //     copy" button. The same shape restoreFunnel uses (a notice that persists
+  //     until the operator's next action), adapted with a navigation
+  //     affordance so the copy is still one click away.
+  // The builder page would have been the other place to render this, but it is
+  // outside this lane's fence.
+  const duplicateFunnel = async (f) => {
+    if (duplicatingId) return;
+    setDuplicatingId(f.id);
+    setRowError(null);
+    setNotice(null);
+    try {
+      const res = await api.post(`/funnels/${f.id}/duplicate`, { confirm: true });
+      const data = res.data?.data;
+      const notes = Array.isArray(data?.notes) ? data.notes : [];
+      const copyId = data?.funnel?.id;
+      const copyName = data?.funnel?.name || 'The copy';
+      setPendingDuplicate(null);
+
+      if (!notes.length) {
+        if (copyId) navigate(`/app/funnels/${copyId}`);
+        else load(1, false);
+        return;
+      }
+      setNotice({
+        title: `${copyName} was created.`,
+        notes,
+        gotoPath: copyId ? `/app/funnels/${copyId}` : null,
+        gotoLabel: 'Open the copy',
+      });
+      load(1, false);
+    } catch (err) {
+      setRowError(err.response?.data?.error || 'Duplicate failed. Nothing was created.');
+      setPendingDuplicate(null);
+    } finally {
+      setDuplicatingId(null);
+    }
+  };
+
+  // ── RESTORE ──────────────────────────────────────────────────────────────
+  // The response's `notes` are the point of this handler. A restore can come
+  // back on a DIFFERENT slug (another live funnel took the old one), which
+  // silently changes the funnel's public path — an operator who is not told
+  // will point an ad at a URL that no longer resolves.
+  const restoreFunnel = async (f) => {
+    if (restoringId) return;
+    setRestoringId(f.id);
+    setRowError(null);
+    setNotice(null);
+    try {
+      const res = await api.post(`/funnels/${f.id}/restore`, { confirm: true });
+      const data = res.data?.data;
+      const notes = Array.isArray(data?.notes) ? data.notes : [];
+      setPendingRestore(null);
+      setNotice({
+        title: data?.restored ? `${f.name} was restored.` : `${f.name} was already live.`,
+        notes,
+      });
+      load(1, false);
+    } catch (err) {
+      setRowError(err.response?.data?.error || 'Restore failed. The funnel is still in the trash.');
+      setPendingRestore(null);
+    } finally {
+      setRestoringId(null);
+    }
+  };
+
+  const trashMode = filter === 'archived';
+
   return (
     <div className="p-6 space-y-5">
       <div className="flex items-start justify-between gap-4">
@@ -773,19 +1017,23 @@ export default function FunnelsPage() {
 
         {/* Filter chips */}
         <div className="flex items-center gap-1">
-          {FILTERS.map((f) => (
-            <button
-              key={f.key}
-              onClick={() => setFilter(f.key)}
-              className={`px-2.5 py-1 rounded-full text-xs border transition-colors cursor-pointer ${
-                filter === f.key
-                  ? 'bg-accent-muted text-accent-text border-accent/30'
-                  : 'bg-transparent text-text-muted border-border-default hover:text-text-primary hover:border-border-strong'
-              }`}
-            >
-              {f.label}
-            </button>
-          ))}
+          {FILTERS.map((f) => {
+            const Icon = f.icon;
+            return (
+              <button
+                key={f.key}
+                onClick={() => { setFilter(f.key); setNotice(null); setRowError(null); }}
+                className={`px-2.5 py-1 rounded-full text-xs border transition-colors cursor-pointer inline-flex items-center gap-1 ${
+                  filter === f.key
+                    ? 'bg-accent-muted text-accent-text border-accent/30'
+                    : 'bg-transparent text-text-muted border-border-default hover:text-text-primary hover:border-border-strong'
+                }`}
+              >
+                {Icon ? <Icon className="w-3 h-3" /> : null}
+                {f.label}
+              </button>
+            );
+          })}
         </div>
 
         {/* Sort */}
@@ -827,9 +1075,61 @@ export default function FunnelsPage() {
         </div>
       )}
 
-      {viewMode === 'metrics' ? (
+      {notice && (
+        <div className="bg-bg-card border border-border-default rounded-xl px-4 py-2.5">
+          <div className="flex items-start justify-between gap-3">
+            <div className="min-w-0">
+              <div className="text-sm text-text-primary">{notice.title}</div>
+              {notice.notes.length > 0 && (
+                <ul className="mt-1 text-xs text-amber-300/90 space-y-1 pl-5 list-disc">
+                  {/* Server notes are SENTENCES, not ids — two pages whose slugs
+                      were rewritten the same way produce byte-identical strings.
+                      Keying on the text alone made React drop the duplicate, so
+                      the operator was told about 2 of 3 rewrites. Key on
+                      position + text. */}
+                  {notice.notes.map((n, i) => <li key={`${i}:${n}`}>{n}</li>)}
+                </ul>
+              )}
+              {notice.gotoPath && (
+                <button
+                  onClick={() => navigate(notice.gotoPath)}
+                  className="mt-2 px-2 py-1 rounded-md text-xs text-text-primary border border-border-default
+                    hover:border-border-strong hover:bg-bg-elevated transition-colors cursor-pointer inline-flex items-center gap-1"
+                >
+                  {notice.gotoLabel || 'Open'} <ArrowRight className="w-3 h-3" />
+                </button>
+              )}
+            </div>
+            <button onClick={() => setNotice(null)} className="text-text-muted hover:text-text-primary cursor-pointer shrink-0">
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+        </div>
+      )}
+
+      {trashMode && (
+        <div className="text-xs text-text-faint">
+          Trashed funnels stop serving immediately and keep all their pages. Restore puts one
+          back as a draft. There is no permanent delete — nothing here is ever destroyed.
+        </div>
+      )}
+
+      {viewMode === 'metrics' && trashMode ? (
+        // Metrics + Trash was an EMPTY TABLE with no explanation: MetricsView is
+        // handed [] for archived funnels (the analytics overview only covers
+        // non-archived ones), so the operator saw a blank grid and could not
+        // tell "no data" from "broken". Say which it is.
+        <div className="bg-bg-card border border-border-default rounded-xl px-4 py-16 text-center">
+          <BarChart3 className="w-6 h-6 mx-auto mb-2 text-text-faint" />
+          <div className="text-sm text-text-primary">Metrics do not apply to trashed funnels.</div>
+          <div className="text-xs text-text-faint mt-1">
+            A trashed funnel stops serving, so it has no traffic to report. Switch to Grid or
+            List to see what is in the trash, or pick another filter.
+          </div>
+        </div>
+      ) : viewMode === 'metrics' ? (
         <MetricsView
-          funnels={filter === 'archived' ? [] : visible}
+          funnels={visible}
           from={from}
           to={to}
           onRangeChange={(s, e) => {
@@ -849,8 +1149,9 @@ export default function FunnelsPage() {
       ) : viewMode === 'grid' ? (
         visible.length === 0 && filter !== 'all' ? (
           <div className="bg-bg-card border border-border-default rounded-xl px-4 py-16 text-center text-text-muted">
-            <Waypoints className="w-6 h-6 mx-auto mb-2 text-text-faint" />
-            No {filter} funnels.
+            {trashMode ? <Trash2 className="w-6 h-6 mx-auto mb-2 text-text-faint" />
+              : <Waypoints className="w-6 h-6 mx-auto mb-2 text-text-faint" />}
+            {trashMode ? 'The trash is empty.' : `No ${filter} funnels.`}
           </div>
         ) : (
           <GridView
@@ -859,6 +1160,10 @@ export default function FunnelsPage() {
             onCreate={() => setShowCreate(true)}
             onExport={exportFunnel}
             exportingId={exportingId}
+            onDuplicate={(f) => { setNotice(null); setPendingDuplicate(f); }}
+            duplicatingId={duplicatingId}
+            onRestore={(f) => { setNotice(null); setPendingRestore(f); }}
+            trashMode={trashMode}
           />
         )
       ) : (
@@ -872,15 +1177,24 @@ export default function FunnelsPage() {
                   <th className="text-left font-medium px-4 py-3">Status</th>
                   <th className="text-right font-medium px-4 py-3">Pages</th>
                   <th className="text-left font-medium px-4 py-3">Updated</th>
-                  <th className="text-right font-medium px-4 py-3">Export</th>
+                  <th className="text-right font-medium px-4 py-3">{trashMode ? 'Restore' : 'Actions'}</th>
                 </tr>
               </thead>
               <tbody>
                 {visible.length === 0 ? (
                   <tr>
                     <td colSpan={6} className="px-4 py-16 text-center text-text-muted">
-                      <Waypoints className="w-6 h-6 mx-auto mb-2 text-text-faint" />
-                      No funnels yet. Create your first one.
+                      {trashMode ? (
+                        <>
+                          <Trash2 className="w-6 h-6 mx-auto mb-2 text-text-faint" />
+                          The trash is empty.
+                        </>
+                      ) : (
+                        <>
+                          <Waypoints className="w-6 h-6 mx-auto mb-2 text-text-faint" />
+                          No funnels yet. Create your first one.
+                        </>
+                      )}
                     </td>
                   </tr>
                 ) : (
@@ -900,15 +1214,40 @@ export default function FunnelsPage() {
                         {fmtDate(f.updated_at)}
                       </td>
                       <td className="px-4 py-3 text-right">
-                        <button
-                          onClick={(e) => { e.stopPropagation(); exportFunnel(f); }}
-                          disabled={exportingId === f.id}
-                          title="Export as .json"
-                          className="p-1.5 rounded-md text-text-muted hover:text-text-primary hover:bg-bg-elevated
-                            transition-colors cursor-pointer disabled:opacity-40 disabled:pointer-events-none"
-                        >
-                          <Download className="w-4 h-4" />
-                        </button>
+                        {trashMode ? (
+                          // Restore is the ONLY action on a trashed row. There is
+                          // deliberately no permanent-delete control — see
+                          // RestoreConfirmModal.
+                          <button
+                            onClick={(e) => { e.stopPropagation(); setNotice(null); setPendingRestore(f); }}
+                            title="Restore funnel"
+                            className="px-2 py-1 rounded-md text-xs text-text-muted hover:text-text-primary hover:bg-bg-elevated
+                              transition-colors cursor-pointer inline-flex items-center gap-1"
+                          >
+                            <RotateCcw className="w-3.5 h-3.5" /> Restore
+                          </button>
+                        ) : (
+                          <span className="inline-flex items-center gap-0.5">
+                            <button
+                              onClick={(e) => { e.stopPropagation(); setNotice(null); setPendingDuplicate(f); }}
+                              disabled={duplicatingId === f.id}
+                              title="Duplicate funnel"
+                              className="p-1.5 rounded-md text-text-muted hover:text-text-primary hover:bg-bg-elevated
+                                transition-colors cursor-pointer disabled:opacity-40 disabled:pointer-events-none"
+                            >
+                              <Copy className="w-4 h-4" />
+                            </button>
+                            <button
+                              onClick={(e) => { e.stopPropagation(); exportFunnel(f); }}
+                              disabled={exportingId === f.id}
+                              title="Export as .json"
+                              className="p-1.5 rounded-md text-text-muted hover:text-text-primary hover:bg-bg-elevated
+                                transition-colors cursor-pointer disabled:opacity-40 disabled:pointer-events-none"
+                            >
+                              <Download className="w-4 h-4" />
+                            </button>
+                          </span>
+                        )}
                       </td>
                     </tr>
                   ))
@@ -922,6 +1261,26 @@ export default function FunnelsPage() {
         </div>
       )}
 
+      {/* Load more applies to Grid and List (Metrics fetches its own window).
+          It APPENDS, so an operator who scrolled to row 90 stays at row 90. */}
+      {viewMode !== 'metrics' && hasMore && !loading && (
+        <div className="flex items-center justify-center gap-3">
+          <button
+            onClick={() => load(page + 1, true)}
+            disabled={appending}
+            className="px-3 py-1.5 rounded-md text-xs text-text-muted border border-border-default
+              hover:text-text-primary hover:border-border-strong transition-colors cursor-pointer
+              disabled:opacity-40 disabled:pointer-events-none"
+          >
+            {appending ? 'Loading…' : 'Load more'}
+          </button>
+          <span className="text-[11px] text-text-faint">
+            Showing {funnels.length}
+            {trashMode ? ' trashed funnels' : ' funnels'} so far
+          </span>
+        </div>
+      )}
+
       {pendingExport && (
         <ExportConfirmModal
           pending={pendingExport}
@@ -930,6 +1289,27 @@ export default function FunnelsPage() {
             writeEnvelopeFile(pendingExport.funnel, pendingExport.envelope);
             setPendingExport(null);
           }}
+        />
+      )}
+
+      {pendingDuplicate && (
+        <DuplicateConfirmModal
+          funnel={pendingDuplicate}
+          busy={duplicatingId === pendingDuplicate.id}
+          onCancel={() => setPendingDuplicate(null)}
+          onConfirm={() => duplicateFunnel(pendingDuplicate)}
+        />
+      )}
+
+      {pendingRestore && (
+        <RestoreConfirmModal
+          // Keyed by id so switching rows resets the typed-confirm field — a
+          // name typed for one funnel must never satisfy the gate for another.
+          key={pendingRestore.id}
+          funnel={pendingRestore}
+          busy={restoringId === pendingRestore.id}
+          onCancel={() => setPendingRestore(null)}
+          onConfirm={() => restoreFunnel(pendingRestore)}
         />
       )}
 

@@ -17,6 +17,21 @@ import {
   quizPageTemplate,
   advertorialPageTemplate,
 } from '../services/funnelRender.js';
+// POST /:id/duplicate composes these two rather than reimplementing a funnel
+// copy — see the long note on that route for what the composition inherits.
+//
+// ⚠️ THIS IS A DELIBERATE IMPORT CYCLE: services/funnelTransfer.js imports
+// validateBlocks / validateFunnelSettings / ensureTables back out of THIS file
+// (funnelTransfer.js:59). It is safe because neither module calls the other at
+// module scope — every binding is dereferenced at REQUEST time, long after both
+// modules have finished evaluating.
+//
+// ⛔ TRANSFER_MAX_PAGES IS A `const` EXPORT AND CROSSES THE CYCLE. It is only
+// ever read INSIDE a handler. Reading it at module scope here (e.g.
+// `const CAP = TRANSFER_MAX_PAGES;`) would throw ReferenceError from the
+// temporal dead zone whenever funnels.js happens to evaluate first. Both
+// evaluation orders are covered by execution in the harness.
+import { exportFunnel, importFunnel, MAX_PAGES as TRANSFER_MAX_PAGES } from '../services/funnelTransfer.js';
 
 const router = Router();
 
@@ -893,6 +908,244 @@ router.post('/:id/archive', async (req, res) => {
     }
     console.error('[funnels] archive failed:', err);
     res.status(500).json({ error: 'Failed to archive funnel' });
+  }
+});
+
+// POST /api/v1/funnels/:id/restore — { confirm: true }
+//
+// The other half of archive. POST /:id/archive {archived:false} already flips
+// the flag, but it ANSWERS 409 when a live funnel took the slug in the meantime
+// (funnels.js:888) and leaves the operator with a trashed funnel and no next
+// move — the slug that collided is usually the one the REPLACEMENT funnel is
+// using, so "free it up and try again" means taking production offline.
+//
+// Restore instead RE-SLUGS: the original slug is tried first (the common case
+// — nothing took it), and only on the partial unique index's refusal does it
+// fall back to a suffixed slug, exactly the way importFunnel de-collides a
+// funnel slug (funnelTransfer.js:658). The rewrite is REPORTED in `notes`,
+// never silent: the funnel's public path changed, and an operator who is not
+// told will point an ad at the old one.
+//
+// PERMANENT DELETE IS DELIBERATELY ABSENT here and in the client. Archive is
+// the only "delete" in this codebase (funnels.js:875) and this route does not
+// introduce a second, irreversible one.
+router.post('/:id/restore', async (req, res) => {
+  try {
+    await ensureTables();
+    // `confirm` is required for the same reason the client types the name:
+    // restore puts a funnel back on a public slug. A bare POST must not do it.
+    if (req.body?.confirm !== true) {
+      return res.status(400).json({ error: 'confirm must be true to restore a funnel' });
+    }
+
+    const funnel = await getFunnel(req.params.id);
+    if (!funnel) return res.status(404).json({ error: 'Funnel not found' });
+    // IDEMPOTENT, not an error: a double-click, or two operators on the same
+    // trash list, must not produce a failure the second person has to read.
+    if (!funnel.archived) {
+      return res.json({
+        success: true,
+        data: { funnel, restored: false, slug_changed: false, notes: ['This funnel was already live — nothing changed.'] },
+      });
+    }
+
+    const notes = [];
+    const base = FUNNEL_SLUG_RE.test(String(funnel.slug || '')) ? String(funnel.slug) : slugify(funnel.name) || 'funnel';
+
+    // Attempt 0 keeps the original slug. A UNIQUE violation is not catchable
+    // inside a transaction, so each attempt is its own statement — which is
+    // also what makes the read-then-write race safe: the INDEX arbitrates, the
+    // read never does.
+    for (let attempt = 0; attempt < 4; attempt += 1) {
+      const slug = attempt === 0 ? base : `${base}-${randomBytes(2).toString('hex')}`.slice(0, 80);
+      try {
+        // Pinned to archived = TRUE so a concurrent restore cannot be
+        // double-applied and silently re-slug an already-live funnel.
+        // eslint-disable-next-line no-await-in-loop
+        const rows = await pgQuery(
+          `UPDATE funnels SET archived = FALSE, slug = $2, updated_at = NOW()
+           WHERE id = $1 AND archived = TRUE RETURNING *`,
+          [req.params.id, slug]
+        );
+        if (!rows.length) {
+          // Lost the race — somebody else restored it between the read above
+          // and this write. Report what is actually there now.
+          const current = await getFunnel(req.params.id);
+          if (!current) return res.status(404).json({ error: 'Funnel not found' });
+          return res.json({
+            success: true,
+            data: { funnel: current, restored: false, slug_changed: false, notes: ['This funnel was already live — nothing changed.'] },
+          });
+        }
+        if (slug !== funnel.slug) {
+          notes.push(`The slug "${funnel.slug}" is taken by a live funnel — this one was restored as "${slug}". Update any links that used the old path.`);
+        }
+        return res.json({
+          success: true,
+          data: { funnel: rows[0], restored: true, slug_changed: slug !== funnel.slug, notes },
+        });
+      } catch (err) {
+        if (err?.code === UNIQUE_VIOLATION) continue; // fresh suffix, try again
+        throw err; // LET IT THROW — the catch below logs and answers 500
+      }
+    }
+
+    return res.status(409).json({ error: 'Cannot restore: could not find a free slug for this funnel' });
+  } catch (err) {
+    console.error('[funnels] restore failed:', err);
+    res.status(500).json({ error: 'Failed to restore funnel' });
+  }
+});
+
+// POST /api/v1/funnels/:id/duplicate — { confirm: true, name? }
+//
+// ── COMPOSED, NOT REIMPLEMENTED ────────────────────────────────────────────
+// A funnel copy is an EXPORT immediately followed by an IMPORT, both in this
+// process and with the envelope never touching a disk. Written any other way
+// this route would be a second, drifting copy of ~800 reviewed lines: the
+// settings allowlist that keeps `checkout.maps_api_key` from travelling
+// (funnelTransfer.js:118), the one-transaction page write that cannot leave a
+// funnel with zero pages (funnelTransfer.js:661), the exactly-one-home repair,
+// the canvas-layout rebuild that refuses layouts the canvas cannot save
+// (funnelTransfer.js:765), the redirect sanitiser, the per-row created_at
+// offset that preserves page ORDER, and the slug de-collision ladder. Every
+// one of those is inherited here for free, and every future fix to them fixes
+// duplicate too.
+//
+// WHAT THAT INHERITANCE COSTS, STATED HONESTLY — every one of these is a way
+// the copy is NOT the original, and each is reported to the operator rather
+// than discovered later:
+//
+//   • ALLOWLISTED, NOT BYTE-FOR-BYTE. Settings keys outside SETTINGS_ALLOWLIST
+//     do not survive — including `checkout.maps_api_key`. Right default (a
+//     credential should be re-entered deliberately, and a copy is a new
+//     funnel), and named in `notes` below.
+//   • `custom_domain`, `default_page_id` and `misc` do not travel, and the copy
+//     is always a DRAFT — a duplicate must never start serving as a side effect
+//     of a click.
+//   • ARCHIVED PAGES ARE NOT COPIED. exportFunnel reads `archived = FALSE`
+//     only (funnelTransfer.js:257), so a funnel's trashed pages stay behind.
+//     Defensible (the copy inherits the funnel's LIVE shape), but invisible
+//     without the note this route adds when any were skipped.
+//   • THE CAPS ARE THE TRANSFER'S CAPS, and they are LOWER than what this
+//     database will hold: TRANSFER_MAX_PAGES (100) pages, 2MB of blocks per
+//     page, 20MB total, 500 redirects. Past any of them nothing is copied.
+//     The page cap is now checked by a COUNT before the export runs, so an
+//     over-cap funnel is refused in milliseconds instead of after megabytes of
+//     serialisation — but the LIMIT itself is still 100.
+//     ⚠️ RAISING IT FOR THIS IN-PROCESS PATH (the reviewer's suggested
+//     `sameDeployment` flag relaxing MAX_PAGES to 500, on the grounds that
+//     nothing here crosses a network or a trust boundary) REQUIRES EDITING
+//     services/funnelTransfer.js, which this lane's fence admits READ-ONLY.
+//     NOT DONE — see the report. The refusal is at least fast and honest.
+router.post('/:id/duplicate', async (req, res) => {
+  try {
+    await ensureTables();
+    if (req.body?.confirm !== true) {
+      return res.status(400).json({ error: 'confirm must be true to duplicate a funnel' });
+    }
+
+    const funnel = await getFunnel(req.params.id);
+    if (!funnel) return res.status(404).json({ error: 'Funnel not found' });
+    // Same refusal, same wording as every other write on this router. Export
+    // refuses an archived funnel too (funnelTransfer.js:249) — duplicating a
+    // trashed funnel would route around the archive — but refusing HERE gives
+    // the operator this router's error shape instead of the transfer's.
+    if (funnel.archived) {
+      return res.status(400).json({ error: 'Funnel is archived — restore it before duplicating' });
+    }
+
+    // `name` must be a STRING when present — the same refusal the transfer
+    // route applies to name_override (funnelTransfer.js:86). Coercing with
+    // String() instead accepted `name: 42` and `name: {}` and named the copy
+    // "42" / "[object Object]", which is a rename nobody asked for.
+    if (req.body?.name !== undefined && req.body?.name !== null && typeof req.body.name !== 'string') {
+      return res.status(400).json({ error: 'name must be a string' });
+    }
+    const nameOverride = typeof req.body?.name === 'string'
+      ? req.body.name.trim()
+      : `${String(funnel.name || 'Funnel').trim()} copy`;
+    if (!nameOverride) return res.status(400).json({ error: 'name cannot be empty' });
+    if (nameOverride.length > 200) return res.status(400).json({ error: 'name is too long (200 max)' });
+
+    // ── PRE-COUNT: REFUSE IN MILLISECONDS, NOT AFTER A 20MB SERIALISE ──────
+    // importFunnel refuses past MAX_PAGES, but only AFTER exportFunnel has
+    // read every page and its blocks and built the whole envelope in memory.
+    // On a funnel over the cap that is megabytes of pointless work ending in a
+    // 413. One COUNT answers the same question first.
+    const [{ live: livePages, trashed: trashedPages }] = await pgQuery(
+      `SELECT COUNT(*) FILTER (WHERE NOT archived)::int AS live,
+              COUNT(*) FILTER (WHERE archived)::int AS trashed
+       FROM funnel_pages WHERE funnel_id = $1`,
+      [req.params.id]
+    );
+    if (livePages > TRANSFER_MAX_PAGES) {
+      return res.status(413).json({
+        error: `This funnel has ${livePages} pages, over the ${TRANSFER_MAX_PAGES}-page duplicate limit. Nothing was copied.`,
+      });
+    }
+    if (livePages === 0) {
+      // exportFunnel would succeed and importFunnel would answer
+      // 'envelope_has_no_pages' (400) — a correct refusal wearing an error code
+      // about an envelope the operator never saw.
+      return res.status(400).json({ error: 'This funnel has no pages to duplicate' });
+    }
+
+    const exported = await exportFunnel(req.params.id);
+    if (!exported.ok) {
+      return res.status(exported.status === 404 ? 404 : exported.status)
+        .json({ error: `Could not read the source funnel (${exported.error})` });
+    }
+
+    // ⚠️ nameOverride is what makes importFunnel derive a FRESH slug from the
+    // new name instead of reusing the source's (funnelTransfer.js:647) — the
+    // source is live, so its slug is taken, and the de-collision ladder would
+    // otherwise be doing work the name already did.
+    const imported = await importFunnel({ envelope: exported.envelope, nameOverride });
+    if (!imported.ok) {
+      console.error('[funnels] duplicate import refused:', imported.error, imported.detail || '');
+      return res.status(imported.status)
+        .json({ error: `Could not create the copy (${imported.error})`, detail: imported.detail });
+    }
+
+    // ⚠️ THE STRIPPED KEYS MUST BE SAID IN WORDS, NOT ONLY LISTED.
+    // importFunnel only writes a "keys were dropped" note when the ENVELOPE it
+    // was handed still carried un-allowlisted keys. Here the envelope came from
+    // OUR OWN export, which already applied the allowlist — so nothing is left
+    // to drop at import time and `notes` came back EMPTY while the credential
+    // had in fact been left behind. (Caught by harness D27, which failed on
+    // exactly this before the fix.) The operator reads `notes`; a fact that
+    // lives only in a machine-readable `stripped` array is a fact they will
+    // meet later as a broken address autocomplete.
+    const notes = Array.isArray(imported.data.notes) ? [...imported.data.notes] : [];
+    if (trashedPages > 0) {
+      // The operator sees "N pages copied" and compares it to a page list that
+      // includes trashed ones. Say the difference out loud.
+      notes.unshift(
+        `${trashedPages} trashed page${trashedPages === 1 ? ' was' : 's were'} not copied — only live pages travel.`
+      );
+    }
+    if (exported.stripped?.length) {
+      notes.unshift(
+        `These settings did not travel to the copy and must be re-entered: ${exported.stripped.join(', ')}.`
+      );
+    }
+
+    return res.status(201).json({
+      success: true,
+      data: {
+        ...imported.data,
+        notes,
+        source_funnel_id: req.params.id,
+        // The KEY NAMES this deployment refused to carry. Safe here in a way it
+        // is not in an export file (funnelTransfer.js:334): nothing leaves this
+        // deployment, and the operator needs to know the copy is missing them.
+        stripped: exported.stripped,
+      },
+    });
+  } catch (err) {
+    console.error('[funnels] duplicate failed:', err);
+    res.status(500).json({ error: 'Failed to duplicate funnel' });
   }
 });
 
