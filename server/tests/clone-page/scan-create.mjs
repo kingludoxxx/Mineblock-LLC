@@ -190,6 +190,20 @@ const post = async (path, body) => {
   check('T8 cleaned output >2MB → 413', fat.status === 413, `got ${fat.status}`);
 }
 
+// ── Align the embedded test DB with the CANONICAL funnel_pages schema ──────
+// (funnels.js ensureTables). The table here predates the escape-hatch
+// columns and CREATE TABLE IF NOT EXISTS never alters; production has them
+// (funnels.js INSERTs custom_css/custom_js, funnelRender reads custom_css).
+await sql`ALTER TABLE funnel_pages
+  ADD COLUMN IF NOT EXISTS seo JSONB DEFAULT '{}',
+  ADD COLUMN IF NOT EXISTS custom_html TEXT DEFAULT '',
+  ADD COLUMN IF NOT EXISTS custom_css TEXT DEFAULT '',
+  ADD COLUMN IF NOT EXISTS custom_js TEXT DEFAULT '',
+  ADD COLUMN IF NOT EXISTS head_html TEXT DEFAULT '',
+  ADD COLUMN IF NOT EXISTS body_end_html TEXT DEFAULT '',
+  ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()`;
+
 // ── T9: /create writes a draft generic page with section blocks ────────────
 const FID = 'fnl_clonetest';
 await sql`DELETE FROM funnel_pages WHERE funnel_id = ${FID}`;
@@ -298,6 +312,89 @@ await sql`INSERT INTO funnels (id, slug, name) VALUES (${FID2}, 'clone-race', 'C
   check('T14 http-equiv refresh stripped despite charset= ride-along', !/http-equiv|evil/i.test(html), html);
   check('T14 pure charset meta survives', html.includes('<meta charset="utf-8">'), html);
   check('T14 viewport meta survives', /name="viewport"/.test(html), html);
+}
+
+// ── T15: inline <style> SURVIVES the paste scan (the pane subtitle promises
+//    "inline <style> kept" — scripts go, styles stay) ────────────────────────
+{
+  const styled = `<body>
+    <section id="s1"><style>.hero{color:#fff;background:url(data:image/png;base64,AAA)}</style><h1>Hi</h1>
+      <script>console.log('junk')</script></section>
+    <style>.top-level{margin:0}</style>
+    <footer><p>end</p></footer>
+  </body>`;
+  const { sections, stats } = scanHtml(styled, {});
+  const all = sections.map((s) => s.html).join('\n');
+  check('T15 <style> inside a section survives', all.includes('<style>.hero{color:#fff;background:url(data:image/png;base64,AAA)}</style>'), all);
+  check('T15 top-level <style> survives as its own chunk', all.includes('<style>.top-level{margin:0}</style>'), all);
+  check('T15 <script> still stripped from the same section', !/<script/i.test(all) && stats.scripts_removed === 1, `scripts_removed=${stats.scripts_removed}`);
+  // And through the HTTP route:
+  const r = await post('/scan', { html: styled });
+  const httpAll = (r.json?.data?.sections || []).map((s) => s.html).join('\n');
+  check('T15 /scan route keeps <style> too', r.status === 200 && httpAll.includes('<style>.hero'), `${r.status}`);
+}
+
+// ── T16: /scan optional css — carried back verbatim; capped; typed ──────────
+const CSS_FIXTURE = 'body{background:#0b0b0b}\n.hero h1{color:gold}';
+{
+  const r = await post('/scan', { html: '<div>x</div>', css: CSS_FIXTURE });
+  check('T16 /scan carries css back verbatim', r.status === 200 && r.json?.data?.css === CSS_FIXTURE, JSON.stringify(r.json?.data?.css));
+  const none = await post('/scan', { html: '<div>x</div>' });
+  check('T16 no css in → no css field out', none.status === 200 && !('css' in (none.json?.data || {})));
+  const blank = await post('/scan', { html: '<div>x</div>', css: '   \n ' });
+  check('T16 whitespace-only css treated as absent', blank.status === 200 && !('css' in (blank.json?.data || {})));
+  const typed = await post('/scan', { html: '<div>x</div>', css: 42 });
+  check('T16 non-string css → 400', typed.status === 400, `got ${typed.status}`);
+  const fat = await post('/scan', { html: '<div>x</div>', css: 'a{b:c}'.repeat(90000) });
+  check('T16 css over 512KB → 413', fat.status === 413, `got ${fat.status}`);
+}
+
+// ── T17: /create css → funnel_pages.custom_css (row read back from PG);
+//    renderer injects custom_css as <style id="lb-page-css"> on top ─────────
+{
+  const r = await post('/create', {
+    funnel_id: FID, title: 'Styled clone', sections: ['<div>styled</div>'], css: CSS_FIXTURE,
+  });
+  const p = r.json?.data;
+  check('T17 create with css → 201', r.status === 201, `got ${r.status}: ${JSON.stringify(r.json)}`);
+  const row = (await sql`SELECT custom_css FROM funnel_pages WHERE id = ${p?.id || ''}`)[0];
+  check('T17 custom_css persisted verbatim (read back)', row?.custom_css === CSS_FIXTURE, JSON.stringify(row?.custom_css));
+  const noCss = await post('/create', { funnel_id: FID, title: 'Unstyled clone', sections: ['<div>plain</div>'] });
+  const row2 = (await sql`SELECT custom_css FROM funnel_pages WHERE id = ${noCss.json?.data?.id || ''}`)[0];
+  check('T17 no css → custom_css stays empty', noCss.status === 201 && row2?.custom_css === '', JSON.stringify(row2?.custom_css));
+  const typed = await post('/create', { funnel_id: FID, title: 'Bad css', sections: ['<div>x</div>'], css: { a: 1 } });
+  check('T17 non-string css on create → 400', typed.status === 400, `got ${typed.status}`);
+  const fat = await post('/create', { funnel_id: FID, title: 'Fat css', sections: ['<div>x</div>'], css: 'x'.repeat(512 * 1024 + 1) });
+  check('T17 css over 512KB on create → 413', fat.status === 413, `got ${fat.status}`);
+}
+
+// ── T18: the paste-pane formatters are PURE functions — unit fixtures ───────
+const { formatHtml, formatCss } = await import('../../../client/src/components/funnels/codeFormat.js');
+{
+  const html = '<div><p>hi</p><img src="x.png"></div>';
+  const expected = '<div>\n  <p>\n    hi\n  </p>\n  <img src="x.png">\n</div>';
+  check('T18 formatHtml re-indents by tag depth (2 spaces)', formatHtml(html) === expected, JSON.stringify(formatHtml(html)));
+  check('T18 formatHtml idempotent', formatHtml(formatHtml(html)) === formatHtml(html));
+  check('T18 formatHtml pure (same in → same out)', formatHtml(html) === formatHtml(html));
+  check('T18 formatHtml void tags do not push depth', formatHtml('<div><br><span>a</span></div>') === '<div>\n  <br>\n  <span>\n    a\n  </span>\n</div>', JSON.stringify(formatHtml('<div><br><span>a</span></div>')));
+  check("T18 formatHtml keeps '>' inside quoted attrs whole", formatHtml('<div data-x="a>b">t</div>') === '<div data-x="a>b">\n  t\n</div>', JSON.stringify(formatHtml('<div data-x="a>b">t</div>')));
+  const pre = formatHtml('<div><pre>  keep\n   me</pre></div>');
+  check('T18 formatHtml <pre> content byte-verbatim', pre.includes('  keep\n   me'), JSON.stringify(pre));
+  const styleOut = formatHtml('<style>a{color:red}</style>');
+  check('T18 formatHtml formats <style> bodies as CSS', styleOut === '<style>\n  a {\n    color:red\n  }\n</style>', JSON.stringify(styleOut));
+  check('T18 formatHtml doctype passes through', formatHtml('<!doctype html><div>x</div>').startsWith('<!doctype html>\n<div>'), JSON.stringify(formatHtml('<!doctype html><div>x</div>')));
+
+  const css = 'a{color:red;background:url("i.png")}b{x:y}';
+  const cssExpected = 'a {\n  color:red;\n  background:url("i.png")\n}\nb {\n  x:y\n}';
+  check('T18 formatCss breaks on braces/semicolons + indents', formatCss(css) === cssExpected, JSON.stringify(formatCss(css)));
+  check('T18 formatCss idempotent', formatCss(formatCss(css)) === formatCss(css));
+  const dataUri = formatCss('a{background:url(data:image/png;base64,AAA)}');
+  check('T18 formatCss ; inside url(...) does NOT break the line', dataUri === 'a {\n  background:url(data:image/png;base64,AAA)\n}', JSON.stringify(dataUri));
+  const braceStr = formatCss('a{content:"}"}');
+  check('T18 formatCss braces inside strings pass through', braceStr === 'a {\n  content:"}"\n}', JSON.stringify(braceStr));
+  const comment = formatCss('/* note; {x} */a{b:c}');
+  check('T18 formatCss comments verbatim', comment === '/* note; {x} */a {\n  b:c\n}', JSON.stringify(comment));
+  check('T18 formatters survive empty/garbage input', formatHtml('') === '' && formatCss('') === '' && typeof formatHtml('<<<') === 'string' && typeof formatCss('}}}{{{') === 'string');
 }
 
 // ── Cleanup ────────────────────────────────────────────────────────────────

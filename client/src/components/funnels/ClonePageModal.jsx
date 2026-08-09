@@ -12,10 +12,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   X, ClipboardPaste, FileUp, Sparkles, ShoppingBag, ScanLine,
-  Check, ArrowLeft, UploadCloud,
+  Check, ArrowLeft, UploadCloud, WandSparkles,
 } from 'lucide-react';
 import api from '../../services/api';
 import Button from '../ui/Button';
+import { formatHtml, formatCss } from './codeFormat';
 
 const TABS = [
   { value: 'paste', label: 'Paste code', icon: ClipboardPaste },
@@ -40,6 +41,40 @@ const fileToBase64 = (file) =>
     reader.readAsDataURL(file);
   });
 
+// One paste pane: label + subtitle + Format button over a monospace,
+// dark-on-light, no-soft-wrap code textarea (no code-editor dep in
+// package.json, so this is a styled <textarea>).
+function CodePane({ label, subtitle, value, onChange, onFormat, placeholder }) {
+  return (
+    <div className="min-w-0 flex flex-col rounded-lg border border-border-default overflow-hidden">
+      <div className="flex items-center justify-between gap-2 px-3 py-2 bg-bg-elevated border-b border-border-subtle">
+        <div className="min-w-0">
+          <span className="block text-xs font-semibold text-text-primary">{label}</span>
+          <span className="block text-[10px] text-text-faint truncate">{subtitle}</span>
+        </div>
+        <button
+          type="button"
+          onClick={onFormat}
+          disabled={!value.trim()}
+          className="inline-flex items-center gap-1 px-2 py-1 rounded-md border border-border-default text-[11px] text-text-muted hover:text-text-primary hover:bg-bg-hover disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer shrink-0"
+          title={`Re-indent the ${label} (cosmetic only)`}
+        >
+          <WandSparkles className="w-3 h-3" />
+          Format
+        </button>
+      </div>
+      <textarea
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder={placeholder}
+        spellCheck={false}
+        wrap="off"
+        className="w-full flex-1 min-h-[340px] px-3 py-2.5 bg-white text-neutral-800 text-xs font-mono leading-5 whitespace-pre overflow-auto placeholder:text-neutral-400 focus:outline-none resize-y"
+      />
+    </div>
+  );
+}
+
 function ResultChip({ children }) {
   return (
     <span className="inline-flex items-center gap-1.5 px-2 py-1 rounded-full bg-emerald-500/10 border border-emerald-500/25 text-emerald-400 text-[11px]">
@@ -52,6 +87,7 @@ function ResultChip({ children }) {
 export default function ClonePageModal({ open, onClose, funnelId, onCreated }) {
   const [tab, setTab] = useState('paste');
   const [pasteHtml, setPasteHtml] = useState('');
+  const [pasteCss, setPasteCss] = useState('');
   const [originalUrl, setOriginalUrl] = useState('');
   const [file, setFile] = useState(null); // { name, base64, size }
   const [dragOver, setDragOver] = useState(false);
@@ -68,6 +104,7 @@ export default function ClonePageModal({ open, onClose, funnelId, onCreated }) {
     if (!open) return;
     setTab('paste');
     setPasteHtml('');
+    setPasteCss('');
     setOriginalUrl('');
     setFile(null);
     setDragOver(false);
@@ -106,8 +143,10 @@ export default function ClonePageModal({ open, onClose, funnelId, onCreated }) {
     setError(null);
     try {
       const body = { original_url: originalUrl.trim() || undefined };
-      if (tab === 'paste') body.html = pasteHtml;
-      else {
+      if (tab === 'paste') {
+        body.html = pasteHtml;
+        if (pasteCss.trim()) body.css = pasteCss;
+      } else {
         body.file_base64 = file?.base64;
         body.filename = file?.name;
       }
@@ -130,7 +169,7 @@ export default function ClonePageModal({ open, onClose, funnelId, onCreated }) {
     } finally {
       setScanning(false);
     }
-  }, [scanning, tab, pasteHtml, file, originalUrl]);
+  }, [scanning, tab, pasteHtml, pasteCss, file, originalUrl]);
 
   const toggleSection = useCallback((idx) => {
     setSelected((prev) => {
@@ -153,6 +192,9 @@ export default function ClonePageModal({ open, onClose, funnelId, onCreated }) {
         funnel_id: funnelId,
         title: title.trim() || 'Cloned page',
         sections,
+        // The optional CSS pane rode the scan result back; it lands on the
+        // new page's custom_css and is applied on top by the renderer.
+        ...(result.css ? { css: result.css } : {}),
       });
       const page = res.data?.data;
       onCreated?.(page);
@@ -179,7 +221,7 @@ export default function ClonePageModal({ open, onClose, funnelId, onCreated }) {
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4"
       onClick={(e) => { if (e.target === e.currentTarget) onClose?.(); }}
     >
-      <div className="w-full max-w-3xl max-h-[88vh] flex flex-col bg-bg-card border border-border-default rounded-xl shadow-2xl overflow-hidden">
+      <div className={`w-full ${!result && tab === 'paste' ? 'max-w-5xl' : 'max-w-3xl'} max-h-[88vh] flex flex-col bg-bg-card border border-border-default rounded-xl shadow-2xl overflow-hidden`}>
         {/* ── Header ─────────────────────────────────────────────── */}
         <div className="shrink-0 flex items-start justify-between px-5 py-3.5 border-b border-border-subtle">
           <div className="min-w-0">
@@ -238,13 +280,24 @@ export default function ClonePageModal({ open, onClose, funnelId, onCreated }) {
             {/* ── Input body ────────────────────────────────────── */}
             <div className="flex-1 min-h-0 overflow-y-auto p-5 space-y-4">
               {tab === 'paste' ? (
-                <textarea
-                  value={pasteHtml}
-                  onChange={(e) => setPasteHtml(e.target.value)}
-                  placeholder="<!doctype html> … paste the full page source here"
-                  spellCheck={false}
-                  className="w-full h-56 px-3 py-2.5 rounded-lg bg-bg-elevated border border-border-default text-text-primary text-xs font-mono placeholder:text-text-faint focus:outline-none focus:border-accent/60 resize-y"
-                />
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                  <CodePane
+                    label="HTML"
+                    subtitle={'full page · inline <style> kept'}
+                    value={pasteHtml}
+                    onChange={setPasteHtml}
+                    onFormat={() => setPasteHtml((v) => formatHtml(v))}
+                    placeholder={'<!doctype html> … paste the full page source here'}
+                  />
+                  <CodePane
+                    label="CSS"
+                    subtitle="optional · applied on top"
+                    value={pasteCss}
+                    onChange={setPasteCss}
+                    onFormat={() => setPasteCss((v) => formatCss(v))}
+                    placeholder={'/* extra styles applied on top of the page */'}
+                  />
+                </div>
               ) : (
                 <div
                   onClick={() => fileInputRef.current?.click()}

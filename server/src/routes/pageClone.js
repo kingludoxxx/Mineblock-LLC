@@ -24,6 +24,7 @@ router.use(authenticate, requirePermission('funnels', 'access'));
 // Same caps as the funnels router: 2MB is what a page write may carry.
 const INPUT_MAX = 10 * 1024 * 1024; // 10MB raw input to /scan
 const ESCAPE_HATCH_MAX = 2 * 1024 * 1024; // 2MB total cleaned output
+const CSS_MAX = 512 * 1024; // 512KB optional CSS overlay (applied on top)
 const PAGE_SLUG_RE = /^\/$|^\/[a-z0-9-]+$/;
 const UNIQUE_VIOLATION = '23505';
 
@@ -277,8 +278,22 @@ export function scanHtml(rawHtml, { originalUrl } = {}) {
 
 const ZIP_MAGIC = Buffer.from([0x50, 0x4b, 0x03, 0x04]); // "PK\x03\x04"
 
+// Optional `css` field shared by /scan and /create: a string capped at 512KB.
+// Returns { css } (possibly '') or { errorStatus, error }. Whitespace-only
+// CSS is treated as absent — the pane is optional.
+function readCssField(body) {
+  if (body.css == null) return { css: '' };
+  if (typeof body.css !== 'string') {
+    return { errorStatus: 400, error: 'css must be a string' };
+  }
+  if (Buffer.byteLength(body.css, 'utf8') > CSS_MAX) {
+    return { errorStatus: 413, error: 'CSS exceeds the 512KB limit' };
+  }
+  return { css: body.css.trim() ? body.css : '' };
+}
+
 // POST /api/v1/page-clone/scan
-// { html? , file_base64?, filename?, original_url? } → { sections, stats }
+// { html?, file_base64?, filename?, original_url?, css? } → { sections, stats, css? }
 export async function scanHandler(req, res) {
   try {
     const body = req.body || {};
@@ -322,6 +337,11 @@ export async function scanHandler(req, res) {
       return res.status(400).json({ error: 'Provide html (paste) or file_base64 (upload)' });
     }
 
+    const cssField = readCssField(body);
+    if (cssField.error) {
+      return res.status(cssField.errorStatus).json({ error: cssField.error });
+    }
+
     let originalUrl;
     if (body.original_url != null && String(body.original_url).trim()) {
       const raw = String(body.original_url).trim();
@@ -347,7 +367,12 @@ export async function scanHandler(req, res) {
       });
     }
 
-    return res.json({ success: true, data: { sections, stats } });
+    // The optional CSS pane rides the scan result back to the client so the
+    // picker step can hand it to /create without re-reading the pane.
+    return res.json({
+      success: true,
+      data: { sections, stats, ...(cssField.css ? { css: cssField.css } : {}) },
+    });
   } catch (err) {
     console.error('[page-clone] scan failed:', err);
     return res.status(500).json({ error: 'Scan failed' });
@@ -355,7 +380,9 @@ export async function scanHandler(req, res) {
 }
 
 // POST /api/v1/page-clone/create
-// { funnel_id, title, sections: [html, ...] } → new draft 'generic' page
+// { funnel_id, title, sections: [html, ...], css? } → new draft 'generic'
+// page; `css` lands on funnel_pages.custom_css (renderer injects it as
+// <style id="lb-page-css"> on top of the page)
 export async function createHandler(req, res) {
   try {
     await ensureTables();
@@ -374,6 +401,12 @@ export async function createHandler(req, res) {
         return res.status(400).json({ error: `sections[${i}] must be a non-empty HTML string` });
       }
     }
+
+    const cssField = readCssField(body);
+    if (cssField.error) {
+      return res.status(cssField.errorStatus).json({ error: cssField.error });
+    }
+    const css = cssField.css;
 
     const funnelRows = await pgQuery(`SELECT * FROM funnels WHERE id = $1`, [funnelId]);
     const funnel = funnelRows[0];
@@ -413,16 +446,16 @@ export async function createHandler(req, res) {
     // the second one's INSERT statement gets a fresh snapshot that sees the
     // first page — its NOT EXISTS then correctly yields FALSE.
     const INSERT_SQL = `
-      INSERT INTO funnel_pages (id, funnel_id, slug, type, title, status, is_home, blocks)
+      INSERT INTO funnel_pages (id, funnel_id, slug, type, title, status, is_home, blocks, custom_css)
       VALUES ($1, $2, $3, 'generic', $4, 'draft',
         NOT EXISTS (SELECT 1 FROM funnel_pages
                     WHERE funnel_id = $2 AND archived = FALSE AND is_home = TRUE),
-        $5)
+        $5, $6)
       RETURNING *`;
     const insertLocked = (pageId, pageSlug) =>
       client.begin(async (tx) => {
         await tx`SELECT id FROM funnels WHERE id = ${funnelId} FOR UPDATE`;
-        return tx.unsafe(INSERT_SQL, [pageId, funnelId, pageSlug, title, blocks]);
+        return tx.unsafe(INSERT_SQL, [pageId, funnelId, pageSlug, title, blocks, css]);
       });
 
     let rows;
