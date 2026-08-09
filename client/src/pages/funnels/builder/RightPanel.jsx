@@ -33,8 +33,8 @@ import {
   isSlugCollision,
   listRows, addListRow, removeListRow, moveListRow, setListCell,
   comparisonColumns, addComparisonColumn, renameComparisonColumn,
-  removeComparisonColumn, comparisonDefaultRow,
-  isoFromLocalInput, localInputFromIso, countdownPreview,
+  removeComparisonColumn, comparisonDefaultRow, moveWouldChangeColumns,
+  isoFromLocalInput, localInputFromIso, localInputAnomaly, countdownPreview,
 } from './builderModel';
 import { AiMediaDialog } from '../../../components/media';
 
@@ -220,6 +220,9 @@ function RowsField({ field, value, onChange }) {
                 value={row[f.key]}
                 onChange={(v) => write(setListCell(rows, i, f.key, v))}
               />
+              {/* Per-field help, shown on the FIRST row only: repeating it on
+                  every card would bury the fields it is explaining. */}
+              {f.help && i === 0 && <p className="mt-1 text-[11px] text-text-faint">{f.help}</p>}
             </div>
           ))}
         </RowCard>
@@ -240,7 +243,27 @@ function RowsField({ field, value, onChange }) {
 function CompareRowsField({ value, onChange }) {
   const rows = listRows(value);
   const cols = comparisonColumns(rows);
+  // Bumped whenever a rename is REFUSED. It rides in the input's key, which
+  // forces a remount so the box snaps back to the stored name — an
+  // uncontrolled input keyed only on the (unchanged) column name would keep
+  // the rejected text on screen while the data said otherwise, making the
+  // panel's own "snaps back" promise false.
+  const [refusalNonce, setRefusalNonce] = useState(0);
+  // Prose for a reorder that was BLOCKED because it would have rewritten the
+  // published headers. Cleared by the next successful move.
+  const [moveBlocked, setMoveBlocked] = useState(null);
   const write = (next) => { if (next !== rows) onChange(next); };
+
+  const renameColumn = (from, typed) => {
+    const next = renameComparisonColumn(rows, from, typed);
+    if (next === rows) {
+      // Refused (blank / duplicate / `feature`) — or simply unchanged. Either
+      // way the stored name is what must be on screen.
+      if (String(typed).trim() !== from) setRefusalNonce((n) => n + 1);
+      return;
+    }
+    onChange(next);
+  };
 
   const addColumn = () => {
     // Name it around the CURRENT count and keep going until it is free, so a
@@ -251,25 +274,48 @@ function CompareRowsField({ value, onChange }) {
     write(addComparisonColumn(rows, `Column ${n}`));
   };
 
+  const moveRow = (i, d) => {
+    // A reorder is only cosmetic when every row carries the same keys. Row 0
+    // IS the header source, so on a heterogeneous table a move can silently
+    // change what the published table's columns are. Blocked rather than
+    // confirmed: the operator asked to reorder, not to redefine the table.
+    if (moveWouldChangeColumns(rows, i, d)) {
+      const after = moveListRow(rows, i, d);
+      setMoveBlocked(
+        `That move would change the published columns from ${cols.join(' / ') || '(none)'} to ` +
+        `${comparisonColumns(after).join(' / ') || '(none)'}, because the first row decides the headers. ` +
+        `Give the rows matching columns first, then reorder.`
+      );
+      return;
+    }
+    setMoveBlocked(null);
+    write(moveListRow(rows, i, d));
+  };
+
   return (
     <div className="space-y-2.5">
       <div className="rounded-lg border border-border-default bg-bg-elevated/60 p-2.5 space-y-2">
         <div className="text-[10px] uppercase tracking-wider text-text-faint font-semibold">
           Columns
         </div>
-        {cols.length === 0 ? (
+        {rows.length === 0 ? (
+          <p className="text-[11px] text-text-faint leading-relaxed">
+            Columns live inside the rows, so there is nowhere to put one yet — add a row first.
+            {' '}A table with no rows renders nothing at all on the page.
+          </p>
+        ) : cols.length === 0 ? (
           <p className="text-[11px] text-text-faint">
             No columns — the table renders with the Feature column alone.
           </p>
         ) : (
           cols.map((c) => (
-            // key={c} remounts the input when the column is renamed, which is
-            // what lets it stay uncontrolled (defaultValue + commit on blur)
-            // without ever showing a stale name.
-            <div key={c} className="flex items-center gap-1.5">
+            // key includes refusalNonce so a REJECTED rename remounts the box
+            // and restores the stored name; the name alone would not change on
+            // a refusal, so the typed text would survive.
+            <div key={`${c}:${refusalNonce}`} className="flex items-center gap-1.5">
               <input
                 defaultValue={c}
-                onBlur={(e) => write(renameComparisonColumn(rows, c, e.target.value))}
+                onBlur={(e) => renameColumn(c, e.target.value)}
                 onKeyDown={(e) => { if (e.key === 'Enter') e.currentTarget.blur(); }}
                 spellCheck={false}
                 className={inputCls}
@@ -285,12 +331,19 @@ function CompareRowsField({ value, onChange }) {
             </div>
           ))
         )}
-        <AddRowButton label="Add column" onClick={addColumn} />
+        {rows.length > 0 && <AddRowButton label="Add column" onClick={addColumn} />}
         <p className="text-[11px] text-text-faint leading-relaxed">
           A blank name, a duplicate, or the reserved word <code className="font-mono">feature</code> is
           refused and the name snaps back — the published headers can never collide.
         </p>
       </div>
+
+      {moveBlocked && (
+        <p className="flex items-start gap-1.5 text-[11px] text-amber-400/90 leading-snug">
+          <AlertTriangle className="w-3 h-3 mt-0.5 shrink-0" />
+          <span>{moveBlocked}</span>
+        </p>
+      )}
 
       {rows.length === 0 && <EmptyRows what="rows" />}
       {rows.map((row, i) => (
@@ -299,7 +352,7 @@ function CompareRowsField({ value, onChange }) {
           index={i}
           count={rows.length}
           label="Row"
-          onMove={(d) => write(moveListRow(rows, i, d))}
+          onMove={(d) => moveRow(i, d)}
           onRemove={() => write(removeListRow(rows, i))}
         >
           <div>
@@ -354,25 +407,47 @@ function DateTimeField({ value, onChange }) {
     const id = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(id);
   }, []);
+  // Set when the picked wall-clock time is not the one that got stored — the
+  // DST gap / ambiguous hour. Detectable only at the moment of the pick,
+  // because once stored the instant round-trips cleanly.
+  const [dst, setDst] = useState(null);
   const raw = value == null ? '' : String(value);
   const local = localInputFromIso(raw);
-  const unreadable = raw.trim() !== '' && local === '';
-  const { state, text } = countdownPreview(raw, now);
+  // The PAGE cannot read it if Date.parse says NaN — which is what
+  // countdownPreview now reports, whitespace and all.
+  const { state, text, padded } = countdownPreview(raw, now);
+  const unreadable = state === 'invalid';
+
+  const pick = (typed) => {
+    setDst(localInputAnomaly(typed));
+    onChange(isoFromLocalInput(typed) || undefined);
+  };
 
   return (
     <div className="space-y-1.5">
       <input
         type="datetime-local"
         value={local}
-        onChange={(e) => onChange(isoFromLocalInput(e.target.value) || undefined)}
+        onChange={(e) => pick(e.target.value)}
         className={inputCls}
       />
       {unreadable ? (
         <p className="flex items-start gap-1.5 text-[11px] text-danger leading-snug">
           <AlertTriangle className="w-3 h-3 mt-0.5 shrink-0" />
           <span>
-            The saved deadline <code className="font-mono">{raw}</code> is not a date the page can read,
-            so the clock stays blank there. Pick one above to replace it.
+            {padded ? (
+              <>
+                The saved deadline has stray spaces around it
+                (<code className="font-mono">{JSON.stringify(raw)}</code>) and the page reads it
+                character for character, so its clock stays blank forever. Pick a date above to
+                store a clean one.
+              </>
+            ) : (
+              <>
+                The saved deadline <code className="font-mono">{raw}</code> is not a date the page can
+                read, so the clock stays blank there. Pick one above to replace it.
+              </>
+            )}
           </span>
         </p>
       ) : (
@@ -380,6 +455,15 @@ function DateTimeField({ value, onChange }) {
           {state === 'unset' && 'No deadline — the clock stays blank on the page.'}
           {state === 'expired' && 'Already passed — the page shows “Offer expired”.'}
           {state === 'live' && `${text} left · stored as ${raw}`}
+        </p>
+      )}
+      {dst && (
+        <p className="flex items-start gap-1.5 text-[11px] text-amber-400/90 leading-snug">
+          <AlertTriangle className="w-3 h-3 mt-0.5 shrink-0" />
+          <span>
+            That local time does not exist (or happens twice) on that date — the clocks change.
+            Stored as <code className="font-mono">{dst.stored.replace('T', ' ')}</code>.
+          </span>
         </p>
       )}
     </div>
@@ -413,6 +497,12 @@ function Field({ field, value, onChange, onPick, onRequestMedia }) {
           max={field.max}
           step={field.step}
           onChange={(e) => {
+            // An EMPTIED box clears the prop, in BOTH coerce modes. Without the
+            // explicit blank test the float path ran `Number('')`, which is 0
+            // and finite — so a cleared score snapped to 0 and could never be
+            // emptied again, while the int path (parseInt('') → NaN) cleared
+            // correctly. Same control, two behaviours.
+            if (e.target.value === '') return onChange(undefined);
             const n = field.coerce === 'int' ? parseInt(e.target.value, 10) : Number(e.target.value);
             onChange(Number.isFinite(n) ? n : undefined);
           }}

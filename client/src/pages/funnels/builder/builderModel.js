@@ -585,12 +585,38 @@ function columnNameUsable(rows, name) {
   return n;
 }
 
-/** Append a column to EVERY row (empty cell). Identity when the name is unusable. */
+/**
+ * Append a column to EVERY row (empty cell). Identity when the name is
+ * unusable — or when there are NO ROWS.
+ *
+ * The empty case is not a nicety. A column lives inside the row objects, so
+ * with zero rows there is nowhere to write it: `[].map()` would hand back a
+ * fresh empty array, the panel would see a "change", and every click would
+ * bank an undo step for a button that cannot do anything. Worse, the table
+ * renders NOTHING at zero rows (funnelRender returns '' before it ever looks
+ * at the columns), so the honest move is to make the caller add a row first.
+ */
 export function addComparisonColumn(rows, name) {
   const list = listRows(rows);
+  if (!list.length) return list;
   const n = columnNameUsable(list, name);
   if (!n) return list;
   return list.map((r) => ({ ...r, [n]: '' }));
+}
+
+/**
+ * True when reordering would change the PUBLISHED column set.
+ *
+ * Row 0 is the header source, so moving a row with different keys into (or out
+ * of) position 0 silently rewrites the live table's columns — a reorder that
+ * looks cosmetic but is not. Rows are homogeneous when this editor authored
+ * them; they need not be when an AI batch or a hand-edited paste did.
+ */
+export function moveWouldChangeColumns(rows, index, delta) {
+  const before = listRows(rows);
+  const after = moveListRow(before, index, delta);
+  if (after === before) return false;
+  return JSON.stringify(comparisonColumns(before)) !== JSON.stringify(comparisonColumns(after));
 }
 
 /**
@@ -645,12 +671,38 @@ export function comparisonDefaultRow(rows, feature) {
 // to it — but it MUST be something Date.parse understands, which is why the
 // panel stores a full ISO instant rather than the browser's zone-less
 // `datetime-local` string.
+//
+// THE WRITE PATH TRIMS; THE READ PATH MUST NOT. That asymmetry is deliberate
+// and was a live bug. The emitted runtime does `Date.parse(raw)` on the
+// attribute verbatim, and V8 returns NaN for a padded instant — verified:
+//   Date.parse(' 2026-01-01T00:00:00Z ') === NaN
+// so a deadline carrying stray whitespace (legacy free-text values, an AI
+// `replace_props`) is DEAD on the public page forever. A preview that trimmed
+// before parsing showed that same block as a healthy ticking clock. The
+// preview now parses exactly what the runtime parses, and names the whitespace
+// as the reason; only isoFromLocalInput — the WRITE — trims, so new data is
+// always clean.
+//
+// ZONE HANDLING IS NOT UNIFORM, and the doc used to claim it was. Per the ES
+// spec, a DATE-ONLY string is UTC while a date-TIME string without a zone is
+// LOCAL — verified in this runtime (Europe/Madrid):
+//   Date.parse('2026-01-01')          → 2026-01-01T00:00:00.000Z  (UTC)
+//   Date.parse('2026-01-01T00:00:00') → 2025-12-31T23:00:00.000Z  (local)
+// The picker always supplies a date-TIME, so the local reading is the one that
+// applies here; the date-only case is reachable only through legacy values.
 // ---------------------------------------------------------------------------
 
 /**
- * `datetime-local` value (`2026-12-31T23:59`, no zone → LOCAL time) → ISO
- * instant. Blank or unparseable returns '' so the caller deletes the prop
- * instead of writing a deadline the runtime would ignore.
+ * `datetime-local` value (`2026-12-31T23:59`) → ISO instant.
+ *
+ * A date-TIME without a zone is read as LOCAL — the zone the operator typed it
+ * in. Blank or unparseable returns '' so the caller deletes the prop instead of
+ * writing a deadline the runtime would ignore.
+ *
+ * TRIMS ON PURPOSE: this is the write path, and it is what guarantees every
+ * value this editor stores is one `Date.parse` accepts on the public page.
+ *
+ * The picker carries no seconds, so a stored deadline always lands on :00.
  */
 export function isoFromLocalInput(value) {
   const raw = typeof value === 'string' ? value.trim() : '';
@@ -662,9 +714,12 @@ export function isoFromLocalInput(value) {
 
 /**
  * ISO instant → the `datetime-local` string the input renders, in the
- * operator's LOCAL zone (which is the zone they typed it in). Unparseable
- * returns '' — an invalid deadline shows as an empty picker, and the raw value
- * is surfaced next to it rather than silently rewritten.
+ * operator's LOCAL zone. Unparseable returns '' — an invalid deadline shows as
+ * an empty picker, and the raw value is surfaced next to it rather than
+ * silently rewritten.
+ *
+ * The year is zero-padded to four digits: `getFullYear()` returns 41 for a
+ * year-41 instant, and `41-01-01T00:00` is not a value the input will accept.
  */
 export function localInputFromIso(value) {
   const raw = typeof value === 'string' ? value.trim() : '';
@@ -673,7 +728,29 @@ export function localInputFromIso(value) {
   if (!Number.isFinite(ms)) return '';
   const d = new Date(ms);
   const p = (n) => (n < 10 ? '0' : '') + n;
-  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`;
+  const year = String(d.getFullYear()).padStart(4, '0');
+  return `${year}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+
+/**
+ * DST honesty check for a value the operator just picked.
+ *
+ * Twice a year a local wall-clock time is either impossible (the spring-forward
+ * gap — 02:30 simply does not happen) or ambiguous (the fall-back hour happens
+ * twice). `Date.parse` resolves both silently, so the picker would snap to a
+ * different time than the one typed with no explanation. Round-tripping the
+ * value detects it: if what comes back out is not what went in, the stored
+ * instant is not the wall clock the operator asked for.
+ *
+ * @returns {null|{stored:string}} null when the pick round-trips exactly.
+ */
+export function localInputAnomaly(value) {
+  const raw = typeof value === 'string' ? value.trim() : '';
+  if (!raw) return null;
+  const iso = isoFromLocalInput(raw);
+  if (!iso) return null;
+  const back = localInputFromIso(iso);
+  return back === raw ? null : { stored: back };
 }
 
 /**
@@ -692,20 +769,29 @@ export function localInputFromIso(value) {
  * @returns {{state:'unset'|'invalid'|'expired'|'live', text:string}}
  */
 export function countdownPreview(deadline, nowMs) {
-  const raw = deadline == null ? '' : String(deadline).trim();
-  if (!raw) return { state: 'unset', text: '—' };
+  // NO TRIM — see the section header. The runtime does `if(!raw) return;` on
+  // the raw attribute and then parses it verbatim, so a whitespace-only value
+  // is NOT "unset" (it is truthy, gets parsed, and dies as NaN) and a padded
+  // instant is NOT live. Trimming here is what made a permanently dead
+  // countdown preview as a healthy clock.
+  const raw = deadline == null ? '' : String(deadline);
+  // `padded` is reported alongside every state so the panel can name the
+  // actual cause instead of leaving the operator staring at a valid-looking
+  // date that the page refuses.
+  const padded = raw !== '' && raw !== raw.trim();
+  if (!raw) return { state: 'unset', text: '—', padded: false };
   const end = Date.parse(raw);
-  if (!Number.isFinite(end)) return { state: 'invalid', text: '—' };
+  if (!Number.isFinite(end)) return { state: 'invalid', text: '—', padded };
   const now = Number.isFinite(nowMs) ? nowMs : Date.now();
   const ms = end - now;
-  if (ms <= 0) return { state: 'expired', text: 'Offer expired' };
+  if (ms <= 0) return { state: 'expired', text: 'Offer expired', padded };
   const total = Math.floor(ms / 1000);
   const d = Math.floor(total / 86400);
   const h = Math.floor((total % 86400) / 3600);
   const m = Math.floor((total % 3600) / 60);
   const s = total % 60;
   const pad = (n) => (n < 10 ? '0' : '') + n;
-  return { state: 'live', text: `${d > 0 ? `${d}d ` : ''}${pad(h)}:${pad(m)}:${pad(s)}` };
+  return { state: 'live', text: `${d > 0 ? `${d}d ` : ''}${pad(h)}:${pad(m)}:${pad(s)}`, padded };
 }
 
 // ---------------------------------------------------------------------------

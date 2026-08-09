@@ -227,6 +227,19 @@ export default function BlockPreview({ block, pageCss = '' }) {
       );
     case 'html':
     case 'embed':
+      // BUILDER-ONLY hint while the prop is empty. The html prop renders
+      // VERBATIM to buyers, so the "paste your code here" nudge must live
+      // here on the canvas and never in the prop itself — an operator who
+      // forgets this block ships an empty div, not placeholder copy.
+      if (!String(p.html || '').trim()) {
+        return (
+          <div style={{ border: `1px dashed ${T.border}`, borderRadius: 10, padding: 22, textAlign: 'center', color: T.faint, fontSize: 13, background: T.muted }}>
+            <Code2 size={18} />
+            <div style={{ marginTop: 6 }}>Empty embed — paste your HTML in the panel.</div>
+            <div style={{ fontSize: 11, marginTop: 2 }}>Renders nothing on the live page until you do.</div>
+          </div>
+        );
+      }
       return (
         <div>
           <HtmlChip label="Raw HTML / Embed — sandboxed preview (scripts run only on the live page)" />

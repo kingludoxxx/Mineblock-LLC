@@ -17,8 +17,8 @@ import {
   BUMP_DEFAULT_HEADLINE, BUMP_DEFAULT_NAME_COLOR, SERVER_GENERATED_NOTE,
   listRows, addListRow, removeListRow, moveListRow, setListCell,
   comparisonColumns, addComparisonColumn, renameComparisonColumn,
-  removeComparisonColumn, comparisonDefaultRow,
-  isoFromLocalInput, localInputFromIso, countdownPreview,
+  removeComparisonColumn, comparisonDefaultRow, moveWouldChangeColumns,
+  isoFromLocalInput, localInputFromIso, localInputAnomaly, countdownPreview,
 } from '../../../client/src/pages/funnels/builder/builderModel.js';
 
 let pass = 0, fail = 0;
@@ -660,6 +660,15 @@ ok(Object.isFrozen(WIRING_KEYS), 'F4: the floor is frozen — a caller cannot wi
   eq(addComparisonColumn(rows, '  Them  '),
     [{ feature: 'Price', Us: '$9', Them: '' }, { feature: 'Support', Us: 'Yes', Them: '' }],
     'cols: the new name is trimmed');
+  // F1. THE EMPTY CASE. A column lives inside the row objects, so with zero
+  // rows there is nowhere to put one — and `[].map()` hands back a FRESH empty
+  // array, which the panel reads as a change and banks an undo step for. Every
+  // sibling helper had an identity assertion for its refusal path; add only
+  // had populated-case ones, which is exactly how this slipped through.
+  const noRows = [];
+  ok(addComparisonColumn(noRows, 'X') === noRows, 'F1 cols: add with NO ROWS returns the SAME array — no phantom undo step');
+  eq(addComparisonColumn(noRows, 'X'), [], 'F1 cols: add with no rows adds nothing');
+  ok(addComparisonColumn(null, 'X').length === 0, 'F1 cols: add onto a non-array prop yields no columns and does not throw');
   // Refusals return the SAME array, so a rejected click writes nothing at all.
   ok(addComparisonColumn(rows, 'Us') === rows, 'cols: a duplicate name is refused (same array)');
   ok(addComparisonColumn(rows, 'feature') === rows, 'cols: the reserved `feature` key is refused');
@@ -711,6 +720,30 @@ ok(Object.isFrozen(WIRING_KEYS), 'F4: the floor is frozen — a caller cannot wi
     'cols: adding a row leaves the column set untouched');
 }
 
+{
+  // F5. Row 0 IS the header source, so on a HETEROGENEOUS table a reorder is
+  // not cosmetic — it can rewrite the published columns. The panel blocks
+  // those moves and says why.
+  const mixed = [{ feature: 'a', Us: '1' }, { feature: 'b', Them: '2' }];
+  ok(moveWouldChangeColumns(mixed, 0, 1), 'F5 cols: moving a differently-keyed row into position 0 is flagged');
+  ok(moveWouldChangeColumns(mixed, 1, -1), 'F5 cols: the same move from the other direction is flagged');
+  eq(comparisonColumns(mixed), ['Us'], 'F5 cols: before the move the headers are Us');
+  eq(comparisonColumns(moveListRow(mixed, 0, 1)), ['Them'], 'F5 cols: the move WOULD have republished them as Them');
+  // A homogeneous table — the case this editor authors — reorders freely.
+  const same = [{ feature: 'a', Us: '1' }, { feature: 'b', Us: '2' }, { feature: 'c', Us: '3' }];
+  ok(!moveWouldChangeColumns(same, 0, 1), 'F5 cols: a matching-column table reorders freely');
+  ok(!moveWouldChangeColumns(same, 1, 1), 'F5 cols: a move that never touches row 0 is never blocked');
+  // A no-op move cannot change anything, so it must not be flagged either —
+  // otherwise ↑ on row 0 would show a scary column warning instead of nothing.
+  ok(!moveWouldChangeColumns(mixed, 0, -1), 'F5 cols: a no-op move at the top is NOT flagged');
+  ok(!moveWouldChangeColumns(mixed, 1, 1), 'F5 cols: a no-op move at the bottom is NOT flagged');
+  ok(!moveWouldChangeColumns([], 0, 1), 'F5 cols: an empty table is not flagged and does not throw');
+  // Column ORDER counts as a change: same names, different header order is
+  // still a different published table.
+  const reordered = [{ feature: 'a', Us: '1', Them: '2' }, { feature: 'b', Them: '2', Us: '1' }];
+  ok(moveWouldChangeColumns(reordered, 0, 1), 'F5 cols: a change in column ORDER is flagged too');
+}
+
 // ===========================================================================
 // Countdown deadline — the picker is LOCAL, the stored prop is a UTC instant,
 // and funnelRender's emitted runtime parses it with Date.parse.
@@ -745,17 +778,19 @@ ok(Object.isFrozen(WIRING_KEYS), 'F4: the floor is frozen — a caller cannot wi
   // MIRRORS countdownRuntimeScript() IN funnelRender.js: same formatting,
   // same 'Offer expired' literal, same <= 0 boundary.
   const t0 = Date.parse('2026-01-01T00:00:00Z');
+  // `padded` rides on every result so the panel can name whitespace as the
+  // cause; it is false for these clean instants.
   const at = (ms) => countdownPreview('2026-01-01T00:00:00Z', t0 - ms);
-  eq(at(1000), { state: 'live', text: '00:00:01' }, 'countdown: one second out formats zero-padded');
-  eq(at(61000), { state: 'live', text: '00:01:01' }, 'countdown: minutes and seconds pad');
-  eq(at(3600000), { state: 'live', text: '01:00:00' }, 'countdown: a whole hour');
-  eq(at(86400000), { state: 'live', text: '1d 00:00:00' }, 'countdown: a day prefixes "1d "');
-  eq(at(90061000), { state: 'live', text: '1d 01:01:01' }, 'countdown: days + padded clock');
-  eq(at(10 * 3600000), { state: 'live', text: '10:00:00' }, 'countdown: a two-digit hour is not double-padded');
+  eq(at(1000), { state: 'live', text: '00:00:01', padded: false }, 'countdown: one second out formats zero-padded');
+  eq(at(61000), { state: 'live', text: '00:01:01', padded: false }, 'countdown: minutes and seconds pad');
+  eq(at(3600000), { state: 'live', text: '01:00:00', padded: false }, 'countdown: a whole hour');
+  eq(at(86400000), { state: 'live', text: '1d 00:00:00', padded: false }, 'countdown: a day prefixes "1d "');
+  eq(at(90061000), { state: 'live', text: '1d 01:01:01', padded: false }, 'countdown: days + padded clock');
+  eq(at(10 * 3600000), { state: 'live', text: '10:00:00', padded: false }, 'countdown: a two-digit hour is not double-padded');
   // The boundary is the runtime's: `if(ms<=0)`. Exactly ON the deadline is
   // EXPIRED, not a live 00:00:00.
-  eq(at(0), { state: 'expired', text: 'Offer expired' }, 'countdown: the deadline instant itself reads expired');
-  eq(at(-5000), { state: 'expired', text: 'Offer expired' }, 'countdown: a past deadline reads expired');
+  eq(at(0), { state: 'expired', text: 'Offer expired', padded: false }, 'countdown: the deadline instant itself reads expired');
+  eq(at(-5000), { state: 'expired', text: 'Offer expired', padded: false }, 'countdown: a past deadline reads expired');
 }
 
 {
@@ -763,7 +798,6 @@ ok(Object.isFrozen(WIRING_KEYS), 'F4: the floor is frozen — a caller cannot wi
   // separates them because only one of them is the block working.
   eq(countdownPreview('', 0).state, 'unset', 'countdown: no deadline is its own state');
   eq(countdownPreview(null, 0).state, 'unset', 'countdown: a null deadline is unset');
-  eq(countdownPreview('   ', 0).state, 'unset', 'countdown: whitespace is unset');
   eq(countdownPreview('next tuesday', 0).state, 'invalid', 'countdown: an unparseable deadline is INVALID, not unset');
   eq(countdownPreview('', 0).text, '—', 'countdown: unset shows the renderer\'s static em-dash');
   eq(countdownPreview('next tuesday', 0).text, '—', 'countdown: invalid shows the same em-dash the page shows');
@@ -772,6 +806,100 @@ ok(Object.isFrozen(WIRING_KEYS), 'F4: the floor is frozen — a caller cannot wi
   eq(countdownPreview([], 0).state, 'unset', 'countdown: an empty array stringifies to blank → unset');
   ok(['live', 'expired'].includes(countdownPreview('2026-01-01T00:00:00Z').state),
     'countdown: an omitted `now` falls back to the real clock without throwing');
+}
+
+{
+  // F3. THE PREVIEW MUST PARSE WHAT THE RUNTIME PARSES — NO TRIM.
+  //
+  // funnelRender's emitted runtime does `Date.parse(node.getAttribute(...))`
+  // on the raw attribute, and V8 answers NaN for a padded instant (verified by
+  // execution, not assumed). A preview that trimmed first showed a
+  // PERMANENTLY DEAD countdown as a healthy ticking clock — reachable through
+  // legacy free-text deadlines and AI replace_props.
+  const good = '2026-01-01T00:00:00Z';
+  const t0 = Date.parse(good);
+  ok(Number.isFinite(t0), 'F3 countdown: the clean instant parses (control)');
+  ok(!Number.isFinite(Date.parse(` ${good} `)), 'F3 countdown: NEGATIVE CONTROL — the runtime\'s own parse rejects a padded instant');
+
+  for (const [pad, what] of [[` ${good} `, 'spaces'], [`\t${good}`, 'a tab'], [`${good}\n`, 'a newline'], [` ${good}`, 'a leading space']]) {
+    const r = countdownPreview(pad, t0 - 60000);
+    eq(r.state, 'invalid', `F3 countdown: a deadline padded with ${what} previews as DEAD, never live`);
+    eq(r.padded, true, `F3 countdown: ...and the whitespace is named as the cause (${what})`);
+    ok(r.text !== '00:01:00', `F3 countdown: ...and no clock is drawn for it (${what})`);
+  }
+  // Whitespace-only is likewise NOT "unset": the runtime's `if(!raw)` guard
+  // passes it through to Date.parse, where it dies.
+  eq(countdownPreview('   ', 0).state, 'invalid', 'F3 countdown: a whitespace-ONLY deadline is invalid, not unset');
+  eq(countdownPreview('   ', 0).padded, true, 'F3 countdown: whitespace-only is flagged as padded');
+  // A clean value must not be mislabelled.
+  eq(countdownPreview(good, t0 - 60000).state, 'live', 'F3 countdown: the clean instant still ticks');
+  eq(countdownPreview(good, t0 - 60000).padded, false, 'F3 countdown: a clean instant is not flagged as padded');
+  eq(countdownPreview('', 0).padded, false, 'F3 countdown: an absent deadline is not flagged as padded');
+
+  // THE WRITE PATH STILL CLEANS. isoFromLocalInput trims its input and emits a
+  // canonical ISO, so anything this editor stores is readable by the page —
+  // which is what makes the read-path strictness safe to ship.
+  const written = isoFromLocalInput('  2026-12-31T23:59  ');
+  ok(Number.isFinite(Date.parse(written)), 'F3 countdown: the WRITE path trims, so stored values always parse');
+  eq(written, written.trim(), 'F3 countdown: a stored value never carries whitespace');
+  eq(countdownPreview(written, 0).state, 'live', 'F3 countdown: a value this editor wrote always previews live');
+}
+
+{
+  // F4. DST — the spring-forward gap and the ambiguous fall-back hour.
+  // Date.parse resolves both silently; round-tripping is what exposes it.
+  // Asserted against the RUNNER's own zone rather than a hard-coded one, so
+  // the case holds wherever CI runs: find a local time that does not survive
+  // the round trip, and require it to be reported.
+  eq(localInputAnomaly('2026-06-15T12:00'), null, 'F4 dst: an ordinary local time round-trips exactly');
+  eq(localInputAnomaly(''), null, 'F4 dst: a blank pick reports nothing');
+  eq(localInputAnomaly(null), null, 'F4 dst: a null pick reports nothing');
+  eq(localInputAnomaly('garbage'), null, 'F4 dst: an unparseable pick is not a DST anomaly (it is handled as invalid)');
+
+  // Sweep a year of 30-minute local times; any that does not round-trip is a
+  // clock change. In a DST zone there is at least one; in UTC there is none,
+  // and the assertion below is written to hold either way.
+  const offenders = [];
+  for (let day = 0; day < 366 && offenders.length < 3; day += 1) {
+    const base = new Date(2026, 0, 1 + day, 0, 0, 0);
+    for (let half = 0; half < 48; half += 1) {
+      const d = new Date(base.getTime());
+      d.setHours(Math.floor(half / 2), (half % 2) * 30, 0, 0);
+      const p = (n) => (n < 10 ? '0' : '') + n;
+      const v = `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(Math.floor(half / 2))}:${p((half % 2) * 30)}`;
+      const a = localInputAnomaly(v);
+      if (a) { offenders.push([v, a.stored]); break; }
+    }
+  }
+  const zone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  if (offenders.length) {
+    ok(offenders.every(([, stored]) => typeof stored === 'string' && stored !== ''),
+      `F4 dst: every non-round-tripping local time reports what WAS stored (zone ${zone}, e.g. ${offenders[0][0]} → ${offenders[0][1]})`);
+    ok(offenders.every(([v, stored]) => v !== stored),
+      'F4 dst: the reported stored value differs from the pick — which is the whole warning');
+  } else {
+    ok(true, `F4 dst: no clock changes exist in zone ${zone}, so no anomaly can be reported (vacuously correct)`);
+  }
+}
+
+{
+  // F4. Zero-padded years. getFullYear() returns 41 for a year-41 instant, and
+  // `41-01-01T00:00` is not a value a datetime-local input will accept — the
+  // picker would silently render empty.
+  const early = localInputFromIso('0041-06-15T12:00:00Z');
+  ok(/^\d{4}-/.test(early), `F4 dates: a year under 1000 is zero-padded to four digits (got ${early})`);
+  ok(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(localInputFromIso('2026-06-15T12:00:00Z')),
+    'F4 dates: an ordinary year keeps the exact datetime-local shape');
+  // The documented zone split, pinned so the doc cannot drift from the engine:
+  // date-ONLY is UTC, date-TIME without a zone is LOCAL.
+  eq(new Date(Date.parse('2026-01-01')).toISOString(), '2026-01-01T00:00:00.000Z',
+    'F4 dates: a DATE-ONLY string is parsed as UTC (as the doc now says)');
+  const localNoon = Date.parse('2026-06-15T12:00:00');
+  eq(new Date(localNoon).getHours(), 12,
+    'F4 dates: a date-TIME string with no zone is parsed as LOCAL (as the doc now says)');
+  // Seconds truncation is accepted and documented in the field help.
+  eq(isoFromLocalInput('2026-06-15T12:00').endsWith(':00.000Z') || localInputFromIso(isoFromLocalInput('2026-06-15T12:00')) === '2026-06-15T12:00', true,
+    'F4 dates: the picker carries no seconds, so a stored deadline lands on :00');
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

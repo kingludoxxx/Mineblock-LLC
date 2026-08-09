@@ -330,15 +330,24 @@ export const BLOCK_DEFS = {
     fields: [
       {
         key: 'items', label: 'Products', kind: 'rows', rowLabel: 'Product',
+        // The two url fields are NOT treated alike by the renderer, and the
+        // help says so per field rather than making one blanket claim: `href`
+        // goes through safeHref() (scheme allow-list), `image` is only
+        // HTML-escaped into the src attribute.
         itemFields: [
           { key: 'name', label: 'Name', kind: 'text' },
           { key: 'summary', label: 'Summary', kind: 'textarea' },
-          { key: 'image', label: 'Image URL', kind: 'url' },
+          {
+            key: 'image', label: 'Image URL', kind: 'url',
+            help: 'Escaped into the img src as written — not scheme-checked. Use a plain http(s) URL.',
+          },
           { key: 'cta', label: 'CTA label', kind: 'text' },
-          { key: 'href', label: 'CTA link', kind: 'url', placeholder: '#fos-next' },
+          {
+            key: 'href', label: 'CTA link', kind: 'url', placeholder: '#fos-next',
+            help: 'Sanitized on the public page — only http(s), mailto, tel and relative URLs survive; anything else becomes “#”.',
+          },
         ],
         defaultItem: { image: '', name: 'New product', summary: '', href: '#', cta: 'View' },
-        help: 'Links are sanitized on the public page — only http(s), mailto, tel and relative URLs survive.',
       },
     ],
   },
@@ -367,7 +376,9 @@ export const BLOCK_DEFS = {
         key: 'deadline', label: 'Deadline', kind: 'datetime',
         help:
           'Picked in YOUR timezone and stored as a UTC instant, so every visitor counts down to the same moment. ' +
-          'When it passes, the clock reads “Offer expired”.',
+          'The picker has no seconds — the deadline always lands on :00. ' +
+          'Once it passes the clock reads “Offer expired” and stays there; a new block is seeded a week out, ' +
+          'so set your real date before publishing.',
       },
     ],
   },
@@ -389,10 +400,13 @@ export const BLOCK_DEFS = {
     label: 'Raw HTML / Embed',
     category: 'blocks',
     icon: FileCode2,
-    // Same posture as custom_html: seed something VISIBLE. An empty html prop
-    // renders literally nothing on the public page, so a freshly inserted
-    // block was indistinguishable from a failed insert.
-    defaults: () => ({ html: '<div style="padding:24px;text-align:center">Paste your embed code here</div>' }),
+    // EMPTY ON PURPOSE. An earlier pass seeded visible placeholder markup so a
+    // fresh block was not invisible — but this prop renders VERBATIM to
+    // buyers, so that placeholder was one forgotten block away from shipping
+    // "Paste your embed code here" onto a live page. The hint belongs in the
+    // builder, not in the document: BlockPreview draws it on the canvas while
+    // html is empty, which is visible to the operator and invisible to buyers.
+    defaults: () => ({ html: '' }),
     fields: [
       {
         key: 'html', label: 'HTML / embed code', kind: 'textarea', mono: true, htmlSink: true,
