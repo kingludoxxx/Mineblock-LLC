@@ -184,8 +184,12 @@ function buildOrderPayload(session, order, { idempotencyKey }) {
       currency,
       gateway: gatewayName,
     }],
-    // Do NOT email the buyer while this is being smoke-tested in production.
-    send_receipt: false,
+    // Send Shopify's order-confirmation email to the buyer (the "thank-you
+    // email" the confirmation page promises). Env-gated so it can be silenced
+    // for smoke tests without a deploy: PUURE_SEND_RECEIPT=0 turns it off.
+    // Default ON now that checkout is live.
+    send_receipt: process.env.PUURE_SEND_RECEIPT !== '0',
+    // Shipping-confirmation email fires later, at fulfillment — leave off here.
     send_fulfillment_receipt: false,
     inventory_behaviour: 'bypass',
     source_name: 'puure-checkout',

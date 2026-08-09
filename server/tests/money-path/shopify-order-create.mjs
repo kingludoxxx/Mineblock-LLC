@@ -153,7 +153,7 @@ const settleArgs = (id, payId) => ({
   check('T2 total_price == transaction amount (reconciles)', rec1?.total_price === o.transactions[0].amount && rec1?.total_price === '89.00', JSON.stringify(rec1));
   check('T2 financial_status resolves fully PAID (not partially_paid)', rec1?.financial_status === 'paid', JSON.stringify(rec1));
   check('T2 email present', o.email === 'buyer@example.com', JSON.stringify(o.email));
-  check('T2 receipts suppressed', o.send_receipt === false && o.send_fulfillment_receipt === false, JSON.stringify({ r: o.send_receipt, f: o.send_fulfillment_receipt }));
+  check('T2 order-confirmation email ON by default, fulfillment email OFF', o.send_receipt === true && o.send_fulfillment_receipt === false, JSON.stringify({ r: o.send_receipt, f: o.send_fulfillment_receipt }));
   check('T2 puure-checkout tag + source', o.tags === 'puure-checkout' && o.source_name === 'puure-checkout', JSON.stringify({ t: o.tags, s: o.source_name }));
   check('T2 gateway payment id in note_attributes', Array.isArray(o.note_attributes) && o.note_attributes.some((a) => a.name === 'gateway_payment_id' && a.value === 'pay_single'), JSON.stringify(o.note_attributes));
   // Injection-in-address: hostile strings pass through as inert JSON values.
