@@ -147,6 +147,46 @@ function verifyJobToken(jobId, userId, provided) {
   return timingSafeEqual(expected, given);
 }
 
+// ---------------------------------------------------------------------------
+// Wiring floor (review MAJOR #4)
+// ---------------------------------------------------------------------------
+// `replace_props` is a WHOLESALE overwrite of a block's props. A model asked to
+// "rewrite the headline" on a checkout block routinely re-emits the props it
+// was thinking about and drops the rest — and the rest is the wiring: the block
+// still renders, still looks right in the editor, and no longer charges.
+//
+// These keys are therefore carried forward from the block's CURRENT props
+// whenever an op does not mention them. An op that DOES mention a key wins,
+// including setting it to null — clearing wiring on purpose is legal, losing
+// it by omission is not.
+//
+// MIRRORED CLIENT-SIDE in client/src/pages/funnels/builder/builderModel.js
+// (WIRING_KEYS / mergeReplaceProps). Both lists must move together: this one
+// keeps the ops the model is told it applied honest, the client one keeps the
+// draft on the operator's screen honest.
+export const WIRING_KEYS = Object.freeze([
+  'variant_id',
+  'line_items',
+  'offer_id',
+  'quantity',
+  'product_id',
+  'price_id',
+  'style',
+  'mobile_styles',
+  'block_name',
+]);
+
+export function mergeReplaceProps(prev, next) {
+  const p = isPlainObject(prev) ? prev : {};
+  const n = isPlainObject(next) ? next : {};
+  const out = { ...n };
+  for (const k of WIRING_KEYS) {
+    if (Object.prototype.hasOwnProperty.call(n, k)) continue; // explicitly set
+    if (Object.prototype.hasOwnProperty.call(p, k)) out[k] = p[k];
+  }
+  return out;
+}
+
 // Returns { error } or { blocks, ops } where ops is the normalized list and
 // blocks is the state after applying them. Pure — never mutates input.
 export function applyOps(currentBlocks, rawOps) {
@@ -169,8 +209,12 @@ export function applyOps(currentBlocks, rawOps) {
       if (!isPlainObject(op.props)) return { error: `ops[${i}]: props must be a plain object` };
       const htmlErr = scanHtmlProps(op.props);
       if (htmlErr) return { error: htmlRejection(i, htmlErr) };
-      blocks[idx] = { ...blocks[idx], props: op.props };
-      ops.push({ op: 'replace_props', block_id: op.block_id, props: op.props });
+      // The wiring floor is applied to the NORMALIZED op that goes back to the
+      // client as well as to the simulated result — the editor must apply the
+      // same props this validator approved, not the model's raw object.
+      const merged = mergeReplaceProps(blocks[idx].props, op.props);
+      blocks[idx] = { ...blocks[idx], props: merged };
+      ops.push({ op: 'replace_props', block_id: op.block_id, props: merged });
     } else if (op.op === 'remove_block') {
       if (idx === -1) return { error: `ops[${i}]: unknown block_id "${op.block_id}"` };
       blocks.splice(idx, 1);
@@ -221,7 +265,7 @@ const TOOLS = [
   {
     name: 'propose_block_edits',
     description:
-      'Propose edits to the current page draft. Ops apply IN ORDER to the editor\'s in-memory blocks — they are a DRAFT the operator reviews on the canvas; nothing is published. block_id values MUST come from the block JSON in the system prompt (or from ids returned by earlier insert_block ops this conversation). replace_props REPLACES the whole props object, so copy unchanged keys over.',
+      'Propose edits to the current page draft. Ops apply IN ORDER to the editor\'s in-memory blocks — they are a DRAFT the operator reviews on the canvas; nothing is published. block_id values MUST come from the block JSON in the system prompt (or from ids returned by earlier insert_block ops this conversation). replace_props REPLACES the whole props object, so copy unchanged keys over — except wiring keys (variant_id, line_items, offer_id, quantity, product_id, price_id, style, mobile_styles, block_name), which are carried over from the block\'s current props when omitted.',
     input_schema: {
       type: 'object',
       properties: {
@@ -314,7 +358,7 @@ ${JSON.stringify(blocks)}
 
 OUTPUT CONTRACT (strict):
 - Edits ONLY via propose_block_edits. Never print ops or block JSON as text.
-- replace_props sends the FULL new props object (it replaces, not merges).
+- replace_props sends the FULL new props object (it replaces, not merges). One exception, applied for you: wiring keys (${WIRING_KEYS.join(', ')}) are carried over from the block's current props when you omit them, so you cannot delete a block's checkout wiring or its style bags by leaving them out. To CHANGE one, set it explicitly.
 - Respect the block schema you see: keep the same prop keys/shapes the block already uses; text-bearing props are plain strings; html props are raw HTML.
 - Blocks are capped at 500 per page and 2MB total; keep edits lean.
 - If the request is ambiguous about which block, say which one you picked in LOCATE and why.

@@ -224,9 +224,9 @@ export function escapeHtml(s) {
  * literal characters — the failure mode is "shows the angle brackets", never
  * "executes".
  *
- * CANVAS-ONLY. The server renderer esc()'s the whole description, so this
- * markup shows as literal text on the published page until the integrator
- * lands the matching renderer change (noted in the delivery report).
+ * MATCHED BY THE RENDERER. funnelRender.js escapes the whole description and
+ * then un-escapes exactly `<b>`/`</b>`/`<u>`/`</u>`, so the published page
+ * shows the same two tags this canvas parser shows — and nothing else.
  *
  * @returns {Array<{text:string,bold:boolean,underline:boolean}>}
  */
@@ -361,4 +361,91 @@ export function blockNameAttr(props) {
   const p = props && typeof props === 'object' ? props : {};
   const name = typeof p.block_name === 'string' ? p.block_name.trim() : '';
   return name;
+}
+
+/**
+ * Which DIRTY FIELD a save refusal names, or null when the refusal is not
+ * about one field in particular.
+ *
+ * The save engine sends every dirty field in ONE PATCH. When the server
+ * refuses, re-dirtying the whole set means the offending field rides along on
+ * every later save too — one slug collision then refuses the operator's next
+ * hour of block edits. Naming the field lets the engine hold back that one and
+ * let the rest through.
+ *
+ * Message-matched, not status-matched, for the same reason isSlugCollision is:
+ * the engine only ever sees `err.response.data.error`, a string.
+ */
+export function refusedSaveField(saveError) {
+  if (isSlugCollision(saveError)) return 'slug';
+  return null;
+}
+
+/**
+ * The fields a refused PATCH should leave DIRTY, so the next flush resends
+ * them. Everything the request carried, minus the one field the refusal names.
+ *
+ * Dropping only the named field is the point: a rejected save must never
+ * silently lose an edit, but re-queueing the field the server just refused
+ * guarantees the NEXT save is refused too, and the one after that. One taken
+ * slug used to wedge every later write on the page.
+ *
+ * Total — `keys` is whatever the caller had in its dirty set.
+ */
+export function retryFieldsAfterRefusal(keys, saveError) {
+  const refused = refusedSaveField(saveError);
+  const list = Array.isArray(keys) ? keys : [];
+  return list.filter((k) => k !== refused);
+}
+
+// ---------------------------------------------------------------------------
+// AI op wiring floor
+// ---------------------------------------------------------------------------
+
+/**
+ * Props whose value is WIRING, not copy: drop one and the block still renders
+ * but no longer charges, no longer resolves a variant, or silently loses the
+ * operator's layout. `replace_props` is a wholesale overwrite, so an AI batch
+ * that re-emits a block's copy without re-emitting these would delete them.
+ *
+ * MIRRORED SERVER-SIDE in routes/aiDeveloper.js (WIRING_KEYS) — the client
+ * floor keeps the on-screen draft honest, the server floor keeps the ops the
+ * model is told it applied honest. Both lists must move together.
+ *
+ * Membership rule: a key belongs here when losing it changes what the block
+ * DOES rather than what it SAYS. `style`/`mobile_styles` qualify because the
+ * inspector is the only place they are authored — an AI batch that has never
+ * seen them cannot re-emit them.
+ */
+export const WIRING_KEYS = Object.freeze([
+  'variant_id',
+  'line_items',
+  'offer_id',
+  'quantity',
+  'product_id',
+  'price_id',
+  'style',
+  'mobile_styles',
+  'block_name',
+]);
+
+/**
+ * The props a `replace_props` op should actually produce.
+ *
+ * `next` wins for every key it SETS — including setting one to null/'' , which
+ * is an explicit clear and is honored. A wiring key the op is simply SILENT
+ * about is carried forward from `prev`. That is the whole floor: an AI batch
+ * can change wiring on purpose, it just cannot drop it by omission.
+ *
+ * Total by construction — `prev`/`next` are whatever was in the JSON.
+ */
+export function mergeReplaceProps(prev, next) {
+  const p = prev && typeof prev === 'object' && !Array.isArray(prev) ? prev : {};
+  const n = next && typeof next === 'object' && !Array.isArray(next) ? next : {};
+  const out = { ...n };
+  for (const k of WIRING_KEYS) {
+    if (Object.prototype.hasOwnProperty.call(n, k)) continue; // explicitly set
+    if (Object.prototype.hasOwnProperty.call(p, k)) out[k] = p[k];
+  }
+  return out;
 }
