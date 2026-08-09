@@ -9,6 +9,8 @@ import {
   ChevronLeft,
   ChevronRight,
   ShoppingBag,
+  ArrowUp,
+  ArrowDown,
   X,
 } from 'lucide-react';
 import api from '../../services/api';
@@ -19,10 +21,17 @@ import NeedsReviewPanel from './NeedsReviewPanel';
 
 // ── formatting helpers ──────────────────────────────────────────────
 
-const money = (v) =>
-  v == null
-    ? '—'
-    : Number(v).toLocaleString('en-US', { style: 'currency', currency: 'USD' });
+// Intl THROWS on a currency code it does not recognize, which would take the
+// whole table down over one bad row. Fall back to a plain "<CODE> <amount>"
+// rather than rendering nothing.
+const money = (v, cur = 'USD') => {
+  if (v == null) return '—';
+  try {
+    return Number(v).toLocaleString('en-US', { style: 'currency', currency: cur || 'USD' });
+  } catch {
+    return `${cur || ''} ${Number(v).toFixed(2)}`.trim();
+  }
+};
 
 const fmtDate = (iso) => {
   if (!iso) return '—';
@@ -92,6 +101,31 @@ function funnelLabel(o) {
   return [o.funnel_name, o.funnel_source].filter(Boolean).join(' · ');
 }
 
+// ── sortable header ─────────────────────────────────────────────────
+// The entry point for the `sort` a saved view stores. Without it the sort was
+// reachable only by hand-editing a URL, so a view could carry a sort the
+// operator had no way to have chosen. Only the server's whitelisted columns
+// get a header — an unlisted one would silently fall back to the default.
+function SortableTh({ col, sort, onSort, align = 'left', children }) {
+  const [activeCol, activeDir] = String(sort || '').split(':');
+  const active = activeCol === col;
+  const Icon = active && activeDir === 'asc' ? ArrowUp : ArrowDown;
+  return (
+    <th className={`text-${align} font-medium px-4 py-3`}>
+      <button
+        onClick={() => onSort(col)}
+        title={`Sort by ${col.replace(/_/g, ' ')}`}
+        className={`inline-flex items-center gap-1 uppercase tracking-wider cursor-pointer transition-colors ${
+          active ? 'text-text-primary' : 'hover:text-text-primary'
+        }`}
+      >
+        {children}
+        <Icon className={`w-3 h-3 ${active ? 'opacity-100' : 'opacity-0 group-hover:opacity-40'}`} />
+      </button>
+    </th>
+  );
+}
+
 // ── KPI strip ───────────────────────────────────────────────────────
 
 function KpiStrip({ stats }) {
@@ -99,7 +133,18 @@ function KpiStrip({ stats }) {
     { label: 'Orders', value: stats ? String(stats.orders_today || '—') : '—' },
     { label: 'Items ordered', value: stats ? String(stats.items_today || '—') : '—' },
     { label: 'Returns', value: money(stats?.returns_today ?? 0) },
+    // Gateway revenue. Manual orders get their own cell, only when there are
+    // any — an always-on "Manual $0.00" would be noise, but silently folding
+    // them into revenue would be a lie.
     { label: 'Revenue today', value: money(stats?.revenue_today ?? 0) },
+    ...(Number(stats?.manual_revenue_today) > 0
+      ? [
+          {
+            label: `Manual (${stats.manual_orders_today})`,
+            value: money(stats.manual_revenue_today),
+          },
+        ]
+      : []),
     {
       label: 'Shopify orders',
       value: stats && stats.shopify_orders_today ? String(stats.shopify_orders_today) : '—',
@@ -315,6 +360,17 @@ export default function OrdersPage() {
     }, 300);
   };
 
+  // Click a header: sort by it descending; click the same header again to flip
+  // to ascending. Always resets to page 1 — staying on page 4 of a re-sorted
+  // list shows rows that have nothing to do with what was just clicked.
+  const toggleSort = (col) => {
+    const [activeCol, activeDir] = sort.split(':');
+    setSort(activeCol === col && activeDir === 'desc' ? `${col}:asc` : `${col}:desc`);
+    const next = new URLSearchParams(searchParams);
+    next.set('page', '1');
+    setSearchParams(next, { replace: true });
+  };
+
   const goToPage = (p) => {
     const next = new URLSearchParams(searchParams);
     next.set('page', String(p));
@@ -524,15 +580,15 @@ export default function OrdersPage() {
               <table className="w-full text-sm">
                 <thead>
                   <tr className="text-[11px] uppercase tracking-wider text-text-faint border-b border-border-subtle">
-                    <th className="text-left font-medium px-4 py-3">Order</th>
-                    <th className="text-left font-medium px-4 py-3">Date</th>
+                    <SortableTh col="order_number" sort={sort} onSort={toggleSort}>Order</SortableTh>
+                    <SortableTh col="created_at" sort={sort} onSort={toggleSort}>Date</SortableTh>
                     <th className="text-left font-medium px-4 py-3">Customer</th>
                     <th className="text-left font-medium px-4 py-3">Funnel</th>
-                    <th className="text-right font-medium px-4 py-3">Total</th>
-                    <th className="text-left font-medium px-4 py-3">Payment</th>
-                    <th className="text-left font-medium px-4 py-3">Fulfillment</th>
+                    <SortableTh col="total_price" sort={sort} onSort={toggleSort} align="right">Total</SortableTh>
+                    <SortableTh col="financial_status" sort={sort} onSort={toggleSort}>Payment</SortableTh>
+                    <SortableTh col="fulfillment_status" sort={sort} onSort={toggleSort}>Fulfillment</SortableTh>
                     <th className="text-left font-medium px-4 py-3">Delivery</th>
-                    <th className="text-right font-medium px-4 py-3">Items</th>
+                    <SortableTh col="item_count" sort={sort} onSort={toggleSort} align="right">Items</SortableTh>
                     <th className="text-left font-medium px-4 py-3">Destination</th>
                     <th className="text-left font-medium px-4 py-3">Gateway</th>
                     <th className="text-left font-medium px-4 py-3">Shopify</th>
@@ -670,9 +726,13 @@ export default function OrdersPage() {
         open={createOpen}
         onClose={() => setCreateOpen(false)}
         onCreated={(order) => {
+          // Quote the SERVER's stored total, not the modal's preview. The
+          // server is what rounds, applies caps and recomputes from validated
+          // line items — confirming the client's arithmetic would tell the
+          // operator what they typed, not what was recorded.
           setFlash(
             order
-              ? `Recorded ${order.order_number} — bookkeeping only, no payment was taken.`
+              ? `Recorded ${order.order_number} for ${money(order.total_price, order.currency)} — bookkeeping only, no payment was taken.`
               : 'Order recorded.'
           );
           load();

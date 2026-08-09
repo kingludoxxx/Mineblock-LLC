@@ -39,22 +39,54 @@ export default function CreateOrderModal({ open, onClose, onCreated }) {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState(null);
 
+  // Mirrors the server's rules so the operator is told at the keyboard rather
+  // than by a 400. The server re-validates all of it regardless — this is a
+  // convenience layer, never the gate.
+  const lineErrors = lines.map((l) => {
+    if (!l.title.trim()) return null; // an untouched row is not an error
+    const q = Number(l.quantity);
+    if (!Number.isInteger(q) || q < 1) return 'Quantity must be a whole number of at least 1';
+    if (q > 1000) return 'Quantity cannot exceed 1000';
+    const p = Number(l.price);
+    if (l.price === '' || !Number.isFinite(p) || p < 0) return 'Price must be 0 or more';
+    if (p > 9999999.99) return 'Price is too large';
+    return null;
+  });
+
   const validLines = lines.filter(
-    (l) => l.title.trim() && Number(l.quantity) > 0 && l.price !== '' && Number(l.price) >= 0
+    (l, i) => l.title.trim() && !lineErrors[i] && l.price !== ''
   );
+
+  const shippingNum = Number(shipping || 0);
+  const discountsNum = Number(discounts || 0);
+  const moneyError =
+    !Number.isFinite(shippingNum) || shippingNum < 0
+      ? 'Shipping must be 0 or more'
+      : !Number.isFinite(discountsNum) || discountsNum < 0
+        ? 'Discounts must be 0 or more'
+        : null;
 
   // Mirrors the server's arithmetic exactly (subtotal + shipping − discounts).
   // The server recomputes it regardless — this is a preview, never the source
-  // of the stored total.
+  // of the stored total, and the confirmation after saving quotes the SERVER's
+  // number rather than this one.
   const { subtotal, total } = useMemo(() => {
     const sub = validLines.reduce((s, l) => s + Number(l.price) * Number(l.quantity), 0);
     return {
       subtotal: sub,
-      total: sub + Number(shipping || 0) - Number(discounts || 0),
+      total: sub + (Number.isFinite(shippingNum) ? shippingNum : 0) -
+        (Number.isFinite(discountsNum) ? discountsNum : 0),
     };
-  }, [validLines, shipping, discounts]);
+  }, [validLines, shippingNum, discountsNum]);
 
-  const canSave = email.trim() && validLines.length > 0 && total >= 0 && !saving;
+  const emailOk = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(email.trim());
+  const canSave =
+    emailOk &&
+    validLines.length > 0 &&
+    !lineErrors.some(Boolean) &&
+    !moneyError &&
+    total >= 0 &&
+    !saving;
 
   const setLine = (i, patch) =>
     setLines((ls) => ls.map((l, j) => (j === i ? { ...l, ...patch } : l)));
@@ -158,7 +190,8 @@ export default function CreateOrderModal({ open, onClose, onCreated }) {
         <div className="space-y-1.5">
           <div className="text-[11px] uppercase tracking-wider text-text-faint">Line items</div>
           {lines.map((l, i) => (
-            <div key={i} className="flex items-center gap-1.5">
+            <div key={i}>
+              <div className="flex items-center gap-1.5">
               <input
                 value={l.title}
                 onChange={(e) => setLine(i, { title: e.target.value })}
@@ -185,13 +218,17 @@ export default function CreateOrderModal({ open, onClose, onCreated }) {
                 placeholder="Price"
                 className={`w-20 text-right ${field}`}
               />
-              <button
-                onClick={() => setLines((ls) => ls.filter((_, j) => j !== i))}
-                disabled={lines.length === 1}
-                className="p-1.5 rounded-md text-text-muted hover:text-danger hover:bg-bg-hover cursor-pointer disabled:opacity-30 disabled:pointer-events-none transition-colors"
-              >
-                <Trash2 className="w-4 h-4" />
-              </button>
+                <button
+                  onClick={() => setLines((ls) => ls.filter((_, j) => j !== i))}
+                  disabled={lines.length === 1}
+                  className="p-1.5 rounded-md text-text-muted hover:text-danger hover:bg-bg-hover cursor-pointer disabled:opacity-30 disabled:pointer-events-none transition-colors"
+                >
+                  <Trash2 className="w-4 h-4" />
+                </button>
+              </div>
+              {lineErrors[i] && (
+                <p className="mt-0.5 text-[11px] text-danger">{lineErrors[i]}</p>
+              )}
             </div>
           ))}
           <button
@@ -244,10 +281,14 @@ export default function CreateOrderModal({ open, onClose, onCreated }) {
           <span className="text-base font-semibold text-text-primary">{money(total)}</span>
         </div>
 
+        {moneyError && <p className="text-xs text-danger">{moneyError}</p>}
         {total < 0 && (
           <p className="text-xs text-danger">
             Discounts exceed the order value — the total cannot be negative.
           </p>
+        )}
+        {email.trim() && !emailOk && (
+          <p className="text-xs text-danger">That does not look like an email address.</p>
         )}
         {error && (
           <div className="px-3 py-2 text-sm text-danger bg-danger/10 border border-danger/20 rounded-lg">

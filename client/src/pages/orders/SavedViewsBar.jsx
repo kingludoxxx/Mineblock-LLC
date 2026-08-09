@@ -40,6 +40,7 @@ export default function SavedViewsBar({
   const [naming, setNaming] = useState(false);
   const [name, setName] = useState('');
   const [err, setErr] = useState(null);
+  const [confirmingId, setConfirmingId] = useState(null);
 
   const activeView = useMemo(
     () => views.find((v) => v.id === activeViewId) || null,
@@ -92,16 +93,40 @@ export default function SavedViewsBar({
             <Bookmark className="w-3.5 h-3.5" />
             {v.name}
           </button>
-          {v.id === activeViewId && (
-            <button
-              onClick={() => onDelete(v)}
-              disabled={busy}
-              title="Delete this view"
-              className="ml-0.5 p-1 rounded-md text-text-faint hover:text-danger hover:bg-bg-hover cursor-pointer transition-colors disabled:opacity-40"
-            >
-              <Trash2 className="w-3.5 h-3.5" />
-            </button>
-          )}
+          {v.id === activeViewId &&
+            (confirmingId === v.id ? (
+              // Two-step rather than a window.confirm: deleting a view is
+              // irreversible (there is no undo and no trash), and the delete
+              // icon sits one pixel from the tab the operator just clicked.
+              <span className="ml-1 inline-flex items-center gap-1">
+                <span className="text-[11px] text-text-muted">Delete?</span>
+                <button
+                  onClick={() => {
+                    setConfirmingId(null);
+                    onDelete(v);
+                  }}
+                  disabled={busy}
+                  className="px-1.5 py-0.5 text-[11px] font-medium rounded bg-danger/10 text-danger border border-danger/20 cursor-pointer disabled:opacity-40"
+                >
+                  Yes
+                </button>
+                <button
+                  onClick={() => setConfirmingId(null)}
+                  className="px-1.5 py-0.5 text-[11px] rounded border border-border-default text-text-muted hover:text-text-primary cursor-pointer"
+                >
+                  No
+                </button>
+              </span>
+            ) : (
+              <button
+                onClick={() => setConfirmingId(v.id)}
+                disabled={busy}
+                title="Delete this view"
+                className="ml-0.5 p-1 rounded-md text-text-faint hover:text-danger hover:bg-bg-hover cursor-pointer transition-colors disabled:opacity-40"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+              </button>
+            ))}
         </span>
       ))}
 

@@ -100,7 +100,11 @@ export default function CustomerDetailPage() {
 
   const { customer: c, orders, notes, shipping_address: ship, billing_address: bill } = data;
   const sameAddress = ship && bill ? JSON.stringify(ship) === JSON.stringify(bill) : !bill;
-  const aov = c.orders_count > 0 ? Number(c.total_spent) / c.orders_count : 0;
+  // total_spent is GATEWAY revenue, so the divisor must be GATEWAY orders.
+  // Dividing collected revenue by every order, manual ones included, would
+  // understate AOV by exactly the share of orders that were recorded by hand.
+  const gatewayOrders = Number(c.orders_count || 0) - Number(c.manual_orders_count || 0);
+  const aov = gatewayOrders > 0 ? Number(c.total_spent) / gatewayOrders : 0;
 
   return (
     <div className="p-6 space-y-5">
@@ -133,7 +137,17 @@ export default function CustomerDetailPage() {
       <div className="flex bg-bg-card border border-border-default rounded-xl overflow-hidden">
         {[
           { label: 'Orders', value: String(c.orders_count) },
+          // Gateway revenue only — manual orders are recorded, not collected,
+          // so they get their own cell instead of inflating this one.
           { label: 'Total spent', value: money(c.total_spent) },
+          ...(Number(c.manual_spent) > 0
+            ? [
+                {
+                  label: `Manual (${c.manual_orders_count})`,
+                  value: money(c.manual_spent),
+                },
+              ]
+            : []),
           { label: 'Avg order value', value: money(aov) },
           {
             label: 'Refunded',
@@ -180,6 +194,14 @@ export default function CustomerDetailPage() {
                     >
                       <td className="px-5 py-3 font-medium text-text-primary">
                         {o.order_number}
+                        {o.source === 'manual' && (
+                          <span
+                            title="Recorded by an operator — no gateway confirmed this payment, and it is excluded from Total spent"
+                            className="ml-1.5 px-1.5 py-0.5 text-[10px] font-medium rounded bg-bg-elevated border border-border-default text-text-muted align-middle"
+                          >
+                            Manual
+                          </span>
+                        )}
                       </td>
                       <td className="px-4 py-3 text-text-muted whitespace-nowrap">
                         {fmtDate(o.created_at)}

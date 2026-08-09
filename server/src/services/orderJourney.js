@@ -95,10 +95,52 @@ export async function sessionIdForOrder(orderId, present) {
   return rows[0] || null;
 }
 
+// An admin link is only real when the order actually EXISTS in the store, and
+// the only evidence of that is crm_orders.shopify_order_id being populated.
+// Falling back to the crm order_id was wrong twice over: for a manual order it
+// is a negative synthetic number, and for any un-mirrored row it is an id
+// Shopify never issued — both render a confident link straight to a 404.
 function shopifyAdminUrl(shopifyOrderId) {
   const store = process.env.PUURE_SHOPIFY_STORE || process.env.SHOPIFY_STORE_DOMAIN;
   if (!store || !shopifyOrderId) return null;
   return `https://${store}/admin/orders/${shopifyOrderId}`;
+}
+
+// Values under these keys are masked in any payload we echo. The journey is an
+// operator debugging surface: the SHAPE of a co_events payload is what makes it
+// useful, the buyer's actual address is not. Matching is substring-based on the
+// key so customer_email, billing_phone and shipping_address all land.
+const PII_KEY_RE = /(email|phone|address|postcode|post_code|zip|first_name|last_name|full_name|card|iban|ssn|tax_id)/i;
+
+// Mask a value while leaving its shape legible: an email keeps its domain, a
+// phone keeps its last two digits, everything else becomes a length hint. The
+// operator can still tell "this event carried an email" from "this event
+// carried nothing", which is the diagnostic they need.
+function maskValue(v) {
+  if (v == null) return v;
+  if (typeof v === 'number' || typeof v === 'boolean') return v;
+  const s = String(v);
+  if (!s) return s;
+  const at = s.indexOf('@');
+  if (at > 0) return `${s[0]}***@${s.slice(at + 1)}`;
+  if (s.length <= 2) return '**';
+  return `***(${s.length} chars)`;
+}
+
+// Depth-bounded so a pathological nested payload cannot blow the stack.
+function redactPii(value, depth = 0) {
+  if (depth > 6 || value == null) return value;
+  if (Array.isArray(value)) return value.map((v) => redactPii(v, depth + 1));
+  if (typeof value !== 'object') return value;
+  const out = {};
+  for (const [k, v] of Object.entries(value)) {
+    if (PII_KEY_RE.test(k)) {
+      out[k] = v && typeof v === 'object' ? redactPii(v, depth + 1) : maskValue(v);
+    } else {
+      out[k] = redactPii(v, depth + 1);
+    }
+  }
+  return out;
 }
 
 /**
@@ -114,36 +156,68 @@ export async function buildOrderJourney(orderId, order = {}) {
   const link = await sessionIdForOrder(orderId, present);
   const sid = link?.session_id || null;
 
+  const isManual = order.source === 'manual';
+  // Only a populated shopify_order_id proves the order exists in the store.
+  const mirroredId = order.shopify_order_id ? String(order.shopify_order_id) : null;
+
   const shopify = {
-    order_id: order.shopify_order_id ? String(order.shopify_order_id) : String(orderId),
+    order_id: mirroredId,
     order_number: order.order_number || link?.shopify_order_number || null,
     status: link?.shopify_status || null,
-    admin_url: shopifyAdminUrl(order.shopify_order_id || orderId),
+    admin_url: shopifyAdminUrl(mirroredId),
   };
 
   const entries = [];
-  const counts = { checkout: 0, upsell: 0, tracking: 0, klaviyo: 0, refund: 0 };
+  const counts = { checkout: 0, upsell: 0, tracking: 0, klaviyo: 0, refund: 0, manual: 0 };
 
-  // The Shopify mirror itself is always a real, dateable fact about the order.
-  entries.push({
-    source: 'shopify',
-    kind: 'shopify_order',
-    ts: link?.shopify_created_at || order.created_at || null,
-    title: 'Shopify order',
-    detail: shopify.order_number ? `Order ${shopify.order_number}` : `Order ${shopify.order_id}`,
-    payload: {
-      shopify_order_id: shopify.order_id,
-      shopify_status: shopify.status,
-      admin_url: shopify.admin_url,
-    },
-  });
+  // The opening entry states what this order IS. Three genuinely different
+  // facts, and the previous version collapsed them into one: a manual order
+  // was announced as a "Shopify order" with a link to a store page that does
+  // not exist. Each branch now claims only what is true.
+  if (isManual) {
+    counts.manual = 1;
+    entries.push({
+      source: 'manual',
+      kind: 'manual_order',
+      ts: order.created_at || null,
+      title: 'Recorded manually',
+      detail: 'Operator-recorded order — no gateway, no checkout session, not in the store',
+      payload: { order_number: order.order_number, source: 'manual' },
+    });
+  } else if (mirroredId) {
+    entries.push({
+      source: 'shopify',
+      kind: 'shopify_order',
+      ts: link?.shopify_created_at || order.created_at || null,
+      title: 'Shopify order',
+      detail: shopify.order_number ? `Order ${shopify.order_number}` : `Order ${mirroredId}`,
+      payload: {
+        shopify_order_id: mirroredId,
+        shopify_status: shopify.status,
+        admin_url: shopify.admin_url,
+      },
+    });
+  } else {
+    // A non-manual row with no shopify_order_id: it exists in the CRM but was
+    // never mirrored. Say exactly that rather than inventing a store link.
+    entries.push({
+      source: 'shopify',
+      kind: 'order_recorded',
+      ts: order.created_at || null,
+      title: 'Order recorded',
+      detail: 'Not linked to a Shopify order id — no store record to open',
+      payload: { order_number: order.order_number, shopify_order_id: null },
+    });
+  }
 
   if (!sid) {
     return {
       linked: false,
-      link_reason: present.has('co_orders')
-        ? 'No checkout session is linked to this Shopify order — it was imported directly from the store, not placed through a funnel checkout.'
-        : 'The checkout tables are not provisioned in this deployment, so no session can be linked.',
+      link_reason: !present.has('co_orders')
+        ? 'The checkout tables are not provisioned in this deployment, so no session can be linked.'
+        : isManual
+          ? 'This order was recorded manually by an operator. It has no checkout session and no gateway trail, by design.'
+          : 'No checkout session is linked to this order — it was imported directly from the store, not placed through a funnel checkout.',
       session_id: null,
       shopify,
       entries,
@@ -167,7 +241,9 @@ export async function buildOrderJourney(orderId, order = {}) {
         ts: r.created_at,
         title: EVENT_TITLES[r.kind] || titleize(r.kind),
         detail: null,
-        payload: r.data || null,
+        // co_events payloads carry buyer data verbatim. The operator needs the
+        // SHAPE of the event, not the customer's address — see redactPii.
+        payload: r.data ? redactPii(r.data) : null,
       });
     }
   }
@@ -287,7 +363,7 @@ export async function buildOrderJourney(orderId, order = {}) {
         ts: r.created_at || r.ts || r.at || null,
         title: 'Refund',
         detail: `${r.currency || session?.currency || 'USD'} ${Number(r.amount || 0).toFixed(2)}`,
-        payload: r,
+        payload: redactPii(r),
       });
     }
   }

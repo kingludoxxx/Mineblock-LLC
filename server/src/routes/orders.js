@@ -113,6 +113,22 @@ async function createTables() {
   await pgQuery(`ALTER TABLE crm_orders ADD COLUMN IF NOT EXISTS source TEXT NOT NULL DEFAULT 'shopify'`);
   await pgQuery(`CREATE INDEX IF NOT EXISTS idx_crm_orders_source ON crm_orders (source)`);
 
+  // Reconciliation, schema-ready ahead of the feature that will use it.
+  // The documented trap on POST /manual is that when the payment-link half
+  // eventually lands, a manual row and the real Shopify order it becomes are
+  // the SAME sale and would otherwise both count. These two columns are how
+  // that gets resolved: the manual row points at the store order that
+  // superseded it and is stamped retired. Nothing writes them yet — but every
+  // aggregate in this repo already EXCLUDES retired rows, so the day the
+  // reconciler ships it cannot silently double-count revenue that shipped
+  // before it.
+  await pgQuery(`ALTER TABLE crm_orders ADD COLUMN IF NOT EXISTS reconciled_with_order_id BIGINT`);
+  await pgQuery(`ALTER TABLE crm_orders ADD COLUMN IF NOT EXISTS retired_at TIMESTAMPTZ`);
+  await pgQuery(`
+    CREATE INDEX IF NOT EXISTS idx_crm_orders_retired
+    ON crm_orders (retired_at) WHERE retired_at IS NOT NULL
+  `);
+
   // Saved views — named filter presets over the orders list, PER USER.
   // Ported from funnel-os's lb_order_view_prefs, with two deliberate changes:
   // theirs stores one prefs DOC per (workspace, user) holding an array of
@@ -494,6 +510,33 @@ function buildSort(sort) {
   return { orderSql: `ORDER BY ${col} ${dir}, order_id DESC`, applied: `${col}:${dir.toLowerCase()}` };
 }
 
+// Pagination parsing that REFUSES nonsense instead of clamping it. `limit=-5`
+// silently becoming 1 is the worst of both worlds: the caller believes their
+// parameter was honored and gets one row. Returns {ok:false} so the route can
+// 400 with the reason.
+function parsePaging(query, { defaultLimit = 25, maxLimit = 100 } = {}) {
+  const rawLimit = query.limit;
+  const rawPage = query.page;
+  let limit = defaultLimit;
+  let page = 1;
+  if (rawLimit !== undefined && rawLimit !== '') {
+    if (!/^\d+$/.test(String(rawLimit))) {
+      return { ok: false, error: 'limit must be a positive whole number' };
+    }
+    limit = parseInt(rawLimit, 10);
+    if (limit < 1) return { ok: false, error: 'limit must be at least 1' };
+    if (limit > maxLimit) return { ok: false, error: `limit cannot exceed ${maxLimit}` };
+  }
+  if (rawPage !== undefined && rawPage !== '') {
+    if (!/^\d+$/.test(String(rawPage))) {
+      return { ok: false, error: 'page must be a positive whole number' };
+    }
+    page = parseInt(rawPage, 10);
+    if (page < 1) return { ok: false, error: 'page must be at least 1' };
+  }
+  return { ok: true, limit, page };
+}
+
 const LIST_COLUMNS = `
   order_id, order_number, created_at, financial_status, fulfillment_status,
   delivery_status, total_price, currency, customer_email,
@@ -507,8 +550,9 @@ const LIST_COLUMNS = `
 router.get('/', async (req, res) => {
   try {
     await ensureTables();
-    const page = Math.max(parseInt(req.query.page, 10) || 1, 1);
-    const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 25, 1), 100);
+    const paging = parsePaging(req.query);
+    if (!paging.ok) return res.status(400).json({ error: paging.error });
+    const { page, limit } = paging;
     const { whereSql, params, next } = buildFilters(req.query);
     const { orderSql, applied } = buildSort(req.query.sort);
 
@@ -548,15 +592,32 @@ router.get('/', async (req, res) => {
 router.get('/stats/today', async (req, res) => {
   try {
     await ensureTables();
+    // revenue_today is GATEWAY revenue only. A manual order is a bookkeeping
+    // record of a sale taken elsewhere — no gateway confirmed it and no
+    // settlement backs it — so folding it into the headline number would
+    // report money the platform cannot substantiate. It is not hidden either:
+    // it gets its own bucket next to the real one, so an operator can see both
+    // and add them up deliberately rather than by accident.
+    // Retired rows (superseded by a reconciled store order) are excluded from
+    // every aggregate here — see the reconciliation columns in createTables().
     const stats = await pgQuery(`
       SELECT
         COUNT(*) FILTER (WHERE created_at >= date_trunc('day', NOW()))::int AS orders_today,
+        COUNT(*) FILTER (
+          WHERE created_at >= date_trunc('day', NOW()) AND source = 'manual'
+        )::int AS manual_orders_today,
         COALESCE(SUM(item_count) FILTER (WHERE created_at >= date_trunc('day', NOW())), 0)::int AS items_today,
         COALESCE(SUM(refund_amount) FILTER (WHERE refunded_at >= date_trunc('day', NOW())), 0) AS returns_today,
         COALESCE(SUM(total_price) FILTER (
           WHERE created_at >= date_trunc('day', NOW())
+            AND source <> 'manual'
             AND financial_status IN ('paid', 'partially_refunded', 'partially_paid')
         ), 0) AS revenue_today,
+        COALESCE(SUM(total_price) FILTER (
+          WHERE created_at >= date_trunc('day', NOW())
+            AND source = 'manual'
+            AND financial_status IN ('paid', 'partially_refunded', 'partially_paid')
+        ), 0) AS manual_revenue_today,
         COUNT(*) FILTER (
           WHERE created_at >= date_trunc('day', NOW()) AND shopify_order_id IS NOT NULL
         )::int AS shopify_orders_today,
@@ -564,7 +625,7 @@ router.get('/stats/today', async (req, res) => {
           WHERE fulfilled_at IS NOT NULL AND created_at >= NOW() - INTERVAL '30 days'
         ) AS avg_fulfillment_hours
       FROM crm_orders
-      WHERE archived = FALSE
+      WHERE archived = FALSE AND retired_at IS NULL
     `);
     res.json({ success: true, data: stats[0] });
   } catch (err) {
@@ -737,15 +798,27 @@ function viewOwner(req) {
 
 // Keep only the filter keys the list endpoint actually understands, as strings.
 // A view is stored data; it does not get to introduce new query keys.
+// Returns {filters, rejected[]}. A non-primitive value is SKIPPED, not
+// String()-ed: String({a:1}) is "[object Object]", which would be stored as a
+// real filter value and silently match nothing forever. An object or array
+// here means the caller sent the wrong shape, so it is named in `rejected` and
+// the route refuses when nothing survived.
 function cleanFilters(input) {
   const out = {};
-  if (!input || typeof input !== 'object' || Array.isArray(input)) return out;
+  const rejected = [];
+  if (!input || typeof input !== 'object' || Array.isArray(input)) {
+    return { filters: out, rejected };
+  }
   for (const k of FILTER_KEYS) {
     const v = input[k];
     if (v === undefined || v === null || v === '') continue;
+    if (typeof v === 'object' || typeof v === 'function') {
+      rejected.push(k);
+      continue;
+    }
     out[k] = String(v).slice(0, 200);
   }
-  return out;
+  return { filters: out, rejected };
 }
 
 // Columns are display-only hints for the client. Cap count and length so a
@@ -761,6 +834,7 @@ function normalizeSort(sort) {
 }
 
 const VIEW_COLUMNS = `id, name, filters, sort, columns, position, created_at, updated_at`;
+const MAX_VIEWS_PER_USER = 50;
 
 // GET /api/v1/orders/views — the caller's saved views
 router.get('/views', async (req, res) => {
@@ -789,6 +863,27 @@ router.post('/views', async (req, res) => {
     const name = String(req.body?.name || '').trim().slice(0, 60);
     if (!name) return res.status(400).json({ error: 'View name is required' });
 
+    const { filters, rejected } = cleanFilters(req.body?.filters);
+    if (rejected.length && !Object.keys(filters).length) {
+      return res.status(400).json({
+        error: `These filters were not a text value and could not be saved: ${rejected.join(', ')}`,
+      });
+    }
+
+    // A views bar is a tab strip; past a few dozen it stops being navigable and
+    // starts being a per-user unbounded write surface. Counted before the
+    // insert — an approximate cap is fine here, unlike the name uniqueness
+    // which has to be the DB's call.
+    const [{ n }] = await pgQuery(
+      `SELECT COUNT(*)::int AS n FROM lb_order_views WHERE user_id = $1`,
+      [userId]
+    );
+    if (n >= MAX_VIEWS_PER_USER) {
+      return res.status(400).json({
+        error: `You already have ${MAX_VIEWS_PER_USER} saved views — delete one before adding another`,
+      });
+    }
+
     const id = `ov_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
     const rows = await pgQuery(
       `INSERT INTO lb_order_views (id, user_id, name, filters, sort, columns, position)
@@ -804,7 +899,7 @@ router.post('/views', async (req, res) => {
         // param is sent as text and lands as a jsonb STRING SCALAR — which
         // round-trips back as a string and silently breaks every reader.
         // Verified by execution; matches how utm/line_items are passed above.
-        cleanFilters(req.body?.filters),
+        filters,
         normalizeSort(req.body?.sort),
         cleanColumns(req.body?.columns),
         Number.isFinite(Number(req.body?.position)) ? Number(req.body.position) : 0,
@@ -841,9 +936,15 @@ router.put('/views/:viewId', async (req, res) => {
       i += 1;
     }
     if (req.body?.filters !== undefined) {
+      const { filters, rejected } = cleanFilters(req.body.filters);
+      if (rejected.length && !Object.keys(filters).length) {
+        return res.status(400).json({
+          error: `These filters were not a text value and could not be saved: ${rejected.join(', ')}`,
+        });
+      }
       // Object, not a string — see the note on the INSERT above.
       sets.push(`filters = $${i}`);
-      params.push(cleanFilters(req.body.filters));
+      params.push(filters);
       i += 1;
     }
     if (req.body?.sort !== undefined) {
@@ -922,7 +1023,9 @@ const NEEDS_REVIEW_TABLES = ['co_sessions', 'co_upsell_charges', 'co_orders'];
 router.get('/needs-review', async (req, res) => {
   try {
     await ensureTables();
-    const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 50, 1), 200);
+    const paging = parsePaging(req.query, { defaultLimit: 50, maxLimit: 200 });
+    if (!paging.ok) return res.status(400).json({ error: paging.error });
+    const { limit } = paging;
 
     const presence = await pgQuery(
       `SELECT t AS name, to_regclass(t) IS NOT NULL AS present
@@ -1033,97 +1136,235 @@ router.get('/needs-review', async (req, res) => {
 
 const MANUAL_FINANCIAL = ['paid', 'pending', 'partially_paid', 'refunded', 'voided'];
 
+// Hard ceilings. Every one of these exists because the value flows into an
+// aggregate: a $2B typo does not just look wrong on the row, it moves
+// revenue_today and every customer LTV that reads it. NUMERIC(12,2) also caps
+// out at 10 digits, so an unbounded price reaches the driver and throws a 500
+// instead of telling the operator what they typed wrong.
+const MANUAL_MAX_PRICE = 9_999_999.99;
+const MANUAL_MAX_QTY = 1000;
+const MANUAL_MAX_TOTAL = 9_999_999_999.99;
+const MANUAL_MAX_LINES = 100;
+// A manual order records something that already happened. Bounding the date
+// stops a fat-fingered year (0202, 20265) from parking revenue outside every
+// reporting window, where it is invisible rather than merely wrong.
+const MANUAL_MIN_DATE = Date.parse('2015-01-01T00:00:00Z');
+
+// Deliberately a SHAPE check, not an RFC-5322 validator: the goal is to catch
+// "no @", "no dot", stray spaces — the typos that silently fork a customer
+// into two profiles because customer_email is the CRM's join key.
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
+
+// ISO-4217 alphabetic codes. crm_orders.currency feeds Intl.NumberFormat in
+// the client, which THROWS on an unknown code — an unvalidated currency is a
+// crashed page, not a cosmetic defect.
+const ISO_4217 = new Set([
+  'AED', 'ARS', 'AUD', 'BGN', 'BRL', 'CAD', 'CHF', 'CLP', 'CNY', 'COP', 'CZK',
+  'DKK', 'EGP', 'EUR', 'GBP', 'HKD', 'HRK', 'HUF', 'IDR', 'ILS', 'INR', 'ISK',
+  'JPY', 'KRW', 'MAD', 'MXN', 'MYR', 'NGN', 'NOK', 'NZD', 'PEN', 'PHP', 'PKR',
+  'PLN', 'RON', 'RSD', 'RUB', 'SAR', 'SEK', 'SGD', 'THB', 'TRY', 'TWD', 'UAH',
+  'USD', 'VND', 'ZAR',
+]);
+
+// Parse an optional non-negative money field. Returns {ok:false, error} rather
+// than coercing, because coercing a bad shipping value to 0 quietly changes
+// the order total the operator is about to confirm.
+function money(value, label) {
+  if (value === undefined || value === null || value === '') return { ok: true, value: 0 };
+  const n = Number(value);
+  if (!Number.isFinite(n)) return { ok: false, error: `${label} must be a number` };
+  if (n < 0) return { ok: false, error: `${label} cannot be negative` };
+  if (n > MANUAL_MAX_TOTAL) return { ok: false, error: `${label} is too large` };
+  return { ok: true, value: Math.round(n * 100) / 100 };
+}
+
 router.post('/manual', async (req, res) => {
   try {
     await ensureTables();
     const b = req.body || {};
 
+    // ── line items ──────────────────────────────────────────────────────
+    if (b.line_items !== undefined && !Array.isArray(b.line_items)) {
+      return res.status(400).json({ error: 'line_items must be an array' });
+    }
     const rawItems = Array.isArray(b.line_items) ? b.line_items : [];
-    const items = rawItems
-      .map((li) => ({
-        title: String(li?.title || '').trim().slice(0, 200),
-        quantity: Math.max(parseInt(li?.quantity, 10) || 0, 0),
-        price: Number(li?.price),
+    if (rawItems.length > MANUAL_MAX_LINES) {
+      return res.status(400).json({ error: `An order cannot have more than ${MANUAL_MAX_LINES} line items` });
+    }
+    const items = [];
+    for (const li of rawItems) {
+      const title = String(li?.title ?? '').trim().slice(0, 200);
+      if (!title) continue; // a blank row in the modal is not an error
+      // Quantity must be a whole number. parseInt would silently turn 2.7 into
+      // 2 and bill the operator's total against a quantity they never chose.
+      const qty = Number(li?.quantity);
+      if (!Number.isInteger(qty) || qty < 1) {
+        return res.status(400).json({ error: `Quantity for “${title}” must be a whole number of at least 1` });
+      }
+      if (qty > MANUAL_MAX_QTY) {
+        return res.status(400).json({ error: `Quantity for “${title}” cannot exceed ${MANUAL_MAX_QTY}` });
+      }
+      const price = Number(li?.price);
+      if (!Number.isFinite(price) || price < 0) {
+        return res.status(400).json({ error: `Price for “${title}” must be a number of 0 or more` });
+      }
+      if (price > MANUAL_MAX_PRICE) {
+        return res.status(400).json({ error: `Price for “${title}” cannot exceed ${MANUAL_MAX_PRICE}` });
+      }
+      items.push({
+        title,
+        quantity: qty,
+        price: Math.round(price * 100) / 100,
         sku: li?.sku ? String(li.sku).slice(0, 100) : null,
-      }))
-      .filter((li) => li.title && li.quantity > 0 && Number.isFinite(li.price) && li.price >= 0)
-      .slice(0, 100);
+      });
+    }
     if (!items.length) {
       return res
         .status(400)
         .json({ error: 'At least one line item with a title, quantity and price is required' });
     }
 
+    // ── customer ────────────────────────────────────────────────────────
     const email = String(b.customer_email || '').trim().slice(0, 200);
     if (!email) return res.status(400).json({ error: 'Customer email is required' });
+    if (!EMAIL_RE.test(email)) {
+      return res.status(400).json({ error: 'Customer email does not look like an email address' });
+    }
 
-    const financialStatus = MANUAL_FINANCIAL.includes(b.financial_status)
-      ? b.financial_status
-      : 'paid';
+    // ── payment status: refuse the unknown, default only the ABSENT ─────
+    // Coercing an unrecognized status to 'paid' fails TOWARD money: a typo
+    // ('Paid', 'complete') would book the order as collected revenue.
+    let financialStatus = 'paid';
+    if (b.financial_status !== undefined && b.financial_status !== null && b.financial_status !== '') {
+      if (!MANUAL_FINANCIAL.includes(b.financial_status)) {
+        return res.status(400).json({
+          error: `Unrecognized payment status. Use one of: ${MANUAL_FINANCIAL.join(', ')}`,
+        });
+      }
+      financialStatus = b.financial_status;
+    }
 
-    const subtotal = items.reduce((s, li) => s + li.price * li.quantity, 0);
-    const shipping = Number.isFinite(Number(b.shipping_price)) ? Number(b.shipping_price) : 0;
-    const discounts = Number.isFinite(Number(b.total_discounts)) ? Number(b.total_discounts) : 0;
-    const total = Math.round((subtotal + shipping - discounts) * 100) / 100;
-    if (total < 0) return res.status(400).json({ error: 'Order total cannot be negative' });
+    // ── currency ────────────────────────────────────────────────────────
+    const currency = String(b.currency || 'USD').toUpperCase().trim();
+    if (!ISO_4217.has(currency)) {
+      return res.status(400).json({ error: `Unrecognized currency code “${currency}”` });
+    }
 
-    // Negative id — see the block comment above.
-    const orderId = -(Date.now() * 1000 + Math.floor(Math.random() * 1000));
-    const orderNumber = String(b.reference || '').trim().slice(0, 40) ||
-      `MAN-${String(Math.abs(orderId)).slice(-8)}`;
+    // ── money ───────────────────────────────────────────────────────────
+    const ship = money(b.shipping_price, 'Shipping');
+    if (!ship.ok) return res.status(400).json({ error: ship.error });
+    const disc = money(b.total_discounts, 'Discounts');
+    if (!disc.ok) return res.status(400).json({ error: disc.error });
+
+    const subtotal = Math.round(items.reduce((s, li) => s + li.price * li.quantity, 0) * 100) / 100;
+    const total = Math.round((subtotal + ship.value - disc.value) * 100) / 100;
+    if (total < 0) return res.status(400).json({ error: 'Discounts cannot exceed the order value' });
+    if (total > MANUAL_MAX_TOTAL) return res.status(400).json({ error: 'Order total is too large' });
+
+    // ── date ────────────────────────────────────────────────────────────
+    // An unparseable string previously reached the driver and surfaced as a
+    // RangeError 500. Parse and bound it here so the operator is told.
+    let createdAt = null;
+    if (b.created_at !== undefined && b.created_at !== null && b.created_at !== '') {
+      const t = Date.parse(b.created_at);
+      if (Number.isNaN(t)) {
+        return res.status(400).json({ error: 'Order date could not be parsed — use an ISO date' });
+      }
+      if (t < MANUAL_MIN_DATE) {
+        return res.status(400).json({ error: 'Order date is before 2015 — check the year' });
+      }
+      if (t > Date.now() + 86_400_000) {
+        return res.status(400).json({ error: 'Order date is more than a day in the future' });
+      }
+      createdAt = new Date(t).toISOString();
+    }
+
+    const orderNumber =
+      String(b.reference || '').trim().slice(0, 40) || null; // filled in below once the id is known
     const itemCount = items.reduce((n, li) => n + li.quantity, 0);
     const author =
       [req.user?.firstName, req.user?.lastName].filter(Boolean).join(' ') ||
       req.user?.email ||
       'Staff';
 
-    const inserted = await pgQuery(
-      `INSERT INTO crm_orders (
-         order_id, order_number, created_at, financial_status, fulfillment_status,
-         total_price, subtotal_price, shipping_price, total_discounts, currency,
-         customer_email, customer_first_name, customer_last_name, customer_phone,
-         shipping_address, destination_city, destination_state, destination_country,
-         line_items, item_count, gateway, order_type, source, raw, synced_at
-       ) VALUES (
-         $1,$2,COALESCE($3::timestamptz, NOW()),$4,NULL,
-         $5,$6,$7,$8,$9,
-         $10,$11,$12,$13,
-         $14,$15,$16,$17,
-         $18,$19,'manual','MANUAL','manual',$20,NOW()
-       )
-       RETURNING ${LIST_COLUMNS}`,
-      [
-        orderId,
-        orderNumber,
-        b.created_at || null,
-        financialStatus,
-        total,
-        Math.round(subtotal * 100) / 100,
-        shipping,
-        discounts,
-        String(b.currency || 'USD').toUpperCase().slice(0, 8),
-        email,
-        String(b.customer_first_name || '').trim().slice(0, 120) || null,
-        String(b.customer_last_name || '').trim().slice(0, 120) || null,
-        String(b.customer_phone || '').trim().slice(0, 40) || null,
-        b.shipping_address && typeof b.shipping_address === 'object' ? b.shipping_address : null,
-        String(b.destination_city || '').trim().slice(0, 120) || null,
-        String(b.destination_state || '').trim().slice(0, 120) || null,
-        String(b.destination_country || '').trim().slice(0, 8) || null,
-        JSON.stringify(items),
-        itemCount,
-        { manual: true, created_by: author, note: String(b.note || '').slice(0, 2000) || null },
-      ]
-    );
+    // The audit row records what the OPERATOR supplied versus what was
+    // recorded, so a back-dated order is legible later without diffing.
+    const auditMeta = {
+      by: author,
+      items: items.length,
+      total,
+      currency,
+      supplied_created_at: b.created_at ?? null,
+      recorded_created_at: createdAt, // null = "now", stamped by the DB
+    };
+
+    // ── insert, with one retry on an id collision ───────────────────────
+    // The id is minted from a millisecond clock plus 1000 random units, so a
+    // collision needs two creates in the same millisecond that also draw the
+    // same random. Vanishingly rare, but the DB is what decides — mirroring
+    // the saved-views discipline, we let the unique violation happen and
+    // retry with a fresh id rather than reading first to check.
+    const mintId = () => -(Date.now() * 1000 + Math.floor(Math.random() * 1000));
+    const insertOnce = async (orderId) =>
+      pgQuery(
+        `INSERT INTO crm_orders (
+           order_id, order_number, created_at, financial_status, fulfillment_status,
+           total_price, subtotal_price, shipping_price, total_discounts, currency,
+           customer_email, customer_first_name, customer_last_name, customer_phone,
+           shipping_address, destination_city, destination_state, destination_country,
+           line_items, item_count, gateway, order_type, source, raw, synced_at
+         ) VALUES (
+           $1,$2,COALESCE($3::timestamptz, NOW()),$4,NULL,
+           $5,$6,$7,$8,$9,
+           $10,$11,$12,$13,
+           $14,$15,$16,$17,
+           $18,$19,'manual','MANUAL','manual',$20,NOW()
+         )
+         RETURNING ${LIST_COLUMNS}`,
+        [
+          orderId,
+          orderNumber || `MAN-${String(Math.abs(orderId)).slice(-8)}`,
+          createdAt,
+          financialStatus,
+          total,
+          subtotal,
+          ship.value,
+          disc.value,
+          currency,
+          email,
+          String(b.customer_first_name || '').trim().slice(0, 120) || null,
+          String(b.customer_last_name || '').trim().slice(0, 120) || null,
+          String(b.customer_phone || '').trim().slice(0, 40) || null,
+          b.shipping_address && typeof b.shipping_address === 'object' && !Array.isArray(b.shipping_address)
+            ? b.shipping_address
+            : null,
+          String(b.destination_city || '').trim().slice(0, 120) || null,
+          String(b.destination_state || '').trim().slice(0, 120) || null,
+          String(b.destination_country || '').trim().slice(0, 8) || null,
+          // The ARRAY, never JSON.stringify(...). A stringified param lands as
+          // a jsonb STRING SCALAR and the detail endpoint then serves
+          // line_items as [] — the order looks empty. Same trap documented on
+          // the saved-views insert; it bit this call site too.
+          items,
+          itemCount,
+          { manual: true, created_by: author, note: String(b.note || '').slice(0, 2000) || null },
+        ]
+      );
+
+    let inserted;
+    let orderId = mintId();
+    try {
+      inserted = await insertOnce(orderId);
+    } catch (err) {
+      if (err.code !== '23505') throw err;
+      orderId = mintId();
+      inserted = await insertOnce(orderId);
+    }
 
     await pgQuery(
       `INSERT INTO crm_order_events (order_id, kind, message, meta)
        VALUES ($1, 'manual_create', $2, $3)`,
-      [
-        orderId,
-        `Manual order recorded by ${author}.`,
-        { by: author, items: items.length, total, currency: inserted[0].currency },
-      ]
+      [orderId, `Manual order recorded by ${author}.`, auditMeta]
     );
 
     res.status(201).json({

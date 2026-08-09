@@ -16,8 +16,18 @@ const fmt = (iso) => {
   return `${d.toLocaleDateString('en-GB', { day: '2-digit', month: 'short' })}, ${d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}`;
 };
 
-const money = (v, cur = 'USD') =>
-  v == null ? '—' : Number(v).toLocaleString('en-US', { style: 'currency', currency: cur || 'USD' });
+// Intl throws a RangeError on an unrecognized currency code. These rows come
+// straight off the money path, which is exactly where a malformed currency
+// would show up — so a bad code must degrade to plain text, not blank the
+// review queue an operator is trying to triage.
+const money = (v, cur = 'USD') => {
+  if (v == null) return '—';
+  try {
+    return Number(v).toLocaleString('en-US', { style: 'currency', currency: cur || 'USD' });
+  } catch {
+    return `${cur || ''} ${Number(v).toFixed(2)}`.trim();
+  }
+};
 
 function Reason({ children }) {
   return (
