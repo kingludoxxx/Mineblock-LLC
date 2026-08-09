@@ -37,6 +37,7 @@ import integrationsRoutes from './integrations.js';
 import liveViewRoutes from './liveView.js';
 import funnelTransferRoutes from './funnelTransfer.js';
 import funnelCostsRoutes from './funnelCosts.js';
+import mediaRoutes from './media.js';
 
 const mountRoutes = (app) => {
   app.use('/api/v1/users', userRoutes);
@@ -85,6 +86,24 @@ const mountRoutes = (app) => {
   // import always lands a DRAFT with no domain, in one transaction).
   app.use('/api/v1/funnel-transfer', funnelTransferRoutes);
   app.use('/api/v1/funnel-costs', funnelCostsRoutes); // COGS / per-funnel P&L (authed, funnels permission; on-read engine, append-only rates)
+  // MEDIA LIBRARY: image store for the builder (authed, funnels permission; archive-only, no DELETE).
+  //
+  // ⚠️ INTEGRATOR ACTION REQUIRED — this mount is a FALLBACK, not the intended
+  // one. mountRoutes() is invoked at app.js:133, i.e. AFTER the global
+  // express.json({limit:'50mb'}) at app.js:93. express.json is a no-op once
+  // req._body is set, so the media router's own 7mb cap CANNOT fire from here
+  // and a 49mb upload body is fully buffered before the route sees it
+  // (measured ~489mb RSS on a 512mb dyno). The router is already built to
+  // parse its own body — it just has to be mounted ahead of the global parser,
+  // exactly like the public checkout/opt-in intakes at app.js:87 and :91.
+  //
+  // THE FIX (one line in app.js, which is outside this lane's fence):
+  //   import mediaRoutes from './routes/media.js';
+  //   app.use('/api/v1/media', mediaRoutes);   // insert at app.js:92, i.e.
+  //                                            // directly after the optin
+  //                                            // mount and BEFORE // Body parsing
+  // then delete this mount. Until that lands, the 7mb cap is documentation.
+  app.use('/api/v1/media', mediaRoutes);
 };
 
 export default mountRoutes;
