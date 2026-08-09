@@ -8,7 +8,9 @@
 // apex vs subdomain required-records shapes; the primary-domain radio
 // contract (PATCH funnels custom_domain: attached-only, null clears, detach
 // clears a dangling pointer); typed detach confirmation; cross-funnel attach
-// conflict; invalid-domain refusal.
+// conflict; invalid-domain refusal; registrar/status render_target_host;
+// reassign ("Reuse here") happy path + refusals; the 24h verify backoff
+// schedule (math + the sweep-path deferral gate).
 //
 // Run:  node server/tests/funnel-settings/domains-tab.mjs
 process.env.DATABASE_URL = 'postgres://puure@127.0.0.1:5433/puure_shoporder';
@@ -114,11 +116,48 @@ check('setup: two funnels created', Boolean(fA?.id && fB?.id));
   check('list for the other funnel is empty', Array.isArray(rB.j?.data) && rB.j.data.length === 0);
 }
 
+// ── registrar/status carries the Render target host (Domains-tab banner) ────
+{
+  const r = await req('GET', '/domain-hub/registrar/status');
+  const d = r.j?.data;
+  check('registrar/status → render_target_host present',
+    r.status === 200 && typeof d?.render_target_host === 'string' && d.render_target_host.length > 0,
+    JSON.stringify(d));
+  check('registrar/status → config flags still present',
+    typeof d?.render_configured === 'boolean' && typeof d?.cloudflare_dns_configured === 'boolean');
+}
+
 // ── verify now ──────────────────────────────────────────────────────────────
 {
   const r = await req('POST', `/domain-hub/${SUB}/verify`);
   const row = r.j?.data;
   check('verify → 200 row, still pending_dns, attempt counted', r.status === 200 && row?.status === 'pending_dns' && row?.verify_attempts >= 1, JSON.stringify({ s: row?.status, a: row?.verify_attempts }));
+}
+
+// ── backoff schedule (24h budget) ───────────────────────────────────────────
+{
+  const svc = await import('../../src/services/domainHub/attachService.js');
+  const total = Array.from({ length: svc.MAX_VERIFY_ATTEMPTS }, (_, i) => svc.verifyDelayMs(i))
+    .reduce((a, b) => a + b, 0);
+  check('backoff: schedule totals exactly 24h', total === 24 * 60 * 60 * 1000, `total=${total}ms over ${svc.MAX_VERIFY_ATTEMPTS} attempts`);
+  check('backoff: fast phase is 60s per attempt for the first hour',
+    svc.verifyDelayMs(0) === 60_000 && svc.verifyDelayMs(svc.FAST_VERIFY_ATTEMPTS - 1) === 60_000);
+  check('backoff: slow phase is 5min per attempt after the first hour',
+    svc.verifyDelayMs(svc.FAST_VERIFY_ATTEMPTS) === 300_000 && svc.verifyDelayMs(svc.MAX_VERIFY_ATTEMPTS - 1) === 300_000);
+  // Sweep-path deferral gate BY EXECUTION: the row was verified seconds ago,
+  // so a sweep-style call (no resetAttempts) must defer without re-checking.
+  const before = await sql`SELECT verify_attempts FROM lb_domains WHERE domain = ${SUB}`;
+  const defRes = await svc.verifyDomain(SUB);
+  const after = await sql`SELECT verify_attempts FROM lb_domains WHERE domain = ${SUB}`;
+  check('backoff: sweep-path verify DEFERS a freshly-checked row',
+    defRes.ok === true && defRes.deferred === true, JSON.stringify({ ok: defRes.ok, deferred: defRes.deferred }));
+  check('backoff: deferred call did NOT consume an attempt',
+    before[0].verify_attempts === after[0].verify_attempts,
+    `${before[0].verify_attempts} → ${after[0].verify_attempts}`);
+  // Manual verify-now still always runs (resetAttempts path skips the gate).
+  const manual = await req('POST', `/domain-hub/${SUB}/verify`);
+  check('backoff: manual verify-now still runs (never deferred)',
+    manual.status === 200 && manual.j?.data?.verify_attempts >= 1, JSON.stringify(manual.j?.data?.verify_attempts));
 }
 
 // ── records view ────────────────────────────────────────────────────────────
@@ -146,7 +185,56 @@ check('setup: two funnels created', Boolean(fA?.id && fB?.id));
 {
   const r = await req('PATCH', `/funnels/${fA.id}`, { custom_domain: null });
   check('primary = null clears (Default URL)', r.status === 200 && r.j?.data?.custom_domain === null);
-  await req('PATCH', `/funnels/${fA.id}`, { custom_domain: SUB }); // re-set for the detach-repair check
+  await req('PATCH', `/funnels/${fA.id}`, { custom_domain: SUB }); // re-set for the reassign + detach checks
+}
+
+// ── reassign ("Reuse here") ─────────────────────────────────────────────────
+// refusals first — none of these may move the row or touch the pointer
+{
+  const r = await req('POST', `/domain-hub/${SUB}/reassign`, { funnel_id: fB.id });
+  check('reassign without confirm → 400 confirm_required', r.status === 400 && r.j?.error === 'confirm_required', JSON.stringify(r.j));
+}
+{
+  const r = await req('POST', `/domain-hub/never-attached.puure-domains-harness.dev/reassign`, { funnel_id: fB.id, confirm: true });
+  check('reassign unknown domain → 404', r.status === 404 && r.j?.error === 'domain_not_found', JSON.stringify(r.j));
+}
+{
+  const r = await req('POST', `/domain-hub/${SUB}/reassign`, { funnel_id: fA.id, confirm: true });
+  check('reassign to the SAME funnel → 400 no-op refusal', r.status === 400 && r.j?.error === 'domain_already_on_this_funnel', JSON.stringify(r.j));
+}
+{
+  const r = await req('POST', `/domain-hub/${SUB}/reassign`, { confirm: true });
+  check('reassign without funnel_id → 400', r.status === 400 && r.j?.error === 'funnel_id_required', JSON.stringify(r.j));
+}
+{
+  const r = await req('POST', `/domain-hub/${SUB}/reassign`, { funnel_id: 'fnl_does_not_exist', confirm: true });
+  check('reassign to unknown funnel → 404 funnel_not_found', r.status === 404 && r.j?.error === 'funnel_not_found', JSON.stringify(r.j));
+}
+{
+  const still = await sql`SELECT funnel_id FROM lb_domains WHERE domain = ${SUB}`;
+  const fa = await req('GET', `/funnels/${fA.id}`);
+  check('reassign refusals: row untouched + A still primary',
+    still[0]?.funnel_id === fA.id && fa.j?.data?.funnel?.custom_domain === SUB,
+    JSON.stringify({ funnel_id: still[0]?.funnel_id, cd: fa.j?.data?.funnel?.custom_domain }));
+}
+// happy path — B steals SUB from A; A's dangling primary pointer is cleared
+{
+  const r = await req('POST', `/domain-hub/${SUB}/reassign`, { funnel_id: fB.id, confirm: true });
+  check('reassign happy path → 200 + row now on funnel B', r.status === 200 && r.j?.data?.funnel_id === fB.id, JSON.stringify(r.j));
+  const fa = await req('GET', `/funnels/${fA.id}`);
+  check("reassign: A's custom_domain pointer CLEARED", fa.j?.data?.funnel?.custom_domain === null, JSON.stringify(fa.j?.data?.funnel?.custom_domain));
+  const listB = await req('GET', `/domain-hub/list?funnel_id=${fB.id}`);
+  check('reassign: list for B now contains the domain',
+    (listB.j?.data || []).some((x) => x.domain === SUB), JSON.stringify((listB.j?.data || []).map((x) => x.domain)));
+  const n = await sql`SELECT COUNT(*)::int AS n FROM lb_domains WHERE domain = ${SUB}`;
+  check('reassign: still exactly one row', n[0].n === 1);
+}
+// move it back and restore A's primary so the detach block below is unchanged
+{
+  const r = await req('POST', `/domain-hub/${SUB}/reassign`, { funnel_id: fA.id, confirm: true });
+  check('reassign back to A → 200', r.status === 200 && r.j?.data?.funnel_id === fA.id, JSON.stringify(r.j));
+  const p = await req('PATCH', `/funnels/${fA.id}`, { custom_domain: SUB });
+  check('reassign: A primary re-set for the detach checks', p.status === 200 && p.j?.data?.custom_domain === SUB);
 }
 
 // ── detach ──────────────────────────────────────────────────────────────────

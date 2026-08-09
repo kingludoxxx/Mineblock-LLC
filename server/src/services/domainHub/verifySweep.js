@@ -6,7 +6,9 @@
 // Each tick re-verifies every row still in pending_dns / verifying (bounded
 // batch). Fail-open per row: one domain's DNS/API failure never blocks the
 // others; error rows park (attachService bounds retries) and are skipped
-// until an operator hits verify-now.
+// until an operator hits verify-now. Backoff lives in verifyDomain: rows in
+// the slow phase of the 24h schedule are DEFERRED (no DNS/Render call) until
+// their delay elapses — the tick itself stays at 60s.
 import { pgQuery } from '../../db/pg.js';
 import { ensureDomainTables } from './schema.js';
 import { verifyDomain } from './attachService.js';
@@ -24,7 +26,7 @@ let timer = null;
 let running = false;
 
 export async function sweepOnce() {
-  const stats = { checked: 0, connected: 0, errors: 0 };
+  const stats = { checked: 0, deferred: 0, connected: 0, errors: 0 };
   await ensureDomainTables();
   const rows = await pgQuery(
     `SELECT domain FROM lb_domains
@@ -36,6 +38,7 @@ export async function sweepOnce() {
   for (const { domain } of rows) {
     try {
       const res = await verifyDomain(domain);
+      if (res.deferred) { stats.deferred++; continue; }
       stats.checked++;
       if (res.row?.status === 'connected') stats.connected++;
       if (res.row?.status === 'error') stats.errors++;
