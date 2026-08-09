@@ -214,12 +214,17 @@ router.post('/create-session', async (req, res) => {
     }
 
     const sessionId = `co_${crypto.randomBytes(16).toString('hex')}`;
+    // Charge-authorization secret (see loadPaidSession). Only the HASH is
+    // stored; the token itself leaves this server exactly once, as an HttpOnly
+    // cookie, so it can never reach a URL, a beacon, a log or page JavaScript.
+    const confirmToken = crypto.randomBytes(32).toString('hex');
     // JSONB params are raw JS values — pgQuery/postgres.js serializes them.
     await pgQuery(
       `INSERT INTO co_sessions (
          id, funnel_id, page_id, status, line_items,
-         subtotal, shipping, tax, total, currency, customer, tracking_net
-       ) VALUES ($1, $2, $3, 'processing', $4, $5, $6, $7, $8, $9, $10, $11)`,
+         subtotal, shipping, tax, total, currency, customer, tracking_net,
+         confirm_token_hash
+       ) VALUES ($1, $2, $3, 'processing', $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
       [
         sessionId,
         body.funnel_id ? String(body.funnel_id).slice(0, 64) : null,
@@ -229,8 +234,21 @@ router.post('/create-session', async (req, res) => {
         currency,
         cleanCustomer(body),
         trackingSnapshot(req),
+        hashToken(confirmToken),
       ]
     );
+
+    // HttpOnly so page JS (and therefore any XSS or third-party tag) cannot
+    // read it; SameSite=Lax so it survives the funnel's own top-level
+    // navigations (checkout -> upsell -> thank-you) but is not sent from a
+    // cross-site POST; Secure outside local dev.
+    res.cookie(CONFIRM_COOKIE, confirmToken, {
+      httpOnly: true,
+      sameSite: 'lax',
+      secure: process.env.NODE_ENV === 'production',
+      path: '/',
+      maxAge: 6 * 60 * 60 * 1000,
+    });
 
     // Event trail — analytics side of the fail-open/fail-closed line: a
     // failed event write must never fail the mint.
@@ -455,15 +473,48 @@ router.post('/whop/create-session', async (req, res) => {
 
 const UPSELL_MIN_CHARGE = 1.0;
 
-async function loadPaidSession(sessionId) {
+// The confirmation secret. The session id is a PUBLIC identifier (it rides in
+// `?s=`, so it reaches the address bar, tracking beacons, the ad platform's
+// event_source_url and the access log); it identifies a checkout but must never
+// AUTHORIZE one. This token is the authorization factor: minted at
+// create-session, delivered only as an HttpOnly cookie, never logged or
+// beaconed, and compared in constant time against a stored SHA-256.
+const CONFIRM_COOKIE = '__fos_ck';
+const hashToken = (t) => crypto.createHash('sha256').update(String(t)).digest('hex');
+
+function confirmTokenFrom(req) {
+  const raw = req.cookies?.[CONFIRM_COOKIE];
+  return typeof raw === 'string' ? raw.slice(0, 120) : '';
+}
+
+// Constant-time compare of two hex digests of equal length.
+function digestsMatch(a, b) {
+  if (!a || !b || a.length !== b.length) return false;
+  try {
+    return crypto.timingSafeEqual(Buffer.from(a, 'hex'), Buffer.from(b, 'hex'));
+  } catch {
+    return false;
+  }
+}
+
+async function loadPaidSession(sessionId, req = null) {
   const rows = await pgQuery(
     `SELECT id, funnel_id, status, gateway, currency, payment_method_id,
-            gateway_customer_id, refunds
+            gateway_customer_id, refunds, confirm_token_hash
      FROM co_sessions WHERE id = $1`,
     [String(sessionId || '').slice(0, 80)]
   );
   if (!rows.length) return { error: { status: 404, code: 'session_not_found' } };
   const s = rows[0];
+  // Charge authorization. Enforced whenever the session carries a token (every
+  // session minted by this code does). Sessions predating the column have a
+  // NULL hash and stay on the old behaviour rather than breaking mid-funnel.
+  if (req && s.confirm_token_hash) {
+    const presented = confirmTokenFrom(req);
+    if (!digestsMatch(hashToken(presented), s.confirm_token_hash)) {
+      return { error: { status: 403, code: 'confirmation_required' } };
+    }
+  }
   if (s.status !== 'paid') return { error: { status: 409, code: 'session_not_paid' } };
   // A chargeback must never trigger another off-session charge on that card —
   // cancelling in-flight charges (the dispute handler) is not enough if the
@@ -497,7 +548,7 @@ router.post('/upsell/accept', async (req, res) => {
     if (!(await rateLimit(req, res, 'upsell-accept', 20))) return;
     await ensureCheckoutTables();
     const body = req.body || {};
-    const { session, error: sErr } = await loadPaidSession(body.session_id);
+    const { session, error: sErr } = await loadPaidSession(body.session_id, req);
     if (sErr) return res.status(sErr.status).json({ success: false, error: { code: sErr.code } });
     const { offer, error: oErr } = await loadOffer(body.offer_id, session);
     if (oErr) return res.status(oErr.status).json({ success: false, error: { code: oErr.code } });
@@ -721,7 +772,7 @@ router.post('/upsell/decline', async (req, res) => {
   try {
     if (!(await rateLimit(req, res, 'upsell-decline', 30))) return;
     await ensureCheckoutTables();
-    const { session, error: sErr } = await loadPaidSession(req.body?.session_id);
+    const { session, error: sErr } = await loadPaidSession(req.body?.session_id, req);
     if (sErr) return res.status(sErr.status).json({ success: false, error: { code: sErr.code } });
     const { offer, error: oErr } = await loadOffer(req.body?.offer_id, session);
     if (oErr) return res.status(oErr.status).json({ success: false, error: { code: oErr.code } });

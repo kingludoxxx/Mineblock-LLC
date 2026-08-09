@@ -68,9 +68,16 @@ function setck(n,v,days){try{var d=new Date(Date.now()+days*864e5);document.cook
 function vidNew(){try{var a=new Uint8Array(12);(window.crypto||{}).getRandomValues&&window.crypto.getRandomValues(a);var s='';for(var i=0;i<a.length;i++){s+=('0'+a[i].toString(16)).slice(-2);}return 'v_'+(s||(''+Date.now()+Math.random()).replace(/[^0-9]/g,'').slice(0,16));}catch(e){return 'v_'+(''+Date.now());}}
 function getVid(create){var v=ck('_fos_vid');if(!v&&create){v=vidNew();setck('_fos_vid',v,365);}return v;}
 function post(path,body){try{return fetch(API+path,{method:'POST',headers:{'Content-Type':'application/json'},credentials:'same-origin',keepalive:true,body:JSON.stringify(body)}).catch(function(){});}catch(e){}}
+/* The checkout session id rides in ?s= so the funnel can carry it across
+   pages. It identifies a buyer's order, so it must never be beaconed, stored
+   in lb_touches/lb_clicks, or forwarded to an ad platform as
+   event_source_url. Strip it (and its aliases) from every URL we transmit. */
+function scrub(u){try{if(!u)return u;var x=new URL(u,window.location.origin);
+['s','session','session_id'].forEach(function(k){x.searchParams.delete(k);});
+return x.toString();}catch(e){return String(u||'').split('?')[0];}}
 var pipelineRan=false;
 function runPipeline(){if(pipelineRan)return;pipelineRan=true;try{
-  var vid=getVid(true);var url=location.href;var ref=document.referrer||'';
+  var vid=getVid(true);var url=scrub(location.href);var ref=scrub(document.referrer||'');
   post('/touch',{funnel_id:CFG.funnel_id,page_id:CFG.page_id,vid:vid,url:url,referrer:ref,consent:'granted'});
   post('/click',{funnel_id:CFG.funnel_id,vid:vid,url:url,consent:'granted'});
   firePixels(vid,url);

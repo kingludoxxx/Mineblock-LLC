@@ -46,10 +46,14 @@ app.use(helmet({
 // CORS
 app.use(cors(corsOptions));
 
-// Request logging
+// Request logging. The checkout session id travels as ?s= on funnel pages; it
+// identifies a buyer's order, so it must not be persisted in the log stream.
+// Redact it (and its aliases) from the logged line — the request itself is
+// untouched.
+const REDACT_QS = /([?&](?:s|session|session_id)=)[^&\s"]+/gi;
 const morganFormat = env.NODE_ENV === 'production' ? 'combined' : 'dev';
 app.use(morgan(morganFormat, {
-  stream: { write: (message) => logger.info(message.trim()) },
+  stream: { write: (message) => logger.info(message.trim().replace(REDACT_QS, '$1[redacted]')) },
 }));
 
 // Capture raw body for Shopify webhook HMAC verification (must come before json parser)

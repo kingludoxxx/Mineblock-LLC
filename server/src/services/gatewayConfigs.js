@@ -95,8 +95,20 @@ function credsKey() {
     if (buf.length === 32) return buf;
     throw new Error('CHECKOUT_CREDS_KEY must decode to 32 bytes (hex or base64)');
   }
-  const jwt = process.env.JWT_SECRET || '';
-  if (!jwt) throw new Error('no CHECKOUT_CREDS_KEY and no JWT_SECRET — cannot encrypt gateway creds');
+  // JWT_SECRET is read by NOTHING else in this app and is provisioned by
+  // NOTHING (render.yaml sets JWT_ACCESS_SECRET / JWT_REFRESH_SECRET; the name
+  // only appears in .env.example, which made the trap look configured). Relying
+  // on it alone meant every gateway-credential save 500'd in production — the
+  // whole Payments feature was dead on arrival. Fall back to the secret that IS
+  // provisioned. Order is load-bearing: JWT_SECRET stays first so any deploy
+  // that already stored creds under it can still decrypt them.
+  const jwt = process.env.JWT_SECRET || process.env.JWT_ACCESS_SECRET || '';
+  if (!jwt) {
+    throw new Error(
+      'cannot encrypt gateway creds: set CHECKOUT_CREDS_KEY (preferred, 32 bytes hex/base64) '
+      + 'or ensure JWT_ACCESS_SECRET is set'
+    );
+  }
   return crypto.createHash('sha256').update(`checkout-creds:${jwt}`).digest();
 }
 
