@@ -224,9 +224,9 @@ export function escapeHtml(s) {
  * literal characters — the failure mode is "shows the angle brackets", never
  * "executes".
  *
- * CANVAS-ONLY. The server renderer esc()'s the whole description, so this
- * markup shows as literal text on the published page until the integrator
- * lands the matching renderer change (noted in the delivery report).
+ * MATCHED BY THE RENDERER. funnelRender.js escapes the whole description and
+ * then un-escapes exactly `<b>`/`</b>`/`<u>`/`</u>`, so the published page
+ * shows the same two tags this canvas parser shows — and nothing else.
  *
  * @returns {Array<{text:string,bold:boolean,underline:boolean}>}
  */
@@ -361,4 +361,160 @@ export function blockNameAttr(props) {
   const p = props && typeof props === 'object' ? props : {};
   const name = typeof p.block_name === 'string' ? p.block_name.trim() : '';
   return name;
+}
+
+/**
+ * Which DIRTY FIELD a save refusal names, or null when the refusal is not
+ * about one field in particular.
+ *
+ * The save engine sends every dirty field in ONE PATCH. When the server
+ * refuses, re-dirtying the whole set means the offending field rides along on
+ * every later save too — one slug collision then refuses the operator's next
+ * hour of block edits. Naming the field lets the engine hold back that one and
+ * let the rest through.
+ *
+ * Message-matched, not status-matched, for the same reason isSlugCollision is:
+ * the engine only ever sees `err.response.data.error`, a string.
+ */
+export function refusedSaveField(saveError) {
+  if (isSlugCollision(saveError)) return 'slug';
+  return null;
+}
+
+/**
+ * The fields a refused PATCH should leave DIRTY, so the next flush resends
+ * them. Everything the request carried, minus the one field the refusal names.
+ *
+ * Dropping only the named field is the point: a rejected save must never
+ * silently lose an edit, but re-queueing the field the server just refused
+ * guarantees the NEXT save is refused too, and the one after that. One taken
+ * slug used to wedge every later write on the page.
+ *
+ * Total — `keys` is whatever the caller had in its dirty set.
+ */
+export function retryFieldsAfterRefusal(keys, saveError) {
+  const refused = refusedSaveField(saveError);
+  const list = Array.isArray(keys) ? keys : [];
+  return list.filter((k) => k !== refused);
+}
+
+/** The meta fields the top bar and the inspector render. */
+export const META_FIELDS = Object.freeze(['title', 'slug', 'status']);
+
+/** The meta bag a page row describes. Same coercions load() and restore use. */
+export function metaFromPage(page) {
+  const p = page && typeof page === 'object' ? page : {};
+  return { title: p.title || '', slug: p.slug || '/', status: p.status || 'draft' };
+}
+
+/**
+ * Meta re-synced from a successful PATCH response.
+ *
+ * THE PHANTOM-SLUG FIX. retryFieldsAfterRefusal drops a refused field from the
+ * dirty set so one taken slug cannot poison every later save — but the refused
+ * VALUE stayed in `meta`, which is what the slug box renders. The box then
+ * showed a value that existed nowhere but this browser, and the next
+ * successful save of anything else cleared the error banner, leaving the chip
+ * reading "Saved" over a slug the server had never accepted.
+ *
+ * `dirtyFields` is the set still queued when the response lands. Those belong
+ * to the OPERATOR — they were typed after this PATCH went out — and are
+ * skipped, which is what stops the re-sync from eating keystrokes.
+ *
+ * Returns `current` unchanged when nothing moved, so React can bail out.
+ */
+export function resyncMeta(current, page, dirtyFields) {
+  const cur = current && typeof current === 'object' ? current : {};
+  // No page in the response is not authority to overwrite anything.
+  if (!page || typeof page !== 'object') return cur;
+  const server = metaFromPage(page);
+  const dirty = dirtyFields instanceof Set
+    ? dirtyFields
+    : new Set(Array.isArray(dirtyFields) ? dirtyFields : []);
+  let changed = false;
+  const next = { ...cur };
+  for (const k of META_FIELDS) {
+    if (dirty.has(k)) continue;
+    if (next[k] !== server[k]) { next[k] = server[k]; changed = true; }
+  }
+  return changed ? next : cur;
+}
+
+/**
+ * Sticky per-field refusals: { slug: { message, value } }.
+ *
+ * The top-bar banner rides on `saveError`, which the next successful save
+ * clears. A refusal whose field is no longer queued would therefore vanish
+ * from the screen while its cause was still unresolved — so it is recorded
+ * against the FIELD, with the value that was rejected, and cleared only when a
+ * write actually carries that field (or a restore replaces the page).
+ */
+export function recordRefusal(refusals, saveError, payload) {
+  const base = refusals && typeof refusals === 'object' ? refusals : {};
+  const field = refusedSaveField(saveError);
+  if (!field) return base;
+  const p = payload && typeof payload === 'object' ? payload : {};
+  return { ...base, [field]: { message: String(saveError), value: p[field] } };
+}
+
+/** Drops refusals for fields a write has now carried. Identity when no match. */
+export function clearRefusals(refusals, fields) {
+  const base = refusals && typeof refusals === 'object' ? refusals : {};
+  const list = Array.isArray(fields) ? fields : [];
+  if (!list.some((k) => Object.prototype.hasOwnProperty.call(base, k))) return base;
+  const next = { ...base };
+  for (const k of list) delete next[k];
+  return next;
+}
+
+// ---------------------------------------------------------------------------
+// AI op wiring floor
+// ---------------------------------------------------------------------------
+
+/**
+ * Props whose value is WIRING, not copy: drop one and the block still renders
+ * but no longer charges, no longer resolves a variant, or silently loses the
+ * operator's layout. `replace_props` is a wholesale overwrite, so an AI batch
+ * that re-emits a block's copy without re-emitting these would delete them.
+ *
+ * MIRRORED SERVER-SIDE in routes/aiDeveloper.js (WIRING_KEYS) — the client
+ * floor keeps the on-screen draft honest, the server floor keeps the ops the
+ * model is told it applied honest. Both lists must move together.
+ *
+ * Membership rule: a key belongs here when losing it changes what the block
+ * DOES rather than what it SAYS. `style`/`mobile_styles` qualify because the
+ * inspector is the only place they are authored — an AI batch that has never
+ * seen them cannot re-emit them.
+ */
+export const WIRING_KEYS = Object.freeze([
+  'variant_id',
+  'line_items',
+  'offer_id',
+  'quantity',
+  'product_id',
+  'price_id',
+  'style',
+  'mobile_styles',
+  'block_name',
+]);
+
+/**
+ * The props a `replace_props` op should actually produce.
+ *
+ * `next` wins for every key it SETS — including setting one to null/'' , which
+ * is an explicit clear and is honored. A wiring key the op is simply SILENT
+ * about is carried forward from `prev`. That is the whole floor: an AI batch
+ * can change wiring on purpose, it just cannot drop it by omission.
+ *
+ * Total by construction — `prev`/`next` are whatever was in the JSON.
+ */
+export function mergeReplaceProps(prev, next) {
+  const p = prev && typeof prev === 'object' && !Array.isArray(prev) ? prev : {};
+  const n = next && typeof next === 'object' && !Array.isArray(next) ? next : {};
+  const out = { ...n };
+  for (const k of WIRING_KEYS) {
+    if (Object.prototype.hasOwnProperty.call(n, k)) continue; // explicitly set
+    if (Object.prototype.hasOwnProperty.call(p, k)) out[k] = p[k];
+  }
+  return out;
 }

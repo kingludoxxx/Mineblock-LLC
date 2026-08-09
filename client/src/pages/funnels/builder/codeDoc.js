@@ -557,3 +557,34 @@ export function parseCodeDocs({ htmlDoc, cssDoc, blocks, knownIds, nonce, deps }
 
   return { blocks: nextBlocks, code, stats, notices };
 }
+
+// ---------------------------------------------------------------------------
+// Epoch gate (review BLOCKER #2)
+// ---------------------------------------------------------------------------
+/**
+ * What the Code view must do when the page changed UNDERNEATH its document.
+ *
+ * The document is built once, on mount. A version restore and an applied AI
+ * batch both render outside the Builder|Code tab ternary, so either can replace
+ * the page with this pane open — and neither is visible to a mount-once build.
+ * Saving afterwards wrote the PRE-replacement document straight back over the
+ * change: a silent rollback of the restore, or of the whole AI batch.
+ *
+ * The page bumps `docEpoch` on both events. The response depends only on
+ * whether the operator has typed:
+ *
+ *   'none'    — the epoch has not moved; nothing to do.
+ *   'rebuild' — the page changed and the document is CLEAN. Rebuilding costs
+ *               the operator nothing and shows them the new page.
+ *   'block'   — the page changed and the document is DIRTY. Auto-rebuilding
+ *               would throw their text away; letting Save through would throw
+ *               the page away. Neither is ours to pick, so Save is refused and
+ *               the pane says why.
+ *
+ * Pure so the decision can be tested without a DOM — see
+ * server/tests/builder/code-doc.mjs.
+ */
+export function codeDocEpochAction({ seenEpoch, docEpoch, dirty }) {
+  if (seenEpoch === docEpoch) return 'none';
+  return dirty ? 'block' : 'rebuild';
+}

@@ -169,15 +169,18 @@ function OutlineTab({ blocks, selectedId, onSelect, onReorder, onDelete }) {
   );
 }
 
-export default function LeftPanel({ blocks, selectedId, onSelect, onAdd, onReorder, onDelete }) {
-  const [tab, setTab] = useState('elements');
+// `tab` is OWNED BY THE PAGE, not by this component. The panel is unmounted
+// whenever the AI Developer takes its place in the rail, so local state here
+// meant every AI open/close silently threw the operator back to Elements —
+// losing an Outline they may have been working down block by block.
+export default function LeftPanel({ blocks, selectedId, onSelect, onAdd, onReorder, onDelete, tab, onTab }) {
   return (
     <aside className="w-60 shrink-0 border-r border-border-subtle bg-bg-card flex flex-col min-h-0">
       <div className="flex border-b border-border-subtle shrink-0">
         {[['elements', 'Elements'], ['outline', 'Outline']].map(([v, l]) => (
           <button
             key={v}
-            onClick={() => setTab(v)}
+            onClick={() => onTab(v)}
             className={`flex-1 px-3 py-2 text-xs font-medium border-b-2 -mb-px cursor-pointer transition-colors
               ${tab === v ? 'border-accent text-text-primary' : 'border-transparent text-text-muted hover:text-text-primary'}`}
           >

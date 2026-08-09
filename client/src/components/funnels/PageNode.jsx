@@ -45,13 +45,13 @@ function PageNodeInner({ data, selected }) {
       {selected && (
         <div className="absolute -top-6 left-0 right-0 flex items-center justify-center">
           <div className="flex items-center gap-0.5 px-1 py-0.5 rounded-lg bg-bg-elevated border border-border-default shadow-xl nodrag">
-            <button className={toolbarBtn} title="Settings" onClick={() => data.onSettings?.(page)}>
+            <button className={toolbarBtn} title="Page settings (JSON editor)" onClick={() => data.onSettings?.(page)}>
               <Settings className="w-3.5 h-3.5" />
             </button>
             <button className={toolbarBtn} title="Analytics (soon)" onClick={() => data.onAnalytics?.(page)}>
               <BarChart3 className="w-3.5 h-3.5" />
             </button>
-            <button className={toolbarBtn} title="Edit page" onClick={() => data.onEdit?.(page)}>
+            <button className={toolbarBtn} title="Edit page in the visual builder (or double-click the card)" onClick={() => data.onEdit?.(page)}>
               <Pencil className="w-3.5 h-3.5" />
             </button>
             <button className={toolbarBtn} title="Preview" onClick={() => data.onPreview?.(page)}>

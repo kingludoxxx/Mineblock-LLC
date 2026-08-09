@@ -12,18 +12,25 @@ import { DRAG_MIME } from './LeftPanel';
 
 const QUICK_TYPES = ['heading', 'text', 'button', 'image', 'divider', 'spacer', 'section', 'custom_html'];
 
-function QuickInsert({ index, onInsert, disabled }) {
+// F6. Every click in here STOPS PROPAGATING. The strip sits inside the block
+// list, whose own onClick deselects — so without this, opening the menu blanked
+// the inspector and a freshly inserted block was deselected the instant it
+// appeared (insertAt had just selected it).
+// `alwaysVisible` drops the hover-reveal. Used on an EMPTY page, where there is
+// no block to hover near and this control is the only way to add one.
+function QuickInsert({ index, onInsert, disabled, alwaysVisible = false }) {
   const [open, setOpen] = useState(false);
   return (
     <div
-      className="relative h-2 -my-1 group/qi flex items-center justify-center z-10"
+      className={`relative group/qi flex items-center justify-center z-10 ${alwaysVisible ? 'h-8 mt-2' : 'h-2 -my-1'}`}
       onMouseLeave={() => setOpen(false)}
     >
       <div className="absolute inset-x-0 top-1/2 h-px bg-transparent group-hover/qi:bg-sky-400/60" />
       <button
-        onClick={() => !disabled && setOpen((o) => !o)}
+        onClick={(e) => { e.stopPropagation(); if (!disabled) setOpen((o) => !o); }}
         title={disabled ? 'Block limit reached' : 'Insert block here'}
-        className={`relative opacity-0 group-hover/qi:opacity-100 transition-opacity w-5 h-5 rounded-full
+        className={`relative transition-opacity w-5 h-5 rounded-full
+          ${alwaysVisible ? 'opacity-100' : 'opacity-0 group-hover/qi:opacity-100'}
           bg-sky-500 text-white flex items-center justify-center shadow ${disabled ? 'cursor-not-allowed bg-gray-400' : 'cursor-pointer hover:bg-sky-600'}`}
       >
         <Plus className="w-3 h-3" />
@@ -36,7 +43,7 @@ function QuickInsert({ index, onInsert, disabled }) {
             return (
               <button
                 key={t}
-                onClick={() => { onInsert(index, t); setOpen(false); }}
+                onClick={(e) => { e.stopPropagation(); onInsert(index, t); setOpen(false); }}
                 className="flex items-center gap-1.5 px-2 py-1 rounded-md text-xs text-text-muted hover:text-text-primary hover:bg-bg-hover cursor-pointer"
               >
                 <Icon className="w-3 h-3" /> {def.label}
@@ -91,6 +98,7 @@ export default function CanvasArea({
   deviceWidth,
   atLimit,
   pageCss,
+  paletteAvailable = true,
 }) {
   const [dragId, setDragId] = useState(null);
   const [dropIndex, setDropIndex] = useState(null);
@@ -161,7 +169,13 @@ export default function CanvasArea({
                 className="border-2 border-dashed rounded-xl p-12 text-center text-sm"
                 style={{ borderColor: '#d1d5db', color: '#9ca3af' }}
               >
-                Empty page — drag an element here to start.
+                {/* The drag half of this sentence is only TRUE when the
+                    Elements rail is on screen — it is replaced by the AI
+                    Developer panel, and the prose used to point at a palette
+                    that was not there. */}
+                {paletteAvailable
+                  ? 'Empty page — drag an element here, or use the + below to insert one.'
+                  : 'Empty page — use the + below to insert your first block.'}
               </div>
             )}
             {blocks.map((b, i) => {
@@ -181,9 +195,9 @@ export default function CanvasArea({
                     data-blk-idx={i}
                     // CSS hook, mirrored from the block-name field. `undefined`
                     // omits the attribute entirely so an unnamed block adds no
-                    // selector surface. The PUBLISHED page needs the matching
-                    // one-liner in funnelRender.js blockStyleWrap() — that file
-                    // is integrator-owned, so this is the builder half only.
+                    // selector surface. The PUBLISHED page emits the same
+                    // attribute from funnelRender.js blockStyleWrap(), so a
+                    // [data-blk-name='…'] rule matches in both places.
                     data-blk-name={blockNameAttr(b.props) || undefined}
                     draggable={editingId !== b.id}
                     onDragStart={(e) => {
@@ -244,18 +258,36 @@ export default function CanvasArea({
                         onCancel={() => setEditingId(null)}
                       />
                     ) : (
-                      <BlockPreview block={b} pageCss={pageCss} />
+                      // The preview is a PICTURE of the block, never a working
+                      // copy of it: pointer-events:none makes the whole subtree
+                      // inert so the click always lands on the wrapper above and
+                      // selects. Without it, a preview's own controls swallowed
+                      // the click — the order bump's card is one big <label>, and
+                      // clicking it re-dispatched onto the checkbox instead of
+                      // opening the inspector. Nothing in here is interactive by
+                      // design (the sandboxed <iframe>s are already inert), so
+                      // there is no affordance to lose.
+                      <div style={{ pointerEvents: 'none' }}>
+                        <BlockPreview block={b} pageCss={pageCss} />
+                      </div>
                     )}
                   </div>
                 </div>
               );
             })}
-            {blocks.length > 0 && (
-              <>
-                {dropIndex === blocks.length && <div className="h-0.5 bg-sky-400 rounded-full my-0.5" />}
-                <QuickInsert index={blocks.length} onInsert={onInsertAt} disabled={atLimit} />
-              </>
-            )}
+            {/* UNGATED. This used to be `blocks.length > 0`, so an EMPTY page
+                had no insert control at all — every other QuickInsert renders
+                per block. That was survivable while the Elements rail was
+                always there to drag from; once the AI panel takes the rail's
+                place, an empty page became a dead end with prose telling the
+                operator to drag from a palette that is not on screen. */}
+            {dropIndex === blocks.length && <div className="h-0.5 bg-sky-400 rounded-full my-0.5" />}
+            <QuickInsert
+              index={blocks.length}
+              onInsert={onInsertAt}
+              disabled={atLimit}
+              alwaysVisible={!blocks.length}
+            />
           </div>
         </div>
       </div>

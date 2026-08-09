@@ -12,6 +12,8 @@ import {
   buildOutline, defaultLabel, blockCodeSections, editableCount, safeJson,
   parseInlineMarkup, bumpHeadline, bumpUnconfigured, blockNameAttr,
   isSlugCollision, escapeHtml, displayPrice, bumpNameColor,
+  refusedSaveField, retryFieldsAfterRefusal, mergeReplaceProps, WIRING_KEYS,
+  resyncMeta, metaFromPage, recordRefusal, clearRefusals, META_FIELDS,
   BUMP_DEFAULT_HEADLINE, BUMP_DEFAULT_NAME_COLOR, SERVER_GENERATED_NOTE,
 } from '../../../client/src/pages/funnels/builder/builderModel.js';
 
@@ -293,6 +295,256 @@ eq(isSlugCollision(null), false, 'slug: null → false');
 eq(isSlugCollision(undefined), false, 'slug: undefined → false');
 eq(isSlugCollision(''), false, 'slug: empty → false');
 eq(isSlugCollision({}), false, 'slug: an object → false, never throws');
+
+// ===========================================================================
+// refusedSaveField (F5) — one refused field must not poison the whole batch
+// ===========================================================================
+eq(
+  refusedSaveField('A page with this slug already exists in this funnel'), 'slug',
+  'F5: the page-slug 409 NAMES the slug field, so the engine can hold just that one back'
+);
+eq(
+  refusedSaveField('A funnel with this slug already exists'), null,
+  'F5: the FUNNEL-level refusal names no page field — the whole batch is retried'
+);
+eq(
+  refusedSaveField('blocks exceed the 2MB limit'), null,
+  'F5: a refusal that is not field-scoped returns null, so nothing is silently dropped'
+);
+eq(refusedSaveField(null), null, 'F5: null → null');
+eq(refusedSaveField(undefined), null, 'F5: undefined → null');
+eq(refusedSaveField(''), null, 'F5: empty → null');
+eq(refusedSaveField({}), null, 'F5: an object → null, never throws');
+
+// The retry set is what actually breaks the poisoning loop: everything the
+// refused PATCH carried, minus the field the refusal named.
+{
+  const carried = ['title', 'slug', 'blocks', 'custom_css'];
+  eq(
+    retryFieldsAfterRefusal(carried, 'A page with this slug already exists in this funnel'),
+    ['title', 'blocks', 'custom_css'],
+    'F5: a slug collision re-queues every OTHER field — the title and the blocks still save'
+  );
+  eq(
+    retryFieldsAfterRefusal(carried, 'A page with this slug already exists in this funnel').includes('slug'),
+    false,
+    'F5: the refused field is NOT re-queued, so the next save is not refused for the same reason'
+  );
+  eq(
+    retryFieldsAfterRefusal(carried, 'blocks exceed the 2MB limit'), carried,
+    'F5: a refusal that names no field re-queues the WHOLE batch — nothing is dropped on a guess'
+  );
+  eq(
+    retryFieldsAfterRefusal(['blocks'], 'A page with this slug already exists in this funnel'), ['blocks'],
+    'F5: a batch that never carried the slug is untouched by a slug refusal'
+  );
+  eq(
+    retryFieldsAfterRefusal(['slug'], 'A page with this slug already exists in this funnel'), [],
+    'F5: a slug-only batch retries nothing — the operator edits the field to re-arm it'
+  );
+  eq(retryFieldsAfterRefusal([], 'anything'), [], 'F5: empty in, empty out');
+  eq(retryFieldsAfterRefusal(null, 'anything'), [], 'F5: a non-array → [], never throws');
+  eq(
+    retryFieldsAfterRefusal(carried, null), carried,
+    'F5: a null error (network abort) re-queues everything — an unread refusal is not a named one'
+  );
+}
+
+// ===========================================================================
+// resyncMeta — THE PHANTOM SLUG (F5-b)
+//
+// The gating defect the F5 fix introduced. Holding the refused field out of
+// the dirty set stops the poisoning, but the refused VALUE stayed in `meta`,
+// which is what the slug box renders — so the box showed a slug that existed
+// nowhere but the browser, and the next successful save of anything else
+// cleared the banner. Chip: "Saved". Box: a slug the server never accepted.
+// ===========================================================================
+{
+  // The exact sequence: operator typed /checkout, server refused it, page is
+  // still at /checkout-2, and a LATER save of the blocks succeeds.
+  const afterRefusal = { title: 'Checkout', slug: '/checkout', status: 'draft' };
+  const serverPage = { title: 'Checkout', slug: '/checkout-2', status: 'draft' };
+  const next = resyncMeta(afterRefusal, serverPage, new Set(['blocks']));
+  eq(next.slug, '/checkout-2', 'F5-b: the refused slug is replaced by the one the server actually holds');
+  eq(next.title, 'Checkout', 'F5-b: untouched fields are left alone');
+}
+{
+  // The re-sync must NOT eat keystrokes typed while the PATCH was in flight.
+  const current = { title: 'New title', slug: '/a', status: 'draft' };
+  const serverPage = { title: 'Old title', slug: '/a', status: 'draft' };
+  const next = resyncMeta(current, serverPage, new Set(['title']));
+  eq(next.title, 'New title', 'F5-b: a field STILL DIRTY belongs to the operator and is not overwritten');
+}
+{
+  // Identity when nothing moved, so React bails out of the re-render.
+  const current = { title: 't', slug: '/a', status: 'draft' };
+  ok(
+    resyncMeta(current, { title: 't', slug: '/a', status: 'draft' }, new Set()) === current,
+    'F5-b: an unchanged re-sync returns the SAME object (no render churn)'
+  );
+  ok(
+    resyncMeta(current, null, new Set()) === current,
+    'F5-b: a response with no page is not authority to overwrite anything'
+  );
+  ok(
+    resyncMeta(current, undefined, []) === current,
+    'F5-b: undefined page → identity, never throws'
+  );
+}
+{
+  // Status rides the same path — this is what makes the publish flip honest.
+  const next = resyncMeta({ title: '', slug: '/', status: 'draft' }, { status: 'published' }, []);
+  eq(next.status, 'published', 'F5-b: status is re-synced from the response too');
+  eq(next.slug, '/', 'F5-b: an absent slug on the row reads as "/", matching load()');
+  eq(next.title, '', 'F5-b: an absent title reads as "", matching load()');
+}
+eq(
+  metaFromPage(null), { title: '', slug: '/', status: 'draft' },
+  'F5-b: metaFromPage(null) is the same default load() uses, never throws'
+);
+eq([...META_FIELDS], ['title', 'slug', 'status'], 'F5-b: the re-synced field set is exactly the meta bag');
+ok(Object.isFrozen(META_FIELDS), 'F5-b: the field list is frozen');
+
+// ===========================================================================
+// recordRefusal / clearRefusals — STICKINESS (F5-b)
+//
+// The banner rides on `saveError`, which the next successful save clears. A
+// refusal whose field is no longer queued would vanish while its cause was
+// unresolved, so it is kept per-FIELD until a write actually carries it.
+// ===========================================================================
+{
+  const msg = 'A page with this slug already exists in this funnel';
+  const r1 = recordRefusal({}, msg, { slug: '/checkout', blocks: [] });
+  eq(r1.slug.value, '/checkout', 'F5-b: the refusal remembers the value that was REJECTED, not the live one');
+  eq(r1.slug.message, msg, 'F5-b: the refusal keeps the server message verbatim');
+
+  // A save of something ELSE must not clear it — that is the whole point.
+  const r2 = clearRefusals(r1, ['blocks', 'title']);
+  ok(r2.slug, 'F5-b: a successful save of OTHER fields leaves the slug refusal standing');
+  ok(r2 === r1, 'F5-b: …and returns the same object, so nothing re-renders');
+
+  // A save that CARRIES the slug clears it.
+  const r3 = clearRefusals(r1, ['slug', 'blocks']);
+  eq(Object.keys(r3), [], 'F5-b: a write that carries the slug clears its refusal');
+}
+{
+  const msg = 'A page with this slug already exists in this funnel';
+  // A second collision replaces the record rather than stacking.
+  const r1 = recordRefusal({}, msg, { slug: '/a' });
+  const r2 = recordRefusal(r1, msg, { slug: '/b' });
+  eq(r2.slug.value, '/b', 'F5-b: a fresh collision replaces the remembered value');
+  eq(Object.keys(r2).length, 1, 'F5-b: refusals key by field, they do not stack');
+}
+{
+  // A refusal that names NO field records nothing — there is no box to flag.
+  const r = recordRefusal({}, 'blocks exceed the 2MB limit', { blocks: [] });
+  eq(Object.keys(r), [], 'F5-b: an unscoped refusal records no field marker');
+  ok(recordRefusal({}, null, null) !== undefined, 'F5-b: null error / null payload → {}, never throws');
+  eq(clearRefusals(null, ['slug']), {}, 'F5-b: a null map → {}, never throws');
+  eq(clearRefusals({ slug: { message: 'x' } }, null), { slug: { message: 'x' } }, 'F5-b: a non-array field list is a no-op');
+}
+{
+  // END-TO-END of the reported defect, as state transitions.
+  const msg = 'A page with this slug already exists in this funnel';
+  let meta = { title: 'T', slug: '/taken', status: 'draft' };   // operator typed it
+  let refusals = {};
+  // 1. the PATCH carrying title+slug is refused
+  refusals = recordRefusal(refusals, msg, { title: 'T', slug: '/taken' });
+  const retry = retryFieldsAfterRefusal(['title', 'slug'], msg);
+  eq(retry, ['title'], 'end-to-end: the slug is held back, the title still retries');
+  // 2. a later save of blocks succeeds and the response carries the real page
+  meta = resyncMeta(meta, { title: 'T', slug: '/live', status: 'draft' }, new Set());
+  refusals = clearRefusals(refusals, ['blocks']);
+  eq(meta.slug, '/live', 'end-to-end: the box now shows the slug the SERVER holds');
+  ok(refusals.slug, 'end-to-end: …and the refusal is STILL on screen saying /taken was rejected');
+  eq(refusals.slug.value, '/taken', 'end-to-end: naming the value the operator tried');
+}
+
+// ===========================================================================
+// mergeReplaceProps (F4) — the AI wiring floor
+//
+// replace_props is a WHOLESALE overwrite. The floor is what stops an AI batch
+// that re-emits a checkout block's copy from deleting the wiring that makes it
+// charge. Client half; routes/aiDeveloper.js mirrors it.
+// ===========================================================================
+{
+  const prev = {
+    headline: 'Old', variant_id: '4455', line_items: [{ id: 1 }], offer_id: 'of_1',
+    quantity: 2, style: { color: 'red' }, mobile_styles: { fontSize: '12px' },
+    block_name: 'bump_a', product_id: 'p1', price_id: 'pr1',
+  };
+  const merged = mergeReplaceProps(prev, { headline: 'New' });
+  eq(merged.headline, 'New', 'F4: the op WINS for the key it sets');
+  eq(merged.variant_id, '4455', 'F4: variant_id survives an op that never mentions it');
+  eq(merged.line_items, [{ id: 1 }], 'F4: line_items survives');
+  eq(merged.offer_id, 'of_1', 'F4: offer_id survives');
+  eq(merged.quantity, 2, 'F4: quantity survives');
+  eq(merged.product_id, 'p1', 'F4: product_id survives');
+  eq(merged.price_id, 'pr1', 'F4: price_id survives');
+  eq(merged.style, { color: 'red' }, 'F4: the base style bag survives');
+  eq(merged.mobile_styles, { fontSize: '12px' }, 'F4: the mobile override bag survives');
+  eq(merged.block_name, 'bump_a', 'F4: the CSS hook / label survives');
+}
+
+{
+  // NON-wiring props are NOT carried forward — replace_props stays a replace
+  // for copy, which is the whole point of the op.
+  const merged = mergeReplaceProps({ headline: 'Old', subtext: 'gone' }, { headline: 'New' });
+  eq(merged.subtext, undefined, 'F4: a NON-wiring prop the op omits is dropped — this is still a replace');
+  eq(Object.keys(merged).sort(), ['headline'], 'F4: nothing is invented when prev has no wiring');
+}
+
+{
+  // An EXPLICIT set wins, including an explicit clear. Changing wiring on
+  // purpose is legal; losing it by omission is not.
+  eq(
+    mergeReplaceProps({ variant_id: '1' }, { variant_id: '2' }).variant_id, '2',
+    'F4: an op that SETS a wiring key overrides the carry-forward'
+  );
+  eq(
+    mergeReplaceProps({ variant_id: '1' }, { variant_id: null }).variant_id, null,
+    'F4: an EXPLICIT null is an intentional clear and is honored'
+  );
+  eq(
+    mergeReplaceProps({ variant_id: '1' }, { variant_id: '' }).variant_id, '',
+    'F4: an EXPLICIT empty string is honored too (the server reads it as unwired)'
+  );
+  eq(
+    Object.prototype.hasOwnProperty.call(
+      mergeReplaceProps({ variant_id: '1' }, { variant_id: undefined }), 'variant_id'
+    ),
+    true,
+    'F4: an explicit undefined is still an own key, so it is NOT overwritten by the carry-forward'
+  );
+}
+
+{
+  // Totality — props are whatever was in the JSON.
+  eq(mergeReplaceProps(null, null), {}, 'F4: null/null → {}, never throws');
+  eq(mergeReplaceProps(undefined, { a: 1 }), { a: 1 }, 'F4: absent prev → the op verbatim');
+  eq(mergeReplaceProps({ variant_id: '9' }, null), { variant_id: '9' }, 'F4: absent next → the wiring floor alone');
+  eq(mergeReplaceProps([1, 2], [3]), {}, 'F4: arrays are not prop bags → {}');
+  eq(mergeReplaceProps('x', 'y'), {}, 'F4: strings are not prop bags → {}');
+}
+
+{
+  // The floor must not MUTATE either input — applyOpsNow maps over the live
+  // blocks array and a mutation there would corrupt the undo stack.
+  const prev = { variant_id: '1' };
+  const next = { headline: 'a' };
+  mergeReplaceProps(prev, next);
+  eq(prev, { variant_id: '1' }, 'F4: prev is not mutated');
+  eq(next, { headline: 'a' }, 'F4: next is not mutated');
+}
+
+ok(
+  WIRING_KEYS.includes('variant_id') && WIRING_KEYS.includes('line_items')
+  && WIRING_KEYS.includes('offer_id') && WIRING_KEYS.includes('quantity')
+  && WIRING_KEYS.includes('style') && WIRING_KEYS.includes('mobile_styles')
+  && WIRING_KEYS.includes('block_name'),
+  'F4: every key the review named is on the floor'
+);
+ok(Object.isFrozen(WIRING_KEYS), 'F4: the floor is frozen — a caller cannot widen it at runtime');
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

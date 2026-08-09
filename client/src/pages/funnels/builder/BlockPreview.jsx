@@ -60,7 +60,12 @@ function HtmlChip({ label = 'Raw HTML — sandboxed preview' }) {
   );
 }
 
-function MediaPlaceholder({ icon: Icon, label }) {
+// `icon` is bound to a local rather than renamed in the destructure:
+// no-unused-vars applies argsIgnorePattern (not varsIgnorePattern) to a
+// renamed param, so `icon: Icon` reads as an unused ARG even though the JSX
+// below uses it.
+function MediaPlaceholder({ icon, label }) {
+  const Icon = icon;
   return (
     <div
       style={{

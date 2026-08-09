@@ -17,6 +17,9 @@ import Button from '../../../components/ui/Button';
 import { typeMeta } from '../../../components/funnels/pageTypes';
 import useHistory from './useHistory';
 import { createBlock, withIds, newBlockId, isInsertable, BLOCKS_MAX_COUNT } from './blockRegistry';
+import {
+  mergeReplaceProps, retryFieldsAfterRefusal, resyncMeta, recordRefusal, clearRefusals,
+} from './builderModel';
 import LeftPanel from './LeftPanel';
 import RightPanel from './RightPanel';
 import CanvasArea from './CanvasArea';
@@ -38,10 +41,23 @@ const DEVICES = [
 // Escape-hatch code columns the Code view round-trips. Same set the server's
 // ESCAPE_HATCH_FIELDS accepts on the pages PATCH.
 const CODE_FIELDS = ['custom_css', 'custom_js', 'custom_html', 'head_html', 'body_end_html'];
+
+// One wording for every way out of this page — the back arrow and the
+// AppLayout sidebar links both ask it.
+const LEAVE_PROMPT = 'This page has unsaved changes. Leave without saving them?';
 const emptyCode = () => Object.fromEntries(CODE_FIELDS.map((f) => [f, '']));
 const codeFromPage = (p) => Object.fromEntries(CODE_FIELDS.map((f) => [f, p?.[f] || '']));
 
 const SAVE_DEBOUNCE_MS = 800;
+
+// The settle outcome of a write that a restore threw away. Not `ok` — the page
+// this write described has been replaced, so a caller must not re-baseline off
+// it — but not a server refusal either, so the banner stays quiet.
+const SUPERSEDED = Object.freeze({
+  ok: false,
+  superseded: true,
+  error: 'A version restore replaced this page while the save was in flight',
+});
 
 // Auto-snapshot rate limit. A burst of AI batches must cost ONE version, not
 // one per batch — the retention window is 30 rows, and a chatty session would
@@ -71,6 +87,10 @@ export default function PageBuilderPage() {
   const [saveState, setSaveState] = useState('idle'); // idle | saving | saved | error
   const [saveError, setSaveError] = useState(null);
   const [publishing, setPublishing] = useState(false);
+  const [previewing, setPreviewing] = useState(false);
+  // Elements|Outline lives HERE because the panel that renders it is unmounted
+  // whenever the AI Developer takes the rail (see LeftPanel).
+  const [railTab, setRailTab] = useState('elements');
   const [aiOpen, setAiOpen] = useState(false);
   const [versionsOpen, setVersionsOpen] = useState(false);
   const [scanOpen, setScanOpen] = useState(false);
@@ -78,6 +98,27 @@ export default function PageBuilderPage() {
   // path must read the newest value without waiting for a render), so the
   // "Save changes" chip needs its own reactive copy.
   const [hasPending, setHasPending] = useState(false);
+  // R-BLOCKER-2. Bumped every time the page is REPLACED underneath an open
+  // Code document — a version restore or an AI batch. CodeTab builds its
+  // document once and cannot see either event, so a "Save code" taken
+  // afterwards used to write the PRE-restore page back over the restore. The
+  // epoch is the signal it needs: rebuild if the operator has typed nothing,
+  // hard-block Save if they have.
+  const [docEpoch, setDocEpoch] = useState(0);
+  // Whether the Code document has unsaved text. Owned by CodeTab, mirrored
+  // here so the tab switch (which UNMOUNTS it) can confirm first.
+  const codeDirtyRef = useRef(false);
+  // STICKY per-field refusals: { slug: { message, value } }. Outlives the
+  // transient `saveError` banner, because a refused field is held out of the
+  // dirty set and would otherwise leave no trace on screen once an unrelated
+  // save succeeded (F5-b).
+  const [fieldRefusals, setFieldRefusals] = useState({});
+  // Remounts the inspector's prop editors, discarding uncommitted drafts. An
+  // AI batch that rewrites the SELECTED block would otherwise leave a
+  // half-typed JsonField alive, and its blur would commit stale text straight
+  // over the batch (F13-edge).
+  const [propsEpoch, setPropsEpoch] = useState(0);
+  const selectedIdRef = useRef(null);
 
   // ---- refs so the debounced flush always sends the LATEST state -----------
   const blocksRef = useRef(blocks);
@@ -86,6 +127,7 @@ export default function PageBuilderPage() {
   useEffect(() => { blocksRef.current = blocks; }, [blocks]);
   useEffect(() => { metaRef.current = meta; }, [meta]);
   useEffect(() => { codeRef.current = code; }, [code]);
+  useEffect(() => { selectedIdRef.current = selectedId; }, [selectedId]);
 
   const dirtyRef = useRef(new Set());
   const timerRef = useRef(null);
@@ -133,9 +175,19 @@ export default function PageBuilderPage() {
   useEffect(() => { load(); }, [load]);
 
   // ---- autosave engine ------------------------------------------------------
+  // Returns the SETTLE OUTCOME of this one write: { ok, error }. Callers used
+  // to infer it from `dirtyRef.current.size` after the flush, which is a
+  // reading of the whole editor rather than of their own write — an AI batch
+  // landing mid-flush re-dirtied 'blocks' and made a successful code save
+  // report "the server refused this document".
   const writeOnce = useCallback(async () => {
     const keys = Array.from(dirtyRef.current);
-    if (!keys.length) return;
+    if (!keys.length) {
+      // Nothing of ours left to send. A FAILED write re-dirties its fields, so
+      // an empty set here means an earlier flush already carried them and
+      // succeeded — report that rather than inventing a refusal.
+      return { ok: true, error: null, skipped: true };
+    }
     dirtyRef.current = new Set();
     setHasPending(false);
 
@@ -158,23 +210,56 @@ export default function PageBuilderPage() {
       const res = await api.patch(`/funnels/${id}/pages/${pageId}`, payload, {
         signal: controller.signal,
       });
-      if (restoreEpochRef.current !== epoch) return; // superseded — drop it
-      setPage(res.data?.data || null);
+      if (restoreEpochRef.current !== epoch) return SUPERSEDED; // dropped
+      const saved = res.data?.data || null;
+      setPage(saved);
+      // F5-b. RE-SYNC the meta fields from what the server now holds.
+      //
+      // A field the server REFUSED is dropped from the dirty set (so one taken
+      // slug cannot poison every later save) — but it stayed in `meta`, which
+      // is what the slug box renders. The box then showed a value that exists
+      // NOWHERE but this browser, and the next successful save of anything
+      // else cleared the banner, so the chip read "Saved" over a slug the
+      // server had never accepted. Silent editor/server divergence.
+      //
+      // A field dirtied AGAIN since this PATCH went out belongs to the
+      // operator, not the server: skipping those is what stops the re-sync
+      // from eating keystrokes typed while the request was in flight.
+      setMeta((m) => resyncMeta(m, saved, dirtyRef.current));
+      // This write CARRIED these fields and the server took them, so any
+      // sticky refusal recorded against them is now historical.
+      setFieldRefusals((r) => clearRefusals(r, keys));
       setSaveState('saved');
       setSaveError(null);
       lastSaveErrorRef.current = null;
+      return { ok: true, error: null };
     } catch (err) {
       // A save abandoned by a restore is not a failure to report, and its
       // fields must NOT be re-dirtied: they describe the pre-restore page.
-      if (restoreEpochRef.current !== epoch) return;
+      if (restoreEpochRef.current !== epoch) return SUPERSEDED;
+      const msg = err.response?.data?.error || err.message || 'Save failed';
       // Re-mark the failed fields dirty so the next edit (or Retry) resends
       // them — a rejected save must never silently drop edits or wedge.
-      for (const k of keys) dirtyRef.current.add(k);
-      setHasPending(true);
+      //
+      // F5. EXCEPT the field the refusal NAMES. One PATCH carries every dirty
+      // field, so re-dirtying the whole batch made a single slug collision
+      // ride along on every later save and refuse those too — one taken slug
+      // poisoned the rest of the session. The named field is held back
+      // instead; editing it again re-arms it (onMeta → scheduleSave).
+      for (const k of retryFieldsAfterRefusal(keys, msg)) dirtyRef.current.add(k);
+      setHasPending(dirtyRef.current.size > 0);
+      // …and record the refusal AGAINST THE FIELD. The top-bar banner rides on
+      // `saveError`, which the next successful save clears — so a refusal whose
+      // field is no longer queued would vanish from the screen while its cause
+      // was still unresolved. A per-field record outlives that: it is cleared
+      // only when a write actually carries the field, or when a restore
+      // replaces the page. It also remembers the value that was rejected, so
+      // the inspector can name it next to the box it came from.
+      setFieldRefusals((r) => recordRefusal(r, msg, payload));
       setSaveState('error');
-      const msg = err.response?.data?.error || err.message || 'Save failed';
       lastSaveErrorRef.current = msg;
       setSaveError(msg);
+      return { ok: false, error: msg };
     } finally {
       if (abortRef.current === controller) abortRef.current = null;
     }
@@ -182,13 +267,14 @@ export default function PageBuilderPage() {
 
   // Serialized, and awaitable to the TRUE settle. A caller that awaits this
   // has its edits on disk (or has seen them fail), which is the contract
-  // autoSnapshot depends on.
+  // autoSnapshot depends on. Resolves to writeOnce's outcome — never rejects.
   const flush = useCallback(async () => {
     const run = (flushChainRef.current || Promise.resolve())
       .catch(() => {})
-      .then(() => writeOnce());
+      .then(() => writeOnce())
+      .catch((err) => ({ ok: false, error: err?.message || 'Save failed' }));
     flushChainRef.current = run;
-    await run;
+    return run;
   }, [writeOnce]);
 
   const scheduleSave = useCallback((...fields) => {
@@ -265,9 +351,10 @@ export default function PageBuilderPage() {
 
   // ---- AI Developer ---------------------------------------------------------
   // Applies Claude's validated ops through the SAME history commit user edits
-  // use (one undo step per batch). DRAFT SEMANTICS: we mark 'blocks' dirty but
-  // do NOT start the autosave timer — the AI change persists only when the
-  // operator publishes (flush) or makes a normal edit that autosaves.
+  // use (one undo step per batch) AND the same debounced autosave. It used to
+  // be draft-only — dirty but with no timer armed — which read as "Saved" in
+  // the chip and was lost on navigation. The rollback story is the version
+  // snapshot taken below plus undo, not a save the editor never takes.
   // Best-effort version snapshot. Never throws, never blocks an edit.
   //
   // The slot is CLAIMED BEFORE the await: two AI batches fired back to back
@@ -307,7 +394,14 @@ export default function PageBuilderPage() {
       for (const op of ops) {
         const idx = next.findIndex((b) => b.id === op.block_id);
         if (op.op === 'replace_props') {
-          if (idx !== -1) next[idx] = { ...next[idx], props: op.props };
+          // F4. replace_props is a WHOLESALE overwrite. A batch that re-emits
+          // a checkout block's copy without re-emitting its variant_id drops
+          // the wiring and the block silently stops charging. mergeReplaceProps
+          // carries the wiring floor forward unless the op sets it on purpose.
+          // Mirrored server-side in routes/aiDeveloper.js.
+          if (idx !== -1) {
+            next[idx] = { ...next[idx], props: mergeReplaceProps(next[idx].props, op.props) };
+          }
         } else if (op.op === 'remove_block') {
           if (idx !== -1) next.splice(idx, 1);
         } else if (op.op === 'move_block') {
@@ -323,8 +417,25 @@ export default function PageBuilderPage() {
       }
       return next;
     }, `ai_${Date.now()}`);
-    dirtyRef.current.add('blocks'); // picked up by the next Save / Publish
-  }, [commit]);
+    // R-BLOCKER-1. Marking the ref dirty WITHOUT arming the debounce left the
+    // chip reading "Saved", the Save button disabled and the beforeunload
+    // guard asleep — an operator who navigated away lost the whole batch while
+    // being told nothing was outstanding. An AI batch is an edit: it goes
+    // through the same scheduleSave every other edit uses.
+    scheduleSave('blocks');
+    // R-BLOCKER-2. The page the Code document was built from no longer exists.
+    setDocEpoch((e) => e + 1);
+    // F13-edge. If the batch rewrote the block the inspector is showing, any
+    // half-typed prop editor in there is now describing the PREVIOUS props —
+    // and JsonField commits on blur, so clicking away would write that stale
+    // text straight over the AI's change. Remount the editors for that block
+    // so uncommitted drafts go with them. Scoped to the blocks the batch
+    // actually touched: an unrelated edit must not interrupt typing.
+    const touched = new Set(ops.map((op) => op.block_id).filter(Boolean));
+    if (selectedIdRef.current && touched.has(selectedIdRef.current)) {
+      setPropsEpoch((e) => e + 1);
+    }
+  }, [commit, scheduleSave]);
 
   // Declared AFTER applyOpsNow so the dependency is real rather than a
   // forward reference the linter has to be told to ignore.
@@ -358,11 +469,18 @@ export default function PageBuilderPage() {
     if (timerRef.current) clearTimeout(timerRef.current);
     timerRef.current = null;
     dirtyRef.current = new Set();
+    setHasPending(false);
     restoreEpochRef.current += 1;
     if (abortRef.current) {
       abortRef.current.abort();
       abortRef.current = null;
     }
+    // A restore replaces every meta field, so a refusal recorded against one
+    // of them describes a page that no longer exists.
+    setFieldRefusals({});
+    // R-BLOCKER-2. Tell an open Code document its page is gone. Unconditional,
+    // including the no-page branch: the document is stale either way.
+    setDocEpoch((e) => e + 1);
     if (!p) {
       setSaveState('error');
       setSaveError('Restored, but the updated page did not come back — reload to see it.');
@@ -445,41 +563,132 @@ export default function PageBuilderPage() {
     setHasPending(true);
     if (timerRef.current) clearTimeout(timerRef.current);
     lastSaveErrorRef.current = null;
-    await flush();
-    // writeOnce swallows its error (the banner owns it) and re-dirties the
-    // failed fields. A non-empty dirty set after the settle therefore means
-    // the server REFUSED — rethrow so the Code view keeps the operator's text
-    // and shows the refusal instead of reporting a save that did not happen.
-    if (dirtyRef.current.size) {
-      throw new Error(lastSaveErrorRef.current || 'The server refused this document');
+    // F7. Keyed on THIS write's settle outcome, not on `dirtyRef.size` after
+    // the flush. The old test read the whole editor: an AI batch (or any edit)
+    // landing while the PATCH was in flight left 'blocks' dirty again and the
+    // Code view reported "the server refused this document" for a save that
+    // had in fact succeeded — sending the operator to undo work that was fine.
+    const outcome = await flush();
+    if (!outcome.ok) {
+      throw new Error(outcome.error || 'The server refused this document');
     }
   }, [commit, flush]);
 
   // ---- preview / publish ----------------------------------------------------
+  // F8. The preview route renders the SAVED page. Opening it without flushing
+  // showed the operator the last autosave rather than what is on screen — they
+  // tested a page that no longer existed and, worse, read a still-broken
+  // preview as proof their fix had not worked.
+  // `previewing` is not decoration: the flush plus the preview-url round-trip
+  // is long enough to click twice, and the second click used to fire a second
+  // flush and open a SECOND tab.
   const openPreview = useCallback(async () => {
+    if (previewing) return;
+    setPreviewing(true);
     try {
+      if (timerRef.current) clearTimeout(timerRef.current);
+      const outcome = await flush();
+      if (!outcome.ok) {
+        setSaveState('error');
+        setSaveError(`${outcome.error} — preview not opened, it would show the last saved version.`);
+        return;
+      }
       const res = await api.get(`/funnels/${id}/pages/${pageId}/preview-url`);
       const { path, preview: isPreview } = res.data?.data || {};
       if (path) window.open(isPreview ? `${path}?preview=1` : path, '_blank', 'noopener');
     } catch {
       setSaveState('error');
       setSaveError('Failed to build preview URL');
+    } finally {
+      setPreviewing(false);
     }
-  }, [id, pageId]);
+  }, [id, pageId, flush, previewing]);
 
+  // F14. The visible status flips only AFTER the write settles. Setting it up
+  // front reported a published page while the PATCH could still be refused —
+  // the operator walked away from a draft believing it was live.
   const republish = useCallback(async () => {
     setPublishing(true);
+    const previousStatus = metaRef.current.status;
     try {
       // Persist anything pending first so what publishes is what's on screen.
       if (timerRef.current) clearTimeout(timerRef.current);
       dirtyRef.current.add('status');
+      // The REF moves now because flush() reads refs, not state — but the
+      // rendered status does not follow until the server agrees.
       metaRef.current = { ...metaRef.current, status: 'published' };
-      setMeta((m) => ({ ...m, status: 'published' }));
       // Send everything that might be dirty in one PATCH.
-      await flush();
+      const outcome = await flush();
+      if (outcome.ok) {
+        setMeta((m) => ({ ...m, status: 'published' }));
+        return;
+      }
+      // Failed: put the ref back and drop the status field, so the next
+      // autosave does not quietly re-attempt a publish the operator was told
+      // did not happen. The banner already carries the server's message.
+      metaRef.current = { ...metaRef.current, status: previousStatus };
+      dirtyRef.current.delete('status');
+      setHasPending(dirtyRef.current.size > 0);
+      setSaveState('error');
+      setSaveError(`Publish failed — this page is still ${previousStatus}. ${outcome.error}`);
     } finally {
       setPublishing(false);
     }
+  }, [flush]);
+
+  // ---- leaving with unsaved work --------------------------------------------
+  // R-BLOCKER-1's other half. The debounce means there is always a window where
+  // the browser holds edits the server has not seen; closing the tab in it used
+  // to lose them silently.
+  useEffect(() => {
+    if (!hasPending) return undefined;
+    const onBeforeUnload = (e) => { e.preventDefault(); e.returnValue = ''; };
+    window.addEventListener('beforeunload', onBeforeUnload);
+    return () => window.removeEventListener('beforeunload', onBeforeUnload);
+  }, [hasPending]);
+
+  // In-app route guard. beforeunload does not fire on a client-side navigation,
+  // and "Flow" is one click away from the Save chip.
+  const leaveBuilder = useCallback(() => {
+    if (hasPending && !window.confirm(LEAVE_PROMPT)) return;
+    navigate(`/app/funnels/${id}`);
+  }, [hasPending, navigate, id]);
+
+  // …and the SAME guard for every other in-app link, which is most of them:
+  // the AppLayout sidebar stays mounted over this page, so Dashboard / Funnels
+  // / Costs were all one silent click away from dropping pending edits.
+  //
+  // react-router's useBlocker is the right tool and is NOT available here: it
+  // requires a data router, and this app mounts a plain <BrowserRouter>.
+  // Rather than migrate the whole app's routing for one guard, this intercepts
+  // the click in the CAPTURE phase — before React's root listener hands it to
+  // the Link — and stops it there when the operator says no.
+  useEffect(() => {
+    if (!hasPending) return undefined;
+    const onCaptureClick = (e) => {
+      // Modified clicks and middle-clicks open a new tab: this editor stays
+      // mounted and nothing is at risk, so they are none of our business.
+      if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+      const anchor = e.target instanceof Element ? e.target.closest('a[href]') : null;
+      if (!anchor) return;
+      const href = anchor.getAttribute('href');
+      // In-app, same-tab, and actually going somewhere else.
+      if (!href || !href.startsWith('/')) return;
+      if (anchor.target && anchor.target !== '_self') return;
+      if (href === window.location.pathname) return;
+      if (window.confirm(LEAVE_PROMPT)) return;
+      e.preventDefault();
+      e.stopPropagation();
+    };
+    document.addEventListener('click', onCaptureClick, true);
+    return () => document.removeEventListener('click', onCaptureClick, true);
+  }, [hasPending]);
+
+  // Flushes before a restore so the server snapshots what the operator can SEE.
+  // Handed to the drawer, which refuses to restore when this fails (F9).
+  const flushBeforeRestore = useCallback(async () => {
+    if (timerRef.current) clearTimeout(timerRef.current);
+    return flush();
   }, [flush]);
 
   // ---- derived --------------------------------------------------------------
@@ -519,7 +728,7 @@ export default function PageBuilderPage() {
       {/* ---------------- Top bar ---------------- */}
       <div className="flex items-center gap-3 px-4 py-2 border-b border-border-subtle bg-bg-card shrink-0 flex-wrap">
         <button
-          onClick={() => navigate(`/app/funnels/${id}`)}
+          onClick={leaveBuilder}
           className="flex items-center gap-1.5 text-sm text-text-muted hover:text-text-primary cursor-pointer shrink-0"
           title="Back to the flow canvas"
         >
@@ -539,12 +748,21 @@ export default function PageBuilderPage() {
           </span>
         </div>
 
-        {/* Builder | Code tabs */}
+        {/* Builder | Code tabs.
+            F3. Switching AWAY from Code unmounts CodeTab and takes its document
+            with it. The Refresh button inside the pane has always confirmed
+            before discarding; the tab switch threw the same text away in
+            silence. Same question, same place. */}
         <div className="flex rounded-lg border border-border-default overflow-hidden ml-2">
           {[['builder', 'Builder'], ['code', 'Code']].map(([v, l]) => (
             <button
               key={v}
-              onClick={() => setTab(v)}
+              onClick={() => {
+                if (tab === 'code' && v !== 'code' && codeDirtyRef.current
+                  && !window.confirm('The Code tab has unsaved edits. Leaving discards them. Continue?')) return;
+                if (v !== 'code') codeDirtyRef.current = false;
+                setTab(v);
+              }}
               className={`px-3 py-1 text-xs font-medium cursor-pointer transition-colors
                 ${tab === v ? 'bg-accent/15 text-accent' : 'text-text-muted hover:text-text-primary'}`}
             >
@@ -625,9 +843,13 @@ export default function PageBuilderPage() {
           <ScanLine className="w-3.5 h-3.5" /> Scan
         </button>
 
-        {/* Version history */}
+        {/* Version history.
+            F10. Versions and AI Developer are MUTUALLY EXCLUSIVE. Both are
+            fixed-width shrink-0 panels; with the 240px outline and the 288px
+            inspector already pinned, having both open crushed the flex-1 canvas
+            to nothing on a laptop screen. */}
         <button
-          onClick={() => setVersionsOpen((o) => !o)}
+          onClick={() => setVersionsOpen((o) => { if (!o) setAiOpen(false); return !o; })}
           title="Version history — snapshot, preview and restore this page"
           className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium cursor-pointer transition-colors border
             ${versionsOpen
@@ -637,9 +859,9 @@ export default function PageBuilderPage() {
           <History className="w-3.5 h-3.5" /> Versions
         </button>
 
-        {/* AI Developer — toggles the Claude chat panel */}
+        {/* AI Developer — toggles the Claude chat panel (F10: closes Versions) */}
         <button
-          onClick={() => setAiOpen((o) => !o)}
+          onClick={() => setAiOpen((o) => { if (!o) setVersionsOpen(false); return !o; })}
           title="AI Developer — describe a change, Claude writes the code"
           className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold cursor-pointer transition-colors
             ${aiOpen ? 'bg-emerald-500 text-white' : 'bg-emerald-600/80 hover:bg-emerald-600 text-white'}`}
@@ -647,7 +869,13 @@ export default function PageBuilderPage() {
           <Bot className="w-3.5 h-3.5" /> AI Developer
         </button>
 
-        <Button variant="secondary" size="sm" onClick={openPreview}>
+        <Button
+          variant="secondary"
+          size="sm"
+          onClick={openPreview}
+          loading={previewing}
+          title="Save everything pending, then open this page in a new tab"
+        >
           <ExternalLink className="w-3.5 h-3.5" /> Preview
         </Button>
         <Button size="sm" onClick={republish} loading={publishing} title="Set this page's status to published and save everything pending">
@@ -669,16 +897,37 @@ export default function PageBuilderPage() {
 
       {/* ---------------- Body ---------------- */}
       <div className="flex flex-1 min-h-0">
+        {/* AI Developer docks on the LEFT, ahead of everything else in the flex
+            row — the reference tool's layout, canvas to its right. It takes the
+            left rail's PLACE rather than sitting beside it: 240 (outline) + 380
+            (panel) + 288 (inspector) is 908px of fixed rail, which leaves a
+            1280px window a 372px canvas. The outline is one click away again
+            when the panel is closed. */}
+        {aiOpen && (
+          <AIDeveloperPanel
+            funnelId={id}
+            pageId={pageId}
+            blocks={blocks}
+            selectedBlock={selectedBlock}
+            selectedIndex={blocks.findIndex((b) => b.id === selectedId)}
+            onApplyOps={applyAiOps}
+            onClose={() => setAiOpen(false)}
+          />
+        )}
         {tab === 'builder' ? (
           <>
-            <LeftPanel
-              blocks={blocks}
-              selectedId={selectedId}
-              onSelect={setSelectedId}
-              onAdd={appendBlock}
-              onReorder={moveBlock}
-              onDelete={deleteBlock}
-            />
+            {!aiOpen && (
+              <LeftPanel
+                blocks={blocks}
+                selectedId={selectedId}
+                onSelect={setSelectedId}
+                onAdd={appendBlock}
+                onReorder={moveBlock}
+                onDelete={deleteBlock}
+                tab={railTab}
+                onTab={setRailTab}
+              />
+            )}
             <CanvasArea
               blocks={blocks}
               selectedId={selectedId}
@@ -694,6 +943,7 @@ export default function PageBuilderPage() {
               deviceWidth={deviceWidth}
               atLimit={atLimit}
               pageCss={code.custom_css}
+              paletteAvailable={!aiOpen}
             />
             <RightPanel
               block={selectedBlock}
@@ -701,6 +951,8 @@ export default function PageBuilderPage() {
               funnel={funnel}
               blocksCount={blocks.length}
               saveError={saveError}
+              slugRefusal={fieldRefusals.slug || null}
+              propsEpoch={propsEpoch}
               onMeta={onMeta}
               onProp={(key, value) => selectedBlock && updateProp(selectedBlock.id, key, value)}
               onDelete={() => selectedBlock && deleteBlock(selectedBlock.id)}
@@ -708,7 +960,13 @@ export default function PageBuilderPage() {
             />
           </>
         ) : (
-          <CodeTab code={code} blocks={blocks} onApply={applyCodeDoc} />
+          <CodeTab
+            code={code}
+            blocks={blocks}
+            onApply={applyCodeDoc}
+            docEpoch={docEpoch}
+            onDirtyChange={(d) => { codeDirtyRef.current = d; }}
+          />
         )}
         {scanOpen && (
           <ClonePageModal
@@ -728,17 +986,7 @@ export default function PageBuilderPage() {
             pageId={pageId}
             onClose={() => setVersionsOpen(false)}
             onRestored={onVersionRestored}
-          />
-        )}
-        {aiOpen && (
-          <AIDeveloperPanel
-            funnelId={id}
-            pageId={pageId}
-            blocks={blocks}
-            selectedBlock={selectedBlock}
-            selectedIndex={blocks.findIndex((b) => b.id === selectedId)}
-            onApplyOps={applyAiOps}
-            onClose={() => setAiOpen(false)}
+            onBeforeRestore={flushBeforeRestore}
           />
         )}
       </div>
