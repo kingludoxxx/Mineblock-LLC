@@ -2987,3 +2987,55 @@ stale-funnel guards already prevent the observable bug (wrong funnel's data
 painting) and aborting is an optimisation, not a correctness fix.
 STATUS: COMPLETE
 ---
+
+---
+TIMESTAMP: 2026-08-10 00:05
+TASK: Live View presentation layer (feat/live-view-presentation)
+BUILT: The presentation half of /app/live-view, ported from funnel-os's liveview
+kit onto our existing SSE+snapshot data plane. Four deliverables: (1) LiveGlobe —
+a rotating orthographic globe on plain 2D canvas, with the paint routine
+extracted to globeRender.js; (2) PaymentToastStack + usePaymentToasts — capped,
+auto-dismissing toasts on purchase events with hidden-tab coalescing;
+(3) SaleAlertControls + useSaleAlerts + chaChing — mute/volume persisted to
+localStorage, chime synthesised with WebAudio (no binary asset); (4) RailCards +
+a rewritten EventRail using the reference's card hierarchy in our dark theme.
+All non-visual decisions were extracted into livePresentation.js as pure
+functions. Two generated data modules (countryCentroids.js, worldLand.js) with
+their generators committed.
+TESTED: Four node-runnable harnesses under server/tests/live-view/ —
+presentation.mjs 156/156 (pure logic), globe-render.mjs 32/32 (the paint routine
+driven against a recording fake 2D context), cha-ching.mjs 53/53 (AudioContext +
+listener lifecycle against browser stubs), run-render-smoke.mjs 66/66 (every
+component through react-dom/server). Edge cases covered: zero events, null/
+malformed geo payloads, degraded server reads, throwing localStorage, absent
+AudioContext, zero-size canvas, negative visitor counts, all-expired ripple
+batches, 50-event toast bursts, and dedupe-set eviction at the bound.
+OUTPUT: 307/307 harness assertions pass. eslint 0 across client/src/pages/live/
+(this also cleared 4 errors that were standing on the page before this lane).
+vite build succeeds; bundle 2,897.25 kB -> 2,957.24 kB raw (+59.99 kB,
++23.84 kB gzip) with no new npm dependency.
+DECISIONS:
+(1) DECISION MADE — server left strictly READ ONLY. Per-event geo does not exist
+on our wire (liveViewQueries.js selects neither lb_touches.country into a touch
+event nor any location for a purchase; co_sessions has no country column at
+all). Rather than add a field, the globe is driven from snapshot.geo.by_country,
+which is already on the wire, and arrivals are derived client-side from
+snapshot-to-snapshot RISES. A rise is a true statement; a pin per visitor would
+have been an invented coordinate.
+(2) DECISION MADE — no new dependency. The reference uses globe.gl (absent from
+our package.json) plus a CDN Earth texture and remote TopoJSON (ruled out by the
+brief). `three` IS present but a WebGL context per card is not worth it for this,
+so the globe is 2D canvas + bundled generated coordinates.
+(3) DECISION MADE — toast "product" degrades to funnel + page. line_items is
+never selected into a feed event, so naming a product would be a guess; the
+location line is wired but renders only if an event ever carries a country.
+(4) The globe paint was extracted from LiveGlobe's rAF closure into
+globeRender.js purely so a harness could execute it — it remains a hot loop
+issuing ctx calls directly, because a per-frame scene graph would be ~180k
+allocations/sec at 60fps.
+(5) NOTE FOR THE INTEGRATOR — `main` advanced from 36b57d5 to 7e2814d4 during
+this run (another lane merged; abandonedCheckouts/pageLibrary changes). This
+branch is based on 36b57d5 and touches only client/src/pages/live/** and
+server/tests/live-view/**, so the merge should be disjoint.
+STATUS: COMPLETE
+---
