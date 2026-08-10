@@ -3,6 +3,7 @@ import ProtectedRoute from './components/auth/ProtectedRoute';
 import PageGate from './components/auth/PageGate';
 import AppLayout from './components/layout/AppLayout';
 import ErrorBoundary from './components/ErrorBoundary';
+import CrmFrame from './pages/crm/CrmFrame';
 
 // Auth pages
 import Login from './pages/Login';
@@ -130,7 +131,25 @@ export default function App() {
           <Route path="dashboard" element={<Dashboard />} />
           <Route path="settings" element={<Settings />} />
 
-          {/* CRM */}
+          {/* ── FUNNEL OS CRM (2026-08-10) ───────────────────────────────────
+              The CRM is a separate application embedded in this shell, so the
+              operator works in ONE product. Each entry maps a Puure route onto
+              the equivalent route inside the CRM. The legacy CRM routes below
+              still exist and still work by URL — they are only off the menu. */}
+          <Route path="crm/orders" element={<PageGate permission="orders:access"><CrmFrame path="/app/orders" title="Orders" /></PageGate>} />
+          <Route path="crm/customers" element={<PageGate permission="customers:access"><CrmFrame path="/app/orders/customers" title="Customers" /></PageGate>} />
+          <Route path="crm/abandoned" element={<PageGate permission="orders:access"><CrmFrame path="/app/orders/abandoned" title="Abandoned checkouts" /></PageGate>} />
+          <Route path="crm/failed-payments" element={<PageGate permission="orders:access"><CrmFrame path="/app/orders/failed-payments" title="Failed payments" /></PageGate>} />
+          <Route path="crm/subscriptions" element={<PageGate permission="orders:access"><CrmFrame path="/app/orders/subscriptions" title="Subscriptions" /></PageGate>} />
+          <Route path="crm/funnels" element={<PageGate permission="funnels:access"><CrmFrame path="/app/websites" title="Funnels" /></PageGate>} />
+          <Route path="crm/builder" element={<PageGate permission="funnels:access"><CrmFrame path="/app/production/listicle-builder" title="Funnel Builder" /></PageGate>} />
+          <Route path="crm/analytics" element={<PageGate permission="funnels:access"><CrmFrame path="/app/analytics" title="Analytics" /></PageGate>} />
+          <Route path="crm/costs" element={<PageGate permission="funnels:access"><CrmFrame path="/app/costs" title="Costs & P&L" /></PageGate>} />
+          <Route path="crm/live" element={<PageGate permission="funnels:access"><CrmFrame path="/app/production/listicle-builder/live" title="Live View" /></PageGate>} />
+          <Route path="crm/templates" element={<PageGate permission="funnels:access"><CrmFrame path="/app/templates" title="Templates" /></PageGate>} />
+          <Route path="crm/settings" element={<PageGate permission="funnels:access"><CrmFrame path="/app/settings" title="CRM Settings" /></PageGate>} />
+
+          {/* CRM (legacy — hidden from the sidebar, routes intentionally kept) */}
           <Route path="orders" element={<PageGate permission="orders:access"><OrdersPage /></PageGate>} />
           <Route path="orders/:id" element={<PageGate permission="orders:access"><OrderDetailPage /></PageGate>} />
           <Route path="customers" element={<PageGate permission="customers:access"><CustomersPage /></PageGate>} />

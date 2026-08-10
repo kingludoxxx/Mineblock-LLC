@@ -37,34 +37,64 @@ import {
   Waypoints,
   Plug,
   CreditCard,
+  LayoutTemplate,
+  Copy,
+  Repeat,
 } from 'lucide-react';
 import { useAuth } from '../../hooks/useAuth';
 import { usePermissions } from '../../hooks/usePermissions';
 
 const navGroups = [
+  // ─────────────────────────────────────────────────────────────────────────
+  // CRM SWITCH-OVER (2026-08-10) — the funnel/CRM surface now comes from the
+  // Funnel OS codebase deployed at puure-crm.onrender.com. These entries are
+  // HIDDEN, not deleted: every route in App.jsx and every page component still
+  // exists and still works if you navigate to the URL directly. They are off
+  // the menu so the sidebar shows ONE CRM, not two of everything.
+  //
+  // To restore: un-comment the block below. Nothing else was changed.
+  //
+  // {
+  //   label: 'Operations',
+  //   icon: Store,
+  //   items: [
+  //     { to: '/app/orders', icon: ShoppingCart, label: 'Orders', permission: 'orders:access', end: true },
+  //     { to: '/app/customers', icon: UsersRound, label: 'Customers', permission: 'customers:access' },
+  //     { to: '/app/abandoned', icon: ShoppingCart, label: 'Abandoned checkouts', permission: 'orders:access' },
+  //     { to: '/app/failed-payments', icon: CreditCard, label: 'Failed payments', permission: 'orders:access' },
+  //   ],
+  // },
+  // ─────────────────────────────────────────────────────────────────────────
   {
     label: 'Operations',
     icon: Store,
     items: [
-      { to: '/app/orders', icon: ShoppingCart, label: 'Orders', permission: 'orders:access', end: true },
-      { to: '/app/customers', icon: UsersRound, label: 'Customers', permission: 'customers:access' },
-      { to: '/app/abandoned', icon: ShoppingCart, label: 'Abandoned checkouts', permission: 'orders:access' },
-      // DUNNING LANE — one additive sidebar line
-      { to: '/app/failed-payments', icon: CreditCard, label: 'Failed payments', permission: 'orders:access' },
+      { to: '/app/crm/orders', icon: ShoppingCart, label: 'Orders', permission: 'orders:access' },
+      { to: '/app/crm/customers', icon: UsersRound, label: 'Customers', permission: 'customers:access' },
+      { to: '/app/crm/abandoned', icon: ShoppingCart, label: 'Abandoned checkouts', permission: 'orders:access' },
+      { to: '/app/crm/failed-payments', icon: CreditCard, label: 'Failed payments', permission: 'orders:access' },
+      { to: '/app/crm/subscriptions', icon: Repeat, label: 'Subscriptions', permission: 'orders:access' },
     ],
   },
   {
     label: 'Production',
     icon: Factory,
     items: [
-      { to: '/app/funnels', icon: Waypoints, label: 'Funnels', permission: 'funnels:access' },
-      // INTEGRATION HOOK (analytics lane) — ONE additive sidebar line
-      { to: '/app/funnel-analytics', icon: BarChart3, label: 'Funnel Analytics', permission: 'funnels:access' },
-      // INTEGRATION HOOK (live-view lane) — ONE additive sidebar line
-      { to: '/app/live-view', icon: Radio, label: 'Live View', permission: 'funnels:access' },
-      { to: '/app/costs', icon: DollarSign, label: 'Costs & P&L', permission: 'funnels:access' }, // INTEGRATION HOOK (costs lane) — ONE additive sidebar line
-      { to: '/app/domains', icon: Globe, label: 'Domain Hub', permission: 'funnels:access' }, // DOMAIN-HUB LANE: single additive entry
-      { to: '/app/integrations', icon: Plug, label: 'Integrations', permission: 'funnels:access' }, // KLAVIYO LANE: single additive entry
+      // Funnel OS CRM — embedded (see App.jsx `crm/*` routes)
+      { to: '/app/crm/funnels', icon: Waypoints, label: 'Funnels', permission: 'funnels:access' },
+      { to: '/app/crm/builder', icon: LayoutTemplate, label: 'Funnel Builder', permission: 'funnels:access' },
+      { to: '/app/crm/templates', icon: Copy, label: 'Templates', permission: 'funnels:access' },
+      { to: '/app/crm/analytics', icon: BarChart3, label: 'Analytics', permission: 'funnels:access' },
+      { to: '/app/crm/live', icon: Radio, label: 'Live View', permission: 'funnels:access' },
+      { to: '/app/crm/costs', icon: DollarSign, label: 'Costs & P&L', permission: 'funnels:access' },
+      { to: '/app/crm/settings', icon: Plug, label: 'CRM Settings', permission: 'funnels:access' },
+      // CRM SWITCH-OVER (2026-08-10) — hidden, not deleted. Routes still live.
+      // { to: '/app/funnels', icon: Waypoints, label: 'Funnels', permission: 'funnels:access' },
+      // { to: '/app/funnel-analytics', icon: BarChart3, label: 'Funnel Analytics', permission: 'funnels:access' },
+      // { to: '/app/live-view', icon: Radio, label: 'Live View', permission: 'funnels:access' },
+      // { to: '/app/costs', icon: DollarSign, label: 'Costs & P&L', permission: 'funnels:access' },
+      // { to: '/app/domains', icon: Globe, label: 'Domain Hub', permission: 'funnels:access' },
+      // { to: '/app/integrations', icon: Plug, label: 'Integrations', permission: 'funnels:access' },
       { to: '/app/brief-agent', icon: Sparkles, label: 'Brief Agent', permission: 'brief-agent:access' },
       { to: '/app/iteration-king', icon: Crown, label: 'Iteration King', permission: 'iteration-king:access' },
       { to: '/app/statics-generation', icon: Layers, label: 'Statics Generation', permission: 'statics-generation:access' },
