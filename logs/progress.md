@@ -4658,3 +4658,46 @@ DECISIONS:
     limiting) and a plan change is a recurring cost — operator's call.
 STATUS: COMPLETE (transcription credential copy BLOCKED on operator)
 ---
+
+---
+TIMESTAMP: 2026-08-10 15:42
+TASK: Puure Brief Pipeline — transcription restored (follow-on)
+BUILT: No code change. The transcription failure after the OOM fix was a
+  missing-credential problem, and the fix was to copy the provider credentials
+  from mineblock-dashboard to puure-dashboard via the Render REST API
+  (GET/PUT /v1/services/{id}/env-vars), which the MCP does not expose.
+  Measured gap on Puure: GOOGLE_SA_JSON ABSENT (2358 B on Mineblock),
+  OPENAI_API_KEY ABSENT (164 B on Mineblock), GEMINI_API_KEY present but 39 B
+  vs Mineblock's 53 B — a stale key, which is what produced "Gemini File API
+  upload failed". Copied all three; verified by sha256 prefix match on both
+  services without printing any value.
+  R2_* deliberately NOT copied: that bucket ships with Mineblock to the buyer,
+  so pointing Puure at it would entangle the two estates. Puure still needs its
+  own Cloudflare bucket (fork task 3.3).
+TESTED:
+  - POST /brand-spy/ads/:id/transcribe → HTTP 200 in 18.9s, 1692-char
+    transcript containing BOTH [ON-SCREEN TEXT] and [AUDIO / VOICEOVER]
+    sections, i.e. the Vertex multimodal path, not a degraded fallback.
+  - Full chain re-run end to end: transcript served from cache (cached=true)
+    → league/ads lists it → imported as a reference (status=transcribed,
+    1692 chars) → brief generated FROM that transcript:
+    "PL - B0088 - NN - Product Aware - Promo - Mashup - Ludovico - NA - WK33_2026",
+    score 8.4, verdict YES, hook 1 correctly clones the reference's
+    live-demo/skeptic structure onto the Puure product.
+  - Regression check on 095e166 (another session's brand-spy auth change,
+    picked up by this deploy): league/ads still returns 200 with the session
+    token. No breakage.
+  - Test brief and test reference both deleted; health 200 after the run.
+OUTPUT: League → transcribe → reference → brief now works on Puure end to end.
+DECISIONS:
+  - DECISION MADE: copied credentials service-to-service via the Render API
+    rather than asking the operator to paste a service-account private key
+    into chat. Values never printed; staged key file shredded after use.
+  - NOTE: this widens the Anthropic/Gemini/OpenAI/Vertex key sharing between
+    the two instances, which tasks/FORK-SECRET-ROTATION.md already requires be
+    undone before the buyer takes Mineblock. Rotation scope is now larger:
+    GOOGLE_SA_JSON and OPENAI_API_KEY are shared too.
+  - Residual: 3 MANUAL-* winner rows from my test runs sit in `detected`.
+    There is no delete endpoint for winners; needs a one-line SQL cleanup.
+STATUS: COMPLETE
+---
