@@ -105,7 +105,6 @@ const navGroups = [
       { to: '/app/brief-pipeline', icon: FileText, label: 'Brief Pipeline', permission: 'brief-pipeline:access' },
       { to: '/app/clickup-pipeline', icon: Video, label: 'ClickUp Pipeline', permission: 'brief-pipeline:access' },
       { to: '/app/iteration-king', icon: Crown, label: 'Iteration King', permission: 'iteration-king:access' },
-      { to: '/app/languages-pipeline', icon: Globe, label: 'Languages Pipeline', permission: 'languages-pipeline:access' },
     ],
   },
   {
@@ -137,10 +136,6 @@ const navGroups = [
     label: 'Ops',
     icon: Wrench,
     items: [
-      { to: '/app/support', icon: Headphones, label: 'Support', permission: 'support:access' },
-      { to: '/app/api-runs', icon: Zap, label: 'API Runs', permission: 'api-runs:access' },
-      { to: '/app/ops-dashboard', icon: Monitor, label: 'Dashboard', permission: 'ops-dashboard:access' },
-      { to: '/app/scrape-runs', icon: Bug, label: 'Scrape Runs', permission: 'scrape-runs:access' },
       { to: '/app/status', icon: Signal, label: 'Status', permission: 'status:access' },
     ],
   },
