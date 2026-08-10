@@ -152,6 +152,12 @@ function NetworkEditor({ funnel, initial, macros, events, onDone, onCancel }) {
 
       <div className="space-y-2">
         <label className="block text-xs font-medium text-text-muted">Send these events</label>
+        <p className="text-xs text-text-faint">
+          AddToCart and ViewContent are ALSO gated by their switches in the General panel above —
+          ticking them here does nothing while those are off. PageView is not offered: every
+          delivery takes a permanent dedupe row, and one per pageview would swamp the ledger
+          that keeps conversions exactly-once.
+        </p>
         <div className="grid grid-cols-2 gap-x-4 gap-y-1">
           {(events || []).map((name) => (
             <CheckboxRow

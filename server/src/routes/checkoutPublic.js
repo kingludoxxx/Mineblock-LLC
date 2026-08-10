@@ -679,7 +679,10 @@ async function resolveSessionPageUrl(req, session) {
     const slug = String(p.slug || '/');
     const path = slug === '/' ? `/f/${f.slug}` : `/f/${f.slug}${slug.startsWith('/') ? slug : '/' + slug}`;
     const ref = encodeURIComponent(session.id);
-    return `${proto}://${host}${path}?resume=${ref}&co_session_id=${ref}`;
+    // `s` is the param the page runtime's sid() ACTUALLY reads (funnelRender
+    // :1443 — s / session / session_id), so contact/session rehydration works;
+    // resume + co_session_id stay for the documented contract + analytics.
+    return `${proto}://${host}${path}?s=${ref}&resume=${ref}&co_session_id=${ref}`;
   } catch (e) {
     console.error('[checkout] resume page resolve failed (non-fatal):', e.message);
     return '';
