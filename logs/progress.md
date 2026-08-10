@@ -4030,3 +4030,63 @@ DECISIONS: Wave 4 launched (order-edit+dunning, analytics-insights, theme-system
 cross-area seam investigation for the operator's morning bug report.
 STATUS: COMPLETE
 ---
+
+---
+TIMESTAMP: 2026-08-10 01:10
+TASK: Cross-area seam audit B3 + M15 — AI wiring floor (branch feat/ai-wiring-floor)
+BUILT: B3 — extended WIRING_KEYS from 9 to 17 keys in BOTH mirrored lists
+(server/src/routes/aiDeveloper.js + client/src/pages/funnels/builder/
+builderModel.js), adding href, cta_href, url, deadline, html, items, rows,
+checked. Also removed a HARDCODED duplicate of the old nine-key list from the
+propose_block_edits tool description and made both it and the output contract
+interpolate WIRING_KEYS, so the model can never be told a floor the validator
+does not apply. M15 — applyOps now returns `warnings`: one advisory per link
+prop whose HOST changes, covering top-level href/cta_href/url and per-item links
+inside product grids. The panel renders them as amber rows naming old -> new
+host; the model is told too so it can self-correct in the same turn. Advisory
+only — the op still applies.
+TESTED: Reproduced B3 by execution FIRST, through the real applyOps + renderBlock:
+a plausible "reword the copy" batch was ACCEPTED and produced href='#',
+data-deadline='', an empty product grid, an erased embed and an empty <tbody> —
+with the canvas still looking right. Re-ran the same repro after the fix: every
+wiring prop preserved, only the intended copy changed.
+ai-ops-wiring extended 31 -> 147: every new key asserted in all three contract
+directions (omitted -> carried, explicitly-set -> wins, explicit-null ->
+respected), a whole-page batch case, and eight M15 cases including same-host
+non-flagging, absolute -> '#', per-item grid links, and totality against junk
+input (null/42/{}/[]/javascript:/mailto:/empty).
+EDGE CASES RUN (all pass): linkHost on undefined, empty string, in-page anchor,
+root-relative path, query-only link, mailto:, javascript:, unparseable text,
+non-default port; detectLinkHostChanges on null/null and a non-array items.
+OUTPUT: ai-ops-wiring 147/147. Regressions green — builder-model 340/340,
+page-versions 93/93, code-doc 107/107, version-format 26/26, breakpoint-render
+49/49, variant-search 94/94, ai-developer validation 155/155, thread-routes
+77/77, chat-turn 62/62. vite build 0 errors (696ms). eslint 0. Commit 685a817.
+DECISIONS:
+(1) DECISION MADE — items/rows/html added to the floor even though they are
+CONTENT the model legitimately rewrites. The floor's contract is "silence does
+not delete", not "read-only": an op that actually emits them still wins,
+including an explicit null. Asserted in both directions per key, so the safety
+net cannot quietly become a write-protect.
+(2) DECISION MADE — M15 flags on ANY block carrying a link prop rather than an
+allowlist of block types. An allowlist is precisely the shape that produced B3:
+correct when written, silently wrong for every block type added afterwards.
+Over-flagging costs an amber row; under-flagging costs a redirected checkout.
+(3) DECISION MADE — `url` added to the floor despite fixing no reachable break.
+No renderer reads a prop named `url` today (it is a field KIND in
+blockRegistry.jsx, not a prop key). Included so the next link-bearing block does
+not have to rediscover this bug. Stated plainly rather than counted as a fix.
+(4) M15 does not flag same-host path/query changes. A check that fires on every
+copy edit is one operators learn to ignore, which is the same as not having it.
+DEFECT FOUND IN THE HARNESS ITSELF: ai-ops-wiring's assertion "the SERVER floor
+is byte-identical to the client floor in builderModel.js" NEVER READ
+builderModel.js — it compared the server list against a hardcoded literal. The
+two floors could have drifted apart indefinitely with the suite green. It now
+imports the client floor and compares directly, ORDER INCLUDED, with the
+literal kept as a second assertion so a mirrored-but-wrong edit to both files is
+still caught.
+MUTATION CHECK: removed 'href' from the server floor and re-ran — 7 assertions
+failed, including the drift check and the batch case, with the sticky CTA back
+to href='#'. Restored and re-verified at 147/147.
+STATUS: COMPLETE
+---
