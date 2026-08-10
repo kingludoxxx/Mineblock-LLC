@@ -331,6 +331,8 @@ export default function AIDeveloperPanel({
             id: newItemId(), type: 'assistant',
             text: data.reply || acc || 'Done.',
             opsCount: Array.isArray(data.ops) ? data.ops.length : 0,
+            // Link-host advisories. Applied, not blocked — the operator reviews.
+            warnings: Array.isArray(data.warnings) ? data.warnings : [],
           }]);
         } else if (event === 'error') {
           throw new Error(data.error || 'AI request failed');
@@ -601,6 +603,27 @@ export default function AIDeveloperPanel({
                   {it.opsCount > 0 && (
                     <div className="mt-1.5 text-[10.5px] text-emerald-400">
                       ✓ {it.opsCount} edit{it.opsCount === 1 ? '' : 's'} applied to the draft — review on the canvas
+                    </div>
+                  )}
+                  {/* LINK-DESTINATION REVIEW (seam audit M15). A re-pointed
+                      money link is invisible on the canvas — the button still
+                      says "Buy Now" and still looks right. These rows name the
+                      old and new host so the operator decides rather than
+                      misses. Amber, not red: the edit is legal and already
+                      applied; this is a review prompt, not an error. */}
+                  {it.warnings?.length > 0 && (
+                    <div className="mt-2 rounded-lg border border-amber-500/40 bg-amber-500/10 px-2 py-1.5">
+                      <div className="flex items-center gap-1.5 text-[10.5px] font-semibold text-amber-300">
+                        <AlertCircle className="w-3 h-3 shrink-0" />
+                        {it.warnings.length} link destination{it.warnings.length === 1 ? '' : 's'} changed — check before you publish
+                      </div>
+                      {it.warnings.map((w, i) => (
+                        <div key={`${w.block_id}-${w.key}-${i}`} className="mt-1 text-[10px] text-amber-200/90 font-mono break-all">
+                          {w.block_type || 'block'} · {w.key}: <span className="text-amber-100">{w.from || 'same-site'}</span>
+                          {' → '}
+                          <span className="text-amber-100 font-semibold">{w.to || 'same-site'}</span>
+                        </div>
+                      ))}
                     </div>
                   )}
                 </div>

@@ -961,6 +961,19 @@ export function unrecognisedProps(props, knownKeys) {
  * DOES rather than what it SAYS. `style`/`mobile_styles` qualify because the
  * inspector is the only place they are authored — an AI batch that has never
  * seen them cannot re-emit them.
+ *
+ * THE SECOND WAVE (seam audit B3). The original nine covered the checkout
+ * blocks that existed when the floor was written; every block type added since
+ * had load-bearing props outside it. A routine "reword this" batch blanked
+ * sticky_cta.href (money link → '#'), product_grid.items (grid gone),
+ * countdown.deadline (clock dead), embed.html (widget erased), table.rows
+ * (table emptied), order_bump.checked (pre-ticked bump unticks) and
+ * hero.cta_href — all while the canvas still looked right.
+ *
+ * items/rows/html are CONTENT the model legitimately rewrites, and they belong
+ * here anyway: the contract is not "read-only", it is "silence does not
+ * delete". An op that actually emits them still wins, including an explicit
+ * null. Both directions are asserted per key in the ai-ops-wiring harness.
  */
 export const WIRING_KEYS = Object.freeze([
   'variant_id',
@@ -972,6 +985,15 @@ export const WIRING_KEYS = Object.freeze([
   'style',
   'mobile_styles',
   'block_name',
+  // seam audit B3 — the second wave
+  'href',
+  'cta_href',
+  'url',
+  'deadline',
+  'html',
+  'items',
+  'rows',
+  'checked',
 ]);
 
 /**
