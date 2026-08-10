@@ -71,10 +71,16 @@ const GENERAL_DEFAULTS = {
 // What each flag ACTUALLY does today. A flag with no consumer must say so
 // where the operator is looking — a persisted checkbox that changes nothing is
 // the most expensive kind of lie in a tracking panel.
+// The seam audit found this copy had gone false in the one place it mattered:
+// the two fire-flags were described as "saved, not yet wired", and they WERE
+// dead for the named networks — but custom S2S networks were firing those
+// events regardless of the checkbox. The flags now gate custom-network
+// selection (trackingCustomNetworks.customNetworksFor), so the notes describe
+// what each one does per channel rather than claiming a blanket no-op.
 const GENERAL_NOTES = {
   send_external_id: 'Live — the hashed session id is sent as external_id on server Purchase events. Unchecking it stops that on the next conversion.',
-  fire_addtocart_checkout: 'Saved, not yet wired — AddToCart is emitted by the page runtime, not the server, so this flag has no consumer until the checkout beacon lands. Nothing changes when you tick it.',
-  fire_viewcontent_lead: 'Saved, not yet wired — same reason: ViewContent comes from the browser beacon, which does not read this flag yet.',
+  fire_addtocart_checkout: 'Gates custom S2S networks: un-ticked, AddToCart is not sent to them at all. The named networks (Meta, GA4) take AddToCart from the browser beacon, which does not read this flag — so for those it changes nothing yet.',
+  fire_viewcontent_lead: 'Same rule: un-ticked, ViewContent is not sent to your custom S2S networks. The named networks take it from the browser beacon and are unaffected for now.',
   unique_txn_per_upsell: 'Always on — an accepted upsell always fires as its own conversion with its own transaction id (pur_<session>_u_<charge>). This cannot currently be turned off.',
 };
 
@@ -237,13 +243,14 @@ export default function TrackingSection({ funnel, onFunnelUpdated }) {
 
   const registryOf = (kind) => (Array.isArray(networks) ? networks.find((n) => n.kind === kind) : undefined);
   const summaryOf = (kind) => (Array.isArray(summary) ? summary.find((n) => n.kind === kind) : undefined);
-  // A preset card is "connected" through the custom network its preset creates.
-  // The key comes from the SERVER (directory.preset_network_key, sluggified
-  // from the preset label by the same function the create path uses) — deriving
-  // it here would be a second copy of the slug rule, and the two would drift.
+  // A preset card is "connected" through the custom network its preset created.
+  // Matched on the STAMPED preset_key (lb_custom_networks.preset_key, written
+  // once at create time), not on a slug re-derived here: the slug rule lived in
+  // two places and the copies drifted the moment a preset label changed, which
+  // left a connected card reading NOT CONNECTED with no way to tell why.
   const customOf = (card) => {
-    if (!Array.isArray(customs) || !card.preset_network_key) return undefined;
-    return customs.find((c) => c.key === card.preset_network_key);
+    if (!Array.isArray(customs) || !card.has_preset) return undefined;
+    return customs.find((c) => c.preset_key === card.key);
   };
   const customHealthOf = (card) => {
     const c = customOf(card);

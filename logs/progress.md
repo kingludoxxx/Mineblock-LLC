@@ -4099,4 +4099,165 @@ schedule state lives on the queue row, so the intent table stays trustworthy
 history.
 STATUS: COMPLETE — the two money-seam contracts are documented in the headers of
 routes/orderEdit.js and routes/dunning.js for the integrator.
+TIMESTAMP: 2026-08-10 03:25 (Europe/Madrid)
+TASK: Night release 2 — split test + tracking + COGS + wave-2 builder features
+BUILT: 10 review-cleared branches merged (split-statistics, split-ui-parity, s2s-networks,
+block-field-editors, ai-developer-extras, live-view-presentation, clone-from-shopify,
+cogs-assistant, cost-groups, + integrator wirings: /pb public mount, funnelCosts conflict
+union threading executor + membership ledger). Deployed dep-d9si5d67bikc739jieqg @ 6eb46e0.
+TESTED: Final sweep 6,743 assertions, 0 failures (after fixing a scripted-merge marker leak
+in routes/index.js caught by the sweep, and an assistant harness fixture the new item-existence
+guard correctly refused). Live pass: all new API surfaces answering honestly; /pb anti-probing
+byte-identical on distinct forged tokens. Browser drive vs operator screenshots: tracking
+directory (GTM card + 12 networks + Fire Purchase panel), Meta detail (ad tracking URL with
+campaign macros, click-id params, delivered-24h), funnel settings nav, Live View (tiles with
+honest currency caption, globe empty state, activity rail with real events) — all match.
+OUTPUT: puure-dashboard.onrender.com live at 6eb46e0.
+DECISIONS: Wave 4 launched (order-edit+dunning, analytics-insights, theme-system) + the
+cross-area seam investigation for the operator's morning bug report.
+STATUS: COMPLETE
+---
+
+---
+TIMESTAMP: 2026-08-10 01:10
+TASK: Cross-area seam audit B3 + M15 — AI wiring floor (branch feat/ai-wiring-floor)
+BUILT: B3 — extended WIRING_KEYS from 9 to 17 keys in BOTH mirrored lists
+(server/src/routes/aiDeveloper.js + client/src/pages/funnels/builder/
+builderModel.js), adding href, cta_href, url, deadline, html, items, rows,
+checked. Also removed a HARDCODED duplicate of the old nine-key list from the
+propose_block_edits tool description and made both it and the output contract
+interpolate WIRING_KEYS, so the model can never be told a floor the validator
+does not apply. M15 — applyOps now returns `warnings`: one advisory per link
+prop whose HOST changes, covering top-level href/cta_href/url and per-item links
+inside product grids. The panel renders them as amber rows naming old -> new
+host; the model is told too so it can self-correct in the same turn. Advisory
+only — the op still applies.
+TESTED: Reproduced B3 by execution FIRST, through the real applyOps + renderBlock:
+a plausible "reword the copy" batch was ACCEPTED and produced href='#',
+data-deadline='', an empty product grid, an erased embed and an empty <tbody> —
+with the canvas still looking right. Re-ran the same repro after the fix: every
+wiring prop preserved, only the intended copy changed.
+ai-ops-wiring extended 31 -> 147: every new key asserted in all three contract
+directions (omitted -> carried, explicitly-set -> wins, explicit-null ->
+respected), a whole-page batch case, and eight M15 cases including same-host
+non-flagging, absolute -> '#', per-item grid links, and totality against junk
+input (null/42/{}/[]/javascript:/mailto:/empty).
+EDGE CASES RUN (all pass): linkHost on undefined, empty string, in-page anchor,
+root-relative path, query-only link, mailto:, javascript:, unparseable text,
+non-default port; detectLinkHostChanges on null/null and a non-array items.
+OUTPUT: ai-ops-wiring 147/147. Regressions green — builder-model 340/340,
+page-versions 93/93, code-doc 107/107, version-format 26/26, breakpoint-render
+49/49, variant-search 94/94, ai-developer validation 155/155, thread-routes
+77/77, chat-turn 62/62. vite build 0 errors (696ms). eslint 0. Commit 685a817.
+DECISIONS:
+(1) DECISION MADE — items/rows/html added to the floor even though they are
+CONTENT the model legitimately rewrites. The floor's contract is "silence does
+not delete", not "read-only": an op that actually emits them still wins,
+including an explicit null. Asserted in both directions per key, so the safety
+net cannot quietly become a write-protect.
+(2) DECISION MADE — M15 flags on ANY block carrying a link prop rather than an
+allowlist of block types. An allowlist is precisely the shape that produced B3:
+correct when written, silently wrong for every block type added afterwards.
+Over-flagging costs an amber row; under-flagging costs a redirected checkout.
+(3) DECISION MADE — `url` added to the floor despite fixing no reachable break.
+No renderer reads a prop named `url` today (it is a field KIND in
+blockRegistry.jsx, not a prop key). Included so the next link-bearing block does
+not have to rediscover this bug. Stated plainly rather than counted as a fix.
+(4) M15 does not flag same-host path/query changes. A check that fires on every
+copy edit is one operators learn to ignore, which is the same as not having it.
+DEFECT FOUND IN THE HARNESS ITSELF: ai-ops-wiring's assertion "the SERVER floor
+is byte-identical to the client floor in builderModel.js" NEVER READ
+builderModel.js — it compared the server list against a hardcoded literal. The
+two floors could have drifted apart indefinitely with the suite green. It now
+imports the client floor and compares directly, ORDER INCLUDED, with the
+literal kept as a second assertion so a mirrored-but-wrong edit to both files is
+still caught.
+MUTATION CHECK: removed 'href' from the server floor and re-ran — 7 assertions
+failed, including the drift check and the batch case, with the sticky CTA back
+to href='#'. Restored and re-verified at 147/147.
+TIMESTAMP: 2026-08-10 05:30
+TASK: Split cross-area seam fixes (feat/split-seam-fixes) — B4/B5/M9/M10 + minors
+BUILT: B4: buildVerdict (windowed banner + the promote gate) gated readiness on
+EVERY arm while computeSplitStatistics scoped to the qualifying family, so an
+archived zero-traffic arm made the banner say "sample is still thin" directly
+above the lifetime panel's green trophy. The scoping rule now lives once, as
+partitionQualifyingArms in analyticsStats, used by both engines with a
+denominatorOf callback because the two callers legitimately spell the
+denominator differently. buildVerdict draws control and challenger from the
+family, corrects alpha over the family, reports pendingArms/qualifyingArms, and
+answers not_ready with a real reason when fewer than two arms qualify. B5: the
+reconciliation sentence was false — it claimed the experiment table counts
+delivered page renders, but funnelAnalytics counts the SAME lb_split_credits
+exposure rows the panel counts (audited byte-identical 440/440), while the real
+renders number (lb_split_views, 500) rendered nowhere. Added a "Delivered
+renders" row fed by a.visitors, naming lb_split_views on screen and degrading to
+a dash with a reason for offer-scope and pre-delivery tests, and corrected the
+copy at all four sites to "same population, different window, clamped to the
+delivery epoch". M9: two rows called "Orders" meant different things (mint-based
+vs credited); relabelled "Credited orders"/"Credited conv. rate" with a help
+line naming the parked-credit population as the cause. M10: the canvas tooltip
+claimed "visitors assigned by the splitter" while the tile renders exposures
+(440 vs 500); both tooltips now make the same true claim and differ on the
+window. MINORS: one floor, one noun (minExposuresPerArm shipped alongside the
+old key, client prefers it); splitApi contract docs updated to post-rename field
+names and new payload keys; distinct_visitors rendered at last on the windowed
+table; the funnelAnalytics comment describing a serve path that no longer exists
+corrected.
+TESTED: statistics.mjs 439/439 (398 before, +41). P18 runs the audit's exact
+fixture through BOTH engines and asserts identical status, winner, readiness and
+pending set, plus that the lifetime trophy corresponds to a promotable windowed
+verdict (PromoteWinner keys on the windowed one), plus that a real 120-visitor
+thin arm still blocks on both. B8 asserts the false claim is gone AND
+mutation-checks that its pattern really matches the audited sentence. B9 asserts
+the two order rows are named apart and the windowed table keeps the plain label.
+verifySplitUiGuards 174/174 — its M10 block had been PINNING THE FALSE WORDING
+(asserting the ledger tooltip must say "assigned to this arm" and must not say
+"reached checkout"), so it was rewritten to pin the truthful claims with a
+mutation-check proving the new assertions still fail against the audited copy.
+Regressions identical to baseline: verifySplitTesting 48/48, split-delivery
+33/33, verifyFunnelAnalytics 212 passed/1 failed (the same pre-existing DST
+failure, unchanged by the buildVerdict edit). vite build exit 0; eslint 2
+pre-existing errors, 0 added, 0 warnings.
+OUTPUT: 439/439; 174/174; 48/48; 33/33; 212+1; VITE_EXIT=0. One bug caught BY
+EXECUTION: the shared scoping helper was placed above MIN_RATE_SAMPLE's
+declaration and threw a TDZ ReferenceError at import — every consumer of
+analyticsStats would have failed to load. Also one of my own new assertions
+sliced the file from ROWS_ALL to EOF and therefore read the windowed table's
+label instead of the all-time one; it failed for the right reason and the slice
+is now bounded.
+DECISIONS: (1) The scoping helper lives in analyticsStats, not splitStats,
+because splitStats already imports from it and the reverse would invert the
+dependency — same reasoning as formatConfidencePct. (2) The canvas tile was NOT
+repointed at lb_split_views: that ledger is page-scope only, so every
+offer-scope and pre-delivery test would drop to a blank tile. The renders number
+is rendered in the results modal instead, where there is room to label it.
+(3) M9 was RELABELLED, not reconciled: both counts are correct and answer
+different questions, and publishing a delta would imply one is the error.
+(4) minVisitorsPerArm is KEPT alongside the new minExposuresPerArm — it is a
+shipped field with consumers; the client prefers the new name and falls back.
+(5) No browser verification: the running preview still serves a different
+project (production puure-dashboard.onrender.com), so the UI claims are verified
+by build, lint, and structural mutation-checked assertions against the shipped
+JSX and copy modules.
+STATUS: COMPLETE
+---
+
+---
+TIMESTAMP: 2026-08-10 04:05 (Europe/Madrid)
+TASK: Seam-audit remediation deploy — 5 blocker rounds + 2 builder-safety branches
+BUILT: Merged the cross-area seam audit's fixes: tracking-seam (per-network click ids B1, relay
+hardening B2, custom networks in health M5-M7, gated fire-flags M8), split-seam (shared verdict
+scoping B4, truthful population copy + rendered delivered-renders B5, credited-orders labels),
+cogs-seam (full index in membershipFor M2, per-field ship provenance M3, one existence table M4),
+blocks-seam (comparison-table safety M11-M14), ai-wiring-floor (WIRING_KEYS 9→17 both mirrors B3,
+host-change advisories M15), + integrator M1 (resume links carry ?s=). Deployed
+dep-d9siq87avr4c73bc0910 @ 1dd2af2.
+TESTED: Each round revert-checked/mutation-checked before passing; tracking 1139, split 439+174,
+cogs 270, blocks 401, ai-floor 147, all green on merged main. Live pass: tracking-health custom-aware,
+split/cogs/custom-network surfaces answering, forged resume token → 302 home.
+OUTPUT: puure-dashboard.onrender.com live at 1dd2af2.
+DECISIONS: Chips filed for the audit's non-blocking items (fabricated Settings tabs, consent-cookie
+posture, raw reset-token logging, brand-variable renderer consumers). Theme (FIX-FIRST: SSRF
+bypass) + order-edit/dunning (review) + analytics-insights still in flight.
+STATUS: COMPLETE
 ---

@@ -20,6 +20,7 @@ import { pgQuery } from '../db/pg.js';
 import { checkRateLimit } from '../middleware/rateLimiter.js';
 import { ensureTrackingTables } from '../services/trackingSchema.js';
 import { recordClick, isValidVid } from '../services/trackingClicks.js';
+import { customClickParams } from '../services/trackingCustomNetworks.js';
 import { recordTouch, recordFirstSeen } from '../services/trackingAttribution.js';
 import { relayBrowserEvent, ALLOWED_CLIENT_EVENTS } from '../services/trackingService.js';
 import { startTrackingSweeps } from '../services/trackingSweeps.js';
@@ -165,8 +166,26 @@ router.post('/click', async (req, res) => {
     if (!consentGranted(b.consent) || !isValidVid(b.vid)) {
       return res.json({ ok: true, skipped: 'no_consent_or_vid' });
     }
-    const r = await recordClick(funnelOf(b), b.vid, String(b.url || '').slice(0, 2048), {
+    // Seam audit MINOR: recordClick/parseClick have ALWAYS accepted a
+    // customParams list, and this — the only public writer into the click
+    // vault — never passed one. So a visitor arriving on a custom network's
+    // own click parameter was recorded as no_click, the vault stayed empty,
+    // and that network's postback could never carry a click id however
+    // correctly it was configured. The built-in params kept working, which is
+    // exactly why it went unnoticed.
+    //
+    // FAIL-OPEN: a read failure here degrades to the built-in params (today's
+    // behaviour) rather than dropping the click entirely.
+    const funnelId = funnelOf(b);
+    let customParams = [];
+    try {
+      customParams = await customClickParams(funnelId);
+    } catch (err) {
+      console.error('[track] custom click params read failed (fail-open):', err.message);
+    }
+    const r = await recordClick(funnelId, b.vid, String(b.url || '').slice(0, 2048), {
       ipHash: ipHash(req),
+      customParams,
     });
     return res.json({ ok: true, network: r.network || '', no_click: Boolean(r.no_click) });
   } catch (err) {

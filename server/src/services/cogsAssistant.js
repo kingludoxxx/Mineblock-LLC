@@ -58,8 +58,8 @@ import {
   parseMoneyText, MoneyError, screenInstructionText, verifyMatrix, sanitizeText,
 } from './quoteVerify.js';
 import {
-  CONTEXTS, SHIP_KEYS, CostError, appendRate, listVariants, loadRates,
-  buildRateIndex, variantRow, dayKey,
+  CONTEXTS, SHIP_KEYS, CostError, appendRate, listVariants, loadCostIndex,
+  resolveUnitShip, variantRow, dayKey,
 } from './funnelCosts.js';
 
 const DAY_RE = /^\d{4}-\d{2}-\d{2}$/;
@@ -122,6 +122,11 @@ export function catalogEntry(row) {
     // WHICH rate answered. 'item' means the cost comes from the variant's cost
     // group — invariant 4 reads this and it must survive the projection.
     cogs_source: row.cogs_source ?? null,
+    // The same question PER SHIPPING CONTEXT (seam audit M3). variantRow does
+    // not carry it, so membershipFor/loadCatalogContext fill it in; the key
+    // exists here so the shape is stable and a missing source is visibly null
+    // rather than an absent property.
+    ship_source: isPlainObject(row.ship_source) ? row.ship_source : null,
     ship: {
       default: ship.default ?? null,
       main: ship.main ?? null,
@@ -147,10 +152,28 @@ export async function loadCatalogContext({ limit = MAX_CATALOG_VARIANTS } = {}) 
   const cap = Math.max(1, Math.min(parseInt(limit, 10) || MAX_CATALOG_VARIANTS, 500));
   const out = await listVariants({ limit: cap, offset: 0 });
   const items = out.items.map(catalogEntry);
+  // Per-field provenance is not on the grid projection, and carry-forward
+  // needs it (M3). Resolve it through the SAME function the apply door uses,
+  // so the card can never promise a carry the write then withholds — the two
+  // paths agree by construction rather than by matching code.
+  if (items.length) {
+    const live = await membershipFor(items.map((e) => ({ scope: 'variant', ref: e.variant_id })));
+    for (const e of items) {
+      const st = live.byId.get(e.variant_id);
+      if (st) e.ship_source = st.ship_source;
+    }
+  }
+  // Live cost groups come from lb_cost_items, the same table appendRate
+  // validates against (seam audit M4). Deriving them from the variants' column
+  // made the propose door blind to a group with no members yet — a supported
+  // state the groups lane creates on purpose — so the assistant refused an id
+  // the manual rate door accepts. Both doors now read one table.
+  const groups = await pgQuery(
+    `SELECT cost_item_id FROM lb_cost_items WHERE archived = FALSE`);
   return {
     items,
     byId: new Map(items.map((e) => [e.variant_id, e])),
-    itemIds: new Set(items.map((e) => e.cost_item_id).filter(Boolean).map(String)),
+    itemIds: new Set(groups.map((g) => String(g.cost_item_id)).filter(Boolean)),
     total: out.total,
     truncated: out.total > items.length,
   };
@@ -163,12 +186,17 @@ export async function loadCatalogContext({ limit = MAX_CATALOG_VARIANTS } = {}) 
 // the grid again clamps at the same cap and would reject a legitimate proposal
 // for the 301st-by-revenue variant.
 //
-// It returns the RESOLVED state (unit_cogs, cogs_source, ship), not just the
-// catalog columns. The first cut selected neither, so carryForward had nothing
-// to carry and silently carried nothing — the review's landmine NIT, and half
-// of why B2 erased costs. The resolution goes through funnelCosts.variantRow,
-// the same projection the grid renders, so it cannot drift from what the
-// operator saw.
+// It returns the RESOLVED state (unit_cogs, cogs_source, ship, ship_source),
+// not just the catalog columns. The first cut selected none of it, so
+// carryForward had nothing to carry and silently carried nothing. The
+// resolution goes through funnelCosts.variantRow, the same projection the grid
+// renders, so it cannot drift from what the operator saw.
+//
+// THE INDEX IS loadCostIndex, NOT buildRateIndex(loadRates()) (seam audit M2).
+// Rates and MEMBERSHIPS are two halves of one index: loading only the rates
+// silently reverts group resolution to "as of now", which is the restatement
+// bug lb_cost_item_members exists to prevent. funnelCosts says out loud that
+// no call site may take only half — this one was taking half.
 export async function membershipFor(refs, { exec = pgQuery } = {}) {
   const variantIds = [...new Set(refs.filter((r) => r.scope === 'variant').map((r) => r.ref).filter(Boolean))];
   const itemIds = [...new Set(refs.filter((r) => r.scope === 'item').map((r) => r.ref).filter(Boolean))];
@@ -176,42 +204,74 @@ export async function membershipFor(refs, { exec = pgQuery } = {}) {
   const items = new Map();
   if (!variantIds.length && !itemIds.length) return { byId, items, itemIds: new Set() };
 
-  const rateIndex = buildRateIndex(await loadRates(exec));
+  const costIndex = await loadCostIndex(exec);
   const today = dayKey();
 
   if (variantIds.length) {
     const rows = await exec(`SELECT * FROM lb_variant_costs WHERE variant_id = ANY($1)`, [variantIds]);
-    for (const vc of rows) byId.set(String(vc.variant_id), catalogEntry(variantRow(vc, rateIndex, today)));
+    for (const vc of rows) {
+      const entry = catalogEntry(variantRow(vc, costIndex, today));
+      entry.ship_source = shipSourcesFor(vc, costIndex, today);
+      byId.set(String(vc.variant_id), entry);
+    }
   }
   if (itemIds.length) {
-    // A cost group exists when at least one variant is bound to it. Its
-    // resolved state is its own rate in force today — an item-scoped proposal
-    // carries from the ITEM, so invariant 4's guard does not apply here (the
-    // rate being carried IS the group's).
+    // EXISTENCE IS lb_cost_items, NOT the lb_variant_costs column (seam audit
+    // M4). A group with no members yet is an explicitly supported state — the
+    // groups lane lets an operator create one and price it before binding a
+    // single variant — and resolving membership from the column made the
+    // assistant answer unknown_cost_item for a group the manual rate door
+    // prices happily. The two doors now ask the same table appendRate does.
     const rows = await exec(
-      `SELECT DISTINCT cost_item_id FROM lb_variant_costs WHERE cost_item_id = ANY($1)`, [itemIds]);
+      `SELECT cost_item_id, archived FROM lb_cost_items WHERE cost_item_id = ANY($1)`, [itemIds]);
     for (const r of rows) {
       const id = String(r.cost_item_id || '');
-      if (!id) continue;
-      const rate = rateIndex.lookup('item', id, today);
+      // An archived group is refused at the write door too — offering it here
+      // would only produce a rate that reaches no variant.
+      if (!id || r.archived) continue;
+      const rate = costIndex.lookup('item', id, today);
       const ship = rate && isPlainObject(rate.ship) ? rate.ship : {};
+      const shipMap = {
+        default: ship.default ?? null,
+        main: ship.main ?? null,
+        upsell: ship.upsell ?? null,
+        addon: ship.addon ?? null,
+        bump: ship.bump ?? null,
+      };
+      const shipSource = {};
+      for (const ctx of CONTEXTS) {
+        shipSource[ctx] = resolveShipFor(shipMap, ctx) === null ? null : 'item';
+      }
       items.set(id, {
         cost_item_id: id,
         unit_cogs: rate && rate.unit_cogs !== null && rate.unit_cogs !== undefined
           ? Number(rate.unit_cogs) : null,
         cogs_source: rate ? 'item' : null,
-        ship: {
-          default: ship.default ?? null,
-          main: ship.main ?? null,
-          upsell: ship.upsell ?? null,
-          addon: ship.addon ?? null,
-          bump: ship.bump ?? null,
-        },
+        ship: shipMap,
+        // An item-scoped proposal carries from the ITEM, so this being 'item'
+        // is not a reason to withhold — carryForward's guard is scope-aware.
+        ship_source: shipSource,
         first_sold: '',
       });
     }
   }
   return { byId, items, itemIds: new Set(items.keys()) };
+}
+
+// PER-CONTEXT ship provenance (seam audit M3). variantRow reports cogs_source
+// but discards the source resolveUnitShip returns, and carryForward needs it:
+// a variant whose shipping currently comes from its cost GROUP must not have
+// that figure frozen into a variant-scoped rate. Different contexts can
+// legitimately resolve from different places (a variant rate that sets
+// ship.main but not ship.upsell falls through to the group for upsell only),
+// so this is a map, never one value.
+export function shipSourcesFor(vc, costIndex, today) {
+  const out = {};
+  for (const ctx of CONTEXTS) {
+    const [, src] = resolveUnitShip(vc, costIndex, today, ctx);
+    out[ctx] = src;
+  }
+  return out;
 }
 
 // ---------------------------------------------------------------------------
@@ -543,8 +603,17 @@ export function carryForward(proposal, state) {
   const carriedShip = [];
   let carriedCogs = false;
 
-  const cogsIsCarryable = proposal.scope === 'item' ? true : state.cogs_source !== 'item';
-  if (out.unit_cogs === null && !clear.has('unit_cogs') && state.unit_cogs !== null && cogsIsCarryable) {
+  // The guard is PER FIELD, and shipping needs it just as much as COGS (seam
+  // audit M3). It was only applied to COGS, so a variant-scoped proposal on a
+  // variant whose freight comes from its cost group copied the group's figure
+  // into a variant rate — silently detaching that variant's shipping from the
+  // group, on all four legs, the exact failure invariant 4 exists to prevent.
+  // An ITEM-scoped proposal is exempt: the rate it is carrying from IS the
+  // group's own.
+  const fromGroup = (source) => proposal.scope !== 'item' && source === 'item';
+
+  if (out.unit_cogs === null && !clear.has('unit_cogs') && state.unit_cogs !== null
+    && !fromGroup(state.cogs_source)) {
     out.unit_cogs = state.unit_cogs;
     carriedCogs = true;
   }
@@ -553,6 +622,11 @@ export function carryForward(proposal, state) {
       if (resolveShipFor(out.ship, ctx) !== null) continue;
       const current = resolveShipFor(state.ship, ctx);
       if (current === null) continue;
+      // No source recorded means the state was built by a caller that does not
+      // track provenance. Withhold rather than guess: a carry that should not
+      // have happened is a silent detachment, a carry that did not happen is a
+      // visible blank the operator can fill in.
+      if (fromGroup(state.ship_source?.[ctx] ?? 'item')) continue;
       out.ship[ctx] = current;
       carriedShip.push({ context: ctx, value: current });
     }
