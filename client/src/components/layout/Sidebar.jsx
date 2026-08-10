@@ -46,25 +46,22 @@ import { usePermissions } from '../../hooks/usePermissions';
 
 const navGroups = [
   // ─────────────────────────────────────────────────────────────────────────
-  // CRM SWITCH-OVER (2026-08-10) — the funnel/CRM surface now comes from the
-  // Funnel OS codebase deployed at puure-crm.onrender.com. These entries are
-  // HIDDEN, not deleted: every route in App.jsx and every page component still
-  // exists and still works if you navigate to the URL directly. They are off
-  // the menu so the sidebar shows ONE CRM, not two of everything.
+  // ONE MENU (2026-08-10). Organised by what the operator is DOING, not by
+  // which backend serves it. `/app/crm/*` entries are the Funnel OS CRM
+  // embedded in this shell; everything else is native Puure. The operator
+  // should not be able to tell the difference — that is the whole point.
   //
-  // To restore: un-comment the block below. Nothing else was changed.
-  //
-  // {
-  //   label: 'Operations',
-  //   icon: Store,
-  //   items: [
-  //     { to: '/app/orders', icon: ShoppingCart, label: 'Orders', permission: 'orders:access', end: true },
-  //     { to: '/app/customers', icon: UsersRound, label: 'Customers', permission: 'customers:access' },
-  //     { to: '/app/abandoned', icon: ShoppingCart, label: 'Abandoned checkouts', permission: 'orders:access' },
-  //     { to: '/app/failed-payments', icon: CreditCard, label: 'Failed payments', permission: 'orders:access' },
-  //   ],
-  // },
+  // The legacy native CRM pages (/app/orders, /app/funnels, …) still exist and
+  // still work by URL. They are off the menu so there is ONE of everything.
   // ─────────────────────────────────────────────────────────────────────────
+  {
+    label: 'Home',
+    icon: LayoutDashboard,
+    items: [
+      { to: '/app/dashboard', icon: LayoutDashboard, label: 'Home', end: true },
+      { to: '/app/kpi-system', icon: Crown, label: 'CEO Office', permission: 'kpi-system:access', end: true },
+    ],
+  },
   {
     label: 'Operations',
     icon: Store,
@@ -74,71 +71,72 @@ const navGroups = [
       { to: '/app/crm/abandoned', icon: ShoppingCart, label: 'Abandoned checkouts', permission: 'orders:access' },
       { to: '/app/crm/failed-payments', icon: CreditCard, label: 'Failed payments', permission: 'orders:access' },
       { to: '/app/crm/subscriptions', icon: Repeat, label: 'Subscriptions', permission: 'orders:access' },
+      { to: '/app/assets', icon: Package, label: 'Products', permission: 'assets:access' },
     ],
   },
   {
-    label: 'Production',
-    icon: Factory,
+    label: 'Sales channels',
+    icon: Waypoints,
     items: [
-      // Funnel OS CRM — embedded (see App.jsx `crm/*` routes)
       { to: '/app/crm/funnels', icon: Waypoints, label: 'Funnels', permission: 'funnels:access' },
       { to: '/app/crm/builder', icon: LayoutTemplate, label: 'Funnel Builder', permission: 'funnels:access' },
       { to: '/app/crm/templates', icon: Copy, label: 'Templates', permission: 'funnels:access' },
-      { to: '/app/crm/analytics', icon: BarChart3, label: 'Analytics', permission: 'funnels:access' },
       { to: '/app/crm/live', icon: Radio, label: 'Live View', permission: 'funnels:access' },
+      { to: '/app/crm/settings', icon: Plug, label: 'Settings', permission: 'funnels:access' },
+    ],
+  },
+  {
+    label: 'Analytics',
+    icon: BarChart3,
+    items: [
+      { to: '/app/crm/analytics', icon: BarChart3, label: 'Analytics', permission: 'funnels:access' },
       { to: '/app/crm/costs', icon: DollarSign, label: 'Costs & P&L', permission: 'funnels:access' },
-      { to: '/app/crm/settings', icon: Plug, label: 'CRM Settings', permission: 'funnels:access' },
-      // CRM SWITCH-OVER (2026-08-10) — hidden, not deleted. Routes still live.
-      // { to: '/app/funnels', icon: Waypoints, label: 'Funnels', permission: 'funnels:access' },
-      // { to: '/app/funnel-analytics', icon: BarChart3, label: 'Funnel Analytics', permission: 'funnels:access' },
-      // { to: '/app/live-view', icon: Radio, label: 'Live View', permission: 'funnels:access' },
-      // { to: '/app/costs', icon: DollarSign, label: 'Costs & P&L', permission: 'funnels:access' },
-      // { to: '/app/domains', icon: Globe, label: 'Domain Hub', permission: 'funnels:access' },
-      // { to: '/app/integrations', icon: Plug, label: 'Integrations', permission: 'funnels:access' },
+      { to: '/app/creative-analysis', icon: BarChart3, label: 'Creative Analysis', permission: 'creative-analysis:access' },
+      { to: '/app/kpi-system/cost-sheet', icon: DollarSign, label: 'Supplier Costs', permission: 'kpi-system:access' },
+      { to: '/app/kpi-system/fees', icon: DollarSign, label: 'Fee Breakdown', permission: 'kpi-system:access' },
+    ],
+  },
+  {
+    label: 'Creatives',
+    icon: Sparkles,
+    items: [
       { to: '/app/brief-agent', icon: Sparkles, label: 'Brief Agent', permission: 'brief-agent:access' },
-      { to: '/app/iteration-king', icon: Crown, label: 'Iteration King', permission: 'iteration-king:access' },
       { to: '/app/statics-generation', icon: Layers, label: 'Statics Generation', permission: 'statics-generation:access' },
       { to: '/app/brief-pipeline', icon: FileText, label: 'Brief Pipeline', permission: 'brief-pipeline:access' },
       { to: '/app/clickup-pipeline', icon: Video, label: 'ClickUp Pipeline', permission: 'brief-pipeline:access' },
-      { to: '/app/ads-launcher', icon: Rocket, label: 'Ads Launcher', permission: 'ads-launcher:access' },
+      { to: '/app/iteration-king', icon: Crown, label: 'Iteration King', permission: 'iteration-king:access' },
       { to: '/app/languages-pipeline', icon: Globe, label: 'Languages Pipeline', permission: 'languages-pipeline:access' },
-      // Brand Spy — no permission gate, always visible to logged-in users
+    ],
+  },
+  {
+    label: 'Paid media',
+    icon: Rocket,
+    items: [
+      { to: '/app/ads-launcher', icon: Rocket, label: 'Ads Launcher', permission: 'ads-launcher:access' },
+      { to: '/app/ads-control-center', icon: Zap, label: 'Ads Control', permission: 'ads-control-center:access' },
+      { to: '/app/ads-reporting', icon: TrendingUp, label: 'Ads Reporting', permission: 'ads-reporting:access' },
+    ],
+  },
+  {
+    label: 'Intel',
+    icon: ScanSearch,
+    items: [
       { to: '/app/brand-spy', icon: ScanSearch, label: 'Brand Spy', end: true },
       { to: '/app/brand-spy/league', icon: Trophy, label: 'The League' },
     ],
   },
   {
-    label: 'Library',
+    label: 'Team',
     icon: FolderOpen,
     items: [
       { to: '/app/team-hub', icon: UsersRound, label: 'Team Hub', permission: 'team-hub:access' },
-      { to: '/app/assets', icon: Package, label: 'Product Library', permission: 'assets:access' },
-    ],
-  },
-  {
-    label: 'Performance',
-    icon: BarChart3,
-    items: [
-      { to: '/app/creative-analysis', icon: BarChart3, label: 'Creative Analysis', permission: 'creative-analysis:access' },
-      { to: '/app/ads-reporting', icon: TrendingUp, label: 'Ads Reporting', permission: 'ads-reporting:access' },
-      { to: '/app/ads-control-center', icon: Zap, label: 'Ads Control', permission: 'ads-control-center:access' },
-      {
-        icon: DollarSign,
-        label: 'KPI System',
-        permission: 'kpi-system:access',
-        children: [
-          { to: '/app/kpi-system', label: 'Dashboard' },
-          { to: '/app/kpi-system/cost-sheet', label: 'Supplier Costs' },
-          { to: '/app/kpi-system/fees', label: 'Fee Breakdown' },
-        ],
-      },
+      { to: '/app/team', icon: Shield, label: 'Team', permission: 'team:manage' },
     ],
   },
   {
     label: 'Ops',
     icon: Wrench,
     items: [
-      { to: '/app/team', icon: Shield, label: 'Team', permission: 'team:manage' },
       { to: '/app/support', icon: Headphones, label: 'Support', permission: 'support:access' },
       { to: '/app/api-runs', icon: Zap, label: 'API Runs', permission: 'api-runs:access' },
       { to: '/app/ops-dashboard', icon: Monitor, label: 'Dashboard', permission: 'ops-dashboard:access' },
