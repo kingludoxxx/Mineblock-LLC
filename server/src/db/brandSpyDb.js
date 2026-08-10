@@ -545,50 +545,68 @@ export async function getAdTierCounts(brandId) {
 // Replaces 4 parallel /aggregations?type=X&limit=1 calls (each of which pulled
 // every ad and built the full grouping in memory) with one query + one in-memory
 // pass that builds all four Set sizes at once. Cuts ~500-700 ms on big brands.
+// ---------------------------------------------------------------------------
+// Aggregation key expressions, evaluated in Postgres.
+//
+// These reproduce the JS key functions that used to run in Node. They live in
+// SQL because the old implementation ran `SELECT ... FROM brand_spy.ads WHERE
+// brand_id = $1` with no LIMIT and deduped every row in process memory. That
+// was written when the comment below it still held ("most brands have <2k ads,
+// fits easily in mem"); brands now reach 9k+ ads and 44k across the corpus, and
+// each row drags a multi-KB raw_snapshot through the heap. On a 512 MB instance
+// it OOM-killed the whole dashboard (every endpoint 502s while it restarts);
+// on a larger one it still took ~31 s, past Render's 30 s gateway timeout.
+// Grouping in Postgres keeps process memory flat regardless of corpus size.
+//
+// `key` yields the group key, `keep` is the qualifying predicate. `a` is the
+// alias of brand_spy.ads in the surrounding query.
+const AGG_KEY_SQL = {
+  // First line of body_text (falling back to headline), whitespace-collapsed,
+  // capped at 100 chars — mirrors src.split(/\r?\n/)[0].trim().replace().slice().
+  hooks: {
+    key: `left(regexp_replace(btrim(split_part(replace(COALESCE(NULLIF(a.body_text, ''), a.headline, ''), E'\\r\\n', E'\\n'), E'\\n', 1)), '\\s+', ' ', 'g'), 100)`,
+    keep: `length(left(regexp_replace(btrim(split_part(replace(COALESCE(NULLIF(a.body_text, ''), a.headline, ''), E'\\r\\n', E'\\n'), E'\\n', 1)), '\\s+', ' ', 'g'), 100)) >= 8`,
+  },
+  headlines: {
+    key: `btrim(COALESCE(a.headline, ''))`,
+    keep: `length(btrim(COALESCE(a.headline, ''))) >= 3`,
+  },
+  // Length is checked BEFORE collapsing, exactly as the JS did.
+  adcopy: {
+    key: `regexp_replace(btrim(COALESCE(a.body_text, '')), '\\s+', ' ', 'g')`,
+    keep: `length(btrim(COALESCE(a.body_text, ''))) >= 30`,
+  },
+  // host+path, lowercased host, www. and query/fragment/trailing slash stripped.
+  // Schemeless values fall back to the raw first 160 chars, as `new URL()`
+  // would have thrown for them.
+  landing: {
+    key: `CASE WHEN btrim(COALESCE(a.link_url, '')) ~ '^[A-Za-z][A-Za-z0-9+.-]*://'
+            THEN lower(regexp_replace(split_part(regexp_replace(split_part(split_part(btrim(a.link_url), '#', 1), '?', 1), '^[A-Za-z][A-Za-z0-9+.-]*://', ''), '/', 1), '^www\\.', ''))
+                 || regexp_replace(COALESCE(substring(regexp_replace(split_part(split_part(btrim(a.link_url), '#', 1), '?', 1), '^[A-Za-z][A-Za-z0-9+.-]*://', '') from '/.*'), ''), '/+$', '')
+            ELSE left(btrim(COALESCE(a.link_url, '')), 160) END`,
+    keep: `btrim(COALESCE(a.link_url, '')) <> ''`,
+  },
+};
+
 export async function getBrandAggregationCounts(brandId) {
+  const K = AGG_KEY_SQL;
   const { rows } = await query(
-    `SELECT headline, body_text, link_url
-       FROM brand_spy.ads WHERE brand_id = $1`,
+    `SELECT
+       count(DISTINCT CASE WHEN ${K.hooks.keep}     THEN ${K.hooks.key}     END)::int AS hooks,
+       count(DISTINCT CASE WHEN ${K.adcopy.keep}    THEN ${K.adcopy.key}    END)::int AS adcopy,
+       count(DISTINCT CASE WHEN ${K.headlines.keep} THEN ${K.headlines.key} END)::int AS headlines,
+       count(DISTINCT CASE WHEN ${K.landing.keep}   THEN ${K.landing.key}   END)::int AS landing
+     FROM brand_spy.ads a
+     WHERE a.brand_id = $1`,
     [brandId],
   );
 
-  const hooks     = new Set();
-  const headlines = new Set();
-  const adcopy    = new Set();
-  const landing   = new Set();
-
-  for (const r of rows) {
-    // Hook = first line of body_text (or headline if no body), <=100 chars
-    const src = r.body_text || r.headline || '';
-    if (src) {
-      const firstLine = src.split(/\r?\n/)[0].trim().replace(/\s+/g, ' ').slice(0, 100);
-      if (firstLine.length >= 8) hooks.add(firstLine);
-    }
-    // Headline = raw trimmed headline, >=3 chars
-    const h = (r.headline ?? '').trim();
-    if (h.length >= 3) headlines.add(h);
-    // Ad copy = full body_text, >=30 chars, collapsed whitespace
-    const b = (r.body_text ?? '').trim();
-    if (b.length >= 30) adcopy.add(b.replace(/\s+/g, ' '));
-    // Landing = normalized host+path (strip protocol/www/query/trailing slash)
-    const u = (r.link_url ?? '').trim();
-    if (u) {
-      try {
-        const url = new URL(u.startsWith('http') ? u : `https://${u}`);
-        const host = url.host.toLowerCase().replace(/^www\./, '');
-        const path = url.pathname.replace(/\/+$/, '');
-        landing.add(`${host}${path}` || host);
-      } catch {
-        landing.add(u.slice(0, 160));
-      }
-    }
-  }
-
+  const r = rows[0] ?? {};
   return {
-    hooks:     hooks.size,
-    adcopy:    adcopy.size,
-    headlines: headlines.size,
-    landing:   landing.size,
+    hooks:     r.hooks     ?? 0,
+    adcopy:    r.adcopy    ?? 0,
+    headlines: r.headlines ?? 0,
+    landing:   r.landing   ?? 0,
   };
 }
 
@@ -606,125 +624,90 @@ export async function getBrandAggregations(brandId, type, { limit = 50, activeOn
   // raw_snapshot from the SELECT cuts the wire payload from ~12 MB to ~2 MB
   // on big brands like Norse Organics (2,400 ads × ~5 KB JSON each) and
   // moves the thumbnail computation from JS to Postgres where it's free.
+  const K = AGG_KEY_SQL[type];
+  if (!K) throw new Error(`Unknown aggregation type: ${type}`);
+
+  // Group in Postgres and return at most `limit` rows. Nothing proportional to
+  // the brand's ad count is ever held in this process — see AGG_KEY_SQL above
+  // for why that matters. `total` comes back as a window count over the full
+  // group set, so it still reflects every group, not just the returned page.
   const { rows } = await query(
-    `SELECT a.id, a.ad_archive_id, a.headline, a.body_text, a.link_url, a.cta_text,
-            a.tier, a.is_active, a.active_days, a.total_active_time,
-            a.display_format, a.current_rank,
-            COALESCE(
-              a.raw_snapshot->'videos'->0->>'video_preview_image_url',
-              a.raw_snapshot->'images'->0->>'resized_image_url',
-              a.raw_snapshot->'images'->0->>'original_image_url',
-              a.raw_snapshot->'cards'->0->>'resized_image_url',
-              a.raw_snapshot->'cards'->0->>'original_image_url',
-              a.raw_snapshot->>'page_profile_picture_url'
-            ) AS thumbnail_url
-       FROM brand_spy.ads a
-      WHERE ${whereSql}`,
-    params,
+    `WITH f AS (
+       SELECT a.id, a.headline, a.body_text, a.link_url, a.cta_text,
+              a.tier, a.is_active, a.current_rank,
+              GREATEST(COALESCE(a.active_days, 0),
+                       floor(COALESCE(a.total_active_time, 0) / 86400.0))::int AS days,
+              COALESCE(
+                a.raw_snapshot->'videos'->0->>'video_preview_image_url',
+                a.raw_snapshot->'images'->0->>'resized_image_url',
+                a.raw_snapshot->'images'->0->>'original_image_url',
+                a.raw_snapshot->'cards'->0->>'resized_image_url',
+                a.raw_snapshot->'cards'->0->>'original_image_url',
+                a.raw_snapshot->>'page_profile_picture_url'
+              ) AS thumbnail_url,
+              ${K.key} AS k
+         FROM brand_spy.ads a
+        WHERE ${whereSql} AND ${K.keep}
+     ),
+     g AS (
+       SELECT k,
+              count(*)::int                                    AS count,
+              count(*) FILTER (WHERE is_active)::int           AS active_count,
+              max(days)::int                                   AS max_active_days,
+              count(*) FILTER (WHERE tier = 'BANGER')::int     AS c_banger,
+              count(*) FILTER (WHERE tier = 'CHAMP')::int      AS c_champ,
+              count(*) FILTER (WHERE tier = 'A')::int          AS c_a,
+              count(*) FILTER (WHERE tier = 'B')::int          AS c_b,
+              count(*) FILTER (WHERE tier = 'C')::int          AS c_c,
+              count(*) FILTER (WHERE tier = 'MID')::int        AS c_mid,
+              count(*) FILTER (WHERE tier = 'TEST')::int       AS c_test,
+              (array_agg(id ORDER BY (is_active AND current_rank IS NOT NULL) DESC,
+                                     current_rank ASC NULLS LAST, id))[1:6] AS sample_ad_ids
+         FROM f GROUP BY k
+     ),
+     t AS (
+       SELECT DISTINCT ON (k) k, id AS top_ad_id, current_rank AS best_rank,
+              headline, body_text, link_url, cta_text, thumbnail_url
+         FROM f
+        ORDER BY k, (is_active AND current_rank IS NOT NULL) DESC,
+                 current_rank ASC NULLS LAST, id
+     )
+     SELECT g.*, t.top_ad_id, t.best_rank, t.headline, t.body_text, t.link_url,
+            t.cta_text, t.thumbnail_url,
+            (count(*) OVER ())::int AS total_groups
+       FROM g JOIN t USING (k)
+      ORDER BY g.active_count DESC, g.max_active_days DESC, g.count DESC
+      LIMIT $${params.length + 1}`,
+    [...params, limit],
   );
 
-  // Pick the key function for the requested type
-  function hookOf(ad) {
-    const src = ad.body_text || ad.headline || '';
-    if (!src) return null;
-    // First line only, then first ~100 chars, trimmed and collapsed-whitespace
-    const firstLine = src.split(/\r?\n/)[0].trim();
-    const collapsed = firstLine.replace(/\s+/g, ' ');
-    const out = collapsed.slice(0, 100);
-    return out.length >= 8 ? out : null;
-  }
-  function headlineOf(ad) {
-    const h = (ad.headline ?? '').trim();
-    return h.length >= 3 ? h : null;
-  }
-  function adCopyOf(ad) {
-    const b = (ad.body_text ?? '').trim();
-    if (b.length < 30) return null;
-    // Group on full text (collapsed whitespace)
-    return b.replace(/\s+/g, ' ');
-  }
-  function landingOf(ad) {
-    const u = (ad.link_url ?? '').trim();
-    if (!u) return null;
-    // Normalize: strip protocol, lowercase host, drop fbclid/utm/etc query params for grouping
-    try {
-      const url = new URL(u);
-      const host = url.host.toLowerCase().replace(/^www\./, '');
-      const path = url.pathname.replace(/\/+$/, '');
-      return `${host}${path}` || host;
-    } catch {
-      return u.slice(0, 160);
-    }
-  }
+  // Rows arrive pre-grouped, pre-sorted and already capped at `limit`. The
+  // representative ad per group is chosen deterministically in SQL (active +
+  // ranked first, then lowest rank, then id) rather than by row arrival order,
+  // which the old in-process loop depended on.
+  const items = rows.map((r) => ({
+    key: r.k,
+    sampleHeadline: r.headline ?? null,
+    sampleBody: r.body_text ?? null,
+    sampleLink: r.link_url ?? null,
+    sampleCta: r.cta_text ?? null,
+    count: r.count,
+    activeCount: r.active_count,
+    tierCounts: {
+      BANGER: r.c_banger,
+      CHAMP:  r.c_champ,
+      A:      r.c_a,
+      B:      r.c_b,
+      C:      r.c_c,
+      MID:    r.c_mid,
+      TEST:   r.c_test,
+    },
+    bestRank: r.best_rank ?? null,
+    maxActiveDays: r.max_active_days,
+    topAdId: r.top_ad_id,
+    sampleAdIds: r.sample_ad_ids ?? [],
+    thumbnailUrl: r.thumbnail_url ?? null,
+  }));
 
-  const keyFn = {
-    hooks:     hookOf,
-    headlines: headlineOf,
-    adcopy:    adCopyOf,
-    landing:   landingOf,
-  }[type];
-  if (!keyFn) throw new Error(`Unknown aggregation type: ${type}`);
-
-  // Group
-  const groups = new Map();
-  for (const r of rows) {
-    const key = keyFn(r);
-    if (!key) continue;
-    let g = groups.get(key);
-    if (!g) {
-      g = {
-        key,
-        sampleHeadline: null,
-        sampleBody: null,
-        sampleLink: null,
-        sampleCta: null,
-        count: 0,
-        activeCount: 0,
-        tierCounts: { BANGER: 0, CHAMP: 0, A: 0, B: 0, C: 0, MID: 0, TEST: 0 },
-        bestRank: null,
-        maxActiveDays: 0,
-        topAdId: null,
-        sampleAdIds: [],
-        thumbnailUrl: null,
-      };
-      groups.set(key, g);
-    }
-    g.count++;
-    if (r.is_active) g.activeCount++;
-    if (r.tier && g.tierCounts[r.tier] != null) g.tierCounts[r.tier]++;
-    const tatDays = r.total_active_time != null ? Math.floor(r.total_active_time / 86400) : 0;
-    const days = Math.max(r.active_days ?? 0, tatDays);
-    if (days > g.maxActiveDays) g.maxActiveDays = days;
-    // Track the "best" ad (lowest current_rank if present, else first active, else first)
-    const isBetter = (() => {
-      if (g.topAdId == null) return true;
-      // Prefer active + has rank
-      if (r.is_active && r.current_rank != null) {
-        if (g.bestRank == null) return true;
-        return r.current_rank < g.bestRank;
-      }
-      return false;
-    })();
-    if (isBetter) {
-      g.topAdId = r.id;
-      g.bestRank = r.current_rank;
-      g.sampleHeadline = r.headline ?? g.sampleHeadline;
-      g.sampleBody = r.body_text ?? g.sampleBody;
-      g.sampleLink = r.link_url ?? g.sampleLink;
-      g.sampleCta = r.cta_text ?? g.sampleCta;
-      // thumbnail_url is now computed in SQL above — same fallback chain as
-      // extractThumbnail used to walk in JS, just done in Postgres for free.
-      g.thumbnailUrl = r.thumbnail_url ?? null;
-    }
-    if (g.sampleAdIds.length < 6) g.sampleAdIds.push(r.id);
-  }
-
-  // Sort by activeCount DESC, then maxActiveDays DESC, then count DESC
-  const items = Array.from(groups.values()).sort((a, b) => {
-    if (b.activeCount !== a.activeCount) return b.activeCount - a.activeCount;
-    if (b.maxActiveDays !== a.maxActiveDays) return b.maxActiveDays - a.maxActiveDays;
-    return b.count - a.count;
-  }).slice(0, limit);
-
-  return { items, total: groups.size };
+  return { items, total: rows[0]?.total_groups ?? 0 };
 }

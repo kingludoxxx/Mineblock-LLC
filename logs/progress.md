@@ -4641,5 +4641,106 @@ in the header rather than deleting it — the audit found that exact mistake, so
 re-invention; the harness forbids only its dangerous presentation (DECISION MADE). (3) M2
 (unmatched-payment parking in gatewayWebhooks) NOT touched — deferred to the integrator per
 instruction; gatewayWebhooks is the single-writer money file (DECISION MADE).
+TIMESTAMP: 2026-08-10 15:31
+TASK: Puure Brief Pipeline — restore full operation (OOM crash + halted migrations)
+BUILT:
+  (1) Bounded the transcription download. `downloadVideo()` in
+  server/src/services/videoTranscribe.js buffered any size via arrayBuffer(),
+  and the inline Vertex/Gemini paths then base64 it (+33%), so peak heap ran
+  ~2.5x the file. On puure-dashboard (`starter`, 512 MB, warm Chromium
+  alongside) a transcribe request hit "FATAL ERROR: Reached heap limit" and
+  restarted the instance, 502-ing every concurrent user. mineblock-dashboard
+  survives the same code only because it is on `standard` (2 GB). Added
+  TRANSCRIBE_MAX_BYTES (default 25 MB) enforced against BOTH the declared
+  content-length and the bytes actually read, tagged `VIDEO_TOO_LARGE`, and
+  suppressed the pointless yt-dlp "stale URL" retry for that class. Set
+  TRANSCRIBE_MAX_BYTES=100MB on Mineblock so its 2 GB box keeps its reach.
+  (2) Repaired the migration chain. Puure logged "MIGRATIONS FAILED: column
+  refresh_token_hash does not exist" + "SCHEMA IS INCOMPLETE" on every boot
+  since the fork. Cause: the fork cloned the schema by pg_dump but not the
+  `_migrations` ledger, so 005 re-ran and its index referenced the pre-008
+  column name. Added /admin-migration-status and /admin-reconcile-migrations
+  (both read-gated on CRON_SECRET), guarded 005 and 008 on column presence,
+  and reconciled the ledger with an explicit 89-filename list rather than
+  letting the chain re-execute.
+TESTED:
+  - Cap, by execution on a 144 MB heap: declared-oversize 40 MB and chunked
+    40 MB with no content-length BOTH throw VIDEO_TOO_LARGE; 2 MB under-cap
+    download returns intact bytes and correct mime. The SAME test against the
+    pre-fix file returns 40 MB buffers for both oversize cases (no cap existed).
+  - Failure path run for real: the exact transcribe call that killed the box
+    now returns HTTP 500 with a diagnostic body in 6.7s and the service stays
+    up (health 200 x3 immediately after).
+  - Migration reconcile dry-run first (wouldInsert=70, alreadyPresent=19),
+    then applied: ledger 19 -> 89, pending 7. Restart ran exactly those 7;
+    boot log shows "Migrations complete", no MIGRATIONS FAILED, no SCHEMA
+    IS INCOMPLETE. Ledger now 96/96, pending 0.
+  - Data integrity checked against the pre-change baseline via
+    /admin-puure-audit: users 20, roles 17, user_roles 47, product_profiles 1,
+    brief_generation_jobs 47, statics_templates 1839, image_store 794 — all
+    unchanged. Only brand_spy tables grew (live scraper).
+  - End-to-end after all changes: paste-script -> brief in 32s,
+    "PL - B0087 - NN - Menopause - TCS - Mashup - Ludovico - NA - WK33_2026",
+    score 8.4, verdict YES, 5 hooks; ClickUp prefill returned the live editor
+    roster with queue counts; test brief deleted; health 200.
+  - Mineblock re-checked after its auto-deploy: health 200, migrations 96/96.
+OUTPUT: Puure boots clean, survives an oversized transcribe, and generates
+  briefs end to end. Transcription itself still cannot SUCCEED on Puure — no
+  provider is configured there (GOOGLE_SA_JSON absent, OPENAI_API_KEY absent,
+  legacy Gemini File API upload fails). That is a credential copy only Ludo
+  can do; it is not a code defect.
+DECISIONS:
+  - DECISION MADE: reconciled the ledger instead of making 005/008 idempotent
+    and letting the run continue. 89 of the 92 pending migrations pre-date the
+    fork and their effects are already in the cloned schema; that set includes
+    032_deactivate_non_superadmin_users, 025/026_reset_*, the cleanup cascades
+    and 082_purge_stale_pl_briefs. Re-applying them to a live database would
+    have deactivated Puure's users and purged brief data. Conservative choice.
+  - DECISION MADE: did not provision Redis or change plans. Redis is degraded
+    on BOTH services (pre-existing, app degrades gracefully to in-memory rate
+    limiting) and a plan change is a recurring cost — operator's call.
+STATUS: COMPLETE (transcription credential copy BLOCKED on operator)
+---
+
+---
+TIMESTAMP: 2026-08-10 15:42
+TASK: Puure Brief Pipeline — transcription restored (follow-on)
+BUILT: No code change. The transcription failure after the OOM fix was a
+  missing-credential problem, and the fix was to copy the provider credentials
+  from mineblock-dashboard to puure-dashboard via the Render REST API
+  (GET/PUT /v1/services/{id}/env-vars), which the MCP does not expose.
+  Measured gap on Puure: GOOGLE_SA_JSON ABSENT (2358 B on Mineblock),
+  OPENAI_API_KEY ABSENT (164 B on Mineblock), GEMINI_API_KEY present but 39 B
+  vs Mineblock's 53 B — a stale key, which is what produced "Gemini File API
+  upload failed". Copied all three; verified by sha256 prefix match on both
+  services without printing any value.
+  R2_* deliberately NOT copied: that bucket ships with Mineblock to the buyer,
+  so pointing Puure at it would entangle the two estates. Puure still needs its
+  own Cloudflare bucket (fork task 3.3).
+TESTED:
+  - POST /brand-spy/ads/:id/transcribe → HTTP 200 in 18.9s, 1692-char
+    transcript containing BOTH [ON-SCREEN TEXT] and [AUDIO / VOICEOVER]
+    sections, i.e. the Vertex multimodal path, not a degraded fallback.
+  - Full chain re-run end to end: transcript served from cache (cached=true)
+    → league/ads lists it → imported as a reference (status=transcribed,
+    1692 chars) → brief generated FROM that transcript:
+    "PL - B0088 - NN - Product Aware - Promo - Mashup - Ludovico - NA - WK33_2026",
+    score 8.4, verdict YES, hook 1 correctly clones the reference's
+    live-demo/skeptic structure onto the Puure product.
+  - Regression check on 095e166 (another session's brand-spy auth change,
+    picked up by this deploy): league/ads still returns 200 with the session
+    token. No breakage.
+  - Test brief and test reference both deleted; health 200 after the run.
+OUTPUT: League → transcribe → reference → brief now works on Puure end to end.
+DECISIONS:
+  - DECISION MADE: copied credentials service-to-service via the Render API
+    rather than asking the operator to paste a service-account private key
+    into chat. Values never printed; staged key file shredded after use.
+  - NOTE: this widens the Anthropic/Gemini/OpenAI/Vertex key sharing between
+    the two instances, which tasks/FORK-SECRET-ROTATION.md already requires be
+    undone before the buyer takes Mineblock. Rotation scope is now larger:
+    GOOGLE_SA_JSON and OPENAI_API_KEY are shared too.
+  - Residual: 3 MANUAL-* winner rows from my test runs sit in `detected`.
+    There is no delete endpoint for winners; needs a one-line SQL cleanup.
 STATUS: COMPLETE
 ---

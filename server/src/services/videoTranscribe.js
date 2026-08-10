@@ -17,6 +17,13 @@ import crypto from 'node:crypto';
 const WHISPER_URL = 'https://api.openai.com/v1/audio/transcriptions';
 const WHISPER_MODEL = 'whisper-1';
 const WHISPER_MAX_BYTES = 25 * 1024 * 1024; // OpenAI hard limit
+// Hard ceiling on a downloaded video. The transcribe path holds the whole file
+// in memory AND makes a base64 copy of it (+33%) for the inline Vertex/Gemini
+// calls, so peak heap is roughly 2.5× the file. On a 512 MB instance running a
+// warm Chromium alongside, an uncapped download reaches the V8 heap limit and
+// kills the process — taking every other request on the box with it.
+// Tunable per instance: a 2 GB box can afford a bigger ceiling than a 512 MB one.
+const TRANSCRIBE_MAX_BYTES = Number(process.env.TRANSCRIBE_MAX_BYTES) || 25 * 1024 * 1024;
 const VIDEO_FETCH_TIMEOUT_MS = 30_000;
 const WHISPER_TIMEOUT_MS = 120_000;
 const GEMINI_TIMEOUT_MS = 180_000;
@@ -269,8 +276,16 @@ export async function downloadVideoForDiag(videoUrl) {
 }
 
 /**
- * Download a remote video into memory. NEVER throws on size — the caller
- * decides whether Whisper or Gemini handles the buffer.
+ * Download a remote video into memory, bounded by TRANSCRIBE_MAX_BYTES.
+ *
+ * Throws a clear, operator-facing error when the asset is over the cap. That is
+ * deliberate: the previous version buffered any size and the process died of an
+ * out-of-memory FATAL, which restarts the instance and 502s every concurrent
+ * user. A refused transcription is recoverable; a dead box is not.
+ *
+ * The cap is enforced TWICE — once against the declared content-length (cheap,
+ * avoids pulling bytes we will reject) and once against the bytes actually read,
+ * because content-length is optional and can understate the real body.
  */
 async function downloadVideo(videoUrl) {
   const controller = new AbortController();
@@ -295,7 +310,44 @@ async function downloadVideo(videoUrl) {
     throw new Error(`Video download returned HTTP ${res.status} ${res.statusText}`);
   }
 
-  const buf = Buffer.from(await res.arrayBuffer());
+  const capMB = (TRANSCRIBE_MAX_BYTES / 1024 / 1024).toFixed(0);
+
+  // Pre-flight on the declared size — reject before pulling the body.
+  const declared = Number(res.headers.get('content-length')) || 0;
+  if (declared > TRANSCRIBE_MAX_BYTES) {
+    try { await res.body?.cancel(); } catch { /* body already discarded */ }
+    throw Object.assign(
+      new Error(
+        `Video is ${(declared / 1024 / 1024).toFixed(1)} MB, over the ${capMB} MB transcription cap. ` +
+        `Raise TRANSCRIBE_MAX_BYTES on an instance with more memory, or paste the script manually.`
+      ),
+      { code: 'VIDEO_TOO_LARGE' }
+    );
+  }
+
+  // Second gate on the bytes actually received. content-length is optional and
+  // some CDNs omit it on chunked responses, so the declared check alone is not
+  // enough to keep us inside the heap.
+  const chunks = [];
+  let total = 0;
+  for await (const chunk of res.body) {
+    total += chunk.length;
+    if (total > TRANSCRIBE_MAX_BYTES) {
+      try { await res.body?.cancel(); } catch { /* stream already torn down */ }
+      throw Object.assign(
+        new Error(
+          `Video exceeded the ${capMB} MB transcription cap while downloading ` +
+          `(content-length was ${declared ? `${(declared / 1024 / 1024).toFixed(1)} MB` : 'absent'}). ` +
+          `Raise TRANSCRIBE_MAX_BYTES on an instance with more memory, or paste the script manually.`
+        ),
+        { code: 'VIDEO_TOO_LARGE' }
+      );
+    }
+    chunks.push(Buffer.from(chunk));
+  }
+
+  const buf = Buffer.concat(chunks, total);
+  chunks.length = 0; // drop the chunk references so GC can reclaim before base64
   const contentType = res.headers.get('content-type') || 'video/mp4';
   return { buf, contentType };
 }

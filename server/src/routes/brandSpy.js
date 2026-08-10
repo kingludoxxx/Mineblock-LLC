@@ -4,6 +4,7 @@
  */
 
 import { Router } from 'express';
+import { authenticate } from '../middleware/auth.js';
 import {
   listBrands,
   getBrandExpanded,
@@ -24,6 +25,14 @@ import { extractFreshVideoUrl, adLibraryUrl } from '../services/freshVideoUrl.js
 import { startMediaMirrorWorker } from '../services/brandSpyMediaMirror.js';
 
 const router = Router();
+
+// Every other feature router authenticates; this one never did, so the whole
+// Brand Spy surface — including POST /brands, POST /brands/:id/scrape and
+// DELETE /brands/:id — was readable and writable with no session at all.
+// `authenticate` accepts the httpOnly accessToken cookie the login sets, and
+// the client calls this API same-origin (apiBaseUrl = '/api/v1/brand-spy'),
+// so the browser attaches it automatically — no client change needed.
+router.use(authenticate);
 
 // RFC4122 UUID v1-v5. Used to reject malformed :id params before they hit
 // Postgres (where they'd otherwise throw a raw `invalid input syntax for
@@ -753,6 +762,10 @@ router.post('/ads/:id/transcribe', validateUuidParam('id'), async (req, res, nex
         try {
           transcription = await transcribeVideoUrl(ad.videoUrl);
         } catch (err) {
+          // A size refusal is about the asset, not the URL — re-fetching a
+          // fresh link yields the same oversized file, so fail fast instead of
+          // paying for a yt-dlp round trip that cannot succeed.
+          if (err.code === 'VIDEO_TOO_LARGE') throw err;
           // Stored fbcdn URL expired (403 etc.) — the ad may still be live
           // in the FB Ad Library. Pull a fresh URL via yt-dlp and retry once.
           const archiveId = ad.adArchiveId || ad.ad_archive_id;

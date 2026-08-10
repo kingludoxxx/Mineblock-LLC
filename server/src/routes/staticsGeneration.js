@@ -1167,6 +1167,130 @@ router.post('/admin-puure-audit', async (req, res) => {
   }
 });
 
+// ─── /admin-migration-status — what the migration ledger thinks ran ──────
+// Read-only. Exists because a forked instance clones its SCHEMA via pg_dump
+// but not the `_migrations` ledger, so the runner re-runs migrations whose
+// effects are already present — and one of those failing halts every later
+// migration ("SCHEMA IS INCOMPLETE"). This reports the gap so the ledger can
+// be reconciled deliberately instead of guessed at.
+router.post('/admin-migration-status', async (req, res) => {
+  const cronSecret = process.env.CRON_SECRET;
+  if (!cronSecret || req.headers['x-cron-secret'] !== cronSecret) {
+    return res.status(403).json({ success: false, error: { message: 'Forbidden' } });
+  }
+  try {
+    const { default: fs } = await import('node:fs');
+    const { default: path } = await import('node:path');
+    const { fileURLToPath } = await import('node:url');
+
+    const here = path.dirname(fileURLToPath(import.meta.url));
+    const migrationsDir = path.resolve(here, '../../migrations');
+    const onDisk = fs.readdirSync(migrationsDir).filter(f => f.endsWith('.sql')).sort();
+
+    const ledgerRows = await pgQuery('SELECT filename FROM _migrations ORDER BY filename');
+    const applied = new Set(ledgerRows.map(r => r.filename));
+    const pending = onDisk.filter(f => !applied.has(f));
+
+    const sessionCols = await pgQuery(
+      `SELECT column_name FROM information_schema.columns
+        WHERE table_schema = 'public' AND table_name = 'sessions'
+        ORDER BY column_name`
+    );
+
+    return res.json({
+      success: true,
+      onDisk: onDisk.length,
+      applied: applied.size,
+      pendingCount: pending.length,
+      firstPending: pending[0] ?? null,
+      pending,
+      sessionsColumns: sessionCols.map(r => r.column_name),
+    });
+  } catch (err) {
+    console.error('[admin-migration-status] error:', err);
+    return res.status(500).json({ success: false, error: { message: err.message } });
+  }
+});
+
+// ─── /admin-reconcile-migrations — mark migrations applied WITHOUT running ──
+// For a forked instance whose schema arrived by pg_dump: those migrations have
+// already taken effect, but the ledger does not know it, so the runner would
+// re-execute them. That is not merely wasteful — the back catalogue contains
+// data migrations (user deactivation, brief purges, counter resets) that would
+// do real damage to a live database on a second application.
+//
+// Takes an EXPLICIT filename list. No server-side inference about which
+// migrations "look" already-applied: the caller states them, this validates
+// each against the migrations directory and refuses the whole batch on any
+// unknown name, so a typo cannot silently mark the wrong thing.
+router.post('/admin-reconcile-migrations', async (req, res) => {
+  const cronSecret = process.env.CRON_SECRET;
+  if (!cronSecret || req.headers['x-cron-secret'] !== cronSecret) {
+    return res.status(403).json({ success: false, error: { message: 'Forbidden' } });
+  }
+  try {
+    const { filenames, dryRun = false } = req.body || {};
+    if (!Array.isArray(filenames) || filenames.length === 0) {
+      return res.status(400).json({ success: false, error: { message: 'filenames[] is required' } });
+    }
+
+    const { default: fs } = await import('node:fs');
+    const { default: path } = await import('node:path');
+    const { fileURLToPath } = await import('node:url');
+    const here = path.dirname(fileURLToPath(import.meta.url));
+    const migrationsDir = path.resolve(here, '../../migrations');
+    const onDisk = new Set(fs.readdirSync(migrationsDir).filter(f => f.endsWith('.sql')));
+
+    const unknown = filenames.filter(f => !onDisk.has(f));
+    if (unknown.length) {
+      return res.status(400).json({
+        success: false,
+        error: { message: `Unknown migration filename(s) — nothing was written: ${unknown.join(', ')}` },
+      });
+    }
+
+    const before = await pgQuery('SELECT count(*)::int AS n FROM _migrations');
+    if (dryRun) {
+      const existing = await pgQuery('SELECT filename FROM _migrations WHERE filename = ANY($1)', [filenames]);
+      const already = new Set(existing.map(r => r.filename));
+      return res.json({
+        success: true, dryRun: true,
+        ledgerBefore: before[0].n,
+        wouldInsert: filenames.filter(f => !already.has(f)),
+        alreadyPresent: [...already],
+      });
+    }
+
+    const inserted = await pgQuery(
+      `INSERT INTO _migrations (filename)
+       SELECT unnest($1::text[])
+       ON CONFLICT (filename) DO NOTHING
+       RETURNING filename`,
+      [filenames]
+    );
+    const after = await pgQuery('SELECT count(*)::int AS n FROM _migrations');
+
+    const ledgerNow = await pgQuery('SELECT filename FROM _migrations');
+    const appliedSet = new Set(ledgerNow.map(r => r.filename));
+    const pending = [...onDisk].sort().filter(f => !appliedSet.has(f));
+
+    console.log(`[admin-reconcile-migrations] marked ${inserted.length} migration(s) as applied; ${pending.length} still pending`);
+    return res.json({
+      success: true,
+      ledgerBefore: before[0].n,
+      ledgerAfter: after[0].n,
+      insertedCount: inserted.length,
+      inserted: inserted.map(r => r.filename),
+      pendingCount: pending.length,
+      pending,
+      note: 'Restart the service to run the remaining pending migrations.',
+    });
+  } catch (err) {
+    console.error('[admin-reconcile-migrations] error:', err);
+    return res.status(500).json({ success: false, error: { message: err.message } });
+  }
+});
+
 // ─── /admin-pgdump-data-copy — async pg_dump for wholesale tables ────────
 // Fires pg_dump/psql in background, returns job_id immediately (Cloudflare
 // caps sync requests at ~100s). Poll /admin-pgdump-data-status?job_id=X.
