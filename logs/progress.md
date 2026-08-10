@@ -4010,3 +4010,67 @@ POST_PURCHASE_TYPES is imported — to keep the change inside the route file the
 coordinator named (DECISION MADE).
 STATUS: COMPLETE
 ---
+
+---
+TIMESTAMP: 2026-08-10 03:30
+TASK: Theme system (audit #7) — feat/theme-system
+BUILT: Named design-token themes for funnels, ported from funnel-os's
+listicle_themes_service.py + /themes* endpoints. Backend: funnelThemesSchema.js
+(lb_funnel_themes, soft-delete, ensureTables promise-memo), funnelThemes.js
+(11-key token schema, 7 seeded presets ported verbatim, the apply macro, the
+import extractor), routes/funnelThemes.js mounted at /api/v1/funnel-themes
+(GET /presets, GET /, POST /, PATCH /:id, DELETE /:id, POST /apply-plan,
+POST /import-url). Frontend: ThemesSection.jsx (preset gallery, saved themes,
+import-from-URL flow with a per-token support badge, and an apply confirm that
+names every settings key being overwritten with its old and new value) wired
+into FunnelSettingsModal's General group. funnelRender.js, funnels.js,
+checkoutPublic.js and app.js were NOT touched.
+TESTED: New harness server/tests/funnel-settings/themes.mjs — 118 checks
+against embedded PG through the real router (real authenticate + rbac).
+Regression: render-settings 30/30, patch-settings 22/22, tracking-tab 19/19,
+commerce 312/312, domains-tab 58/58 — all identical to the pre-change baseline
+taken before the first edit. vite build succeeded (680ms). eslint: 159 problems
+(143 errors) both WITH and WITHOUT the change — measured by stashing the lane —
+so 0 added; ThemesSection.jsx itself lints clean. Mount verified live through
+the full routes/index.js graph (unauthed GET /api/v1/funnel-themes/presets →
+401). Edge cases: empty/null/non-string/array token bags, empty and binary HTML,
+malformed URLs, over-long and non-string tokens, double-delete, unknown ids,
+and a 16-target SSRF corpus.
+OUTPUT: 118 passed, 0 failed (themes) — 441 passed, 0 failed across the five
+regression suites.
+DECISIONS: (1) THE APPLY IS AN INTERSECTION, AND IT IS PUBLISHED. The renderer
+reads exactly 3 design keys (brand_colors.primary, brand_colors.secondary,
+fonts.family); the reference's bag is 11 wide. 8 tokens are stored but never
+applied, and TOKEN_SUPPORT — served from the server so it cannot drift — makes
+the UI say so per token (DECISION MADE). (2) --brand-primary/--brand-secondary
+are EMITTED but consumed by nothing in the block library or the 8 templates
+(zero hits for var(--brand). They are marked 'variable', not 'applied', and the
+UI states they repaint a page only where that page's CSS reads them — claiming
+otherwise would sell a visual change the operator will not see (DECISION MADE).
+(3) NO SERVER-SIDE APPLY WRITE. apply-plan returns a plan and writes nothing;
+the client commits it through saveFunnelPatch/enqueueSettingsSave, so a theme
+apply is serialized against every other settings save. A second server door
+would be a second read-modify-write racing the first (DECISION MADE).
+(4) SECURITY FIX FOUND BY EXECUTION. Reusing endpointAllowed verbatim inherited
+its dev-mode loopback hatch (NODE_ENV!=='production' allows http://127.0.0.1),
+which made http://127.0.0.1:5433/ a working request against local Postgres. The
+SSRF block caught it; import-url now pre-checks https-only before delegating.
+The reference has no guard at all and returns str(exc) — we return one fixed
+code (DECISION MADE). (5) Fonts resolve to an allowlist key by walking the CSS
+stack; an unresolvable font writes NOTHING rather than falling back to the
+heading font, which would have applied Georgia to the whole page for Editorial
+Light. 5 of 7 presets resolve; 2 honestly do not (DECISION MADE).
+(6) The reference's dark muted/border branch is UNREACHABLE (bg is always
+near-white — both the palette filter and the fallback are). Ported faithfully
+and asserted as dead by execution rather than "fixed", since both tokens are
+unsupported and no rendered output could distinguish the two (DECISION MADE).
+(7) THEME A/B DEFERRED, NOT STUBBED. This install already has a split-test lane
+with its own assignment and results ledger; a second cookie-based path could
+not be scored against it, and the reference's version has no results endpoint
+at all. The UI names it as not built (DECISION MADE). (8) extra_css dropped —
+the only funnel-level CSS door is the operator's custom_head_code and letting a
+theme overwrite it would destroy hand-written code for a field the renderer
+would ignore (DECISION MADE). (9) Single-tenant, so workspace_id exists and is
+scoped in every query but carries one constant value (DECISION MADE).
+STATUS: COMPLETE
+---

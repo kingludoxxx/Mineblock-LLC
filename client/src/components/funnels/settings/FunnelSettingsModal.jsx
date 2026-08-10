@@ -3,8 +3,9 @@
 // badge), a grouped left nav, and a routed content pane. Payments is built
 // fully; other sections are wired where a backend exists, else clean scaffolds.
 import { useEffect, useState } from 'react';
-import { X, Settings, Type, Globe, CreditCard, Package, Truck, Repeat, Activity, HeartPulse, Code2, FileCode2, CornerUpRight, Stethoscope } from 'lucide-react';
+import { X, Settings, Type, Globe, CreditCard, Package, Truck, Repeat, Activity, HeartPulse, Code2, FileCode2, CornerUpRight, Stethoscope, Palette } from 'lucide-react';
 import PaymentsSection from './PaymentsSection';
+import ThemesSection from './ThemesSection';
 import TrackingSection from './TrackingSection';
 import ProductsSection from './ProductsSection';
 import ShippingSection from './ShippingSection';
@@ -20,6 +21,9 @@ const NAV = [
     group: 'General',
     items: [
       { key: 'general', label: 'General', icon: Settings },
+      // Themes sits beside General and Fonts because it writes the SAME keys
+      // those two write — it is a macro over them, not a separate surface.
+      { key: 'themes', label: 'Themes', icon: Palette },
       { key: 'fonts', label: 'Fonts', icon: Type },
       { key: 'domains', label: 'Domains', icon: Globe },
     ],
@@ -73,6 +77,7 @@ export default function FunnelSettingsModal({ open, onClose, funnel, initialSect
   const render = () => {
     switch (section) {
       case 'general': return <GeneralSection funnel={funnel} onFunnelUpdated={onFunnelUpdated} />;
+      case 'themes': return <ThemesSection funnel={funnel} onFunnelUpdated={onFunnelUpdated} />;
       case 'fonts': return <FontsSection funnel={funnel} onFunnelUpdated={onFunnelUpdated} />;
       case 'domains': return <DomainsSection funnel={funnel} onFunnelUpdated={onFunnelUpdated} />;
       case 'payments': return <PaymentsSection funnelId={funnelId} />;
