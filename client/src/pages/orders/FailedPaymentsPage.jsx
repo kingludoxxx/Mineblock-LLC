@@ -332,7 +332,12 @@ export default function FailedPaymentsPage() {
                   </td>
                   <td className="px-3 py-2.5"><Pill state={r.state} /></td>
                   <td className="px-3 py-2.5 whitespace-nowrap text-right">
-                    {r.state === 'scheduled' && (
+                    {/* Gate on the SERVER's retry_possible, not on state alone:
+                        a scheduled row on a session with no vaulted card cannot
+                        be retried, and the write path now refuses it. When the
+                        row is scheduled but has no saved card, show WHY rather
+                        than a dead button. */}
+                    {r.state === 'scheduled' && r.retry_possible && (
                       <Button
                         variant="secondary" size="sm"
                         loading={busy === r.id}
@@ -342,6 +347,14 @@ export default function FailedPaymentsPage() {
                       >
                         Request retry
                       </Button>
+                    )}
+                    {r.state === 'scheduled' && !r.retry_possible && (
+                      <span
+                        className="text-[11px] text-text-faint"
+                        title="This session has no saved card, so a retry would be a certain decline."
+                      >
+                        no saved card
+                      </span>
                     )}
                     {['scheduled', 'exhausted', 'not_retryable', 'stale'].includes(r.state) && (
                       <Button

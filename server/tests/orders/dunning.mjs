@@ -527,6 +527,57 @@ const SOFT_ID = `dq_u_uc_dn_soft`;
 }
 
 // ════════════════════════════════════════════════════════════════════════════
+// D12b — the no-saved-payment-method precondition is enforced ON THE WRITE PATH,
+//        not only in the display flag. A scheduled row on a session with no
+//        vaulted card must: (1) be retry_possible:false in the LIST so the
+//        button is gated; (2) have the server claim REFUSE without advancing
+//        attempts. Without both, a click drives attempts→exhausted and writes a
+//        dishonest intent row against a card that could never be charged.
+// ════════════════════════════════════════════════════════════════════════════
+{
+  const NOPM_ID = 'dq_u_uc_dn_nopm';
+  // Precondition for the test itself: the row is scheduled and has climbed no
+  // rungs yet.
+  const [before] = await sql`SELECT state, attempts FROM co_dunning_queue WHERE id = ${NOPM_ID}`;
+  check('D12b fixture: the no-card row is scheduled at attempt 0',
+    before.state === 'scheduled' && before.attempts === 0, JSON.stringify(before));
+
+  // (1) LIST gating — retry_possible / has_saved_pm ride every row.
+  const list = await req('GET', '/failed-payments?days=30&state=scheduled');
+  const nopmRow = (list.j?.data?.rows || []).find((r) => r.id === NOPM_ID);
+  check('D12b the LIST row for a no-card session carries retry_possible:false + has_saved_pm:false',
+    nopmRow && nopmRow.retry_possible === false && nopmRow.has_saved_pm === false,
+    JSON.stringify(nopmRow && { rp: nopmRow.retry_possible, pm: nopmRow.has_saved_pm }));
+
+  // (2) WRITE-PATH refusal — the claim refuses AND does not increment attempts.
+  const retry = await req('POST', `/failed-payments/${NOPM_ID}/retry`);
+  check('D12b the server claim REFUSES a no-card retry with the reason named',
+    retry.status === 409 && retry.j?.error === 'no_saved_payment_method',
+    `${retry.status} ${JSON.stringify(retry.j?.error)}`);
+  const [after] = await sql`SELECT state, attempts FROM co_dunning_queue WHERE id = ${NOPM_ID}`;
+  check('D12b the refused retry burned NO rung — attempts and state are untouched',
+    after.attempts === 0 && after.state === 'scheduled', JSON.stringify(after));
+  check('D12b the refused retry wrote NO intent row',
+    (await sql`SELECT COUNT(*)::int n FROM co_dunning_retry_requests WHERE queue_id = ${NOPM_ID}`)[0].n === 0);
+
+  // A card that DISAPPEARS between the display flag and the click is still
+  // refused — the guard is in the claim WHERE, not a stale read. Strip the PM
+  // off the soft row's session, then attempt a (spacing-cleared) retry.
+  await sql`UPDATE co_sessions SET payment_method_id = NULL WHERE id = ${S_PAID}`;
+  await sql`UPDATE co_dunning_queue SET last_attempt_at = NOW() - interval '2 hours',
+    state = 'scheduled', attempts = 0, next_retry_at = NOW() - interval '1 minute'
+    WHERE id = 'dq_u_uc_dn_soft'`;
+  const stripped = await req('POST', '/failed-payments/dq_u_uc_dn_soft/retry');
+  check('D12b a card removed AFTER the row was scheduled is caught by the claim, not a stale read',
+    stripped.status === 409 && stripped.j?.error === 'no_saved_payment_method',
+    `${stripped.status} ${JSON.stringify(stripped.j?.error)}`);
+  check('D12b that refusal also burned no rung',
+    (await sql`SELECT attempts FROM co_dunning_queue WHERE id = 'dq_u_uc_dn_soft'`)[0].attempts === 0);
+  // Restore the card so later blocks see a coherent world.
+  await sql`UPDATE co_sessions SET payment_method_id = 'pm_1' WHERE id = ${S_PAID}`;
+}
+
+// ════════════════════════════════════════════════════════════════════════════
 // D13 — close
 // ════════════════════════════════════════════════════════════════════════════
 {

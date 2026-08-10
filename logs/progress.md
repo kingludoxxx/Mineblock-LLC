@@ -4261,3 +4261,65 @@ posture, raw reset-token logging, brand-variable renderer consumers). Theme (FIX
 bypass) + order-edit/dunning (review) + analytics-insights still in flight.
 STATUS: COMPLETE
 ---
+
+---
+TIMESTAMP: 2026-08-10 05:10
+TASK: Order-edit + dunning — coordinator review remediation (FIX-FIRST, no blockers)
+BUILT: Rebased onto current main (6eb46e0→0f38f53 via git merge; only logs/progress.md
+conflicted, unioned append/append). Then, on the same branch:
+MAJOR — the no_saved_payment_method precondition, previously enforced NOWHERE on the write
+path (only in readQueueRow's display flag). (1) requestRetry's atomic claim WHERE now carries
+`AND EXISTS (SELECT 1 FROM co_sessions s WHERE s.id = q.session_id AND COALESCE(payment_method_id,'')<>'')`,
+so a scheduled row on a card-less session refuses (error no_saved_payment_method) WITHOUT
+advancing attempts or writing an intent row; the lost-claim re-read now joins co_sessions so
+the missing-card refusal is named precisely. (2) listQueue now selects has_saved_pm and
+retry_possible per row (LEFT JOIN co_sessions), and FailedPaymentsPage gates the Request-retry
+button on r.retry_possible (showing "no saved card" otherwise) instead of state==='scheduled'
+alone.
+MINOR-1 — shopifyOrderEdit.js address PUT sent the shipping address as BOTH shipping_address
+AND billing_address (a shipping correction silently overwrote real billing). Now pushes
+shipping_address only; billing is never touched.
+MINOR-2 — resolveSettlement now sets a `variance` boolean (new column + partial index) in the
+same atomic UPDATE when a `settled` outcome's settled_amount differs from the row's owed
+`amount` beyond a half-cent. The operator attestation still stands (not refused), but a $19
+refund marked settled at $1 is flagged and queryable; the flag rides listSettlements and the
+co_events audit row. waived/failed/no-amount carry no variance.
+MINOR-3 — one line added to BOTH money-seam contracts (route header + service header): the
+charger MUST re-verify the underlying charge is still declined at charge time (out-of-band
+recovery + up-to-72h scan lag).
+NIT-1 (done) — price-drift guard: commit accepts expected_total_delta (the number the operator
+saw); a commit whose freshly re-priced delta differs beyond epsilon is refused 409 price_changed
+with the new figures; the modal re-previews (refresh nonce) so the operator re-confirms the new
+amount. Omitting the field opts out.
+NIT-2 (done, as documentation) — the settlement-identity precondition (captured_total ==
+owed-at-purchase) is now stated in the read-surface comment; deliberately NOT published as a
+boolean, because post-edit session.subtotal cannot reconstruct the original owed amount to test
+it honestly (a guessed flag would be worse than the note).
+TESTED: Extended both harnesses. dunning.mjs +7 (D12b: list gating retry_possible/has_saved_pm
+false for a no-card session; the write-path claim refuses without incrementing attempts and
+writes no intent row; a card REMOVED after scheduling is caught by the claim WHERE, not a stale
+read; both refusals burn no rung). order-edit.mjs +11 (E9 variance: on-amount settle → false,
+$19-owed settled at $1 → true + persisted + evented; E13b: address PUT asserted to send
+shipping_address and NOT billing_address, waived → no variance; E17 price-drift: stale delta →
+409 price_changed with fresh figures + no version row, re-confirm at new delta commits,
+omitting the field opts out). post-purchase-ui.mjs +6 (U10 button gates on retry_possible and
+NOT on bare state; U11 price-drift confirm-again loop).
+OUTPUT: order-edit 88/88 · dunning 81/81 · post-purchase-ui 33/33 · regression orders-extras
+150/150 · money-path 322/325 (the same 3 upsell-page failures reproduce on a clean tree and
+need live Shopify creds; review-regression needs a live server on :4003 — both environmental,
+unchanged by this work). vite build exit 0; eslint 0 on all changed client files; node --check
+OK on all changed server files. The MAJOR was verified BY MUTATION: stripping the PM off a
+scheduled row's session and firing the retry returned 409 no_saved_payment_method with attempts
+still 0.
+DECISIONS: (1) The PM guard lives in the claim WHERE (not a read-then-write) so a card removed
+between the display flag and the click is still refused — the display flag is advisory, the
+claim is the authority (DECISION MADE). (2) The variance check is a FLAG, not a refusal — an
+operator may legitimately settle at a different number (partial, fee, goodwill), so the
+attestation stands and the discrepancy is made queryable rather than blocked (DECISION MADE).
+(3) The billing address is never written by an order edit at all — a shipping edit changes
+shipping; billing is a distinct field this lane has no mandate to touch (DECISION MADE).
+(4) list retry_possible deliberately excludes the 60s spacing floor — a row inside its cooldown
+is "retryable, just not this second", and the button answers "possible at all?", not "right
+now?" (DECISION MADE).
+STATUS: COMPLETE
+---

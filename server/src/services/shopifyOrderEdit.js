@@ -222,9 +222,15 @@ export async function pushOrderEdit({
     const orderGid = `gid://shopify/Order/${numeric}`;
 
     // ── 1. ADDRESS (idempotent REST PUT — safe to be first, safe to repeat) ──
+    // A post-purchase edit corrects the SHIPPING address only. We push
+    // shipping_address alone and NEVER touch billing_address: mirroring the
+    // shipping value onto billing would silently overwrite the buyer's real
+    // billing address (a different thing — the card's address, used for AVS and
+    // accounting) every time an operator fixed a delivery typo. The edit
+    // changed shipping, so the write changes shipping.
     if (addr) {
       const r = await restPut(doFetch, creds, `orders/${numeric}.json`, {
-        order: { id: Number(numeric), shipping_address: addr, billing_address: addr },
+        order: { id: Number(numeric), shipping_address: addr },
       });
       detail.ops.push({ op: 'address', ok: r.ok, reason: r.reason || null });
       if (!r.ok) {

@@ -47,6 +47,14 @@
 //              that can also write it is a second source of truth about money.
 //              Then call closeQueueRow({ queueId, state: 'recovered' }).
 //
+//   RE-VERIFY   at charge time, the charger MUST re-read the underlying charge
+//              and confirm it is STILL declined before charging — the queue is
+//              built by a scan, so a payment recovered out-of-band (a webhook,
+//              a manual settle) between the last scan and the charge would
+//              otherwise be collected twice. The scheduled retry window (up to
+//              72h) is wide enough that this lag is the expected case, not an
+//              edge one.
+//
 //   NEVER      add an automatic retry loop that fires without an intent row.
 //              The intent row is the only record that a human (or a scheduled
 //              job identifying itself as origin='scheduled') asked for this.

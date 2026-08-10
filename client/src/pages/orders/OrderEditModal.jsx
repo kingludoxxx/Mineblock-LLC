@@ -54,6 +54,7 @@ const SAVE_ERRORS = {
   too_many_lines: 'That would put too many lines on one order.',
   pricing_unavailable: "Shopify didn't answer, so the price could not be confirmed. Nothing was changed — try again in a moment.",
   session_not_found: 'The checkout session behind this order could not be found.',
+  price_changed: 'A catalog price changed since you last looked. The amount below has been refreshed — check it and save again. Nothing was changed.',
 };
 
 const ADDRESS_FIELDS = [
@@ -78,6 +79,10 @@ export default function OrderEditModal({ open, orderId, onClose, onSaved }) {
   const [preview, setPreview] = useState({ status: 'idle', data: null, error: null });
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState(null);
+  // Bumped to force a fresh preview when the body is unchanged but the WORLD
+  // changed — specifically after a price-drift refusal, where the operator must
+  // see the new catalog price against the same edit.
+  const [refreshNonce, setRefreshNonce] = useState(0);
 
   // ONE idempotency token per modal-open, reused across every retry. This is
   // the client half of the replay guarantee: a re-clicked Save after a timeout
@@ -161,7 +166,7 @@ export default function OrderEditModal({ open, orderId, onClose, onSaved }) {
       }
     }, 350);
     return () => { cancelled = true; clearTimeout(t); };
-  }, [open, linked, hasInput, body]);
+  }, [open, linked, hasInput, body, refreshNonce]);
 
   const p = preview.data;
   const dirty = Boolean(p?.dirty);
@@ -181,12 +186,20 @@ export default function OrderEditModal({ open, orderId, onClose, onSaved }) {
     try {
       const res = await api.post(`/order-edit/${linked.session.id}/commit`, {
         ...body, edit_id: editId, base_version: baseVersion,
+        // The delta the operator is looking at. The server refuses the commit
+        // if a catalog price drifted since this preview, so an operator can
+        // never confirm one amount and record another.
+        expected_total_delta: p?.total_delta,
       });
       onSaved?.(res.data?.data || null);
       onClose?.();
     } catch (err) {
       const code = err.response?.data?.error;
       setSaveError(SAVE_ERRORS[code] || (typeof code === 'string' && code) || 'The edit failed — nothing was changed.');
+      // On a price-drift refusal, force a fresh preview (the body is unchanged,
+      // so only the nonce can re-trigger it) so the summary shows the new
+      // catalog price the operator must re-confirm before saving again.
+      if (code === 'price_changed') setRefreshNonce((n) => n + 1);
     } finally {
       setSaving(false);
     }

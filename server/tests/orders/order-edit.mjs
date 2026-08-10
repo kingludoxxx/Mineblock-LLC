@@ -212,11 +212,12 @@ const SID_UNPRICED = 'co_oe_unpriced';
 const SID_REFUNDED = 'co_oe_refunded';
 const SID_FULFILLED = 'co_oe_fulfilled';
 const SID_PUSH = 'co_oe_push';
+const SID_DRIFT = 'co_oe_drift';
 const SHOPIFY_ID = 9911000000001;
 const FULFILLED_SHOPIFY_ID = 9911000000002;
 const ORPHAN_ID = 9911000000003;
 const PUSH_SHOPIFY_ID = 9911000000004;
-const ALL_SIDS = [SID, SID_UNPRICED, SID_REFUNDED, SID_FULFILLED, SID_PUSH];
+const ALL_SIDS = [SID, SID_UNPRICED, SID_REFUNDED, SID_FULFILLED, SID_PUSH, SID_DRIFT];
 
 const { ensureCheckoutTables } = await import('../../src/services/checkoutSchema.js');
 await ensureCheckoutTables();
@@ -486,6 +487,9 @@ let v1RowJson = null;
   check('E9 the first resolve wins and reports money_moved:false',
     a.status === 200 && a.j?.data?.status === 'settled' && a.j?.money_moved === false,
     `${a.status} ${JSON.stringify(a.j)}`);
+  // Settled at EXACTLY the owed amount → no variance flag.
+  check('E9 an on-amount settle carries variance:false',
+    a.j?.data?.variance === false, JSON.stringify(a.j?.data?.variance));
   const b = await req('POST', `/settlements/${row.edit_row_id}/resolve`, { action: 'waived' });
   check('E9 the SECOND resolve is refused 409 not_open, naming the current status',
     b.status === 409 && b.j?.error === 'not_open' && b.j?.current_status === 'settled',
@@ -495,6 +499,28 @@ let v1RowJson = null;
     bad.status === 400 && bad.j?.error === 'bad_action', `${bad.status} ${JSON.stringify(bad.j)}`);
   const missing = await req('POST', `/settlements/oe_nope/resolve`, { action: 'settled' });
   check('E9 resolving a settlement that does not exist is 404', missing.status === 404);
+
+  // HONESTY CHECK: the refund settlement is owed 19.00. Marking it settled at
+  // $1.00 must be ALLOWED (operator attestation stands) but FLAGGED as a
+  // variance — a $19 refund recorded as $1 must not read as clean.
+  const [ref] = await sql`SELECT edit_row_id, amount FROM co_order_edit_settlements
+    WHERE session_id = ${SID} AND direction = 'refund'`;
+  const off = await req('POST', `/settlements/${ref.edit_row_id}/resolve`, {
+    action: 'settled', settled_amount: 1.00, note: 'partial by hand',
+  });
+  check('E9 a $19-owed row settled at $1 is ALLOWED but flagged variance:true',
+    off.status === 200 && off.j?.data?.status === 'settled' && off.j?.data?.variance === true,
+    JSON.stringify(off.j?.data));
+  check('E9 the variance flag is persisted and is queryable',
+    (await sql`SELECT variance FROM co_order_edit_settlements WHERE edit_row_id = ${ref.edit_row_id}`)[0].variance === true);
+  check('E9 the settlement event records the variance for the audit trail',
+    (await sql`SELECT data FROM co_events WHERE session_id = ${SID}
+       AND kind = 'order_edit_settlement' AND (data->>'variance')::boolean = true`).length === 1);
+  // NB: the "waived / no-amount → never flagged" path is guarded in the service
+  // by `checkVariance = target === 'settled' && amount !== null`; it is
+  // exercised on a fresh row in E13's push session where an open settlement
+  // still exists, without disturbing SID's version chain (E10/E15 assert SID
+  // has exactly 3 versions).
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -633,6 +659,26 @@ let v1RowJson = null;
   check('E13b the push outcome is recorded with its op trail',
     pushRow.status === 'pushed' && Array.isArray(pushRow.detail?.ops) && pushRow.detail.ops.length >= 4,
     JSON.stringify(pushRow.detail).slice(0, 200));
+  // THE BILLING GUARD: a SHIPPING correction must write shipping_address ONLY.
+  // Mirroring it onto billing_address would silently overwrite the buyer's real
+  // billing address (the card address, used for AVS/accounting) on every
+  // delivery-typo fix.
+  const addrPut = shopify.ops.find((o) => o.op === 'address_put');
+  check('E13b the address PUT sends shipping_address and NEVER touches billing_address',
+    Boolean(addrPut) && addrPut.body?.order?.shipping_address?.address1 === '5 Push Rd'
+    && !('billing_address' in (addrPut.body?.order || {})),
+    JSON.stringify(addrPut?.body?.order && Object.keys(addrPut.body.order)));
+
+  // HONESTY CHECK, no-amount path: an OPEN settlement from push-off (an
+  // increase → a charge) marked `waived` carries no variance flag, because
+  // there is no settled_amount to check. Done here, on SID_PUSH, so SID's
+  // version chain (asserted at exactly 3 by E10/E15) is undisturbed.
+  const [openPush] = await sql`SELECT edit_row_id FROM co_order_edit_settlements
+    WHERE session_id = ${SID_PUSH} AND status = 'needs_settlement' LIMIT 1`;
+  const waived = await req('POST', `/settlements/${openPush.edit_row_id}/resolve`, { action: 'waived' });
+  check('E13b a waived outcome (no amount) never carries a variance flag',
+    waived.status === 200 && waived.j?.data?.status === 'waived' && waived.j?.data?.variance === false,
+    JSON.stringify(waived.j?.data));
 
   // (c) ARMED, store fails at commit — the edit MUST still stand.
   clearPriceCache(); shopify.ops = []; shopify.editMode = 'commit_error';
@@ -771,6 +817,64 @@ let v1RowJson = null;
   check('E16 the money-seam contract is documented in the route header for the integrator',
     /MONEY SEAM/.test(routeSrc) && /orderedit_<edit_row_id>/.test(routeSrc)
     && /kind: 'order_edit'/.test(routeSrc));
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// E17 — PRICE-DRIFT GUARD. The commit re-prices added lines independently of
+// the preview, so a catalog price that moved between the operator seeing the
+// delta and clicking Save must not be recorded silently. When the client sends
+// the delta it displayed, a drifted commit is refused with the fresh figures.
+// ════════════════════════════════════════════════════════════════════════════
+{
+  await seedSession(SID_DRIFT);
+  await sql`INSERT INTO co_orders (id, session_id, idempotency_key, gateway, total, currency, shopify_order_id)
+    VALUES ('coo_oe_drift', ${SID_DRIFT}, 'idem_oe_drift', 'whop', 90.00, 'USD', NULL)`;
+
+  // Preview an add of variant 333 at its catalog price 7.25 (× 2 = 14.50).
+  clearPriceCache();
+  const prev = await req('POST', `/${SID_DRIFT}/preview`, { add_lines: [{ variant_id: '333', quantity: 2 }] });
+  check('E17 preview shows the delta the operator will confirm (14.50)',
+    prev.status === 200 && prev.j?.data?.total_delta === 14.5, JSON.stringify(prev.j?.data?.total_delta));
+  const shownDelta = prev.j.data.total_delta;
+
+  // The catalog price MOVES between preview and commit.
+  CATALOG['333'].price = '12.00';
+  clearPriceCache();
+
+  // Commit carrying the delta the operator SAW → refused, with the fresh number.
+  const drifted = await req('POST', `/${SID_DRIFT}/commit`, {
+    edit_id: 'drift-1', base_version: 0,
+    add_lines: [{ variant_id: '333', quantity: 2 }],
+    expected_total_delta: shownDelta,
+  });
+  check('E17 a commit at the STALE delta is refused 409 price_changed, with the new figures',
+    drifted.status === 409 && drifted.j?.error === 'price_changed'
+    && drifted.j?.current_total_delta === 24 && drifted.j?.expected_total_delta === 14.5,
+    `${drifted.status} ${JSON.stringify(drifted.j)}`);
+  check('E17 the refused commit wrote NO version row',
+    (await sql`SELECT COUNT(*)::int n FROM co_order_edits WHERE session_id = ${SID_DRIFT}`)[0].n === 0);
+
+  // Re-confirming at the NEW delta (as the modal would after re-preview) succeeds.
+  clearPriceCache();
+  const confirmed = await req('POST', `/${SID_DRIFT}/commit`, {
+    edit_id: 'drift-1', base_version: 0,
+    add_lines: [{ variant_id: '333', quantity: 2 }],
+    expected_total_delta: 24,
+  });
+  check('E17 re-confirming at the fresh delta commits at v1 recording the NEW price',
+    confirmed.status === 200 && confirmed.j?.data?.version === 1
+    && confirmed.j?.data?.total_delta === 24, JSON.stringify(confirmed.j?.data).slice(0, 200));
+
+  // Omitting expected_total_delta opts OUT of the guard (a scripted caller).
+  CATALOG['333'].price = '5.00';
+  clearPriceCache();
+  const optOut = await req('POST', `/${SID_DRIFT}/commit`, {
+    edit_id: 'drift-2', base_version: 1, add_lines: [{ variant_id: '333', quantity: 1 }],
+  });
+  check('E17 omitting expected_total_delta opts out of the guard (commits without it)',
+    optOut.status === 200 && optOut.j?.data?.version === 2, `${optOut.status} ${JSON.stringify(optOut.j?.data?.version)}`);
+
+  CATALOG['333'].price = '7.25'; // restore for any later run
 }
 
 // ── cleanup ─────────────────────────────────────────────────────────────────

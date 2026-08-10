@@ -135,5 +135,33 @@ const routesIdx = read('server/src/routes/index.js');
     onSaved ? onSaved[0].slice(0, 120) : 'onSaved not found');
 }
 
+// ── U10: the failed-payments RETRY button gates on the SERVER precondition ──
+// The MAJOR fix: a scheduled row on a session with no vaulted card must not
+// offer a retry the write path will refuse. The button gates on retry_possible
+// (which the server computes), never on state alone.
+{
+  check('U10 the Request-retry button requires state===scheduled AND retry_possible',
+    /r\.state === 'scheduled' && r\.retry_possible &&/.test(failed));
+  check('U10 a scheduled row with no saved card shows WHY instead of a dead button',
+    /r\.state === 'scheduled' && !r\.retry_possible &&/.test(failed) && /no saved card/i.test(failed));
+  // The button must NOT gate on bare state anymore (the exact bug the review
+  // called out).
+  check('U10 the button no longer gates on {r.state === "scheduled" &&} alone',
+    !/\{r\.state === 'scheduled' && \(\s*<Button/.test(failed));
+}
+
+// ── U11: the price-drift confirm-again loop ────────────────────────────────
+// The commit sends the delta the operator saw; a price_changed refusal forces
+// a fresh preview so the new amount is shown before a second Save.
+{
+  check('U11 the commit sends expected_total_delta (the number the operator saw)',
+    /expected_total_delta: p\?\.total_delta/.test(modal));
+  check('U11 a price_changed refusal forces a fresh preview via the refresh nonce',
+    /code === 'price_changed'\) setRefreshNonce/.test(modal)
+    && /refreshNonce\]/.test(modal));
+  check('U11 the modal has copy for the price-changed case',
+    /A catalog price changed since you last looked/i.test(modal));
+}
+
 console.log(`\nRESULT: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

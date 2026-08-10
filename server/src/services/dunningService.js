@@ -568,11 +568,24 @@ export async function listQueue({ days = 30, state = 'open', bucket = '', limit 
   if (bucket) { params.push(String(bucket).slice(0, 64)); where.push(`q.decline_bucket = $${params.length}`); }
   const whereSql = where.join(' AND ');
 
+  // has_saved_pm / retry_possible ride EVERY list row so the client's
+  // "Request retry" button gates on the same precondition the write path
+  // enforces. Without it the button gated on state==='scheduled' alone and
+  // would offer a retry the server will (now) refuse — a button that lies
+  // about what it can do. retry_possible mirrors requestRetry's claim WHERE
+  // (scheduled + retryable + under the cap + a saved card); the spacing floor
+  // is deliberately NOT folded in here — a row inside its cooldown is still
+  // "retryable, just not this second", and the button's job is to show whether
+  // a retry is possible at all, not to run a clock.
   const rows = await pgQuery(
     `SELECT q.*,
             (SELECT COUNT(*)::int FROM co_dunning_retry_requests r WHERE r.queue_id = q.id) AS retry_requests,
-            (SELECT MAX(created_at) FROM co_dunning_retry_requests r WHERE r.queue_id = q.id) AS last_request_at
+            (SELECT MAX(created_at) FROM co_dunning_retry_requests r WHERE r.queue_id = q.id) AS last_request_at,
+            (COALESCE(s.payment_method_id, '') <> '') AS has_saved_pm,
+            (q.state = 'scheduled' AND q.retryable = TRUE AND q.attempts < ${MAX_ATTEMPTS}
+             AND COALESCE(s.payment_method_id, '') <> '') AS retry_possible
        FROM co_dunning_queue q
+       LEFT JOIN co_sessions s ON s.id = q.session_id
       WHERE ${whereSql}
       ORDER BY q.first_failed_at DESC
       LIMIT ${lim} OFFSET ${off}`,
@@ -702,8 +715,18 @@ export async function requestRetry({ queueId: qid, actor = '', origin = 'manual'
   // The atomic claim. Every condition here is a refusal an operator needs
   // named, so the failure branch re-reads and reports the SPECIFIC one rather
   // than a generic "could not retry".
+  //
+  // The correlated EXISTS on co_sessions.payment_method_id is LOAD-BEARING, not
+  // a nicety: the integrator contract says a retry with no vaulted card MUST be
+  // refused, and this is the ONLY write-path enforcement of it. Without the
+  // predicate in the WHERE, a scheduled row on a session with no saved card
+  // would advance attempts and write a dishonest intent row — driving the row
+  // to 'exhausted' against a card that could never have been charged. Enforcing
+  // it in the claim (rather than a read-then-write) means a card removed
+  // between the display flag and the click still refuses, and it never burns a
+  // rung. NULL payment_method_id (no card) and '' are both treated as no card.
   const claimed = await pgQuery(
-    `UPDATE co_dunning_queue
+    `UPDATE co_dunning_queue q
         SET attempts = attempts + 1,
             last_attempt_at = NOW(),
             next_retry_at = CASE
@@ -711,9 +734,13 @@ export async function requestRetry({ queueId: qid, actor = '', origin = 'manual'
               ELSE NOW() + (($3::int[])[attempts + 2] || ' hours')::interval END,
             state = CASE WHEN attempts + 1 >= $2 THEN 'exhausted' ELSE 'scheduled' END,
             updated_at = NOW()
-      WHERE id = $1 AND state = 'scheduled' AND retryable = TRUE AND attempts < $2
-        AND (last_attempt_at IS NULL
-             OR last_attempt_at <= NOW() - ($4 || ' seconds')::interval)
+      WHERE q.id = $1 AND q.state = 'scheduled' AND q.retryable = TRUE AND q.attempts < $2
+        AND (q.last_attempt_at IS NULL
+             OR q.last_attempt_at <= NOW() - ($4 || ' seconds')::interval)
+        AND EXISTS (
+          SELECT 1 FROM co_sessions s
+           WHERE s.id = q.session_id
+             AND COALESCE(s.payment_method_id, '') <> '')
       RETURNING *`,
     [id, MAX_ATTEMPTS, RETRY_DELAYS_H, String(RETRY_MIN_SPACING_SECONDS)]
   );
@@ -721,8 +748,15 @@ export async function requestRetry({ queueId: qid, actor = '', origin = 'manual'
     // Re-read rather than reporting the pre-claim snapshot: a request that lost
     // a race must describe the world as it is NOW, not as it was when it
     // started. Reporting the stale row is how "attempts_exhausted" gets shown
-    // for a row that is merely rate-limited.
-    const [fresh] = await pgQuery(`SELECT * FROM co_dunning_queue WHERE id = $1`, [id]);
+    // for a row that is merely rate-limited. The has_saved_pm read is part of
+    // this re-read so the missing-card refusal is named precisely.
+    const [fresh] = await pgQuery(
+      `SELECT q.*, (COALESCE(s.payment_method_id, '') <> '') AS has_saved_pm
+         FROM co_dunning_queue q
+         LEFT JOIN co_sessions s ON s.id = q.session_id
+        WHERE q.id = $1`,
+      [id]
+    );
     const row = fresh || existing;
     const reason = row.state !== 'scheduled'
       ? `state:${row.state}`
@@ -730,7 +764,9 @@ export async function requestRetry({ queueId: qid, actor = '', origin = 'manual'
         ? 'hard_decline_not_retryable'
         : row.attempts >= MAX_ATTEMPTS
           ? 'attempts_exhausted'
-          : 'retry_too_soon';
+          : !row.has_saved_pm
+            ? 'no_saved_payment_method'
+            : 'retry_too_soon';
     return { ok: false, error: reason, status: 409, queue: row, min_spacing_seconds: RETRY_MIN_SPACING_SECONDS };
   }
   const row = claimed[0];
@@ -820,7 +856,14 @@ export async function closeQueueRow({ queueId: qid, state = 'closed', actor = ''
 //   2. refuse unless session.payment_method_id is present AND the session
 //      status is one where a saved credential may be reused — a dunning retry
 //      on a session with no vaulted PM is a guaranteed decline that still
-//      burns a ladder rung;
+//      burns a ladder rung (this is now also enforced in requestRetry's claim,
+//      but the charger must re-check: the card can be removed between the
+//      intent and the charge);
+//   2b. RE-VERIFY the underlying charge is STILL declined immediately before
+//      charging. The queue is built by a periodic scan, so a payment recovered
+//      out-of-band (webhook, manual settle, a late async settlement) between
+//      the last scan and this charge would otherwise be collected a second
+//      time. With a retry window up to 72h wide, that lag is the expected case;
 //   3. charge with the idempotency key  `dun_<queue_id>_<attempt_no>`. That
 //      key is DETERMINISTIC and already unique by construction, because the
 //      attempt number is minted by the atomic claim in requestRetry() and

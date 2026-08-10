@@ -224,6 +224,14 @@ async function createTables() {
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )
   `);
+  // A settled row whose recorded settled_amount does not match what the seam
+  // said was owed carries a variance flag. The operator attestation still
+  // stands — an operator may legitimately settle at a different number (a
+  // partial, a fee, a goodwill adjustment) — but a $100 charge marked settled
+  // at $1 must not READ as clean. The flag makes the discrepancy queryable
+  // rather than buried in a free-text note. Added after the initial DDL (safe
+  // on fresh and existing DBs, same pattern as the co_* schema).
+  await pgQuery(`ALTER TABLE co_order_edit_settlements ADD COLUMN IF NOT EXISTS variance BOOLEAN NOT NULL DEFAULT FALSE`);
   await pgQuery(`
     CREATE INDEX IF NOT EXISTS idx_co_order_edit_settlements_open
     ON co_order_edit_settlements (created_at DESC)
@@ -233,7 +241,16 @@ async function createTables() {
     CREATE INDEX IF NOT EXISTS idx_co_order_edit_settlements_session
     ON co_order_edit_settlements (session_id)
   `);
+  // Every settled row that landed off-amount, for the reconciliation review.
+  await pgQuery(`
+    CREATE INDEX IF NOT EXISTS idx_co_order_edit_settlements_variance
+    ON co_order_edit_settlements (resolved_at DESC) WHERE variance = TRUE
+  `);
 }
+
+// The half-cent that separates rounding noise from a real discrepancy. Below
+// this, a settled_amount and the owed amount are "the same number".
+const SETTLEMENT_VARIANCE_TOLERANCE = 0.005;
 
 // ════════════════════════════════════════════════════════════════════════════
 // PURE HELPERS (no I/O — exercised directly by the harness)
@@ -629,9 +646,23 @@ export async function readEditState(sessionId, { historyLimit = 50 } = {}) {
       discount_amount: Number(session.discount_amount),
       captured_total: Number(session.total),
       owed_now: owedNow,
-      // The whole divergence between money taken and goods owed. When every
-      // edit's settlement is still open this MUST equal open_settlement_net —
-      // that identity is the cheapest possible audit of the seam.
+      // The whole divergence between money taken and goods owed.
+      //
+      // IDENTITY (the cheapest possible audit of the seam): while every edit's
+      // settlement is still OPEN, cumulative_delta equals open_settlement_net.
+      // The identity has ONE PRECONDITION worth stating for whoever asserts it:
+      // captured_total must equal what the order was owed at PURCHASE time —
+      // i.e. the capture matched the original cart. That holds for a normally
+      // -settled session (co_sessions.total IS that owed amount) and is what
+      // the harness exercises. It does NOT hold for an order captured at a
+      // hand-adjusted amount or one partly refunded outside the edit flow, and
+      // any settlement that has since been resolved (settled/waived/failed)
+      // drops out of open_settlement_net while remaining in the history — so
+      // the equality is an invariant of the OPEN set under that precondition,
+      // not a universal one. We deliberately do NOT publish a boolean for it:
+      // after an edit, session.subtotal is the POST-edit value, so the original
+      // owed amount cannot be reconstructed here to test the precondition
+      // honestly, and a flag that guessed would be worse than this note.
       cumulative_delta: round2(owedNow - (Number(session.total) || 0)),
       paid_at: session.paid_at,
       needs_review_reason: session.needs_review_reason,
@@ -845,6 +876,31 @@ export async function commitEdit({ sessionId, body = {}, actor = '', pushFn = nu
   }
   const p = preview.preview;
   if (!p.dirty) return { ok: false, error: 'no_changes', status: 422 };
+
+  // PRICE-DRIFT GUARD. The commit re-prices added lines against Shopify
+  // independently of the preview, so a catalog price that moved between the
+  // operator seeing the delta and clicking Save would be recorded silently at
+  // the new number. When the client sends the delta it displayed
+  // (`expected_total_delta`), we refuse a commit whose freshly-computed delta
+  // differs beyond the epsilon and hand back the new figures, so the modal can
+  // re-preview and ask the operator to confirm the changed amount. Omitting the
+  // field opts out (a scripted caller that does not show a human a number).
+  if (body.expected_total_delta !== undefined && body.expected_total_delta !== null) {
+    const expected = Number(body.expected_total_delta);
+    if (Number.isFinite(expected)
+        && Math.abs(expected - p.total_delta) > EDIT_LIMITS.DELTA_EPSILON) {
+      return {
+        ok: false,
+        error: 'price_changed',
+        status: 409,
+        expected_total_delta: round2(expected),
+        current_total_delta: p.total_delta,
+        subtotal_after: p.subtotal_after,
+        owed_after: p.owed_after,
+        settlement: p.settlement,
+      };
+    }
+  }
 
   // Optimistic concurrency. An absent base_version means "I did not look" —
   // we then compute it, which is safe for a single operator and still races
@@ -1068,7 +1124,7 @@ export async function listSettlements({ status = 'needs_settlement', days = 90, 
 
   const rows = await pgQuery(
     `SELECT s.edit_row_id, s.session_id, s.version, s.direction, s.amount, s.currency,
-            s.status, s.gateway_payment_id, s.settled_amount, s.note,
+            s.status, s.gateway_payment_id, s.settled_amount, s.variance, s.note,
             s.resolved_by, s.resolved_at, s.created_at,
             e.edit_id, e.delta, e.captured_total, e.owed_after, e.created_by,
             ses.status AS session_status, ses.customer ->> 'email' AS customer_email,
@@ -1122,6 +1178,15 @@ export async function listSettlements({ status = 'needs_settlement', days = 90, 
  * no gateway — see the MONEY SEAM contract in the module header and the route
  * file. It is an atomic claim on a still-open row, so two operators clicking
  * "mark settled" produce one transition and one `not_open` refusal.
+ *
+ * HONESTY CHECK: when a settled_amount is recorded on a `settled` outcome, the
+ * UPDATE compares it against what the seam said was owed (the row's own
+ * `amount`) and sets `variance = TRUE` when they differ beyond a half-cent. The
+ * attestation is NOT refused — an operator may settle at a different number for
+ * legitimate reasons — but the discrepancy is flagged so a $100 charge marked
+ * settled at $1 is queryable, not clean-looking. The comparison is done in SQL
+ * against the row's column so it is atomic with the claim and cannot be raced.
+ * A `waived`/`failed` outcome, or a settle with no amount, carries no variance.
  */
 export async function resolveSettlement({ editRowId, action, actor = '', note = '', gatewayPaymentId = '', settledAmount = null }) {
   await ensureOrderEditTables();
@@ -1135,14 +1200,22 @@ export async function resolveSettlement({ editRowId, action, actor = '', note = 
     amount = round2(n);
   }
 
+  // Variance is meaningful ONLY for a `settled` outcome that names an amount:
+  // a waive settles nothing, a failure records a non-payment, and a settle with
+  // no amount is an attestation without a number to check.
+  const checkVariance = target === 'settled' && amount !== null;
+
   const rows = await pgQuery(
     `UPDATE co_order_edit_settlements
         SET status = $2, resolved_by = $3, resolved_at = NOW(), note = $4,
-            gateway_payment_id = NULLIF($5, ''), settled_amount = $6, updated_at = NOW()
+            gateway_payment_id = NULLIF($5, ''), settled_amount = $6,
+            variance = ($7 AND ABS(COALESCE($6, amount) - amount) > $8),
+            updated_at = NOW()
       WHERE edit_row_id = $1 AND status = 'needs_settlement'
-      RETURNING edit_row_id, session_id, version, direction, amount, currency, status`,
+      RETURNING edit_row_id, session_id, version, direction, amount, currency, status, variance`,
     [editRowId, target, String(actor || '').slice(0, 200), String(note || '').slice(0, 1000),
-      String(gatewayPaymentId || '').slice(0, 128), amount]
+      String(gatewayPaymentId || '').slice(0, 128), amount,
+      checkVariance, SETTLEMENT_VARIANCE_TOLERANCE]
   );
   if (!rows.length) {
     const [existing] = await pgQuery(
@@ -1157,7 +1230,7 @@ export async function resolveSettlement({ editRowId, action, actor = '', note = 
       `INSERT INTO co_events (session_id, kind, data) VALUES ($1, 'order_edit_settlement', $2)`,
       [row.session_id, {
         edit_row_id: row.edit_row_id, version: row.version, direction: row.direction,
-        amount: Number(row.amount), status: row.status,
+        amount: Number(row.amount), status: row.status, variance: row.variance,
         settled_amount: amount, gateway_payment_id: gatewayPaymentId || null,
         by: String(actor || '').slice(0, 200),
       }]
@@ -1165,7 +1238,7 @@ export async function resolveSettlement({ editRowId, action, actor = '', note = 
   } catch (err) {
     console.error('[orderEdit] settlement event write failed (non-fatal):', err.message);
   }
-  return { ok: true, settlement: { ...row, amount: Number(row.amount), settled_amount: amount } };
+  return { ok: true, settlement: { ...row, amount: Number(row.amount), settled_amount: amount, variance: row.variance } };
 }
 
 export default {
