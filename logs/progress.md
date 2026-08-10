@@ -4596,3 +4596,50 @@ forced fix rounds. Seam audit's 5 blockers all remediated. Chips filed for non-b
 theme host:port over-refusal, insights view-today-toggle product call).
 STATUS: COMPLETE
 ---
+
+---
+TIMESTAMP: 2026-08-10 06:20
+TASK: Order-edit/dunning — seam-audit M1 + M3 (branch feat/order-edit-contract-fix off main d769ea0)
+BUILT: Two contract/correctness fixes on the live tree; M2 deferred to the integrator per instruction.
+M1 (MAJOR, contract landmine) — dunningService.js money-seam header told the integrator to charge
+with metadata kind:'post_purchase_upsell'|'base', but the LIVE webhook router keys STRICTLY on the
+literal 'upsell' (gatewayWebhooks.js whop `kind === 'upsell'`, stripe `(metadata.kind||'')==='upsell'`)
+and the accept path stamps kind:'upsell' for upsells / kind:'0' for base (checkoutPublic.js:990,1010,739).
+A charger built to the literal example would send a kind that matches nothing → base branch →
+session already 'paid' → already_paid ack → settleUpsellCharge never called → money captured, row
+stays 'declined', re-dunned. FIX: rewrote the service-header metadata block to document the
+byte-exact accept-path values (kind:'upsell' + charge_row for upsells, kind:'0'/absent for base),
+named the router constant it must match, and kept 'post_purchase_upsell' ONLY as a ⛔-marked
+counter-example ("do NOT invent a kind"). The route header (dunning.js:38) was already abstract/correct.
+M3 (MINOR) — orderEditService.js EDITABLE_SESSION_STATUSES included 'processing' (pre-purchase).
+Editing an unpaid session mutated line_items/subtotal but wrote NO settlement row (paid-only), so the
+eventual settle would book at the unchanged session.total — capturing the original amount against
+edited goods (silent divergence). DECISION: restrict editability to 'paid' ONLY (not the flag-on-
+divergence alternative). Justification: this is post-PURCHASE edit; 'processing' is mid-checkout and
+belongs to checkoutPublic's live-cart lane; and EDITABLE==PAID makes the divergence UNREPRESENTABLE
+(every editable session is paid ⇒ every non-trivial delta writes a settlement row) rather than merely
+flagged. Also corrected orderEdit.js:27-28: a mis-routed order-edit webhook on a paid session yields
+an already_paid ack (the base settler short-circuits on status==='paid' BEFORE reconciliation), NOT a
+mismatch park — and noted 'order_edit' is a kind the integrator must ADD (router matches only 'upsell').
+TESTED: order-edit.mjs +4 (E12: a 'processing' session → 409 not_editable status:processing, read
+surface editable:false, refused edit wrote no version row + left line_items untouched, and
+EDITABLE_SESSION_STATUSES===PAID_SESSION_STATUSES===['paid']). dunning.mjs +6 (D16 CONTRACT↔ROUTER
+LOCK: reads the LIVE gatewayWebhooks + checkoutPublic, extracts the single discriminating kind literal
+the router keys on, asserts it is exactly 'upsell', asserts the accept path stamps it + kind:'0' for
+base, and PINS the service header to document that same literal while never presenting
+kind:'post_purchase_upsell' or kind:'base' as a value to send — so the doc can never silently drift
+from the router again). D16 caught a real over-broad first draft of my own check (the ⛔ counter-example
+legitimately names the poison string); tightened the assertion to forbid only the dangerous `kind:'X'`
+presentation form.
+OUTPUT: order-edit 92/92 · dunning 87/87 · post-purchase-ui 33/33 · orders-extras 150/150. node --check
+OK on all 4 changed server files. vite build exit 0 (built in ~0.7s). eslint 0 on the orders client
+files. M1 verified BY THE LOCK ASSERTION reading the live router source; M3 verified by execution
+(processing commit returned 409 not_editable, 0 version rows, line_items unchanged).
+DECISIONS: (1) 'paid'-only editability over flag-on-divergence — the divergence becomes structurally
+impossible, not just visible (DECISION MADE). (2) Kept the poison literal as a named counter-example
+in the header rather than deleting it — the audit found that exact mistake, so naming it prevents the
+re-invention; the harness forbids only its dangerous presentation (DECISION MADE). (3) M2
+(unmatched-payment parking in gatewayWebhooks) NOT touched — deferred to the integrator per
+instruction; gatewayWebhooks is the single-writer money file (DECISION MADE).
+STATUS: COMPLETE
+---

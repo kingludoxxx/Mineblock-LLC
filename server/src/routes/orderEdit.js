@@ -24,8 +24,16 @@
 //             restarts. Metadata must carry
 //               { co_session_id, kind: 'order_edit', edit_row_id, version }
 //             so an async settlement webhook routes to the order-edit handler
-//             and not to the base-order settler (which would reconcile the
-//             increment against the session total and park a false mismatch).
+//             and not to the base-order settler. The hazard if it does NOT is
+//             the QUIET one: the edited order is already 'paid', so the base
+//             settler short-circuits on its `status === 'paid'` check and acks
+//             `already_paid` — it never reaches the amount reconciliation, so
+//             there is no mismatch park. The increment is captured at the
+//             gateway while nothing on our side records it against the edit.
+//             ('order_edit' is a kind the integrator's charger + webhook
+//             handler must ADD — the LIVE router today matches only 'upsell'
+//             and treats every other kind as base, which is precisely why an
+//             unhandled kind acks already_paid instead of settling.)
 //
 //   REFUND    route through the EXISTING refund path (gateway refund →
 //             gatewayWebhooks applies the ledger → shopifyRefund reflects into

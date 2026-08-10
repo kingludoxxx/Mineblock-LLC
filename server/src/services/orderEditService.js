@@ -96,10 +96,26 @@ export const EDIT_LIMITS = {
   DELTA_EPSILON: 0.005,
 };
 
-// A session whose money is being UNWOUND is not a session whose goods are
-// being CORRECTED. 'refunded' is deliberately excluded.
-export const EDITABLE_SESSION_STATUSES = ['processing', 'paid'];
+// Only a PAID session is editable. This is post-PURCHASE order edit, and every
+// invariant the lane rests on requires that money already moved:
+//   - a 'processing' session is mid-checkout — the buyer is on the payment page
+//     paying against an already-minted gateway plan/amount. Mutating its
+//     line_items/subtotal underneath them is a race with checkoutPublic, which
+//     owns the live-cart mutation path; that is a different lane, not this one.
+//   - the settlement seam is PAID-only (a delta with no captured amount to
+//     reconcile against is meaningless). Were 'processing' editable, an edit
+//     would change line_items/subtotal but write NO settlement row, and the
+//     eventual settle would book at the UNCHANGED session.total — capturing the
+//     original amount while the settled order's goods reflect the edit. That
+//     silent divergence between money-captured and goods-owed is exactly the
+//     failure this feature exists to make LOUD, so we refuse to create it.
+//   - 'refunded' is likewise excluded: its money is being unwound, not
+//     corrected.
+// Consequence, load-bearing: EDITABLE == PAID, so EVERY editable session is
+// paid, so EVERY non-trivial delta writes a settlement row — the divergence
+// above is now unrepresentable rather than merely flagged.
 export const PAID_SESSION_STATUSES = ['paid'];
+export const EDITABLE_SESSION_STATUSES = ['paid'];
 
 // Settlement row lifecycle. 'needs_settlement' is the only state this module
 // ever writes; the other three are operator/integrator outcomes.

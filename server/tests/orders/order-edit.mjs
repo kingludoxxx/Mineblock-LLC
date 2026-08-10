@@ -213,11 +213,12 @@ const SID_REFUNDED = 'co_oe_refunded';
 const SID_FULFILLED = 'co_oe_fulfilled';
 const SID_PUSH = 'co_oe_push';
 const SID_DRIFT = 'co_oe_drift';
+const SID_PROC = 'co_oe_processing';
 const SHOPIFY_ID = 9911000000001;
 const FULFILLED_SHOPIFY_ID = 9911000000002;
 const ORPHAN_ID = 9911000000003;
 const PUSH_SHOPIFY_ID = 9911000000004;
-const ALL_SIDS = [SID, SID_UNPRICED, SID_REFUNDED, SID_FULFILLED, SID_PUSH, SID_DRIFT];
+const ALL_SIDS = [SID, SID_UNPRICED, SID_REFUNDED, SID_FULFILLED, SID_PUSH, SID_DRIFT, SID_PROC];
 
 const { ensureCheckoutTables } = await import('../../src/services/checkoutSchema.js');
 await ensureCheckoutTables();
@@ -617,6 +618,35 @@ let v1RowJson = null;
 
   const unknown = await req('GET', '/co_does_not_exist');
   check('E12 an unknown session is 404, not a 500', unknown.status === 404);
+
+  // M3 PIN: a 'processing' session is PRE-purchase (mid-checkout) and is NOT
+  // editable. Editing it would change line_items/subtotal while writing NO
+  // settlement row, so the eventual settle books at the unchanged total —
+  // capturing the original amount against edited goods. That silent divergence
+  // is refused at the door: only 'paid' is editable.
+  await seedSession(SID_PROC, { status: 'processing' });
+  clearPriceCache();
+  const proc = await req('POST', `/${SID_PROC}/commit`, {
+    edit_id: 'edit-proc', line_edits: [{ variant_id: '111', quantity: 1 }],
+  });
+  check('E12 a PROCESSING (unpaid, mid-checkout) session is 409 not_editable',
+    proc.status === 409 && proc.j?.error === 'not_editable' && proc.j?.detail === 'status:processing',
+    `${proc.status} ${JSON.stringify(proc.j)}`);
+  const procState = await req('GET', `/${SID_PROC}`);
+  check('E12 the read surface says a processing session is editable:false, reason status:processing',
+    procState.j?.data?.editable === false && procState.j?.data?.not_editable_reason === 'status:processing',
+    JSON.stringify(procState.j?.data?.not_editable_reason));
+  check('E12 the refused processing edit wrote NO version row and left line_items untouched',
+    (await sql`SELECT COUNT(*)::int n FROM co_order_edits WHERE session_id = ${SID_PROC}`)[0].n === 0
+    && (await sql`SELECT line_items FROM co_sessions WHERE id = ${SID_PROC}`)[0].line_items
+        .find((li) => li.variant_id === '111').quantity === 2,
+    'a processing edit leaked a write');
+  // The invariant the restriction buys: EDITABLE === PAID, so no editable
+  // session can ever skip the settlement row.
+  check('E12 EDITABLE_SESSION_STATUSES equals PAID_SESSION_STATUSES (every editable session is paid)',
+    JSON.stringify(svc.EDITABLE_SESSION_STATUSES) === JSON.stringify(svc.PAID_SESSION_STATUSES)
+    && svc.EDITABLE_SESSION_STATUSES.join() === 'paid',
+    JSON.stringify(svc.EDITABLE_SESSION_STATUSES));
 }
 
 // ════════════════════════════════════════════════════════════════════════════
