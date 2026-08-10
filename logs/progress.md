@@ -4576,3 +4576,23 @@ stashing this work — and are left as-is; the repo-wide `eslint .` non-zero exi
 is not from these changes.
 STATUS: COMPLETE
 ---
+
+---
+TIMESTAMP: 2026-08-10 05:10 (Europe/Madrid)
+TASK: Wave-4 final deploy — order-edit+dunning, theme system, analytics insights
+BUILT: Merged the 3 remaining wave-4 lanes (all review-cleared after fix rounds): order-edit+dunning
+(post-purchase line/address edits, failed-payment ladder, money seams documented not built, PM-guard
+in the atomic claim), theme system (7 presets, apply-to-funnel, SSRF-pinned import-url — rebinding-
+proven), analytics insights (6 detectors, cohorts, LTV folded to real data, partial-day suppression).
+Deployed dep-d9sjsrajobas73fgf6j0 @ 39067ab.
+TESTED: Final merged-tree sweep 7,912 assertions, 0 failures (run in 3 batches: costs/insights/orders/
+settings/metrics 2763, tracking/split/builder/money/attribution 2879, remaining 2270). Live pass:
+funnel-insights (yesterday-default, real first_sale card, detector list), cohorts, themes (7 presets),
+order-edit settlements, dunning config all answering.
+OUTPUT: puure-dashboard.onrender.com live at 39067ab.
+DECISIONS: NIGHT COMPLETE. 13 branches merged over the session, each adversarially reviewed with 2-3
+forced fix rounds. Seam audit's 5 blockers all remediated. Chips filed for non-blocking items
+(fabricated Settings tabs, consent cookie, raw reset-token log, brand-variable renderer consumers,
+theme host:port over-refusal, insights view-today-toggle product call).
+STATUS: COMPLETE
+---
