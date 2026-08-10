@@ -577,17 +577,49 @@ export function comparisonColumns(rows) {
   return Object.keys(list[0]).filter((k) => k !== 'feature');
 }
 
-/** Refuse blank names, the reserved `feature` key, and duplicates. */
-function columnNameUsable(rows, name) {
+/** A syntactically usable column name, or null. Blank and the reserved key. */
+function columnNameValid(name) {
   const n = typeof name === 'string' ? name.trim() : '';
   if (!n || n === 'feature') return null;
-  if (comparisonColumns(rows).includes(n)) return null;
   return n;
 }
 
+/** Every key present on ANY row, printed or not. */
+function allRowKeys(rows) {
+  const seen = new Set();
+  for (const r of listRows(rows)) for (const k of Object.keys(r)) seen.add(k);
+  return seen;
+}
+
 /**
- * Append a column to EVERY row (empty cell). Identity when the name is
- * unusable — or when there are NO ROWS.
+ * Keys that exist on some row but are NOT printed by the page, because
+ * funnelRender derives its headers from row 0 alone. On a table this editor
+ * authored the set is empty; a hand-edited paste or an AI batch can leave real
+ * data sitting in cells the published table has no column for, and silently
+ * not showing it is how that data gets destroyed by the next edit.
+ *
+ * @returns {string[]} sorted, so the panel's message is stable
+ */
+export function hiddenColumnKeys(rows) {
+  const printed = new Set(comparisonColumns(rows));
+  const out = [];
+  for (const k of allRowKeys(rows)) {
+    if (k !== 'feature' && !printed.has(k)) out.push(k);
+  }
+  return out.sort();
+}
+
+/** How many rows carry at least one key the published table does not print. */
+export function rowsWithHiddenKeys(rows) {
+  const printed = new Set(comparisonColumns(rows));
+  return listRows(rows).filter((r) =>
+    Object.keys(r).some((k) => k !== 'feature' && !printed.has(k))
+  ).length;
+}
+
+/**
+ * Append a column to EVERY row. Identity when the name is unusable — or when
+ * there are NO ROWS.
  *
  * The empty case is not a nicety. A column lives inside the row objects, so
  * with zero rows there is nowhere to write it: `[].map()` would hand back a
@@ -595,13 +627,21 @@ function columnNameUsable(rows, name) {
  * bank an undo step for a button that cannot do anything. Worse, the table
  * renders NOTHING at zero rows (funnelRender returns '' before it ever looks
  * at the columns), so the honest move is to make the caller add a row first.
+ *
+ * PRESERVES AN EXISTING VALUE rather than blanking it. Adding a column whose
+ * key already sits on a non-first row is how an operator PROMOTES hidden data
+ * into the published table — the whole remedy for a heterogeneous legacy row.
+ * An unconditional `[n]: ''` destroyed exactly the data the click was trying
+ * to surface. Only a genuinely absent cell is seeded empty, and `??` is
+ * deliberate over `||` so a stored '' or 0 survives as itself.
  */
 export function addComparisonColumn(rows, name) {
   const list = listRows(rows);
   if (!list.length) return list;
-  const n = columnNameUsable(list, name);
-  if (!n) return list;
-  return list.map((r) => ({ ...r, [n]: '' }));
+  const n = columnNameValid(name);
+  // Already a PRINTED column — that is a real duplicate and is refused.
+  if (!n || comparisonColumns(list).includes(n)) return list;
+  return list.map((r) => ({ ...r, [n]: r[n] ?? '' }));
 }
 
 /**
@@ -620,6 +660,39 @@ export function moveWouldChangeColumns(rows, index, delta) {
 }
 
 /**
+ * True when DELETING a row would change the published column set.
+ *
+ * The move guard shipped without this twin, which left the two doors to the
+ * same hazard guarded unequally: reordering row 0 was blocked with prose while
+ * one trash click on the same row silently rewrote every header. Reproduced on
+ *   [{feature:'a',Us:'1'},{feature:'b',Them:'2'}]
+ * — deleting row 0 took the table from Us to Them. Deleting the LAST row is a
+ * different act (the table stops rendering at all, which the empty state
+ * already says) and is not treated as a column change.
+ */
+export function removeWouldChangeColumns(rows, index) {
+  const before = listRows(rows);
+  const after = removeListRow(before, index);
+  if (after === before || !after.length) return false;
+  return JSON.stringify(comparisonColumns(before)) !== JSON.stringify(comparisonColumns(after));
+}
+
+/**
+ * How many stored entries this editor cannot represent — nulls, strings,
+ * tuple-arrays left by an older format.
+ *
+ * The renderer ALREADY drops these (`.filter(isPlainObject)`), so the page
+ * loses nothing when they go. What was wrong is that the editor dropped them
+ * SILENTLY from stored data on the first keystroke: the operator had no way to
+ * know a block still held them, or that typing one character would discard
+ * them for good. Counting them lets the panel say so before any write.
+ */
+export function legacyRowCount(value) {
+  if (!Array.isArray(value)) return 0;
+  return value.length - value.filter(isRowObject).length;
+}
+
+/**
  * Rename a column IN PLACE on every row — key order is rebuilt rather than
  * patched, because `{...r, [to]: v}` after a delete would move the column to
  * the END and silently reorder the published table's headers.
@@ -627,8 +700,17 @@ export function moveWouldChangeColumns(rows, index, delta) {
 export function renameComparisonColumn(rows, from, to) {
   const list = listRows(rows);
   if (typeof from !== 'string' || !comparisonColumns(list).includes(from)) return list;
-  const n = columnNameUsable(list, to);
+  const n = columnNameValid(to);
   if (!n || n === from) return list;
+  // COLLISION IS TESTED AGAINST EVERY ROW, not just the printed header set.
+  // The rename rebuilds each row key by key, so a target that already exists
+  // further down collides mid-rebuild and one of the two values is written
+  // over the other — silent, unrecoverable cell loss on a row the operator may
+  // not even have scrolled to. Reproduced on
+  //   [{feature:'a',Us:'1'},{feature:'b',Us:'2',Them:'REAL'}]
+  // where renaming Us→Them destroyed row 1's `Us` value. Testing row 0 alone
+  // could not see it, because `Them` is not a printed column there.
+  if (allRowKeys(list).has(n)) return list;
   return list.map((r) => {
     const next = {};
     for (const k of Object.keys(r)) {
@@ -803,7 +885,13 @@ export function countdownPreview(deadline, nowMs) {
   //   · a whitespace-ONLY value trims to '', so the attribute is empty and the
   //     runtime's `if(!raw) return` fires → indistinguishable from unset, and
   //     reported as unset rather than as a separate broken state
-  const raw = deadline == null ? '' : String(deadline).trim();
+  // `deadline || ''` — the renderer's EXACT expression, not `== null`. They
+  // diverge on every falsy non-null value: for a stored `0` the renderer emits
+  // an empty attribute (dead page), while `== null` kept the '0' and
+  // Date.parse('0') answers a real year-2000 instant — so the canvas drew a
+  // ticking clock for a block the page leaves blank. Same class of lie as the
+  // whitespace bug, reached through a different operator.
+  const raw = String(deadline || '').trim();
   if (!raw) return { state: 'unset', text: '—' };
   const end = Date.parse(raw);
   if (!Number.isFinite(end)) return { state: 'invalid', text: '—' };
@@ -817,6 +905,42 @@ export function countdownPreview(deadline, nowMs) {
   const s = total % 60;
   const pad = (n) => (n < 10 ? '0' : '') + n;
   return { state: 'live', text: `${d > 0 ? `${d}d ` : ''}${pad(h)}:${pad(m)}:${pad(s)}` };
+}
+
+// ---------------------------------------------------------------------------
+// Unrecognised props
+// ---------------------------------------------------------------------------
+
+/**
+ * Props stored on a block that NO editor field owns.
+ *
+ * Blocks authored by an older tool carry different key names for the same
+ * content — FAQ `question`/`answer`, ranking `title`/`desc`, product grid
+ * `image_url`/`link`, sticky CTA `label`/`url`, testimonial `text`/`name`,
+ * embed `code`/`src`. The renderer does not read any of them, so the block
+ * renders empty AND every editor box opens blank: the operator sees a block
+ * with content in the database, no content on the page, and no explanation.
+ *
+ * Listing them read-only is the honest minimum. It does not migrate anything —
+ * guessing that `question` means `q` is a data rewrite this panel has no
+ * mandate for — but it turns a silent void into a visible fact the operator
+ * can act on.
+ *
+ * `knownKeys` is INJECTED (the registry is JSX and this file stays
+ * dependency-free), and the shared inspector keys are excluded here so every
+ * caller does not have to remember them.
+ *
+ * @returns {string[]} sorted, so the panel's line is stable across renders
+ */
+export const SYSTEM_PROP_KEYS = Object.freeze(['block_name', 'style', 'mobile_styles']);
+
+export function unrecognisedProps(props, knownKeys) {
+  const p = props && typeof props === 'object' && !Array.isArray(props) ? props : {};
+  const known = new Set([
+    ...(Array.isArray(knownKeys) ? knownKeys : []),
+    ...SYSTEM_PROP_KEYS,
+  ]);
+  return Object.keys(p).filter((k) => !known.has(k)).sort();
 }
 
 // ---------------------------------------------------------------------------

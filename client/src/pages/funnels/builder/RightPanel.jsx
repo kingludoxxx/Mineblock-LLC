@@ -34,6 +34,8 @@ import {
   listRows, addListRow, removeListRow, moveListRow, setListCell,
   comparisonColumns, addComparisonColumn, renameComparisonColumn,
   removeComparisonColumn, comparisonDefaultRow, moveWouldChangeColumns,
+  removeWouldChangeColumns, hiddenColumnKeys, rowsWithHiddenKeys, legacyRowCount,
+  unrecognisedProps,
   isoFromLocalInput, localInputFromIso, localInputAnomaly, countdownPreview,
 } from './builderModel';
 import { AiMediaDialog } from '../../../components/media';
@@ -188,6 +190,34 @@ function EmptyRows({ what }) {
   );
 }
 
+// Amber, not red: everything it reports is survivable and already true of the
+// stored data — the point is that it stops being INVISIBLE.
+function SeamNote({ children }) {
+  return (
+    <p className="flex items-start gap-1.5 text-[11px] text-amber-400/90 leading-snug">
+      <AlertTriangle className="w-3 h-3 mt-0.5 shrink-0" />
+      <span>{children}</span>
+    </p>
+  );
+}
+
+// M14. Stored entries this editor cannot represent (nulls, strings, tuple
+// arrays from an older format). The RENDERER already drops them, so the page
+// loses nothing — but the editor used to drop them from STORED data on the
+// first keystroke with no warning at all. Rendered before any write, so the
+// operator learns it while the data still exists.
+function LegacyRowsNote({ value }) {
+  const n = legacyRowCount(value);
+  if (!n) return null;
+  return (
+    <SeamNote>
+      {n} stored {n === 1 ? 'entry is' : 'entries are'} in an old format this editor cannot show.
+      {' '}The published page already ignores {n === 1 ? 'it' : 'them'}, and {n === 1 ? 'it' : 'they'} will be
+      discarded when you edit this block.
+    </SeamNote>
+  );
+}
+
 function RowsField({ field, value, onChange }) {
   const rows = listRows(value);
   const itemFields = Array.isArray(field.itemFields) ? field.itemFields : [];
@@ -199,6 +229,7 @@ function RowsField({ field, value, onChange }) {
 
   return (
     <div className="space-y-2">
+      <LegacyRowsNote value={value} />
       {rows.length === 0 && (
         <>
           <EmptyRows what={rowLabel.toLowerCase() + 's'} />
@@ -310,26 +341,59 @@ function CompareRowsField({ value, onChange }) {
     write(addComparisonColumn(rows, `Column ${n}`));
   };
 
+  // Shared prose for both column-changing edits, so a reorder and a delete
+  // that do the same damage cannot describe it two different ways.
+  const columnChangeMsg = (verb, after) =>
+    `That ${verb} would change the published columns from ${cols.join(' / ') || '(none)'} to ` +
+    `${comparisonColumns(after).join(' / ') || '(none)'}, because the first row decides the headers. ` +
+    `Give the rows matching columns first.`;
+
   const moveRow = (i, d) => {
     // A reorder is only cosmetic when every row carries the same keys. Row 0
     // IS the header source, so on a heterogeneous table a move can silently
     // change what the published table's columns are. Blocked rather than
     // confirmed: the operator asked to reorder, not to redefine the table.
     if (moveWouldChangeColumns(rows, i, d)) {
-      const after = moveListRow(rows, i, d);
-      setMoveBlocked(
-        `That move would change the published columns from ${cols.join(' / ') || '(none)'} to ` +
-        `${comparisonColumns(after).join(' / ') || '(none)'}, because the first row decides the headers. ` +
-        `Give the rows matching columns first, then reorder.`
-      );
+      setMoveBlocked(columnChangeMsg('move', moveListRow(rows, i, d)));
       return;
     }
     setMoveBlocked(null);
     write(moveListRow(rows, i, d));
   };
 
+  // M12. The SAME hazard, through the other door. Reordering row 0 was blocked
+  // with prose while one trash click on it rewrote every published header
+  // silently — two doors to one outcome, guarded unequally. Deleting the LAST
+  // row is deliberately NOT blocked: that empties the table, which is a
+  // different act and one the empty state already explains.
+  const removeRow = (i) => {
+    if (removeWouldChangeColumns(rows, i)) {
+      setMoveBlocked(columnChangeMsg('delete', removeListRow(rows, i)));
+      return;
+    }
+    setMoveBlocked(null);
+    write(removeListRow(rows, i));
+  };
+
+  // M13. Keys living on some row that the published table has no header for.
+  // The editor drew NOTHING for them, so a legacy row's real content was
+  // invisible here and invisible on the page — and the next edit was liable to
+  // destroy it. Naming the keys makes "Add column" a usable remedy: adding one
+  // by that exact name now PROMOTES the stored values instead of blanking them.
+  const hidden = hiddenColumnKeys(rows);
+  const hiddenRows = rowsWithHiddenKeys(rows);
+
   return (
     <div className="space-y-2.5">
+      <LegacyRowsNote value={value} />
+      {hidden.length > 0 && (
+        <SeamNote>
+          {hiddenRows} {hiddenRows === 1 ? 'row carries a key' : 'rows carry keys'} the published table does
+          not print: <code className="font-mono">{hidden.join(', ')}</code>. Only the first row decides the
+          headers. Add a column with the same name to bring {hidden.length === 1 ? 'it' : 'them'} into the
+          table — the stored values are kept.
+        </SeamNote>
+      )}
       <div className="rounded-lg border border-border-default bg-bg-elevated/60 p-2.5 space-y-2">
         <div className="text-[10px] uppercase tracking-wider text-text-faint font-semibold">
           Columns
@@ -394,7 +458,7 @@ function CompareRowsField({ value, onChange }) {
           count={rows.length}
           label="Row"
           onMove={(d) => moveRow(i, d)}
-          onRemove={() => write(removeListRow(rows, i))}
+          onRemove={() => removeRow(i)}
         >
           <div>
             <label className={labelCls}>
@@ -955,6 +1019,20 @@ function BlockProps({ block, onProp, onDelete, onDuplicate }) {
   // knowledge of which block type it is serving.
   const [mediaField, setMediaField] = useState(null);
 
+  // Every key an editor on this block owns — content fields AND wiring fields.
+  // The registry is the only source of truth for that, so it is computed here
+  // and injected; builderModel stays dependency-free and adds the shared
+  // inspector keys (block_name / style / mobile_styles) itself.
+  // `legacyProps` are keys with NO editor that the renderer nonetheless READS
+  // as a fallback (order_bump.label, product.title — both verified in
+  // funnelRender.js). They must not be listed as unrecognised: the notice says
+  // the published page ignores what it names, and for these that is false.
+  const unrecognised = unrecognisedProps(props, [
+    ...(def?.fields || []).map((f) => f.key),
+    ...(def?.wiringFields || []).map((f) => f.key),
+    ...(def?.legacyProps || []),
+  ]);
+
   const applyMediaAsset = (asset) => {
     if (!mediaField || !asset?.url) return;
     onProp(mediaField.key, asset.url);
@@ -1033,6 +1111,29 @@ function BlockProps({ block, onProp, onDelete, onDuplicate }) {
             <FieldList fields={def.fields} props={props} onProp={onProp} onFieldFocus={setSubEl} onRequestMedia={setMediaField} />
           ) : (
             !def?.wiringFields?.length && <p className="text-xs text-text-faint">This block has no editable settings.</p>
+          )}
+
+          {/* Props no field owns — almost always an older tool's key names
+              (FAQ question/answer, ranking title/desc, grid image_url/link,
+              sticky label/url, testimonial text/name, embed code/src). The
+              renderer reads none of them, so the block renders empty AND every
+              box above opens blank: content in the database, nothing on the
+              page, no explanation. Read-only on purpose — guessing that
+              `question` means `q` is a data rewrite this panel has no mandate
+              to perform. It states the fact; the operator decides. */}
+          {unrecognised.length > 0 && (
+            <div className="rounded-lg border border-amber-500/30 bg-amber-500/5 p-2.5">
+              <p className="flex items-start gap-1.5 text-[11px] text-amber-400/90 leading-snug">
+                <AlertTriangle className="w-3 h-3 mt-0.5 shrink-0" />
+                <span>
+                  Unrecognised props: <code className="font-mono">{unrecognised.join(', ')}</code>.
+                  {' '}Nothing on this block reads {unrecognised.length === 1 ? 'it' : 'them'} and the
+                  published page ignores {unrecognised.length === 1 ? 'it' : 'them'} — most likely key
+                  names from an older builder. Copy the values into the fields above; they are left
+                  untouched until you do.
+                </span>
+              </p>
+            </div>
           )}
 
           {def?.help && (
