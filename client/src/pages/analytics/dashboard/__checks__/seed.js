@@ -104,6 +104,15 @@ export const SEED_INSIGHTS = capturedInsights.insights;
 export const SEED_INSIGHTS_SCOPED = capturedInsights.insights_scoped;
 
 /**
+ * H2. THE PARTIAL (in-progress) DAY — captured by requesting today, whose bucket
+ * is still filling. `partial:true`, a today_partial warning, and NOT ONE
+ * direction:down card: the downward alarms the same detectors fire on the
+ * settled day are withheld because a half-finished day is below a full day's
+ * baseline by the clock, not the business. The strip must label it "in progress".
+ */
+export const SEED_INSIGHTS_PARTIAL = capturedInsights.insights_partial;
+
+/**
  * I. NOTHING FIRED — DERIVED from G by emptying the card list while leaving
  * every detector marked as HAVING RUN. It cannot be captured: the detectors are
  * good enough that even a two-order funnel legitimately fires, and a fixture

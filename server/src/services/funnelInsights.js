@@ -152,6 +152,14 @@ export const THRESHOLDS = Object.freeze({
     source: 'adapted',
     note: 'breakdown rows read per detector pass (the engine\'s own MAX_BREAKDOWN_LIMIT)',
   }),
+  leak_scan_cap: Object.freeze({
+    value: 25000,
+    source: 'reference',
+    note: 'row ceiling on the step-ledger scan — matches the reference _BUCKET_SCAN_CAP. '
+      + 'NOT the 200-row breakdown cap: the step read returns one row per (funnel, day, step) '
+      + 'over the baseline, so 200 would silently truncate a multi-funnel baseline; this is a '
+      + 'safety bound against an unbounded scan, ORDER BY-anchored so it is deterministic',
+  }),
 });
 
 /** Ranking: bad first, then warn, good, info (reference `_SEVERITY_RANK`). */
@@ -277,8 +285,19 @@ export function explorerLink(metric, day, funnelId = null, days = BASELINE_DAYS)
   return { page: 'explorer', params };
 }
 
-/** The one card shape every detector returns. */
-function card(kind, severity, headline, prose, deepLink, evidence = {}) {
+/**
+ * The one card shape every detector returns.
+ *
+ * `direction` is 'up' | 'down' | 'neutral' and it is LOAD-BEARING, not
+ * decoration: a card about a PARTIAL day (see `runInsights`) may still say the
+ * business is UP or point at a config problem (neutral), but it must never make
+ * a confident DOWNWARD claim, because a day that is only half over is below a
+ * full day's baseline as a matter of the clock, not the business. The partial
+ * guard drops exactly the `direction === 'down'` cards. A detector that omits
+ * it defaults to 'neutral' — which is the safe direction to be wrong about
+ * (kept, not a false alarm), but every detector below sets it explicitly.
+ */
+function card(kind, severity, headline, prose, deepLink, evidence = {}, direction = 'neutral') {
   return {
     kind,
     severity,
@@ -286,7 +305,28 @@ function card(kind, severity, headline, prose, deepLink, evidence = {}) {
     prose,
     deep_link: deepLink,
     evidence,
+    direction,
   };
+}
+
+/**
+ * Drop the cards a PARTIAL (in-progress) day cannot honestly support.
+ *
+ * A partial day's counts are a fraction of a complete day's, so every
+ * count-over-baseline detector reads DOWN at any hour before close — a red
+ * "net sales dropped" card at 10am that is a clock artifact, not the business.
+ * This is the mirror of the absent-means-zero bug, on the CURRENT side. The
+ * cure is symmetrical with the rest of this file: rather than invent a
+ * completed day, we WITHHOLD the downward claim and say why (the caller adds a
+ * `today_partial` warning). Upward cards survive — a partial day already ahead
+ * of a full baseline is genuinely notable — and so do neutral ones
+ * (dead_rail's config check is not a day-over-day movement).
+ *
+ * Pure and exported so server/tests/insights/detectors.mjs can drive it
+ * directly against a mix of directions.
+ */
+export function suppressPartialDay(cards) {
+  return (Array.isArray(cards) ? cards : []).filter((c) => c && c.direction !== 'down');
 }
 
 /**
@@ -392,7 +432,7 @@ export function detectAnomaly(baseline, current, day, today, {
         baseline_days_measured: vals.length,
         direction: up ? 'up' : 'down',
         funnel_id: funnelId,
-      });
+      }, up ? 'up' : 'down');
   }
   return null;
 }
@@ -448,7 +488,10 @@ export function detectTopMover(curRows, prevRows, day, today) {
       previous_net_sales: best.prev,
       delta: best.delta,
       delta_pct: pct(best.delta, Math.abs(best.prev)),
-    });
+      // A mover that fell is a downward claim even at info severity, so on a
+      // partial day it is suppressed like any other — today's leader looks like
+      // a laggard at 10am purely because yesterday is a full day.
+    }, best.delta > 0 ? 'up' : 'down');
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -540,7 +583,11 @@ export function detectFunnelLeak(stepDays, day, today, funnelNames = new Map()) 
       day_upstream_visitors: best.dh,
       baseline_upstream_visitors: best.bh,
       basis: 'distinct lb_touches.vid per funnel_pages.type per day, summed (additive)',
-    });
+      // A leak is always a downward finding, and on a partial day it is
+      // especially treacherous: if the top of the funnel has fired today but
+      // the checkout step lags by the usual minutes, the through-rate reads as
+      // a collapse at mid-morning. Suppressed on a partial day.
+    }, 'down');
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -585,7 +632,7 @@ export function detectAovShift(baseline, current, day, today) {
       baseline_days_with_orders: baseVals.length,
       shift_pct: Math.round(shift * 10) / 10,
       orders: Math.round(curOrders),
-    });
+    }, up ? 'up' : 'down');
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -674,12 +721,15 @@ export function detectFirstSale(baseline, current, day, today) {
   const headline = `First sale is in — ${fmtInt(n)} order${n === 1 ? '' : 's'}`;
   const prose = `First sale is in — ${fmtInt(n)} order${n === 1 ? '' : 's'} totalling ${netStr} `
     + `${whenOf(day, today)} after ${baseline.length} measured day${baseline.length === 1 ? '' : 's'} at zero.`;
+  // 'up' — a first sale is unambiguously good news, and it SURVIVES a partial
+  // day: the very first order of the day, however early, is a real event worth
+  // celebrating, not a fraction of a fuller day's total.
   return card('first_sale', 'good', headline, prose,
     explorerLink('orders', day), {
       orders: Math.round(n),
       net_sales: net === null ? null : money2(net),
       zero_days: baseline.length,
-    });
+    }, 'up');
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -713,7 +763,9 @@ async function readStepDays(query, fromTs, toTs, funnelId) {
      FROM lb_touches t
      JOIN funnel_pages p ON p.id = t.page_id
      WHERE t.ts >= $2 AND t.ts < $3${fsql}
-     GROUP BY 1, 2, 3`,
+     GROUP BY 1, 2, 3
+     ORDER BY 1, 2, 3
+     LIMIT ${THRESHOLDS.leak_scan_cap.value}`,
     params
   );
   return {
@@ -801,18 +853,38 @@ const idOf = (v, max = 120) => String(v ?? '').trim().slice(0, max);
  * GET /funnel-insights/insights — the whole insight layer in ONE composite.
  *
  * Returns:
- *   { day, insights[], last_60:{series, window}, thresholds, window, meta }
+ *   { day, partial, insights[], last_60:{series, window}, thresholds, window, meta }
  *
  * ONE endpoint on purpose, for the same reason `/dashboard` is one: the strip,
  * the last-60 card and the rule table are all functions of the same day series,
  * and three requests could paint three mutually inconsistent versions of it.
+ *
+ * ── THE DAY DEFAULTS TO YESTERDAY, THE LAST COMPLETE ONE ────────────────────
+ *
+ * A detector judges `current` against COMPLETE baseline days. Today's bucket is
+ * only as full as the clock, so at 10am net sales are legitimately a third of a
+ * full day's — and an anomaly / AOV / first-sale detector reading today would
+ * fire a confident "net sales DROPPED" card that is an artifact of the hour,
+ * not the business. That is the absent-means-zero bug mirrored onto the current
+ * side, and this file refuses it the same way it refuses the original: by NOT
+ * comparing an incomplete measurement to a complete baseline.
+ *
+ * So `day` defaults to YESTERDAY — the newest day that is actually over — which
+ * is also how the reference cached only complete days. Today is still
+ * selectable (the API accepts it), but a PARTIAL day never emits a downward
+ * card: `partial` is set on the payload, a `today_partial` warning explains it,
+ * and every `direction === 'down'` card is withheld (see suppressPartialDay).
  */
 export async function runInsights({ day: dayIn, funnel_id: funnelIdIn } = {}, {
   query = analyticsQuery,
 } = {}) {
   const t0 = Date.now();
   const today = todayInTz();
-  const day = dayIn === undefined || dayIn === null || dayIn === '' ? today : validDay(dayIn);
+  // THE DEFAULT IS THE LAST COMPLETE DAY, not today. An explicit `day` is
+  // honoured (including today, which then travels the partial path below).
+  const day = dayIn === undefined || dayIn === null || dayIn === ''
+    ? dayAdd(today, -1)
+    : validDay(dayIn);
   if (day === null) {
     throw new MetricsError('invalid_day', 'day must be a real YYYY-MM-DD calendar date', 422, { day: String(dayIn).slice(0, 20) });
   }
@@ -821,6 +893,10 @@ export async function runInsights({ day: dayIn, funnel_id: funnelIdIn } = {}, {
   if (day > today) {
     throw new MetricsError('day_in_future', `day ${day} is after today (${today} in ${REPORT_TZ})`, 422, { day, today });
   }
+  // THE PARTIAL FLAG. True only when the caller explicitly asked for today — the
+  // one day whose bucket is still filling. Every downward card is withheld for
+  // it below, and the client labels it "in progress".
+  const partial = day === today;
   const funnelId = idOf(funnelIdIn, 64) || null;
 
   const seriesStart = dayAdd(day, -(LAST_N_DAYS - 1));
@@ -939,9 +1015,26 @@ export async function runInsights({ day: dayIn, funnel_id: funnelIdIn } = {}, {
   run(5, 'dead_rail', () => detectDeadRail(pixelRes.rows, railRes.rows, names));
   run(6, 'first_sale', () => detectFirstSale(baseline, current, day, today));
 
-  const insights = rankInsights(entries);
+  // ── THE PARTIAL-DAY GUARD ────────────────────────────────────────────────
+  // On an in-progress day, drop every downward card BEFORE ranking (so the cap
+  // is filled from the cards that survive, not spent on ones about to be cut).
+  // The count of what was withheld is disclosed, not swallowed.
+  const rankable = partial
+    ? entries.filter((e) => e.card && e.card.direction !== 'down')
+    : entries;
+  const suppressedCount = entries.length - rankable.length;
+  const insights = rankInsights(rankable);
 
   // ── the disclosures. A silent strip is the one an operator trusts most. ──
+  if (partial) {
+    warnings.push({
+      source: 'today_partial',
+      reason: `${day} is still in progress, so its totals are a fraction of a full day's and would `
+        + 'read as a drop against complete baseline days at any hour before close. Downward cards are '
+        + `withheld for it${suppressedCount > 0 ? ` (${suppressedCount} suppressed)` : ''}; upward and `
+        + 'configuration findings still show. For a settled read, the strip defaults to yesterday.',
+    });
+  }
   if (!seriesRes) {
     warnings.push({
       source: 'series',
@@ -995,19 +1088,36 @@ export async function runInsights({ day: dayIn, funnel_id: funnelIdIn } = {}, {
     });
   }
 
+  // Kinds a detector produced but the partial guard withheld — so `fired:false`
+  // beside `suppressed:true` reads as "it DID find something, held on the
+  // partial day", not "it looked and had nothing".
+  const suppressedKinds = new Set(
+    partial ? entries.filter((e) => e.card && e.card.direction === 'down').map((e) => e.card.kind) : [],
+  );
+  const detectorRow = (kind, ran) => ({
+    kind,
+    ran,
+    fired: insights.some((c) => c.kind === kind),
+    suppressed: suppressedKinds.has(kind),
+  });
+
   return {
     day,
+    // TRUE only when the caller asked for today. The client labels the strip
+    // "in progress" and every downward card was withheld above.
+    partial,
     timezone: REPORT_TIMEZONE,
     insights,
     // EVERY DETECTOR THAT RAN, whether or not it fired — a strip showing two
-    // cards says nothing about whether the other four were quiet or broken.
+    // cards says nothing about whether the other four were quiet, broken, or
+    // withheld on a partial day.
     detectors: [
-      { kind: 'anomaly', ran: Boolean(seriesRes), fired: insights.some((c) => c.kind === 'anomaly') },
-      { kind: 'top_mover', ran: Boolean(dayRowsRes && prevRowsRes), fired: insights.some((c) => c.kind === 'top_mover') },
-      { kind: 'funnel_leak', ran: stepRes.available, fired: insights.some((c) => c.kind === 'funnel_leak') },
-      { kind: 'aov_shift', ran: Boolean(seriesRes), fired: insights.some((c) => c.kind === 'aov_shift') },
-      { kind: 'dead_rail', ran: pixelRes.available || railRes.available, fired: insights.some((c) => c.kind === 'dead_rail') },
-      { kind: 'first_sale', ran: Boolean(seriesRes), fired: insights.some((c) => c.kind === 'first_sale') },
+      detectorRow('anomaly', Boolean(seriesRes)),
+      detectorRow('top_mover', Boolean(dayRowsRes && prevRowsRes)),
+      detectorRow('funnel_leak', stepRes.available),
+      detectorRow('aov_shift', Boolean(seriesRes)),
+      detectorRow('dead_rail', pixelRes.available || railRes.available),
+      detectorRow('first_sale', Boolean(seriesRes)),
     ],
     last_60: {
       series: points,
@@ -1039,6 +1149,10 @@ export async function runInsights({ day: dayIn, funnel_id: funnelIdIn } = {}, {
       // A read or a detector that fell over, NAMED. Never swallowed.
       degraded,
       warnings,
+      // How many downward cards the partial-day guard withheld (0 off a
+      // complete day). Distinct from `degraded`: nothing broke, a claim was
+      // deliberately not made because the day is not over.
+      partial_suppressed: suppressedCount,
     },
   };
 }
@@ -1101,6 +1215,31 @@ export const RULES = Object.freeze([
   }),
 ]);
 
+/**
+ * Cross-cutting behaviour that is not a single detector but shapes them all.
+ * Served on /definitions so the "why is today quiet?" question is answerable
+ * from the running server rather than only from this comment.
+ */
+export const POLICIES = Object.freeze([
+  Object.freeze({
+    kind: 'complete_day_default',
+    what: 'the strip defaults to yesterday — the last COMPLETE day — because a detector judges the '
+      + 'current value against complete baseline days.',
+    why: 'today\'s bucket is only as full as the clock, so at 10am it is legitimately below a full '
+      + 'day\'s baseline; judging it would fire a confident "dropped" card that is a clock artifact, '
+      + 'the mirror of the absent-means-zero bug on the current side.',
+  }),
+  Object.freeze({
+    kind: 'partial_day_suppression',
+    what: 'when today is explicitly selected the payload sets partial:true, adds a today_partial '
+      + 'warning, and WITHHOLDS every downward (direction:"down") card; upward and configuration '
+      + 'findings still show.',
+    why: 'an in-progress day can honestly report good news (already ahead of a full baseline) or a '
+      + 'config problem (a dead rail), but never a confident decline — that would be an artifact of '
+      + 'the hour, not the business.',
+  }),
+]);
+
 /** What did NOT survive the port, and why. Served beside RULES. */
 export const DROPPED = Object.freeze([
   Object.freeze({
@@ -1116,9 +1255,10 @@ export const DROPPED = Object.freeze([
 ]);
 
 export default {
-  runInsights, RULES, DROPPED, THRESHOLDS, MAX_CARDS, BASELINE_DAYS, LAST_N_DAYS,
+  runInsights, RULES, DROPPED, POLICIES, THRESHOLDS, MAX_CARDS, BASELINE_DAYS, LAST_N_DAYS,
   SERIES_METRICS, STEP_ORDER, STEP_LABELS, SEVERITIES,
   detectAnomaly, detectTopMover, detectFunnelLeak, detectAovShift,
-  detectDeadRail, detectFirstSale, rankInsights, splitSeries, measuredColumn,
+  detectDeadRail, detectFirstSale, rankInsights, suppressPartialDay,
+  splitSeries, measuredColumn,
   measured, pstdev, fmean, dayAdd, validDay, explorerLink, whenOf,
 };

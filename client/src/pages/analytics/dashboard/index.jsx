@@ -82,11 +82,14 @@ export default function AnalyticsDashboardPage() {
    * THE INSIGHT LANE'S OWN WINDOWS, and they are deliberately NOT the picker's.
    *
    *   · the detector cards judge ONE DAY against its own trailing 28-day
-   *     baseline. The natural day is the LAST day of the selected range: an
+   *     baseline, and it is the last COMPLETE day of the selected range. An
    *     operator looking at "last 30 days" is asking about the state of things
-   *     now, and the end of their range is the most recent day they have chosen
-   *     to look at. Clamping to today instead would put a card about today over
-   *     a report about March.
+   *     now, so the end of their range is the most recent day they chose — but
+   *     if that end is today, today's bucket is still filling and judging it
+   *     would fire a "sales dropped" card that is an artifact of the hour (the
+   *     server withholds downward cards on a partial day, and this is the
+   *     client half of the same fix: default to the last SETTLED day). A
+   *     historical range whose end is already in the past is used verbatim.
    *   · cohorts open on their own 90-day ACQUISITION window, because a cohort
    *     acquired inside a 7-day picker range has had 7 days to come back and
    *     every horizon past D7 would be blank. The card prints the window it is
@@ -95,7 +98,10 @@ export default function AnalyticsDashboardPage() {
    * Both windows are visible on their surfaces, so the divergence is stated
    * rather than discovered.
    */
-  const insightDay = end || todayIso();
+  // The last COMPLETE day: the range end when it is already in the past,
+  // otherwise yesterday. `todayIso()` is the report-zone today; a string
+  // compare on YYYY-MM-DD is a date compare.
+  const insightDay = (end && end < todayIso()) ? end : daysAgoIso(1);
   const cohortEnd = end || todayIso();
   const cohortStart = daysAgoIso(COHORT_WINDOW_DAYS - 1);
   const [cohortGroupBy, setCohortGroupBy] = useState('day');

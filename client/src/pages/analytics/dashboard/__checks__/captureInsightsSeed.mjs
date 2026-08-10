@@ -119,32 +119,37 @@ const touch = async (day, page, vid, funnel = 'f-alpha') => q(
   [vid, funnel, page, noonOf(day)]
 );
 
-// ── STATE A: a day that fires several detectors ────────────────────────────
-// Alpha holds ~$100/day across the whole baseline, then collapses to $6 today;
-// Beta moves a little, so BOTH movers have a measured previous day. The numbers
-// are chosen so the ACCOUNT-WIDE day is the outlier — see
-// server/tests/insights/service.mjs for the same arithmetic worked through.
-for (let i = BASELINE_DAYS; i >= 1; i -= 1) {
-  const d = dayAdd(TODAY, -i);
+// ── STATE A: a SETTLED day that fires several detectors ────────────────────
+// ⚠️ THE EVENT IS ON YESTERDAY, not today. runInsights defaults to the last
+// COMPLETE day, so the everyday strip judges yesterday — staging the collapse on
+// today would make the default read judge a partial bucket and suppress the very
+// cards this seed needs to carry. Alpha holds ~$100/day across the 28 days
+// before yesterday, then collapses to $6 on YESTERDAY; Beta moves a little so
+// both movers have a measured previous day. Today is left as a partial bucket.
+// Same arithmetic as server/tests/insights/service.mjs.
+const YESTERDAY = dayAdd(TODAY, -1);
+for (let i = 1; i <= BASELINE_DAYS; i += 1) {
+  const d = dayAdd(YESTERDAY, -i);
   await order({ day: d, email: `b${i}@x.com`, total: 62 });
   await order({ day: d, email: `b${i}b@x.com`, total: 38 });
 }
-await order({ day: TODAY, email: 'today@x.com', total: 6 });
-await order({ day: dayAdd(TODAY, -1), funnel: 'f-beta', email: 'mv1@x.com', total: 45 });
-await order({ day: TODAY, funnel: 'f-beta', email: 'mv2@x.com', total: 52 });
+await order({ day: YESTERDAY, email: 'yest@x.com', total: 6 });
+await order({ day: TODAY, email: 'today@x.com', total: 6 }); // partial bucket
+await order({ day: dayAdd(YESTERDAY, -1), funnel: 'f-beta', email: 'mv1@x.com', total: 45 });
+await order({ day: YESTERDAY, funnel: 'f-beta', email: 'mv2@x.com', total: 52 });
 
-// ── the step ledger: a healthy funnel that collapses at checkout today ─────
-for (let i = BASELINE_DAYS; i >= 1; i -= 1) {
-  const d = dayAdd(TODAY, -i);
+// ── the step ledger: a healthy funnel that collapses at checkout on yesterday
+for (let i = 1; i <= BASELINE_DAYS; i += 1) {
+  const d = dayAdd(YESTERDAY, -i);
   for (let v = 0; v < 40; v += 1) await touch(d, 'pg-lp', `bl${i}_${v}`);
   for (let v = 0; v < 20; v += 1) await touch(d, 'pg-pd', `bl${i}_${v}`);
   for (let v = 0; v < 10; v += 1) await touch(d, 'pg-co', `bl${i}_${v}`);
   for (let v = 0; v < 6; v += 1) await touch(d, 'pg-ty', `bl${i}_${v}`);
 }
-for (let v = 0; v < 120; v += 1) await touch(TODAY, 'pg-lp', `td_${v}`);
-for (let v = 0; v < 60; v += 1) await touch(TODAY, 'pg-pd', `td_${v}`);
-for (let v = 0; v < 2; v += 1) await touch(TODAY, 'pg-co', `td_${v}`);
-for (let v = 0; v < 1; v += 1) await touch(TODAY, 'pg-ty', `td_${v}`);
+for (let v = 0; v < 120; v += 1) await touch(YESTERDAY, 'pg-lp', `yl${v}`);
+for (let v = 0; v < 60; v += 1) await touch(YESTERDAY, 'pg-pd', `yp${v}`);
+for (let v = 0; v < 2; v += 1) await touch(YESTERDAY, 'pg-co', `yc${v}`);
+for (let v = 0; v < 1; v += 1) await touch(YESTERDAY, 'pg-ty', `yt${v}`);
 
 // ── the dead rail: an enabled Meta pixel with no CAPI token ────────────────
 await q(`INSERT INTO lb_pixels (id, funnel_id, kind, pixel_id, enabled, config)
@@ -180,6 +185,13 @@ const insights = await runInsights({}, { query: q });
 //    so its strip is a strictly smaller set of cards off the same code path —
 //    which is what proves the funnel filter reaches every read.
 const insightsScoped = await runInsights({ funnel_id: 'f-beta' }, { query: q });
+
+// B2. THE PARTIAL (in-progress) DAY. Requesting today judges a bucket that is
+//     still filling; the SAME detectors that fired on yesterday run again, but
+//     every downward card is WITHHELD (partial:true, a today_partial warning,
+//     and the neutral dead-rail card the only survivor here). This is the
+//     reviewer's exact scenario, captured rather than authored.
+const insightsPartial = await runInsights({ day: TODAY }, { query: q });
 
 // C. A DAY ON WHICH NOTHING FIRED — DERIVED, and labelled as derived.
 //
@@ -242,6 +254,7 @@ const out = {
   },
   insights,
   insights_scoped: insightsScoped,
+  insights_partial: insightsPartial,
   insights_none: insightsNone,
   insights_degraded: insightsDegraded,
   cohorts,
@@ -258,6 +271,7 @@ say(`      insights.insights            = ${JSON.stringify(insights.insights.map
 say(`      insights.detectors           = ${JSON.stringify(insights.detectors.map((d) => `${d.kind}:${d.ran ? 'ran' : 'blind'}${d.fired ? ':fired' : ''}`))}`);
 say(`      insights.meta.degraded       = ${JSON.stringify(insights.meta.degraded)}`);
 say(`      insights_scoped.insights     = ${insightsScoped.insights.length} card(s)`);
+say(`      insights_partial             = partial:${insightsPartial.partial} · ${insightsPartial.insights.length} card(s) · suppressed:${insightsPartial.meta.partial_suppressed} · dirs:${JSON.stringify(insightsPartial.insights.map((c) => c.direction))}`);
 say(`      insights_none.insights       = ${insightsNone.insights.length} card(s), ${insightsNone.detectors.filter((d) => d.ran).length} detector(s) ran`);
 say(`      insights_degraded.degraded   = ${JSON.stringify(insightsDegraded.meta.degraded.map((d) => d.source))}`);
 say(`      cohorts.cohorts              = ${cohorts.cohorts.length} (${cohorts.cohorts.map((c) => `${c.key}:${c.size}`).join(', ')})`);

@@ -125,7 +125,10 @@ console.log(`\n== insight route surface ==  today=${T0}\n`);
   const r = await req('/insights');
   ok(r.status === 200, 'I1 GET /insights answers 200', `${r.status} ${r.text.slice(0, 200)}`);
   ok(Array.isArray(r.j.insights), 'I2 …with an insights array');
-  ok(r.j.day === T0, 'I3 …defaulting to today in REPORT_TZ', r.j.day);
+  // ⚠️ DEFAULTS TO YESTERDAY, the last COMPLETE day — not today. Judging today's
+  // partial bucket would fire a "sales dropped" card that is a clock artifact.
+  ok(r.j.day === D(1), 'I3 …defaulting to YESTERDAY, the last complete day (not today)', r.j.day);
+  ok(r.j.partial === false, 'I3 …and a complete day is not flagged partial');
   ok(r.j.timezone === 'Europe/Madrid', 'I4 …and naming the zone', r.j.timezone);
   ok(Array.isArray(r.j.detectors) && r.j.detectors.length === 6,
     'I5 …reporting all six detectors, fired or not');
@@ -136,8 +139,19 @@ console.log(`\n== insight route surface ==  today=${T0}\n`);
   ok(Array.isArray(r.j.meta.warnings) && Array.isArray(r.j.meta.degraded),
     'I8 …and both disclosure channels present');
 
-  const scoped = await req(`/insights?funnel_id=f1&day=${D(1)}`);
-  ok(scoped.status === 200 && scoped.j.day === D(1), 'I9 an explicit day and scope are honoured', scoped.j?.day);
+  const scoped = await req(`/insights?funnel_id=f1&day=${D(3)}`);
+  ok(scoped.status === 200 && scoped.j.day === D(3), 'I9 an explicit day and scope are honoured', scoped.j?.day);
+
+  // TODAY is still SELECTABLE — the API accepts it and flags it partial. The
+  // seeded fixture is sparse, so it may fire nothing; the guarantee under test
+  // is the flag + the warning, not a particular card.
+  const todayReq = await req(`/insights?day=${T0}`);
+  ok(todayReq.status === 200, 'I9b today is selectable (200, not a refusal)', todayReq.status);
+  ok(todayReq.j.partial === true, 'I9b …and the payload flags it partial');
+  ok(todayReq.j.meta.warnings.some((w) => w.source === 'today_partial'),
+    'I9b …with a today_partial warning explaining that downward cards are withheld');
+  ok(!todayReq.j.insights.some((c) => c.direction === 'down'),
+    'I9b …and NOT ONE downward card in the payload');
 
   for (const [qs, code] of [
     ['?day=nope', 'invalid_day'],
@@ -222,6 +236,15 @@ console.log(`\n== insight route surface ==  today=${T0}\n`);
     'D4 …plus the thresholds, the cohort caps and the zone');
   ok(r.j.rules.every((x) => x.floors.every((f) => Object.prototype.hasOwnProperty.call(r.j.thresholds, f))),
     'D5 every floor a rule names is a threshold the same payload publishes');
+  // The cross-cutting policies (default-to-yesterday, partial-day suppression)
+  // are documented so the "why is today quiet?" question is answerable from the
+  // running server.
+  ok(Array.isArray(r.j.policies) && r.j.policies.some((p) => p.kind === 'partial_day_suppression'),
+    'D6 …and the partial-day policy is published, with its reason');
+  ok(r.j.policies.some((p) => p.kind === 'complete_day_default'),
+    'D6 …alongside the default-to-yesterday policy');
+  ok(Object.prototype.hasOwnProperty.call(r.j.thresholds, 'leak_scan_cap'),
+    'D7 the step-scan safety cap is published as a threshold');
 }
 
 // ═══ THE SHARED READ BUDGET ═════════════════════════════════════════════════

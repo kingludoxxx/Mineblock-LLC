@@ -148,6 +148,10 @@ export default function InsightsStrip({
 
   const ran = detectors.filter((d) => d.ran === true).length;
   const blind = detectors.filter((d) => d.ran === false);
+  // THE DAY IS IN PROGRESS. The server withheld every downward card and told us
+  // so; the strip labels the day rather than letting the operator read a short
+  // list as "all clear" when it is really "half the day isn't in yet".
+  const partial = Boolean(data && data.partial);
 
   const header = (
     <header className="flex items-baseline justify-between gap-2 mb-2">
@@ -159,6 +163,15 @@ export default function InsightsStrip({
         <span className="text-[10.5px] text-text-faint truncate">
           {data && data.day ? `for ${data.day}` : ''}
         </span>
+        {partial && (
+          <span
+            className="text-[9.5px] uppercase tracking-wide font-semibold text-warning/90 border border-warning/30 rounded px-1 py-px shrink-0"
+            data-testid={`${testid}-partial`}
+            title="Today is still in progress. Its totals are a fraction of a full day's, so downward findings are withheld until the day is over."
+          >
+            in progress
+          </span>
+        )}
       </div>
       {/* THE PROVENANCE OF THE SILENCE. Rendered whenever the payload told us
           how many detectors looked — never guessed from the card count. */}
@@ -198,19 +211,42 @@ export default function InsightsStrip({
             </ul>
           )}
 
-          {/* THE QUIET STATE — and it is only reachable when every detector
-              actually ran. With a blind detector in the list this falls through
-              to the degradation notice below instead. */}
-          {cards.length === 0 && blind.length === 0 && detectors.length > 0 && (
+          {/* THE QUIET STATE — reachable only when every detector actually ran,
+              NONE was withheld, and the day is COMPLETE. A blind detector falls
+              through to the degradation notice; a partial day falls through to
+              its own warning below. "Nothing stood out" is a confident claim
+              about the business, and it may only be made about a settled day
+              that was fully examined. */}
+          {cards.length === 0 && blind.length === 0 && detectors.length > 0
+            && !partial && !detectors.some((d) => d.suppressed) && (
             <div
               className="flex flex-col items-center justify-center text-center gap-1 py-6"
               data-testid={`${testid}-quiet`}
             >
-              <p className="text-xs text-text-muted">Nothing stood out today</p>
+              <p className="text-xs text-text-muted">Nothing stood out</p>
               <p className="text-[10.5px] text-text-faint max-w-[420px] leading-relaxed">
                 {`All ${fmtInt(detectors.length)} checks ran and none of them fired: `}
                 {detectors.map((d) => KIND_LABELS[d.kind] || d.kind).join(', ').toLowerCase()}
                 . A quiet strip is a result, not an absence of one.
+              </p>
+            </div>
+          )}
+
+          {/* A PARTIAL DAY WITH NOTHING LEFT TO SHOW. Not the quiet state — the
+              day is not over, so "nothing stood out" would be a claim nobody can
+              make yet. The today_partial warning below carries the detail; this
+              is the neutral placeholder so the strip is not blank. */}
+          {cards.length === 0 && blind.length === 0 && detectors.length > 0
+            && (partial || detectors.some((d) => d.suppressed)) && (
+            <div
+              className="flex flex-col items-center justify-center text-center gap-1 py-6"
+              data-testid={`${testid}-partial-empty`}
+            >
+              <p className="text-xs text-text-muted">Today is still in progress</p>
+              <p className="text-[10.5px] text-text-faint max-w-[420px] leading-relaxed">
+                Downward findings are withheld until the day is over — a half-finished day is below a
+                full day&apos;s baseline by the clock, not the business. Check back tomorrow, or read
+                yesterday&apos;s settled strip.
               </p>
             </div>
           )}

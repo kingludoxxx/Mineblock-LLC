@@ -152,9 +152,9 @@ const trimOf = (sel) => page.$eval(sel, (e) => e.textContent.trim());
 /* ── 1. every state mounted ──────────────────────────────────────────────── */
 
 const sections = await page.$$eval('section[id^="state-"]', (els) => els.map((e) => e.id));
-eq(sections.length, 11, `1 eleven render states mounted (${sections.join(', ')})`);
+eq(sections.length, 12, `1 twelve render states mounted (${sections.join(', ')})`);
 const dashCount = await page.$$eval(DASHV, (e) => e.length);
-eq(dashCount, 10, '1 ten DashboardView instances (nine direct + the live route)');
+eq(dashCount, 11, '1 eleven DashboardView instances (ten direct + the live route)');
 
 /* ── 2. provenance, from the CAPTURED window ─────────────────────────────── */
 
@@ -657,7 +657,7 @@ ok(checksLine.includes(`${ranN} of ${INS.detectors.length} checks ran`),
 const quietWell = await page.$('#state-insight-none [data-testid="an-insights-strip-quiet"]');
 ok(!!quietWell, '22 QUIET the all-ran-none-fired state renders the quiet well');
 const quietTxt = quietWell ? await quietWell.innerText() : '';
-ok(quietTxt.includes('Nothing stood out today'), '22 …and says so');
+ok(quietTxt.includes('Nothing stood out'), '22 …and says so');
 ok(quietTxt.includes('quiet strip is a result'),
   '22 …and says a quiet strip is a result, not an absence of one');
 ok(!(await page.$('#state-insight-none [data-testid="an-insights-strip-blind"]')),
@@ -843,6 +843,42 @@ ok(!!(await page.$('#state-live [data-testid="an-insights-strip"]')),
   '25 the strip rendered end to end, from a real HTTP response');
 ok(!!(await page.$('#state-live [data-testid="an-card-cohorts"]')),
   '25 …and so did the cohort card');
+
+/* ── 26. THE PARTIAL (in-progress) DAY — the reviewer's fix, in the DOM ───── */
+
+// The captured payload really is a partial day carrying no downward card.
+eq(ISEED.insights_partial.partial, true, '26 (capture) the partial payload is flagged partial');
+ok(!ISEED.insights_partial.insights.some((c) => c.direction === 'down'),
+  '26 (capture) …and carries NOT ONE downward card');
+
+const partialStrip = '#state-insight-partial [data-testid="an-insights-strip"]';
+ok(!!(await page.$(partialStrip)), '26 the strip mounted on the partial-day state');
+// THE LABEL. A short list on today must not read as "all clear" — the strip
+// tells the operator the day is not over.
+const partialLabel = await page.$(`${partialStrip} [data-testid="an-insights-strip-partial"]`);
+ok(!!partialLabel, '26 the strip LABELS today "in progress"');
+ok((await partialLabel.innerText()).toLowerCase().includes('in progress'),
+  '26 …in those words');
+// NOT ONE downward card in the rendered DOM (bad/warn cards that point down).
+const partialSeverities = await page.$$eval(`${partialStrip} [data-severity]`,
+  (els) => els.map((e) => e.getAttribute('data-severity')));
+console.log(`      partial-day card severities in DOM: ${JSON.stringify(partialSeverities)}`);
+// Every card the server sent survives (all up/neutral); the guarantee is that
+// none is a downward alarm. Cross-check the DOM cards against the payload.
+for (const c of ISEED.insights_partial.insights) {
+  ok(!!(await page.$(`${partialStrip} [data-testid="an-insight-${c.kind}"]`)),
+    `26 the surviving '${c.kind}' (${c.direction}) card is drawn`);
+}
+// The today_partial warning is on screen — the withholding is NAMED.
+const partialNotes = await page.$(`${partialStrip} [data-testid="an-insights-strip-notes"]`);
+const partialNotesTxt = partialNotes ? await partialNotes.innerText() : '';
+ok(partialNotesTxt.toLowerCase().includes('in progress')
+  || partialNotesTxt.toLowerCase().includes('withheld'),
+  `26 the today_partial warning explains the withholding (${partialNotesTxt.slice(0, 80)})`);
+// And it must NOT claim the settled "nothing stood out" — that sentence is only
+// for a complete, fully-examined day.
+ok(!(await textOf(partialStrip)).includes('Nothing stood out'),
+  '26 …and the partial day NEVER prints the settled-day "nothing stood out" verdict');
 
 /* ── screenshots ─────────────────────────────────────────────────────────── */
 

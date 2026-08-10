@@ -4249,3 +4249,64 @@ posture, raw reset-token logging, brand-variable renderer consumers). Theme (FIX
 bypass) + order-edit/dunning (review) + analytics-insights still in flight.
 STATUS: COMPLETE
 ---
+
+---
+TIMESTAMP: 2026-08-10 05:35
+TASK: Analytics insight layer — review FIX-FIRST: partial-current-day comparison
+BUILT: Rebased onto current main (0f38f53; only a logs/progress.md union
+conflict, no code conflict — main touched no engine file). Fixed the one MAJOR
+review item: runInsights judged today's PARTIAL bucket against COMPLETE baseline
+days, so a normal in-progress morning (net well below a full day's baseline)
+rendered a confident red "Net sales dropped" card that was a clock artifact —
+the mirror of the absent-means-zero bug on the current side. The cure is
+symmetrical with the rest of the file (withhold, do not invent): (1) the strip
+now DEFAULTS TO YESTERDAY, the last COMPLETE day (matches how the reference
+cached complete days); today stays selectable. (2) Every card now declares a
+`direction` (up/down/neutral) and a pure exported `suppressPartialDay` drops
+every direction:'down' card on a partial day; the payload sets `partial:true`,
+adds a `today_partial` warning, marks the withheld detectors `suppressed:true`,
+and reports `meta.partial_suppressed`. Upward findings and neutral ones
+(dead_rail's config check) survive. Client half: index.jsx defaults insightDay
+to the last settled day (range end when historical, else yesterday); the strip
+labels a partial day "IN PROGRESS" and never prints the settled "nothing stood
+out" verdict; a new POLICIES block is served on /definitions. Also did both NITs:
+readStepDays now carries an ORDER BY + LIMIT (new leak_scan_cap threshold =
+25000, matching the reference _BUCKET_SCAN_CAP — NOT the 200-row breakdown cap,
+which would truncate a multi-funnel baseline).
+TESTED: All harnesses extended and run green. detectors.mjs 269->293 (direction
+per detector; suppressPartialDay pure incl. mutation checks that it removes the
+bad+down card and is not a no-op; POLICIES published). service.mjs 88->102 —
+the fixture was restructured so the notable event is on YESTERDAY (settled) and
+TODAY is a partial bucket; new section G proves end-to-end against real Postgres
+that requesting today suppresses every downward card, sets partial/warning/
+suppressed, KEEPS the neutral dead-rail, and section G6 is the MIRROR test: the
+identical detector DOES fire the bad downward anomaly on the settled day, so the
+suppression is provably load-bearing, not an absence of signal. routes.mjs
+55->63 (default day = yesterday over HTTP; today selectable + partial flag +
+today_partial warning + no down card; policies + leak_scan_cap on /definitions).
+Screenshot 196->208: new captured partial-day payload + render state; the strip
+is asserted to LABEL "in progress", draw only up/neutral cards, and never print
+the settled verdict. Regressions: cohorts 84, metrics engine 323, metrics routes
+144, formatterContract 234 — all 0 failed. node --check on all changed server/
+api files, vite build exit 0, eslint 0 on every file this task touched.
+OUTPUT: 542 server-side + 208 rendered-DOM assertions green. Visually confirmed
+the partial-day screenshot: "What changed for 2026-08-10 [IN PROGRESS]", three
+up/neutral cards, the today_partial warning, and NO red downward alarm.
+DECISIONS: (1) DEFAULT-TO-YESTERDAY over an emit-warning-only approach — the
+reviewer's lean, and the cleaner one: a partial day never even reaches a
+downward detector on the default view, and the day picker still allows today
+(labeled in progress) for anyone who wants the live read (DECISION MADE).
+(2) direction:neutral is the SAFE default in the card factory, so a detector
+that forgets to set it is KEPT, not silently dropped — dead_rail is deliberately
+bad+neutral (a config failure is serious but not a day-over-day movement)
+(DECISION MADE). (3) leak_scan_cap = 25000 not funnel_scan_cap = 200: the
+step read returns one row per (funnel, day, step) over 28 days, so 200 would
+silently truncate a legitimate multi-funnel baseline; 25000 matches the
+reference's own _BUCKET_SCAN_CAP and is a safety ceiling, ORDER BY-anchored so
+it is deterministic (DECISION MADE). (4) The two pre-existing eslint errors
+(components/FunnelTotalsCards.jsx:5 unused 'Icon', components/SplitResultsPanel
+.jsx:5 unused 'currency') are OUTSIDE this diff — confirmed present on main by
+stashing this work — and are left as-is; the repo-wide `eslint .` non-zero exit
+is not from these changes.
+STATUS: COMPLETE
+---

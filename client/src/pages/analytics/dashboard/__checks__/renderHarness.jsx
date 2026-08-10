@@ -45,7 +45,7 @@ import {
   CAPTURE, CAPTURE_WINDOWS, SEED_DASHBOARD, SEED_MARKETING,
   SEED_MARKETING_UNATTRIBUTED, TTL_DASHBOARD, WITHHELD_DASHBOARD,
   INSIGHT_CAPTURE, SEED_COHORTS, SEED_COHORTS_EMPTY, SEED_INSIGHTS,
-  SEED_INSIGHTS_DEGRADED, SEED_INSIGHTS_NONE,
+  SEED_INSIGHTS_DEGRADED, SEED_INSIGHTS_NONE, SEED_INSIGHTS_PARTIAL,
 } from './seed.js';
 import '../../../../index.css';
 
@@ -221,6 +221,22 @@ const STATES = [
       cohorts: null,
       cohortsError: 'Could not load cohorts (Network Error)',
       cohortsState: 'failed',
+      cohortGroupBy: 'day',
+    },
+  },
+  {
+    id: 'state-insight-partial',
+    title: '12 · Today is still in progress (LANE 5, captured)',
+    note: 'The insight day is TODAY, whose bucket is still filling. This payload was captured by requesting today: partial:true, a today_partial warning, and NOT ONE downward card — the same detectors that fire a red "sales dropped" card on the settled day are withheld here, because a half-finished day is below a full day’s baseline by the clock, not the business. The strip must LABEL it "in progress" rather than let a short list read as "all clear".',
+    props: {
+      data: SEED_DASHBOARD,
+      marketing: SEED_MARKETING,
+      loadState: 'ready',
+      error: null,
+      insights: SEED_INSIGHTS_PARTIAL,
+      insightsState: 'ready',
+      cohorts: SEED_COHORTS,
+      cohortsState: 'ready',
       cohortGroupBy: 'day',
     },
   },

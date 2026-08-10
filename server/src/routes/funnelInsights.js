@@ -25,7 +25,7 @@ import { requirePermission } from '../middleware/rbac.js';
 import { checkRateLimit } from '../middleware/rateLimiter.js';
 import { MetricsError, REPORT_TZ, todayInTz } from '../services/funnelMetrics.js';
 import {
-  runInsights, RULES, DROPPED, THRESHOLDS, MAX_CARDS, BASELINE_DAYS,
+  runInsights, RULES, DROPPED, POLICIES, THRESHOLDS, MAX_CARDS, BASELINE_DAYS,
   LAST_N_DAYS, SERIES_METRICS, STEP_ORDER, STEP_LABELS, SEVERITIES,
 } from '../services/funnelInsights.js';
 import {
@@ -201,6 +201,7 @@ router.get('/definitions', async (req, res, next) => {
     if (!(await limit(req, res))) return;
     res.json({
       rules: RULES,
+      policies: POLICIES,
       dropped: DROPPED,
       thresholds: THRESHOLDS,
       severities: SEVERITIES,

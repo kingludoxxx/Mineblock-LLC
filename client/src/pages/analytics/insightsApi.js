@@ -137,6 +137,7 @@ export function insightsOf(payload) {
   const out = {
     sent: false,
     day: '',
+    partial: false,
     timezone: '',
     cards: [],
     detectors: [],
@@ -144,11 +145,15 @@ export function insightsOf(payload) {
     baselineWindow: null,
     warnings: [],
     degraded: [],
+    partialSuppressed: null,
     computedMs: null,
   };
   if (!isObj(payload)) return out;
   out.sent = true;
   out.day = str(payload.day);
+  // The server sets this true only when the judged day is TODAY (in progress).
+  // The strip labels the day and every downward card was withheld server-side.
+  out.partial = payload.partial === true;
   out.timezone = str(payload.timezone);
 
   const list = Array.isArray(payload.insights) ? payload.insights : [];
@@ -171,6 +176,10 @@ export function insightsOf(payload) {
       // does not report it has not told us the detector was blind.
       ran: hasKey(d, 'ran') ? d.ran === true : null,
       fired: hasKey(d, 'fired') ? d.fired === true : null,
+      // A detector that FOUND a downward finding on a partial day and had it
+      // withheld — distinct from one that looked and had nothing (fired:false,
+      // suppressed:false).
+      suppressed: hasKey(d, 'suppressed') ? d.suppressed === true : false,
     }))
     .filter((d) => d.kind);
 
@@ -179,6 +188,7 @@ export function insightsOf(payload) {
   const meta = isObj(payload.meta) ? payload.meta : null;
   out.warnings = normaliseNotes(meta ? meta.warnings : null);
   out.degraded = normaliseNotes(meta ? meta.degraded : null);
+  out.partialSuppressed = meta ? numOrNull(meta.partial_suppressed) : null;
   out.computedMs = meta ? numOrNull(meta.computed_ms) : null;
   return out;
 }

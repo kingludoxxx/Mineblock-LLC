@@ -63,10 +63,15 @@ const { runInsights, dayAdd } = I;
 const { computeCohorts, cohortsCsv } = CO;
 
 const TODAY = todayInTz();
+// THE JUDGED DAY IS YESTERDAY — the last COMPLETE day, which is what
+// runInsights defaults to. The fixture stages its notable event on YESTERDAY so
+// the default read judges a settled day; TODAY is left as a deliberately
+// partial (below-baseline) bucket for the suppression test in section G.
+const YESTERDAY = dayAdd(TODAY, -1);
 /** A UTC instant at 12:00 local on a REPORT_TZ day — safely inside the day. */
 const noonOf = (day) => new Date(zonedDayStart(day).getTime() + 12 * 3_600_000).toISOString();
 
-console.log(`\n== insight service, against real Postgres ==\n   today (REPORT_TZ) = ${TODAY}\n`);
+console.log(`\n== insight service, against real Postgres ==\n   today (REPORT_TZ) = ${TODAY} · judged day (default) = ${YESTERDAY}\n`);
 
 // ═══════════════════════════════════════════════════════════════════════════
 // A. THE EMPTY DATABASE — before a single row exists
@@ -74,7 +79,8 @@ console.log(`\n== insight service, against real Postgres ==\n   today (REPORT_TZ
 
 {
   const r = await runInsights({}, { query: q });
-  eq(r.day, TODAY, 'A1 an empty database still answers, for today');
+  eq(r.day, YESTERDAY, 'A1 an empty database still answers, and DEFAULTS TO YESTERDAY (the last complete day)');
+  eq(r.partial, false, 'A1 …a complete day is not partial');
   eq(r.insights, [], 'A1 …with NO cards — and an empty list, never a fabricated one');
   eq(r.meta.degraded, [], 'A1 …and nothing degraded (the tables exist, they are just empty)');
   ok(r.detectors.length === 6 && r.detectors.every((d) => d.fired === false),
@@ -97,23 +103,28 @@ console.log(`\n== insight service, against real Postgres ==\n   today (REPORT_TZ
 //
 //   funnels    f1 "Alpha funnel" · f2 "Beta funnel"
 //   pages      f1: product + checkout (for the step waterfall)
-//   money      f1 takes $100 on each of the 28 baseline days, then COLLAPSES to
-//              $5 today. f2 takes $40 yesterday and $50 today.
+//   money      f1 takes $100 on each of the 28 days BEFORE yesterday, then
+//              COLLAPSES to $5 on YESTERDAY (the judged/default day). f2 takes
+//              $40 the day before yesterday and $50 yesterday.
 //
-//              THE NUMBERS ARE CHOSEN, not sprinkled. The detectors judge the
-//              ACCOUNT-WIDE series, so the fixture has to make the account-wide
-//              day an outlier — the first cut gave f2 a $300 spike today, which
-//              lifted the account to $305 and fired a perfectly correct UPWARD
-//              anomaly instead of the collapse the fixture was trying to stage.
-//              With f2 at $50:
-//                baseline = 27 days at $100 + one at $140 (f1 + f2's yesterday)
+//              ⚠️ THE EVENT IS ON YESTERDAY, NOT TODAY — that is the whole point
+//              of the reviewer's fix. runInsights defaults to the last COMPLETE
+//              day, so staging the collapse on today would make the default read
+//              judge a partial bucket and (correctly, now) suppress the very
+//              card this section is trying to observe. On the SETTLED day:
+//                baseline = 27 days at $100 + one at $140 (f1 + f2's day-before)
 //                mean = 101.43, σ = 7.42, so mean − 2σ = 86.59
-//                today = $5 + $50 = $55  ⇒ below the band, a BAD net-sales card
-//              and f1's −$95 beats f2's +$10 for the top mover, both of them
-//              with a measured previous day.
+//                yesterday = $5 + $50 = $55  ⇒ below the band, a BAD anomaly
+//              and f1's −$95 beats f2's +$10 for the top mover, both with a
+//              measured previous day.
+//
+//              TODAY is left as a PARTIAL bucket ($5, well below baseline) with
+//              its own token-less-pixel-independent low steps, so section G can
+//              prove the partial-day guard suppresses the downward card that the
+//              SAME detector fires on the settled day.
 //   cohorts    three buyers, hand-checkable (see the table in C below)
-//   steps      product → checkout at 50% for 20 baseline days, then 100 → 2
-//              today: 2%, well under half of 50% — a leak.
+//   steps      product → checkout at 50% across the baseline, then 100 → 2 on
+//              yesterday (2%, under half of 50% — a leak) and the same on today.
 //   rails      f1 has an enabled Meta pixel with NO capi token — a dead rail.
 
 await q(`INSERT INTO funnels (id, slug, name, status) VALUES
@@ -147,18 +158,23 @@ const addOrder = async ({ day, funnel = 'f1', email, total, vid = null, campaign
   return id;
 };
 
-// ── the anomaly baseline: f1 at $100/day for the whole 28-day baseline ─────
-for (let i = I.BASELINE_DAYS; i >= 1; i -= 1) {
+// ── the anomaly baseline: f1 at $100/day for the 28 days BEFORE yesterday ──
+for (let i = 1; i <= I.BASELINE_DAYS; i += 1) {
   // Two orders a day so AOV has something to be, and a distinct email each day
   // so these buyers do not pollute the cohort table below.
-  await addOrder({ day: dayAdd(TODAY, -i), email: `base${i}@x.com`, total: 60 });
-  await addOrder({ day: dayAdd(TODAY, -i), email: `base${i}b@x.com`, total: 40 });
+  await addOrder({ day: dayAdd(YESTERDAY, -i), email: `base${i}@x.com`, total: 60 });
+  await addOrder({ day: dayAdd(YESTERDAY, -i), email: `base${i}b@x.com`, total: 40 });
 }
+// The COLLAPSE, on yesterday (the settled, judged day).
+await addOrder({ day: YESTERDAY, email: 'yest@x.com', total: 5 });
+// TODAY: a PARTIAL bucket, also below baseline. Section G judges this day.
 await addOrder({ day: TODAY, email: 'today@x.com', total: 5 });
 
 // ── f2: a small measured move, so BOTH movers have a real baseline ─────────
-await addOrder({ day: dayAdd(TODAY, -1), funnel: 'f2', email: 'm1@x.com', total: 40 });
-await addOrder({ day: TODAY, funnel: 'f2', email: 'm2@x.com', total: 50 });
+// day-before-yesterday $40 (a baseline day for yesterday's judgement), then
+// yesterday $50 — so f2's mover has a measured previous day and reads +$10.
+await addOrder({ day: dayAdd(YESTERDAY, -1), funnel: 'f2', email: 'm1@x.com', total: 40 });
+await addOrder({ day: YESTERDAY, funnel: 'f2', email: 'm2@x.com', total: 50 });
 
 // ── the step ledger ────────────────────────────────────────────────────────
 const addTouch = async (day, page, vid) => q(
@@ -166,13 +182,17 @@ const addTouch = async (day, page, vid) => q(
    VALUES ($1,'f1',$2,'https://x/p','{}'::jsonb,$3,$3::timestamptz + interval '90 days')`,
   [vid, page, noonOf(day)]
 );
-for (let i = I.BASELINE_DAYS; i >= 1; i -= 1) {
-  const day = dayAdd(TODAY, -i);
+for (let i = 1; i <= I.BASELINE_DAYS; i += 1) {
+  const day = dayAdd(YESTERDAY, -i);
   for (let v = 0; v < 10; v += 1) await addTouch(day, 'p1', `v${i}_${v}`);
   for (let v = 0; v < 5; v += 1) await addTouch(day, 'p2', `v${i}_${v}`); // 50% through
 }
+// yesterday: 100 → 2 = 2% (the settled leak)
+for (let v = 0; v < 100; v += 1) await addTouch(YESTERDAY, 'p1', `vy_${v}`);
+for (let v = 0; v < 2; v += 1) await addTouch(YESTERDAY, 'p2', `vy_${v}`);
+// today: the same collapse, but on a partial day — section G proves it is suppressed
 for (let v = 0; v < 100; v += 1) await addTouch(TODAY, 'p1', `vt_${v}`);
-for (let v = 0; v < 2; v += 1) await addTouch(TODAY, 'p2', `vt_${v}`);   // 2% through
+for (let v = 0; v < 2; v += 1) await addTouch(TODAY, 'p2', `vt_${v}`);
 
 // ── the dead rail ──────────────────────────────────────────────────────────
 await q(`INSERT INTO lb_pixels (id, funnel_id, kind, pixel_id, enabled, config)
@@ -334,12 +354,16 @@ await addOrder({ day: dayAdd(ACQ, 3), funnel: 'f1', email: 'coh3@x.com', total: 
     ok(Object.prototype.hasOwnProperty.call(r, k), `D5 the payload ships '${k}'`);
   }
   eq(r.last_60.series.length, I.LAST_N_DAYS, `D5 the last-60 series is exactly ${I.LAST_N_DAYS} gap-free buckets`);
-  eq(r.last_60.series[r.last_60.series.length - 1].key, TODAY, 'D5 …ending on the card day');
+  eq(r.last_60.series[r.last_60.series.length - 1].key, YESTERDAY,
+    'D5 …ending on the JUDGED day (yesterday, the last complete one) — not the partial today');
   ok(r.last_60.metrics.every((m) => Object.prototype.hasOwnProperty.call(r.last_60.series[0], m)),
     'D5 …and every metric it names is actually on the points');
   eq(r.detectors.length, 6, 'D5 all six detectors report whether they ran');
   ok(r.detectors.filter((d) => d.fired).length === r.insights.length,
     'D5 …and the fired flags agree with the card list');
+  eq(r.partial, false, 'D5 the default (settled-day) read is NOT partial');
+  eq(r.meta.partial_suppressed, 0, 'D5 …and suppresses nothing');
+  ok(r.detectors.every((d) => d.suppressed === false), 'D5 …no detector is marked suppressed');
 
   // Deep links must be POSTable by the explorer, i.e. legal for the engine.
   for (const c of r.insights) {
@@ -361,6 +385,60 @@ await addOrder({ day: dayAdd(ACQ, 3), funnel: 'f1', email: 'coh3@x.com', total: 
     'D7 scoped to f2 (which has no pages) the leak detector finds nothing — the filter reached the step read');
   ok(!scoped.insights.some((c) => c.kind === 'dead_rail'),
     'D7 …and f2 has no pixel, so the rail detector is quiet too');
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// G. THE PARTIAL CURRENT DAY — the reviewer's bug, end to end
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// Requesting TODAY judges a bucket that is still filling. The SAME detectors
+// that fired a red "net sales dropped" card on the settled day (section D) run
+// again here — but every DOWNWARD card must be withheld, or a normal
+// in-progress morning renders a confident alarm that is a clock artifact, not
+// the business. This is the reviewer's exact scenario, proven end to end.
+
+{
+  const rP = await runInsights({ day: TODAY }, { query: q });
+  console.log(`      partial-day fired: ${JSON.stringify(rP.insights.map((c) => `${c.kind}:${c.severity}:${c.direction}`))}`);
+
+  eq(rP.day, TODAY, 'G1 requesting today judges today…');
+  eq(rP.partial, true, 'G1 …and the payload flags it partial');
+
+  // THE HEADLINE GUARANTEE: not one downward card, at any severity.
+  ok(!rP.insights.some((c) => c.direction === 'down'),
+    `G2 NO downward card survives a partial day (${rP.insights.map((c) => `${c.kind}:${c.direction}`).join(', ')})`);
+  ok(!rP.insights.some((c) => c.severity === 'bad' && c.kind === 'anomaly'),
+    'G2 …specifically the red "net sales dropped" card the reviewer proved is GONE');
+
+  // LOAD-BEARING PROOF that the guard did work, not that today was normal: the
+  // anomaly detector RAN, did not fire, and is marked SUPPRESSED — i.e. it
+  // found a downward outlier and the guard withheld it. Without the guard this
+  // would be the same bad card section D observed on the settled day.
+  const anomalyRow = rP.detectors.find((d) => d.kind === 'anomaly');
+  ok(anomalyRow && anomalyRow.ran === true && anomalyRow.fired === false && anomalyRow.suppressed === true,
+    `G3 the anomaly detector RAN, was withheld, and SAYS SO (ran/fired/suppressed = ${JSON.stringify([anomalyRow?.ran, anomalyRow?.fired, anomalyRow?.suppressed])})`);
+  ok(rP.meta.partial_suppressed >= 1,
+    `G3 …and meta.partial_suppressed counts the withheld card(s) (${rP.meta.partial_suppressed})`);
+
+  // The suppression is NAMED, not silent — an operator sees WHY the strip is quiet.
+  ok(rP.meta.warnings.some((w) => w.source === 'today_partial'),
+    'G4 a today_partial warning explains the withholding');
+
+  // NEUTRAL and UPWARD findings SURVIVE — the guard is a scalpel, not a mute
+  // button. The token-less pixel (a config problem, direction neutral) still
+  // fires on the partial day.
+  ok(rP.insights.some((c) => c.kind === 'dead_rail'),
+    'G5 the dead-rail card (neutral, a config problem) SURVIVES a partial day');
+
+  // THE MIRROR TEST: the SAME numbers, judged as a COMPLETE day, DO produce the
+  // bad card. Section D already proved the settled day fires it; assert the
+  // linkage explicitly so a future change that stops the settled day firing
+  // cannot make G2 pass vacuously.
+  const rSettled = await runInsights({ day: YESTERDAY }, { query: q });
+  ok(rSettled.insights.some((c) => c.kind === 'anomaly' && c.severity === 'bad' && c.direction === 'down'),
+    'G6 MIRROR the identical detector DOES fire a bad downward anomaly on the SETTLED day — '
+    + 'so G2 is suppression at work, not an absence of signal');
+  eq(rSettled.partial, false, 'G6 …and that settled read is not partial');
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

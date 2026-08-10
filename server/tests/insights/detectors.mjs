@@ -24,9 +24,10 @@ process.env.REPORT_TZ = process.env.REPORT_TZ || 'Europe/Madrid';
 const I = await import('../../src/services/funnelInsights.js');
 const {
   detectAnomaly, detectTopMover, detectFunnelLeak, detectAovShift,
-  detectDeadRail, detectFirstSale, rankInsights, splitSeries, measuredColumn,
+  detectDeadRail, detectFirstSale, rankInsights, suppressPartialDay,
+  splitSeries, measuredColumn,
   measured, pstdev, fmean, dayAdd, validDay, explorerLink, whenOf,
-  THRESHOLDS, RULES, DROPPED, MAX_CARDS, BASELINE_DAYS, LAST_N_DAYS,
+  THRESHOLDS, RULES, DROPPED, POLICIES, MAX_CARDS, BASELINE_DAYS, LAST_N_DAYS,
   SERIES_METRICS, STEP_ORDER, STEP_LABELS, SEVERITIES,
 } = I;
 
@@ -467,6 +468,104 @@ eq(dayAdd('2026-10-25', 1), '2026-10-26', '12 …and across the Madrid DST day (
 eq(dayAdd('2026-03-29', 1), '2026-03-30', '12 …and across the spring one');
 eq(whenOf('2026-08-09', '2026-08-09'), 'today', '12 the card day IS today');
 eq(whenOf('2026-08-04', '2026-08-09'), 'on 2026-08-04', '12 …and an older day names itself');
+
+/* ═══ 13. DIRECTION — every card declares which way it points ═══
+   The partial-day guard drops `direction === 'down'` cards, so a detector that
+   sets the wrong direction (or forgets it) would let a false downward alarm
+   through on an in-progress day, or needlessly hide good news. Each direction
+   is pinned to the case that produces it. */
+
+{
+  const base = wobble(10, 'net_sales', 90, 110);
+  eq(detectAnomaly(base, { key: DAY, net_sales: 50 }, DAY, TODAY).direction, 'down',
+    '13 a DOWNWARD anomaly declares direction:down (the one the partial guard drops)');
+  eq(detectAnomaly(base, { key: DAY, net_sales: 150 }, DAY, TODAY).direction, 'up',
+    '13 an UPWARD anomaly declares direction:up (kept on a partial day — genuinely ahead)');
+
+  eq(detectTopMover([{ key: 'a', label: 'A', net_sales: 100 }], [{ key: 'a', net_sales: 500 }], DAY, TODAY).direction,
+    'down', '13 a mover that FELL is direction:down even at info severity');
+  eq(detectTopMover([{ key: 'a', label: 'A', net_sales: 500 }], [{ key: 'a', net_sales: 100 }], DAY, TODAY).direction,
+    'up', '13 …and one that rose is up');
+
+  const leakRows = [
+    { funnel_id: 'f1', day: DAY, step: 'product', visitors: 50 },
+    { funnel_id: 'f1', day: DAY, step: 'checkout', visitors: 1 },
+    { funnel_id: 'f1', day: dayAdd(DAY, -1), step: 'product', visitors: 100 },
+    { funnel_id: 'f1', day: dayAdd(DAY, -1), step: 'checkout', visitors: 40 },
+  ];
+  eq(detectFunnelLeak(leakRows, DAY, TODAY).direction, 'down',
+    '13 a funnel leak is ALWAYS direction:down (a partial day\'s lagging checkout reads as a collapse)');
+
+  eq(detectAovShift(flat(10, { orders: 5, aov: 100 }), { key: DAY, orders: 5, aov: 200 }, DAY, TODAY).direction,
+    'up', '13 an AOV that rose is up');
+  eq(detectAovShift(flat(10, { orders: 5, aov: 100 }), { key: DAY, orders: 5, aov: 50 }, DAY, TODAY).direction,
+    'down', '13 …and one that fell is down');
+
+  eq(detectDeadRail([{ funnel_id: 'f1', has_capi: false }], []).direction, 'neutral',
+    '13 a dead rail is direction:neutral — a config problem, not a day-over-day movement, so it '
+    + 'SURVIVES a partial day');
+  eq(detectFirstSale(flat(10, { orders: 0 }), { key: DAY, orders: 1, net_sales: 10 }, DAY, TODAY).direction,
+    'up', '13 a first sale is up — the first order of the day is real however early it lands');
+
+  // The four severities never contradict the direction: a 'good' card is up, a
+  // downward card is bad or warn. (dead_rail is bad+neutral by design — a
+  // config failure is serious but not a movement, hence kept on a partial day.)
+  const upAnom = detectAnomaly(base, { key: DAY, net_sales: 150 }, DAY, TODAY);
+  ok(upAnom.severity === 'good' && upAnom.direction === 'up', '13 good ⇒ up');
+}
+
+/* ═══ 14. THE PARTIAL-DAY GUARD (pure) ═══
+   suppressPartialDay is the whole of the current-side fix in one function: on
+   an in-progress day it drops exactly the downward cards. This is the mirror of
+   the absent-means-zero discipline, applied to the current value instead of the
+   baseline. */
+
+{
+  const mk = (kind, severity, direction) => ({ kind, severity, direction, headline: 'h', prose: 'p.' });
+  const mixed = [
+    mk('anomaly', 'bad', 'down'),
+    mk('aov_shift', 'good', 'up'),
+    mk('funnel_leak', 'warn', 'down'),
+    mk('dead_rail', 'bad', 'neutral'),
+    mk('first_sale', 'good', 'up'),
+    mk('top_mover', 'info', 'down'),
+  ];
+  const kept = suppressPartialDay(mixed);
+  eq(kept.map((c) => c.kind).sort(), ['aov_shift', 'dead_rail', 'first_sale'],
+    '14 a partial day keeps ONLY up + neutral cards — every downward one is withheld');
+  ok(!kept.some((c) => c.direction === 'down'),
+    '14 …not one direction:down card survives, whatever its severity');
+  ok(kept.some((c) => c.kind === 'dead_rail'),
+    '14 …and the bad-but-neutral dead-rail card is KEPT (a config failure is not a clock artifact)');
+
+  eq(suppressPartialDay([]), [], '14 an empty list suppresses to empty, never throws');
+  eq(suppressPartialDay(null), [], '14 …and a non-array does not throw');
+  // A card missing a direction defaults to neutral in the factory, so it is
+  // never dropped by accident — the safe failure mode.
+  eq(suppressPartialDay([{ kind: 'x', severity: 'info' }]).length, 1,
+    '14 a directionless card is kept, not silently dropped (neutral is the safe default)');
+
+  // MUTATION CHECK, in-file: prove the guard is load-bearing. If it were a
+  // no-op (returned its input), the downward cards would survive — assert they
+  // do NOT, so a future refactor that neuters it fails here.
+  ok(kept.length < mixed.length, '14 MUTATION the guard actually removes cards — it is not a no-op');
+  ok(!kept.some((c) => c.severity === 'bad' && c.direction === 'down'),
+    '14 MUTATION …specifically the red downward alarm the reviewer proved (bad + down) is gone');
+}
+
+/* ═══ 15. THE PARTIAL-DAY POLICY IS PUBLISHED ═══ */
+
+{
+  ok(Array.isArray(POLICIES) && POLICIES.length >= 2, '15 POLICIES ships the cross-cutting behaviour');
+  const kinds = POLICIES.map((p) => p.kind);
+  ok(kinds.includes('complete_day_default'),
+    '15 …including the default-to-yesterday policy');
+  ok(kinds.includes('partial_day_suppression'),
+    '15 …and the downward-suppression policy');
+  for (const p of POLICIES) {
+    ok(p.kind && p.what && p.why, `15 [${p.kind}] policy row carries kind/what/why`);
+  }
+}
 
 console.log(`\nRESULT: ${pass} passed, ${fail} failed\n`);
 process.exit(fail ? 1 : 0);
