@@ -334,10 +334,16 @@ router.get('/:funnelId/tracking/summary', async (req, res) => {
         [funnelId]
       ),
       pgQuery(
-        `SELECT p.kind, COUNT(*)::int AS n
-         FROM lb_postback_queue q JOIN lb_pixels p ON p.id = q.pixel_row_id
+        // Seam audit M6: LEFT JOIN, and COALESCE the kind. The inner join
+        // dropped every queue row whose pixel_row_id is a CUSTOM network —
+        // those rows live in lb_custom_networks, not lb_pixels — so a funnel
+        // with a deep partner backlog reported only the named networks' share
+        // of it. Custom rows now land under the synthetic kind 'custom', which
+        // is what the per-network custom health surface reports in detail.
+        `SELECT COALESCE(p.kind, 'custom') AS kind, COUNT(*)::int AS n
+         FROM lb_postback_queue q LEFT JOIN lb_pixels p ON p.id = q.pixel_row_id
          WHERE q.funnel_id = $1 AND q.status IN ('queued', 'sending')
-         GROUP BY p.kind`,
+         GROUP BY 1`,
         [funnelId]
       ),
     ]);

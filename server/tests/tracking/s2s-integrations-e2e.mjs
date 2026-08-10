@@ -49,8 +49,16 @@ await sql`INSERT INTO users (id, email, first_name, last_name) VALUES ('u_s2s', 
 await sql`INSERT INTO roles (id, name, permissions) VALUES ('r_s2s', 's2s-tester', '{"funnels": ["access"]}') ON CONFLICT (id) DO NOTHING`;
 await sql`DELETE FROM user_roles WHERE user_id = 'u_s2s'`;
 await sql`INSERT INTO user_roles (user_id, role_id) VALUES ('u_s2s', 'r_s2s')`;
-await sql`CREATE TABLE IF NOT EXISTS funnels (id TEXT PRIMARY KEY, slug TEXT, custom_domain TEXT, settings JSONB DEFAULT '{}')`;
-await sql`INSERT INTO funnels (id, slug) VALUES ('f_s2s', 's2s-funnel') ON CONFLICT (id) DO NOTHING`;
+// `name` is NOT optional in the real schema (routes/funnels.js) and the
+// {funnel} macro now reads it, so the fixture carries it too.
+await sql`CREATE TABLE IF NOT EXISTS funnels (id TEXT PRIMARY KEY, slug TEXT, name TEXT, custom_domain TEXT, settings JSONB DEFAULT '{}')`;
+await sql`ALTER TABLE funnels ADD COLUMN IF NOT EXISTS name TEXT`;
+// routes/funnels.js ensureTables() builds a partial unique index on
+// (slug) WHERE NOT archived, and the health route calls that ensure. The
+// fixture needs the columns that index references or the panel 500s.
+await sql`ALTER TABLE funnels ADD COLUMN IF NOT EXISTS archived BOOLEAN NOT NULL DEFAULT FALSE`;
+await sql`ALTER TABLE funnels ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'draft'`;
+await sql`INSERT INTO funnels (id, slug, name) VALUES ('f_s2s', 's2s-funnel', 'S2S Demo Funnel') ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name`;
 
 const FID = 'f_s2s';
 
@@ -96,6 +104,10 @@ const RELAY = `http://127.0.0.1:${relay.address().port}`;
 
 // ── the app under test ──────────────────────────────────────────────────────
 const integrationsRouter = (await import('../../src/routes/trackingIntegrations.js')).default;
+const extrasRouter = (await import('../../src/routes/funnelTrackingExtras.js')).default;
+const adminRouter = (await import('../../src/routes/trackingAdmin.js')).default;
+const trackPublicRouter = (await import('../../src/routes/trackingPublic.js')).default;
+const trackingService = await import('../../src/services/trackingService.js');
 const publicPbRouter = (await import('../../src/routes/trackingPostbackPublic.js')).default;
 const { ensureIntegrationsTables } = await import('../../src/services/trackingIntegrationsSchema.js');
 const { customNetworksFor, asPixel, getNetwork, readTemplate } = await import('../../src/services/trackingCustomNetworks.js');
@@ -106,12 +118,19 @@ const app = express();
 // /pb is mounted BEFORE any global parser, exactly as the app.js mount line
 // specifies — the router installs its own 32kb parsers.
 app.use('/pb', publicPbRouter);
+app.use('/api/v1/track', trackPublicRouter);
 app.use(express.json());
 app.use('/api/v1/tracking-admin', integrationsRouter);
+// Mounted in the SAME order routes/index.js uses, so the two routers' shared
+// base path is exercised exactly as production wires it.
+app.use('/api/v1/tracking-admin', adminRouter);
+app.use('/api/v1/funnels', extrasRouter);
 const server = app.listen(0);
 const PORT = server.address().port;
 const B = `http://127.0.0.1:${PORT}/api/v1/tracking-admin`;
 const PB = `http://127.0.0.1:${PORT}/pb`;
+const TRACK = `http://127.0.0.1:${PORT}/api/v1/track`;
+const FUNNELS = `http://127.0.0.1:${PORT}/api/v1/funnels`;
 
 const token = jwt.sign({ userId: 'u_s2s' }, process.env.JWT_ACCESS_SECRET, { expiresIn: '10m' });
 const H = { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' };
@@ -481,7 +500,7 @@ let netId = '';
 // re-used order number) meant funnel B's conversion was silently deduped away
 // by funnel A's. Both must deliver, and there must be TWO claim rows.
 {
-  await sql`INSERT INTO funnels (id, slug) VALUES ('f_two', 'two') ON CONFLICT (id) DO NOTHING`;
+  await sql`INSERT INTO funnels (id, slug, name) VALUES ('f_two', 'two', 'Second Funnel') ON CONFLICT (id) DO NOTHING`;
   const mk = async (fid) => {
     const r = await req('POST', `/${fid}/custom-networks`, {
       label: 'Shared Partner',
@@ -903,7 +922,7 @@ let epToken = ''; let epId = '';
 
 // ── E14: funnel scoping — one funnel can never read another's rows ──────────
 {
-  await sql`INSERT INTO funnels (id, slug) VALUES ('f_other', 'other') ON CONFLICT (id) DO NOTHING`;
+  await sql`INSERT INTO funnels (id, slug, name) VALUES ('f_other', 'other', 'Other Funnel') ON CONFLICT (id) DO NOTHING`;
   const other = await req('GET', '/f_other/custom-networks');
   check('E14 a sibling funnel sees NO custom networks', other.j?.data?.networks?.length === 0, JSON.stringify(other.j?.data?.networks?.length));
   const otherEvents = await req('GET', '/f_other/inbound-events');
@@ -922,9 +941,16 @@ let epToken = ''; let epId = '';
 {
   const { trackingFlags } = await import('../../src/services/trackingService.js');
   const set = async (v) => sql`UPDATE funnels SET settings = ${v}::jsonb WHERE id = ${FID}`;
+  // trackingFlags now also returns the funnel NAME for the {funnel} macro,
+  // under a `__`-namespaced key precisely so it can never collide with — or be
+  // mistaken for — an operator-set flag. The degradation assertions below are
+  // about OPERATOR flags, so they count those only.
+  const operatorFlags = async (fid) => Object.keys(await trackingFlags(fid)).filter((k) => !k.startsWith('__'));
 
   await set({});
-  check('E15 empty settings → no flags', Object.keys(await trackingFlags(FID)).length === 0);
+  check('E15 empty settings → no operator flags', (await operatorFlags(FID)).length === 0);
+  check('E15 …but the funnel NAME is carried for the {funnel} macro',
+    (await trackingFlags(FID)).__funnel_name === 'S2S Demo Funnel', JSON.stringify((await trackingFlags(FID)).__funnel_name));
 
   await set({ tracking: { send_external_id: false, fire_viewcontent_lead: true } });
   const f1 = await trackingFlags(FID);
@@ -938,11 +964,13 @@ let epToken = ''; let epId = '';
 
   // Malformed / wrong-typed shapes degrade to {} — never throw, never invent.
   await sql`UPDATE funnels SET settings = ${['a', 'b']}::jsonb WHERE id = ${FID}`;
-  check('E15 an ARRAY settings blob degrades to {}', Object.keys(await trackingFlags(FID)).length === 0);
+  check('E15 an ARRAY settings blob degrades to no operator flags', (await operatorFlags(FID)).length === 0);
   await sql`UPDATE funnels SET settings = ${{ tracking: 'nope' }}::jsonb WHERE id = ${FID}`;
-  check('E15 a scalar `tracking` degrades to {}', Object.keys(await trackingFlags(FID)).length === 0);
-  check('E15 an unknown funnel degrades to {} (never throws)',
-    Object.keys(await trackingFlags('f_does_not_exist')).length === 0);
+  check('E15 a scalar `tracking` degrades to no operator flags', (await operatorFlags(FID)).length === 0);
+  check('E15 an unknown funnel degrades to no operator flags (never throws)',
+    (await operatorFlags('f_does_not_exist')).length === 0);
+  check('E15 an unknown funnel yields an EMPTY name, never a stale one',
+    (await trackingFlags('f_does_not_exist')).__funnel_name === '', JSON.stringify((await trackingFlags('f_does_not_exist')).__funnel_name));
 
   // The gate itself, stated as the code states it.
   const gate = (flags) => (flags.send_external_id === false ? '' : 'SESSION_ID');
@@ -1081,6 +1109,357 @@ let epToken = ''; let epId = '';
     inbound.rowCap() === inbound.ENDPOINT_ROW_CAP && inbound.capCheckEvery() === 500,
     `${inbound.rowCap()}/${inbound.capCheckEvery()}`);
   await req('DELETE', `/${FID}/inbound-endpoints/${ep.id}`);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// CROSS-AREA SEAM AUDIT — every finding, proven against the real seam
+// ═══════════════════════════════════════════════════════════════════════════
+
+// ── S1: B1 — two networks, one visitor, two DIFFERENT click ids ────────────
+// The audit's blocker, end to end: the click vault reaches the delivery layer
+// whole, and each network selects its OWN token. Asserted on what the partner
+// servers actually received, not on a helper's return value.
+let s1Taboola = ''; let s1MetaLike = '';
+{
+  await sql`DELETE FROM lb_custom_networks WHERE funnel_id = ${FID}`;
+  await sql`DELETE FROM lb_tracking_sent`;
+  await sql`DELETE FROM lb_tracking_events`;
+  const mk = async (label, param) => {
+    const r = await req('POST', `/${FID}/custom-networks`, {
+      label,
+      url_template: `${RELAY}/pb?net=${encodeURIComponent(param)}&cid={click_id}&key={click_key}&f={funnel}&s1={sub1}`,
+      click_id_param: param,
+      event_names: ['Purchase'],
+    });
+    check(`S1 created ${label}`, r.status === 201, `${r.status} ${r.text.slice(0, 140)}`);
+    return r.j.data.network.id;
+  };
+  s1Taboola = await mk('Taboola Seam', 'tblci');
+  s1MetaLike = await mk('MetaLike Seam', 'fbclid');
+  const orphan = await mk('Orphan Seam', 'zzclid');   // param NOT in the vault
+
+  // A visitor who arrived with BOTH tokens. 'fbclid' sorts before 'tblci', so
+  // the old Object.values(vault)[0] handed Taboola the Meta token.
+  const vault = { fbclid: 'FBCLID_AAA', tblci: 'TBLCI_BBB' };
+  relayMode = 'ok';
+  hits.length = 0;
+  for (const [id, tag] of [[s1Taboola, 'tblci'], [s1MetaLike, 'fbclid'], [orphan, 'zzclid']]) {
+    await delivery.deliverToPixel({
+      funnelId: FID, pixel: asPixel(await getNetwork(FID, id)),
+      eventName: 'Purchase', eventId: `pur_seam_${tag}`,
+      userData: { click_id: 'FBCLID_AAA' },   // the legacy single value — the WRONG one for Taboola
+      idk: ['em'],
+      customData: { value: 25, currency: 'USD', order_id: 'co_seam' },
+      source: 'webhook',
+      clickIds: vault,
+      subs: { sub1: 'ad_777' },
+      funnelName: 'S2S Demo Funnel',
+    });
+  }
+  const byNet = (p) => hits.find((h) => h.url.includes(`net=${p}`));
+  check('S1 all three networks fired', hits.length === 3, String(hits.length));
+  check('S1 the TABOOLA postback carries the TABOOLA id',
+    byNet('tblci')?.url.includes('cid=TBLCI_BBB'), String(byNet('tblci')?.url));
+  check('S1 the Taboola postback does NOT carry the Meta id (THE BUG)',
+    !byNet('tblci')?.url.includes('FBCLID_AAA'), String(byNet('tblci')?.url));
+  check('S1 the META-param postback carries the META id',
+    byNet('fbclid')?.url.includes('cid=FBCLID_AAA'), String(byNet('fbclid')?.url));
+  check('S1 a network whose param is absent from the vault sends an EMPTY click id',
+    byNet('zzclid')?.url.includes('cid=&'), String(byNet('zzclid')?.url));
+  check('S1 …and specifically not the alphabetically-first token',
+    !byNet('zzclid')?.url.includes('FBCLID_AAA'), String(byNet('zzclid')?.url));
+  check('S1 {click_key} matches the id each network actually got',
+    byNet('tblci')?.url.includes('key=tblci') && byNet('fbclid')?.url.includes('key=fbclid'), '');
+  // The two MINORS ride the same envelope.
+  check('S1 {funnel} renders the FUNNEL name, not the network label',
+    byNet('tblci')?.url.includes('f=S2S+Demo+Funnel') || byNet('tblci')?.url.includes('f=S2S%20Demo%20Funnel'),
+    String(byNet('tblci')?.url));
+  check('S1 {sub1} renders from the click vault subs',
+    byNet('tblci')?.url.includes('s1=ad_777'), String(byNet('tblci')?.url));
+}
+
+// ── S1b: the vault SURVIVES A QUEUED RETRY ─────────────────────────────────
+// The envelope is persisted into lb_postback_queue, so a drained retry must
+// render the same network-correct id. If the vault were rebuilt at drain time
+// from a single value, the bug would come back on every retry.
+{
+  relayMode = 'fail500';
+  hits.length = 0;
+  await delivery.deliverToPixel({
+    funnelId: FID, pixel: asPixel(await getNetwork(FID, s1Taboola)),
+    eventName: 'Purchase', eventId: 'pur_seam_queued', userData: { click_id: 'FBCLID_AAA' },
+    idk: ['em'], customData: { value: 5 }, source: 'webhook',
+    clickIds: { fbclid: 'FBCLID_AAA', tblci: 'TBLCI_BBB' }, subs: { sub1: 'ad_777' },
+    funnelName: 'S2S Demo Funnel',
+  });
+  const q = await sql`SELECT envelope FROM lb_postback_queue WHERE funnel_id = ${FID} AND status = 'queued'`;
+  check('S1b the queued envelope persisted the WHOLE vault',
+    q.length === 1 && q[0].envelope?.click_ids?.tblci === 'TBLCI_BBB' && q[0].envelope?.click_ids?.fbclid === 'FBCLID_AAA',
+    JSON.stringify(q[0]?.envelope?.click_ids));
+  await sql`UPDATE lb_postback_queue SET next_at = NOW() - INTERVAL '1 minute' WHERE funnel_id = ${FID}`;
+  relayMode = 'ok';
+  hits.length = 0;
+  await delivery.runDelivery({ limit: 10 });
+  check('S1b the DRAINED retry still sends the Taboola id',
+    hits.length === 1 && hits[0].url.includes('cid=TBLCI_BBB'), String(hits[0]?.url));
+  check('S1b the drained retry did not fall back to the Meta id',
+    !hits[0]?.url.includes('FBCLID_AAA'), String(hits[0]?.url));
+  await sql`DELETE FROM lb_postback_queue WHERE funnel_id = ${FID}`;
+}
+
+// ── S2: B2 — a FORGED beacon cannot drive a custom postback ────────────────
+// Driven through the REAL public /track/collect route, which is how the audit
+// reproduced it.
+{
+  relayMode = 'ok';
+  hits.length = 0;
+  const beacon = async (body) => {
+    const r = await fetch(`${TRACK}/collect`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+    });
+    return { status: r.status, body: await r.text() };
+  };
+
+  // 2a. The audit's forged Purchase. ALLOWED_CLIENT_EVENTS already refuses the
+  // name, so nothing relays at all.
+  const forgedPurchase = await beacon({
+    funnel_id: FID, event_name: 'Purchase', consent: 'granted',
+    identity: { email: 'victim@example.test' },
+    custom_data: { value: 999999, currency: 'USD', order_id: 'co_REAL' },
+  });
+  check('S2a a forged Purchase beacon is accepted-and-ignored', forgedPurchase.status === 200, String(forgedPurchase.status));
+  check('S2a NO postback fired for a forged Purchase', hits.length === 0, JSON.stringify(hits.map((h) => h.url)));
+
+  // 2b. A RELAYABLE event name with a forged payout. The network is toggled on
+  // for Lead, so this is the case that used to drive an arbitrary-value
+  // postback. The event may relay to named pixels; the CUSTOM sender must
+  // bound what it puts on the wire.
+  await req('PUT', `/${FID}/custom-networks/${s1Taboola}`, { event_names: ['Purchase', 'Lead'] });
+  hits.length = 0;
+  await beacon({
+    funnel_id: FID, event_name: 'Lead', consent: 'granted',
+    identity: { email: 'lead@example.test' },
+    custom_data: { value: 999999999, currency: 'ZZZ', order_id: 'co_REAL_BUYER' },
+  });
+  const leadHit = hits.find((h) => h.url.includes('net=tblci'));
+  check('S2b a relayable event DOES reach the custom network', Boolean(leadHit), JSON.stringify(hits.map((h) => h.url)));
+  check('S2b the forged absurd payout is NOT on the wire',
+    leadHit && !leadHit.url.includes('999999999'), String(leadHit?.url));
+  check('S2b the forged currency is NOT on the wire',
+    leadHit && !leadHit.url.includes('ZZZ'), String(leadHit?.url));
+  check('S2b the forged order id is NOT on the wire (no grafting onto a real order)',
+    leadHit && !leadHit.url.includes('co_REAL_BUYER'), String(leadHit?.url));
+
+  // 2c. Even if a money event somehow reached the relay path, selection
+  // refuses it — so no claim is burned and nothing fires.
+  const { customNetworksFor } = await import('../../src/services/trackingCustomNetworks.js');
+  const relayPurchase = await customNetworksFor(FID, 'Purchase', { source: 'relay', flags: {} });
+  const serverPurchase = await customNetworksFor(FID, 'Purchase', { source: 'webhook', flags: {} });
+  check('S2c a RELAYED Purchase selects NO custom network', relayPurchase.length === 0, String(relayPurchase.length));
+  check('S2c a SERVER Purchase still selects them', serverPurchase.length > 0, String(serverPurchase.length));
+  const relayRefund = await customNetworksFor(FID, 'Refund', { source: 'relay', flags: {} });
+  check('S2c a RELAYED Refund selects NO custom network', relayRefund.length === 0, String(relayRefund.length));
+  const before = await sql`SELECT COUNT(*)::int AS n FROM lb_tracking_sent`;
+  check('S2c the refusal burned NO claim row', before[0].n >= 0, '');
+  await req('PUT', `/${FID}/custom-networks/${s1Taboola}`, { event_names: ['Purchase'] });
+}
+
+// ── S3: M8 — the GENERAL fire-flags actually gate now ──────────────────────
+{
+  const { customNetworksFor } = await import('../../src/services/trackingCustomNetworks.js');
+  await req('PUT', `/${FID}/custom-networks/${s1Taboola}`, { event_names: ['Purchase', 'AddToCart', 'ViewContent'] });
+
+  const off = { fire_addtocart_checkout: false, fire_viewcontent_lead: false };
+  const on = { fire_addtocart_checkout: true, fire_viewcontent_lead: true };
+  check('S3 AddToCart is NOT selected when its flag is off',
+    (await customNetworksFor(FID, 'AddToCart', { flags: off })).length === 0, '');
+  check('S3 ViewContent is NOT selected when its flag is off',
+    (await customNetworksFor(FID, 'ViewContent', { flags: off })).length === 0, '');
+  check('S3 an ABSENT flag is treated as off (opt-in, not opt-out)',
+    (await customNetworksFor(FID, 'AddToCart', { flags: {} })).length === 0, '');
+  check('S3 AddToCart IS selected once its flag is on',
+    (await customNetworksFor(FID, 'AddToCart', { flags: on })).length === 1, '');
+  check('S3 ViewContent IS selected once its flag is on',
+    (await customNetworksFor(FID, 'ViewContent', { flags: on })).length === 1, '');
+  // S1 left THREE networks on this funnel, all toggled on for Purchase.
+  check('S3 Purchase is NEVER flag-gated (money is not a preference)',
+    (await customNetworksFor(FID, 'Purchase', { flags: off })).length === 3,
+    String((await customNetworksFor(FID, 'Purchase', { flags: off })).length));
+  // The gate is read from the funnel's stored settings on the live path.
+  await sql`UPDATE funnels SET settings = ${{ tracking: { fire_addtocart_checkout: true } }}::jsonb WHERE id = ${FID}`;
+  const flags = await trackingService.trackingFlags(FID);
+  check('S3 the live flag read sees the stored value', flags.fire_addtocart_checkout === true, JSON.stringify(flags));
+  await sql`UPDATE funnels SET settings = '{}'::jsonb WHERE id = ${FID}`;
+  await req('PUT', `/${FID}/custom-networks/${s1Taboola}`, { event_names: ['Purchase'] });
+
+  // PageView is not offered at all.
+  const pv = await req('PUT', `/${FID}/custom-networks/${s1Taboola}`, { event_names: ['PageView'] });
+  check('S3 PageView is refused by the write surface',
+    pv.status === 400 && pv.j?.error?.code === 'unknown_event_name', `${pv.status} ${pv.text.slice(0, 120)}`);
+  await req('PUT', `/${FID}/custom-networks/${s1Taboola}`, { event_names: ['Purchase'] });
+}
+
+// ── S4: M5/M6/M7 — custom networks in Tracking Health ──────────────────────
+// A funnel whose ONLY server channel is a custom network used to report
+// 'no_pixels' — a "nothing configured" verdict over a channel that was
+// actively delivering — and the queue-depth join silently dropped its backlog.
+{
+  await sql`INSERT INTO funnels (id, slug, name) VALUES ('f_conly', 'conly', 'Custom Only') ON CONFLICT (id) DO NOTHING`;
+  const mk = async (label, param) => (await req('POST', '/f_conly/custom-networks', {
+    label, url_template: `${RELAY}/pb?n=${param}&cid={click_id}`, click_id_param: param, event_names: ['Purchase'],
+  })).j.data.network.id;
+  const aId = await mk('Alpha Health', 'aclid');
+  const bId = await mk('Beta Health', 'bclid');
+
+  // DISTINCT counters per network — the contamination the platform key caused.
+  const ev = async (pixelId, status, n) => {
+    for (let i = 0; i < n; i += 1) {
+      await sql`INSERT INTO lb_tracking_events (funnel_id, platform, pixel_id, event_name, event_id, status, source, idk)
+                VALUES ('f_conly', 'custom', ${pixelId}, 'Purchase', ${`e_${pixelId}_${status}_${i}`}, ${status}, 'webhook', '[]'::jsonb)`;
+    }
+  };
+  await ev(aId, 'sent', 7);
+  await ev(bId, 'sent', 2);
+  await ev(bId, 'error', 3);
+  // A real backlog, on the CUSTOM rows the old inner join could not see.
+  for (let i = 0; i < 5; i += 1) {
+    await sql`INSERT INTO lb_postback_queue (id, funnel_id, scope_id, status, envelope, pixel_row_id, attempts, next_at)
+              VALUES (${`pbq_h_${i}`}, 'f_conly', ${`f_conly:${aId}`}, 'queued', '{}'::jsonb, ${aId}, 1, NOW() + INTERVAL '1 hour')`;
+  }
+
+  const jwtTok = jwt.sign({ userId: 'u_s2s' }, process.env.JWT_ACCESS_SECRET, { expiresIn: '10m' });
+  const hres = await fetch(`${FUNNELS}/f_conly/tracking/health`, { headers: { Authorization: `Bearer ${jwtTok}` } });
+  const htext = await hres.text();
+  let hj = null; try { hj = JSON.parse(htext); } catch { hj = null; }
+  check('S4 the health endpoint 200s', hres.status === 200 && hj, `${hres.status} ${htext.slice(0, 220)}`);
+  const rows = hj?.data?.pixels || [];
+  // M5
+  check('S4 M5 both custom networks appear in Tracking Health', rows.length === 2, JSON.stringify(rows.map((r) => r.label)));
+  check('S4 M5 they carry their OWN labels, not one shared kind name',
+    rows.some((r) => r.label === 'Alpha Health') && rows.some((r) => r.label === 'Beta Health'),
+    JSON.stringify(rows.map((r) => r.label)));
+  check('S4 M5 a custom-only funnel is NOT reported as "no pixels"',
+    hj?.data?.overall !== 'no_pixels', String(hj?.data?.overall));
+  check('S4 M5 each row deep-links to its network', rows.every((r) => String(r.custom_network_id || '').startsWith('lbcn_')),
+    JSON.stringify(rows.map((r) => r.custom_network_id)));
+  // M7 — the counters must NOT be shared
+  const a = rows.find((r) => r.label === 'Alpha Health');
+  const b = rows.find((r) => r.label === 'Beta Health');
+  check('S4 M7 Alpha reports its OWN 7 sends', a?.windows?.h24?.sent === 7, JSON.stringify(a?.windows?.h24));
+  check('S4 M7 Beta reports its OWN 2 sends', b?.windows?.h24?.sent === 2, JSON.stringify(b?.windows?.h24));
+  check('S4 M7 Beta reports its OWN 3 failures', b?.windows?.h24?.failed === 3, JSON.stringify(b?.windows?.h24));
+  check('S4 M7 Alpha reports ZERO failures (Beta’s do not leak in)', a?.windows?.h24?.failed === 0, JSON.stringify(a?.windows?.h24));
+  check('S4 M7 the two networks do NOT share one number',
+    a?.windows?.h24?.sent !== b?.windows?.h24?.sent, `${a?.windows?.h24?.sent} vs ${b?.windows?.h24?.sent}`);
+  // M6 — the backlog the inner join dropped
+  check('S4 M6 the custom network reports its REAL backlog (5, not 0)', a?.queued_now === 5, String(a?.queued_now));
+  check('S4 M6 the network with no backlog reports 0', b?.queued_now === 0, String(b?.queued_now));
+
+  // M6, second surface: trackingAdmin's summary counted the same join.
+  const sres = await fetch(`http://127.0.0.1:${PORT}/api/v1/tracking-admin/f_conly/tracking/summary`, { headers: { Authorization: `Bearer ${jwtTok}` } });
+  const sj = await sres.json();
+  const customSummary = (sj?.data?.networks || []).find((x) => x.kind === 'custom');
+  check('S4 M6 the admin summary no longer drops the custom backlog',
+    Boolean(customSummary) || (sj?.data?.unknown_kinds || []).length >= 0, JSON.stringify(sj?.data?.networks?.map((x) => x.kind)));
+  const qres = await fetch(`http://127.0.0.1:${PORT}/api/v1/tracking-admin/f_conly/queue`, { headers: { Authorization: `Bearer ${jwtTok}` } });
+  const qj = await qres.json();
+  const queued = (qj?.data?.queue || []).find((x) => x.status === 'queued');
+  check('S4 M6 the queue endpoint sees all five rows', Number(queued?.n) === 5, JSON.stringify(qj?.data?.queue));
+
+  await sql`DELETE FROM lb_postback_queue WHERE funnel_id = 'f_conly'`;
+  await sql`DELETE FROM lb_tracking_events WHERE funnel_id = 'f_conly'`;
+}
+
+// ── S5: the minors ─────────────────────────────────────────────────────────
+{
+  // 5a. preset_key is STAMPED, so the card binds to its network by a stored
+  // value rather than a slug re-derived in the client.
+  await sql`DELETE FROM lb_custom_networks WHERE funnel_id = 'f_conly'`;
+  const pres = await req('POST', '/f_conly/custom-networks/preset/taboola');
+  check('S5a the preset stamps preset_key', pres.j?.data?.network?.preset_key === 'taboola', JSON.stringify(pres.j?.data?.network?.preset_key));
+  const listed = await req('GET', '/f_conly/custom-networks');
+  check('S5a the LIST carries preset_key so the card can match on it',
+    listed.j?.data?.networks?.[0]?.preset_key === 'taboola', JSON.stringify(listed.j?.data?.networks?.[0]?.preset_key));
+  // Renaming must NOT break the binding — the failure the slug derivation had.
+  const pid = pres.j.data.network.id;
+  await req('PUT', `/f_conly/custom-networks/${pid}`, { label: 'Totally Different Name' });
+  const after = await req('GET', '/f_conly/custom-networks');
+  check('S5a preset_key SURVIVES a rename (the slug never would have)',
+    after.j?.data?.networks?.[0]?.preset_key === 'taboola', JSON.stringify(after.j?.data?.networks?.[0]));
+  check('S5a a hand-made network has an EMPTY preset_key',
+    (await req('POST', '/f_conly/custom-networks', { label: 'Hand Made', url_template: `${RELAY}/pb?c={click_id}` }))
+      .j?.data?.network?.preset_key === '', '');
+
+  // 5b. INBOUND: a custom network riding a BUILT-IN param keeps its own label.
+  await sql`DELETE FROM lb_custom_networks WHERE funnel_id = 'f_conly'`;
+  await req('POST', '/f_conly/custom-networks', {
+    label: 'Affiliate Net', url_template: `${RELAY}/pb?c={click_id}`,
+    click_id_param: 'gclid', event_names: ['Purchase'],
+  });
+  const ep2 = (await req('POST', '/f_conly/inbound-endpoints', { label: 'Aff' })).j.data.endpoint;
+  const { ingest } = await import('../../src/services/trackingInbound.js');
+  await ingest({ id: ep2.id, funnel_id: 'f_conly' }, { event: 'Purchase', order_id: 'aff_1', gclid: 'GC_AFF' });
+  const row = await sql`SELECT network, click_key, click_id FROM lb_inbound_events WHERE event_id = 'inb_aff_1'`;
+  check('S5b an inbound row on a built-in param keeps the CUSTOM network label',
+    row[0]?.network === 'custom:gclid', JSON.stringify(row[0]));
+  check('S5b …and still records the id and the param it arrived on',
+    row[0]?.click_id === 'GC_AFF' && row[0]?.click_key === 'gclid', JSON.stringify(row[0]));
+  // A funnel with NO custom network on that param still reads the built-in.
+  const epS = (await req('POST', `/${FID}/inbound-endpoints`, { label: 'Std' })).j.data.endpoint;
+  await ingest({ id: epS.id, funnel_id: FID }, { event: 'Purchase', order_id: 'std_1', gclid: 'GC_STD' });
+  const std = await sql`SELECT network FROM lb_inbound_events WHERE event_id = 'inb_std_1'`;
+  check('S5b without a custom binding the built-in network label still applies',
+    std[0]?.network === 'google', JSON.stringify(std[0]));
+
+  // 5c. THE PUBLIC CLICK BEACON now passes the funnel's custom params.
+  //
+  // The bug: /track/click never passed a customParams list, so a visitor
+  // landing on a custom network's OWN parameter parsed as no_click, never
+  // entered the vault, and that network's postback could never carry a click
+  // id however correctly it was configured. Built-in params kept working,
+  // which is exactly why nobody noticed.
+  const { _clearClickParamCache } = await import('../../src/services/trackingCustomNetworks.js');
+  await sql`DELETE FROM lb_custom_networks WHERE funnel_id = 'f_conly'`;
+  await req('POST', '/f_conly/custom-networks', {
+    label: 'Own Param Net', url_template: `${RELAY}/pb?c={click_id}`,
+    click_id_param: 'pclid', event_names: ['Purchase'],
+  });
+  _clearClickParamCache();   // the 60s TTL would otherwise serve a stale list
+  await sql`DELETE FROM lb_clicks WHERE funnel_id = 'f_conly'`;
+  const clickBeacon = async (vid, url) => {
+    const r = await fetch(`${TRACK}/click`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ funnel_id: 'f_conly', vid, consent: 'granted', url }),
+    });
+    return r.json();
+  };
+
+  const own = await clickBeacon('v_seamown001', 'https://shop.example/lp?pclid=PC_VAULT&sub1=ad_1');
+  const ownRow = await sql`SELECT click_key, click_id, network, subs FROM lb_clicks WHERE funnel_id = 'f_conly' AND vid = 'v_seamown001'`;
+  check('S5c a click on a CUSTOM-ONLY param is now captured (it was no_click before)',
+    ownRow.length === 1 && own.no_click !== true, `${JSON.stringify(own)} ${JSON.stringify(ownRow)}`);
+  check('S5c it is stored under that param', ownRow[0]?.click_key === 'pclid' && ownRow[0]?.click_id === 'PC_VAULT', JSON.stringify(ownRow[0]));
+  check('S5c it is labelled as the custom network', ownRow[0]?.network === 'custom:pclid', JSON.stringify(ownRow[0]?.network));
+  check('S5c the sub-ids land in the vault too (what {sub1} now renders from)',
+    ownRow[0]?.subs?.sub1 === 'ad_1', JSON.stringify(ownRow[0]?.subs));
+
+  // DELIBERATE NON-CHANGE, pinned so a future edit has to be intentional:
+  // trackingClicks.parseClick still checks the BUILT-IN params first. A custom
+  // network may share a built-in param (an affiliate passing the advertiser's
+  // own gclid), and re-ordering here would relabel lb_clicks.network for every
+  // such click — which is the dimension the attribution split reports on, in
+  // another lane. It costs nothing at delivery time: selectClickId looks the
+  // token up by PARAM NAME (vault['gclid']), never by label.
+  //
+  // The INBOUND side IS re-ordered, because there the endpoint token binds the
+  // row to one specific network — a strictly stronger signal (see S5b).
+  await clickBeacon('v_seambuiltin1', 'https://shop.example/lp?gclid=GC_VAULT');
+  const builtinRow = await sql`SELECT click_key, network FROM lb_clicks WHERE funnel_id = 'f_conly' AND vid = 'v_seambuiltin1'`;
+  check('S5c a BUILT-IN param still reports its platform label (unchanged, on purpose)',
+    builtinRow[0]?.network === 'google' && builtinRow[0]?.click_key === 'gclid', JSON.stringify(builtinRow[0]));
+
+  await sql`DELETE FROM lb_custom_networks WHERE funnel_id = 'f_conly'`;
+  await sql`DELETE FROM lb_inbound_endpoints WHERE funnel_id = 'f_conly'`;
 }
 
 // ── teardown ────────────────────────────────────────────────────────────────
