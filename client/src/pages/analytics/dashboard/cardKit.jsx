@@ -259,8 +259,12 @@ function ChartTooltip({ active, payload, label, fmt }) {
  * `connectNulls={false}` everywhere, and the count of holes is admitted in
  * words underneath — an empty stretch of canvas is not self-describing.
  */
+// `action` is threaded through to Card (which has always supported it) so a
+// line card can carry a control in its header — the last-60 card's reading
+// toggle is the first caller. ADDITIVE: every existing caller omits it, and
+// Card's header already renders identically when it is undefined.
 export function LineCard({
-  title, headline, sub, notice, points, prevPoints, labels, prevLabels,
+  title, headline, sub, notice, action, points, prevPoints, labels, prevLabels,
   fmt = fmtMoney, height = 200, state, reason, withheldReason, testid, footNote,
   comparisonLabel, flush,
 }) {
@@ -286,7 +290,7 @@ export function LineCard({
   const dotted = gaps > 0 ? { r: 1.6 } : false;
 
   return (
-    <Card title={title} headline={headline} sub={sub} notice={notice} testid={testid} flush={flush}>
+    <Card title={title} headline={headline} sub={sub} notice={notice} action={action} testid={testid} flush={flush}>
       {cardBody({
         state,
         reason,
@@ -519,9 +523,12 @@ export function DonutCard({
  * precisely so a surface can say "Top 8 of 40 · $123,456". See TruncationFooter
  * for what happens when the server sends neither — the answer is NOT "All 8".
  */
+// `action` threaded through to Card, exactly as on LineCard above and for the
+// same reason (the top-lists card's slice switch). ADDITIVE — every existing
+// caller omits it.
 export function HBarCard({
   title, rows, fmt = fmtMoney, limit = 8, state, reason, testid, sub, notice,
-  emptyText, flush, total, totalRows, totalLabel = 'total', footer,
+  emptyText, flush, total, totalRows, totalLabel = 'total', footer, action,
 }) {
   const all = (Array.isArray(rows) ? rows : []).filter(Boolean);
   const measured = all
@@ -538,7 +545,7 @@ export function HBarCard({
   const max = clean.reduce((m, r) => Math.max(m, r.value), 0) || 1;
 
   return (
-    <Card title={title} sub={sub} notice={notice} testid={testid} flush={flush} footer={footer}>
+    <Card title={title} sub={sub} notice={notice} action={action} testid={testid} flush={flush} footer={footer}>
       {cardBody({
         state,
         reason,

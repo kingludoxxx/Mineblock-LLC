@@ -22,6 +22,9 @@ import AnalyticsDashboardPage from './dashboard/index.jsx';
 import { CardSkeleton } from './dashboard/cardKit.jsx';
 
 const Explorer = lazy(() => import('./explorer/index.jsx'));
+// LANE 5 — the cohort / LTV surface. Lazy for the same reason the explorer is:
+// it is a second full page and the dashboard should not pay for its bundle.
+const Cohorts = lazy(() => import('./CohortsPage.jsx'));
 
 function ExplorerFallback() {
   return (
@@ -42,6 +45,18 @@ export default function AnalyticsRoutes() {
         element={(
           <Suspense fallback={<ExplorerFallback />}>
             <Explorer />
+          </Suspense>
+        )}
+      />
+      {/* /app/analytics/cohorts — new-acquisition cohorts, their LTV curves and
+          the CSV. This is also where the previously-unrouted
+          pages/performance/LTV.jsx landed: its view survived, its hardcoded
+          numbers did not (see CohortsPage.jsx's header). */}
+      <Route
+        path="cohorts"
+        element={(
+          <Suspense fallback={<ExplorerFallback />}>
+            <Cohorts />
           </Suspense>
         )}
       />

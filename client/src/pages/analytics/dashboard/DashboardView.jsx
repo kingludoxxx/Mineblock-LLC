@@ -39,6 +39,17 @@ import DashboardHeader from './DashboardHeader.jsx';
 import FunnelPerformanceTable from './FunnelPerformanceTable.jsx';
 import KpiRow from './KpiRow.jsx';
 import OrderValueCard from './OrderValueCard.jsx';
+// LANE 5 — the insight layer. Every one of these is PURE and takes its payload
+// as a prop, exactly like the cards above, so the render harness can mount them
+// against captured payloads with no server.
+import CohortCard from './CohortCard.jsx';
+import EconomicsCard from './EconomicsCard.jsx';
+import InsightsStrip from './InsightsStrip.jsx';
+import Last60Card from './Last60Card.jsx';
+import MoversCard from './MoversCard.jsx';
+import StepWaterfallCard from './StepWaterfallCard.jsx';
+import TopListsCard from './TopListsCard.jsx';
+import { insightsOf } from '../insightsApi.js';
 import {
   EM_DASH, countryLabel, fmtCountShort, fmtDeduction, fmtInt, fmtMoney,
   fmtMoneyShort, fmtPctPlain, plural, prettyRange,
@@ -84,6 +95,22 @@ export default function DashboardView({
   onOpenExplorer,
   onOpenLive,
   onDrillMetric,
+  // ── LANE 5, all optional ──────────────────────────────────────────────────
+  // Every prop below defaults to "this build did not fetch it", and the block
+  // that consumes it is HIDDEN in that case rather than rendered empty. That is
+  // what lets the six pre-existing render-harness states keep mounting this
+  // component unchanged: an absent insight payload draws no strip, which is a
+  // different thing from a strip that says nothing stood out.
+  insights,
+  insightsError,
+  insightsState,
+  cohorts,
+  cohortsError,
+  cohortsState,
+  cohortsCsvUrl,
+  cohortGroupBy,
+  onCohortGroupByChange,
+  onDrillInsight,
 }) {
   // The composite's state, threaded into every card that reads it. `failed`
   // only when there is nothing on screen: a failed REFRESH over a good payload
@@ -109,6 +136,19 @@ export default function DashboardView({
   const sources = breakdownOf(data, 'sources');
   const countries = breakdownOf(data, 'countries');
   const mk = marketingOf(marketing);
+
+  /**
+   * THE INSIGHT LAYER IS OPT-IN PER SURFACE, and absence is not a state.
+   *
+   * A caller that passes no `insightsState` has not fetched insights at all —
+   * the six seeded harness states, for instance — and the strip is NOT rendered.
+   * Rendering it in some "ready with nothing" state would put "nothing stood
+   * out today" over a page that never asked, which is the same forbidden claim
+   * as an empty state over a failed request, just one layer further out.
+   */
+  const hasInsightLane = Boolean(insightsState);
+  const hasCohortLane = Boolean(cohortsState);
+  const ins = useMemo(() => insightsOf(insights), [insights]);
 
   // ATTRIBUTION HAS ITS OWN STATE. It is 'failed' when the call rejected —
   // never 'ready with no rows', which is what would print the empty state.
@@ -301,6 +341,22 @@ export default function DashboardView({
             </div>
           )}
 
+          {/* ── INSIGHTS STRIP ────────────────────────────────────────────
+              ABOVE the KPI tiles on purpose. The tiles say WHAT the numbers
+              are; the strip says WHICH of them changed enough to matter, and an
+              operator who has already read the tiles has spent their attention
+              before reaching it. It carries its OWN state — a failed insight
+              read must never blank the figures below, and a failed composite
+              must never make the strip claim the day was quiet. */}
+          {hasInsightLane && (
+            <InsightsStrip
+              insights={ins}
+              state={insightsState}
+              error={insightsError}
+              onDrill={onDrillInsight}
+            />
+          )}
+
           {/* ── KPI strip ─────────────────────────────────────────────────── */}
           <KpiRow
             kpis={kpis}
@@ -387,8 +443,65 @@ export default function DashboardView({
             }}
           />
 
+          {/* ── COHORTS — full width, under the funnel table ────────────────
+              Not in the masonry: it is a wide table with one column per
+              horizon, and a CSS-columns cell would either clip it or force a
+              horizontal scrollbar inside a 380px column. Its own state, its own
+              window (acquisition, not the picker's range), and it says so. */}
+          {hasCohortLane && (
+            <CohortCard
+              cohorts={cohorts}
+              state={cohortsState}
+              error={cohortsError}
+              groupBy={cohortGroupBy}
+              onGroupByChange={onCohortGroupByChange}
+              csvUrl={cohortsCsvUrl}
+            />
+          )}
+
           {/* ── masonry ───────────────────────────────────────────────────── */}
           <div className="columns-1 lg:columns-2 xl:columns-3 gap-3" data-testid="an-card-masonry">
+            {/* LANE 5 cards that read the COMPOSITE — no extra request. The
+                waterfall and movers blocks have been on the wire since Lane 1
+                and nothing was drawing them; economics is a division of figures
+                the KPI block already carries. */}
+            <StepWaterfallCard
+              data={data}
+              state={cardState}
+              reason={error ? String(error) : undefined}
+            />
+
+            <MoversCard
+              data={data}
+              window={win}
+              state={cardState}
+              reason={error ? String(error) : undefined}
+              onPickFunnel={(id) => onScopeChange(id === String(funnelId || '') ? '' : id)}
+            />
+
+            <EconomicsCard
+              kpis={kpis}
+              upsellLines={upsell}
+              state={cardState}
+              reason={error ? String(error) : undefined}
+            />
+
+            {/* Its own lane's payload and its own lane's state — a dead insight
+                endpoint costs this card and nothing else on the page. */}
+            {hasInsightLane && (
+              <Last60Card
+                insights={insights}
+                state={insightsState}
+                error={insightsError}
+              />
+            )}
+
+            <TopListsCard
+              data={data}
+              state={cardState}
+              reason={error ? String(error) : undefined}
+            />
+
             <OrderValueCard
               kpis={kpis}
               upsellLines={upsell}

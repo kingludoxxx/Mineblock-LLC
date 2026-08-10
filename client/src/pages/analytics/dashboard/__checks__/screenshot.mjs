@@ -31,12 +31,27 @@ const DASH = SEED.dashboard;
 const TTL = SEED.dashboard_ttl;
 const MKT = SEED.marketing;
 const MKT_UN = SEED.marketing_unattributed;
+// LANE 5 — captured from runInsights / computeCohorts (./captureInsightsSeed.mjs).
+const ISEED = JSON.parse(readFileSync(resolve(HERE, 'insights.seed.generated.json'), 'utf8'));
+const INS = ISEED.insights;
+const INS_BLIND = ISEED.insights_degraded;
+const COH = ISEED.cohorts;
 
 let pass = 0; let fail = 0;
 const ok = (c, m, x = '') => {
   if (c) { pass++; console.log('PASS ', m); } else { fail++; console.log('FAIL ', m, x); }
 };
 const eq = (got, want, m) => ok(got === want, m, `got=${JSON.stringify(got)} want=${JSON.stringify(want)}`);
+/**
+ * ⚠️ USE THIS FOR ARRAYS AND OBJECTS. `eq` above is `got === want`, so two
+ * structurally identical arrays NEVER compare equal — and the failure message
+ * prints the two sides looking the same, which is the most confusing possible
+ * red. Two assertions in the Lane 5 block hit exactly that before this existed.
+ */
+const deepEq = (got, want, m) => ok(
+  JSON.stringify(got) === JSON.stringify(want), m,
+  `got=${JSON.stringify(got)} want=${JSON.stringify(want)}`,
+);
 
 const money = (n) => new Intl.NumberFormat('en-US', {
   style: 'currency', currency: 'USD', minimumFractionDigits: 2, maximumFractionDigits: 2,
@@ -63,7 +78,7 @@ const server = await createServer({
 await server.listen();
 const base = 'http://127.0.0.1:5199';
 console.log(`\n== seeded render check == ${base}${PAGE} ==`);
-console.log(`   payloads: metrics@${SEED.captured_from.metrics_commit} attribution@${SEED.captured_from.attribution_commit}\n`);
+console.log(`   payloads: metrics@${SEED.captured_from.metrics_commit} attribution@${SEED.captured_from.attribution_commit} insights@${ISEED.captured_from.commit}\n`);
 
 const browser = await chromium.launch();
 const page = await browser.newPage({ viewport: { width: 1600, height: 1200 }, deviceScaleFactor: 1 });
@@ -93,7 +108,7 @@ page.on('pageerror', (e) => consoleErrors.push(`pageerror: ${e.message}`));
 // Route interception, not a mocked axios: the page's real client, real params
 // and real error handling all run. Anything NOT matched here still 404s and is
 // caught by the assertions at the end.
-const served = { dashboard: 0, band: 0, marketing: 0 };
+const served = { dashboard: 0, band: 0, marketing: 0, insights: 0, cohorts: 0 };
 const json = (route, body) => route.fulfill({
   status: 200, contentType: 'application/json', body: JSON.stringify(body),
 });
@@ -117,6 +132,14 @@ await page.route('**/api/v1/funnel-metrics/band*', (route) => {
 await page.route('**/api/v1/funnel-attribution/marketing*', (route) => {
   served.marketing += 1; return json(route, MKT);
 });
+// LANE 5's two reads, served from the SAME captured payloads the seeded states
+// render — so the end-to-end state and the direct-mount states cannot disagree.
+await page.route('**/api/v1/funnel-insights/insights*', (route) => {
+  served.insights += 1; return json(route, INS);
+});
+await page.route('**/api/v1/funnel-insights/cohorts*', (route) => {
+  served.cohorts += 1; return json(route, COH);
+});
 
 await page.goto(`${base}${PAGE}`, { waitUntil: 'networkidle' });
 await page.waitForSelector('#state-measured [data-testid="an-funnel-performance-table"]', { timeout: 30000 });
@@ -129,9 +152,9 @@ const trimOf = (sel) => page.$eval(sel, (e) => e.textContent.trim());
 /* ── 1. every state mounted ──────────────────────────────────────────────── */
 
 const sections = await page.$$eval('section[id^="state-"]', (els) => els.map((e) => e.id));
-eq(sections.length, 8, `1 eight render states mounted (${sections.join(', ')})`);
+eq(sections.length, 12, `1 twelve render states mounted (${sections.join(', ')})`);
 const dashCount = await page.$$eval(DASHV, (e) => e.length);
-eq(dashCount, 7, '1 seven DashboardView instances (six direct + the live route)');
+eq(dashCount, 11, '1 eleven DashboardView instances (ten direct + the live route)');
 
 /* ── 2. provenance, from the CAPTURED window ─────────────────────────────── */
 
@@ -365,21 +388,148 @@ for (const id of ['state-measured', 'state-ttl', 'state-withheld', 'state-failed
   dashCounts[id] = (t.match(/—/g) || []).length;
 }
 console.log(`      em-dash census: ${JSON.stringify(dashCounts)}`);
+// ── WHERE THE DASHES ARE, per card, printed (not asserted) ────────────────
+// The totals above are the pin; this breakdown is what makes re-baselining
+// them an INSPECTION rather than a shrug. When a count moves, this line says
+// which card moved it, so "a reader stopped finding a key" and "a new card
+// legitimately refuses more things" can be told apart without a screenshot.
+for (const id of ['state-measured', 'state-withheld']) {
+  const per = await page.$$eval(`#${id} ${DASHV} [data-testid^="an-"]`, (els) => {
+    const out = {};
+    for (const e of els) {
+      // Only count a dash against the OUTERMOST card that contains it, so a
+      // nested testid does not double-count its parent's cells.
+      if (e.parentElement && e.parentElement.closest('[data-testid^="an-card"], [data-testid^="an-insights"]')) continue;
+      const n = (e.innerText.match(/—/g) || []).length;
+      if (n > 0) out[e.getAttribute('data-testid')] = n;
+    }
+    return out;
+  });
+  console.log(`      ${id} by card: ${JSON.stringify(per)}`);
+}
 // PINNED against metrics@3e42a8e / attribution@14ce8f9. These are not
 // thresholds: each number is how many things the page refuses to claim in that
 // state, and a change means either a reader started finding a key it used to
 // miss (good) or stopped finding one it used to read (the exact regression this
 // suite exists for). Re-inspect the screenshot before touching a number here;
 // re-capture the seeds and these will move legitimately.
+//
+// ── RE-BASELINED FOR LANE 5, and here is the whole of the accounting ────────
+// The page grew six cards, so every state refuses more things than it did. The
+// screenshots in ./out/ were re-inspected before these numbers moved, and the
+// per-card breakdown printed above is what makes the next move diagnosable
+// rather than a shrug.
+//
+//   state-measured  15 → 73  (+58)
+//       +50  an-card-cohorts — THE AGING GUARD, and it is the point of the
+//            lane: the card draws the 8 newest cohorts, of which seven are
+//            0–6 days old (D7/D30/D90 un-aged ⇒ 6 dashes each) and one is
+//            exactly 7 days old (D30/D90 un-aged ⇒ 4), plus the two prose
+//            em dashes in the card's own footer and warnings. Every one of
+//            those cells is a horizon nobody has observed yet, and check 23
+//            asserts structurally that they are dashes and not $0.00.
+//        +8  the five new masonry cards (waterfall / movers / economics /
+//            top lists / last 60) declining to state what they were not given.
+//   state-ttl       32 → 46  (+14)   the same five cards over a withheld window
+//   state-withheld  62 → 76  (+14)   ditto, every measurement nulled
+//   state-failed    25 → 38  (+13)   ditto, cold failure (no cohort card: that
+//                                    state passes no cohort props at all)
+//
+// ⚠️ The insight strip contributes ZERO. It did contribute 3 on the first run,
+// entirely from em dashes inside FUNNEL NAMES in the capture fixture
+// ("Alpha — Breast Lift") reaching card headlines. Those are punctuation, not
+// withheld measurements, and a pin that counts them is measuring the wrong
+// thing — so the fixture's funnels were renamed rather than the number nudged.
 const EXPECTED_DASHES = JSON.parse(process.env.EXPECT_DASHES || JSON.stringify({
-  'state-measured': 15,
-  'state-ttl': 32,
-  'state-withheld': 62,
-  'state-failed': 25,
+  'state-measured': 73,
+  'state-ttl': 46,
+  'state-withheld': 76,
+  'state-failed': 38,
 }));
 for (const [id, n] of Object.entries(EXPECTED_DASHES)) {
   eq(dashCounts[id], n, `16 em-dash count is exactly ${n} on ${id}`);
 }
+
+/* #16b — THE SHARPER PIN: em dashes in NUMERIC CELLS ONLY.
+   The census above counts every em dash on the page, including the ones that
+   are PUNCTUATION in a card's explanatory prose. That dilution is why the
+   Lane 5 re-baseline needed a paragraph of accounting, and it is why a
+   half-broken reader could in principle hide inside a prose edit that moved the
+   total back. `.tabular-nums` is worn by every cell in this workspace that
+   holds a figure, so counting dashes there counts EXACTLY the measurements the
+   page refuses to state — nothing else. */
+const cellDashes = {};
+for (const id of ['state-measured', 'state-ttl', 'state-withheld', 'state-failed']) {
+  cellDashes[id] = await page.$$eval(`#${id} ${DASHV} .tabular-nums`, (els) => els
+    .filter((e) => e.textContent.trim() === '—').length);
+}
+console.log(`      numeric-cell dash census: ${JSON.stringify(cellDashes)}`);
+
+/** Which testid owns each dashed numeric cell — the diagnostic for a move. */
+const dashOwners = async (id) => {
+  const where = await page.$$eval(`#${id} ${DASHV} .tabular-nums`, (els) => els
+    .filter((e) => e.textContent.trim() === '—')
+    .map((e) => {
+      const owner = e.closest('[data-testid]');
+      return owner ? owner.getAttribute('data-testid') : '(no testid)';
+    }));
+  const tally = {};
+  for (const w of where) tally[w] = (tally[w] || 0) + 1;
+  return tally;
+};
+for (const id of ['state-measured', 'state-failed']) {
+  console.log(`      ${id} numeric dashes by owner: ${JSON.stringify(await dashOwners(id))}`);
+}
+
+// MEASURED, then pinned — not guessed. The first cut of this block pinned
+// `state-failed: 0` on the hypothesis that a cold failure renders no numeric
+// cells at all. The run refuted it: eight KPI tiles and three line-card
+// headlines legitimately print an em dash BESIDE their own "couldn't load"
+// text, which is the KPI tile's existing (and correct) design. The hypothesis
+// was replaced with the assertion below, which checks the thing that actually
+// matters.
+const EXPECTED_CELL_DASHES = JSON.parse(process.env.EXPECT_CELL_DASHES || JSON.stringify({
+  // Every one of these 46 is an UN-AGED COHORT CELL — see the assertion below,
+  // which proves it rather than asserting it in a comment.
+  'state-measured': 46,
+  'state-ttl': 16,
+  'state-withheld': 46,
+  // 8 KPI tiles + 3 line-card headlines, each beside its own failure text.
+  'state-failed': 11,
+}));
+for (const [id, n] of Object.entries(EXPECTED_CELL_DASHES)) {
+  eq(cellDashes[id], n, `16b numeric cells refusing to state a figure: exactly ${n} on ${id}`);
+}
+
+// ON A HEALTHY WINDOW, EVERY REFUSAL IS THE AGING GUARD — and nothing else.
+// This is the sharp version of the census: it says not just how many figures
+// the page declines to state, but that all of them are the ONE thing that is
+// genuinely unobservable (a horizon a cohort has not lived to reach). A reader
+// that quietly stopped finding a key would add a dash somewhere else and fail
+// here with the offending card named.
+const measuredOwners = await dashOwners('state-measured');
+const nonCohort = Object.entries(measuredOwners).filter(([k]) => !k.startsWith('an-card-cohorts'));
+deepEq(nonCohort, [],
+  '16b on a fully measured window EVERY dashed figure is an un-aged cohort cell — '
+  + 'no other card refuses to state anything',
+  JSON.stringify(nonCohort));
+
+// ON A COLD FAILURE, A DASH IS NEVER ALONE. Each dashed figure sits inside a
+// surface that ALSO says the request did not come back — so no dash on that
+// page can be read as "measured, and the answer is nothing".
+const orphanDashes = await page.$$eval(`#state-failed ${DASHV} .tabular-nums`, (els) => els
+  .filter((e) => e.textContent.trim() === '—')
+  .map((e) => {
+    const card = e.closest('section, [data-testid]');
+    const txt = card ? card.innerText : '';
+    return /couldn’t load|couldn't load|Couldn’t load|Couldn't load/.test(txt)
+      ? null : (card && card.getAttribute('data-testid')) || '(no testid)';
+  })
+  .filter(Boolean));
+deepEq(orphanDashes, [],
+  '16b …and on a COLD FAILURE every dashed figure sits beside its own "couldn\'t load" — '
+  + 'not one of them can be read as a measurement that came back empty',
+  JSON.stringify(orphanDashes));
 
 /* ── 17. loading is not the empty state and not the dead state ───────────── */
 
@@ -447,8 +597,288 @@ eq(apiCalls.length, 0, '20 the harness touched no API', apiCalls.join(' | '));
 ok(blocked.length > 0,
   `20 the sealed boundary actually fired — the merged explorer's mount calls were aborted (${blocked.length})`);
 const leaked = blocked.filter((u) => !u.includes('/api/v1/funnel-metrics/')
-  && !u.includes('/api/v1/funnel-attribution/'));
+  && !u.includes('/api/v1/funnel-attribution/')
+  && !u.includes('/api/v1/funnel-insights/'));
 eq(leaked.length, 0, '20 nothing outside the analytics API was even attempted', leaked.slice(0, 4).join(' | '));
+
+
+/* ══ LANE 5 — THE INSIGHT LAYER ══════════════════════════════════════════════
+   Every expectation below is DERIVED FROM ./insights.seed.generated.json, which
+   is captured from runInsights / computeCohorts. An assertion written against
+   the capture fails the moment the service renames a key — the drift this whole
+   suite exists to catch. */
+
+/* ── 21. the strip renders the SERVER'S cards, ranked ────────────────────── */
+
+const stripSel = '#state-measured [data-testid="an-insights-strip"]';
+ok(!!(await page.$(stripSel)), '21 the insights strip mounted on the measured state');
+ok(INS.insights.length > 0, `21 (capture) the seed really carries cards (${INS.insights.length})`);
+for (const c of INS.insights) {
+  const el = await page.$(`${stripSel} [data-testid="an-insight-${c.kind}"]`);
+  ok(!!el, `21 the '${c.kind}' card is drawn`);
+  const t = el ? await el.innerText() : '';
+  ok(t.includes(c.headline),
+    `21 …with the SERVER'S headline verbatim ("${c.headline}")`, t.replace(/\n/g, ' | '));
+}
+// RANKED WORST-FIRST, asserted against the DOM ORDER rather than the payload:
+// a component that sorted its own way would still pass a payload-only check.
+const domSeverities = await page.$$eval(`${stripSel} [data-severity]`,
+  (els) => els.map((e) => e.getAttribute('data-severity')));
+const RANK = { bad: 0, warn: 1, good: 2, info: 3 };
+ok(domSeverities.every((v, i) => i === 0 || RANK[domSeverities[i - 1]] <= RANK[v]),
+  `21 …and the DOM order is worst-first (${domSeverities.join(' → ')})`);
+// ⚠️ `deepEq`, NOT `eq` — see the helper's own note at the top of this file.
+deepEq(domSeverities, INS.insights.map((c) => c.severity),
+  '21 …matching the order the server ranked them in, not a client re-sort');
+console.log(`      insight severities in the capture: ${[...new Set(domSeverities)].join(', ')}`);
+
+// THE PROSE IS THE EVIDENCE, and it is reachable. It starts collapsed, so the
+// assertion has to CLICK — a check that only read the DOM would pass against a
+// button wired to nothing.
+const firstKind = INS.insights[0].kind;
+ok(!(await page.$(`${stripSel} [data-testid="an-insight-${firstKind}-prose"]`)),
+  '21 the reasoning starts collapsed');
+await page.click(`${stripSel} [data-testid="an-insight-${firstKind}"] button`);
+const proseEl = await page.$(`${stripSel} [data-testid="an-insight-${firstKind}-prose"]`);
+ok(!!proseEl, '21 …and the "why this fired" control really expands it');
+const proseTxt = proseEl ? await proseEl.innerText() : '';
+ok(proseTxt.includes(INS.insights[0].prose.slice(0, 40)),
+  "21 …showing the server's own sentence, not a re-derived one");
+
+// The check counter comes off `detectors[]`, never off the card count.
+const checksLine = await trimOf(`${stripSel} [data-testid="an-insights-strip-checks"]`);
+const ranN = INS.detectors.filter((d) => d.ran).length;
+ok(checksLine.includes(`${ranN} of ${INS.detectors.length} checks ran`),
+  `21 the strip counts the DETECTORS that ran (${ranN}/${INS.detectors.length}), not the cards that fired (${checksLine})`);
+
+/* ── 22. quiet vs blind vs dead — three empties, three meanings ──────────── */
+
+// QUIET: every detector ran, none fired. The one state allowed to say so.
+const quietWell = await page.$('#state-insight-none [data-testid="an-insights-strip-quiet"]');
+ok(!!quietWell, '22 QUIET the all-ran-none-fired state renders the quiet well');
+const quietTxt = quietWell ? await quietWell.innerText() : '';
+ok(quietTxt.includes('Nothing stood out'), '22 …and says so');
+ok(quietTxt.includes('quiet strip is a result'),
+  '22 …and says a quiet strip is a result, not an absence of one');
+ok(!(await page.$('#state-insight-none [data-testid="an-insights-strip-blind"]')),
+  '22 …with no blind-detector notice, because none was blind');
+
+// BLIND: a detector could not run. Same near-empty strip, opposite meaning.
+ok(INS_BLIND.detectors.some((d) => d.ran === false),
+  '22 (capture) the degraded payload really carries a ran:false detector');
+const blindNote = await page.$('#state-insight-blind [data-testid="an-insights-strip-blind"]');
+ok(!!blindNote, '22 BLIND a detector that could not run is NAMED');
+const blindTxt = blindNote ? await blindNote.innerText() : '';
+ok(blindTxt.includes('could not run'), `22 …in those words (${blindTxt})`);
+ok(blindTxt.includes('rules out'),
+  '22 …and says the cards above do not rule out what it would have found');
+ok(!(await page.$('#state-insight-blind [data-testid="an-insights-strip-quiet"]')),
+  '22 …and it NEVER falls through to "nothing stood out" — not the same claim');
+const blindCards = await page.$$eval('#state-insight-blind [data-severity]', (e) => e.length);
+ok(blindCards === INS_BLIND.insights.length && blindCards > 0,
+  `22 …while the ${blindCards} card(s) that did fire are still drawn`);
+
+// DEAD: the request failed. The forbidden sentence must be absent.
+const deadStrip = await textOf('#state-insight-dead [data-testid="an-insights-strip"]');
+ok(!!(await page.$('#state-insight-dead [data-testid="an-insights-strip"] [data-testid="an-card-failed"]')),
+  "22 DEAD a failed insight read renders the couldn't-load well");
+ok(deadStrip.includes('HTTP 502'), '22 …naming why');
+ok(!deadStrip.includes('Nothing stood out'),
+  '22 …and NEVER "Nothing stood out today" — the most dangerous sentence on this page');
+ok(!deadStrip.includes('checks ran'),
+  '22 …and claims nothing about which checks ran, because none of them did');
+ok(!!(await page.$('#state-insight-dead [data-testid="an-funnel-performance-table"]')),
+  "22 …while the composite's own figures are unaffected");
+ok(!(await page.$('#state-insight-dead [data-testid="an-dash-error"]')),
+  '22 …and no page-level error banner is raised for it');
+
+// A SURFACE THAT NEVER ASKED DRAWS NO STRIP. States 2-6 pass no insight props.
+for (const id of ['state-ttl', 'state-withheld', 'state-loading', 'state-failed', 'state-hostile']) {
+  ok(!(await page.$(`#${id} [data-testid="an-insights-strip"]`)),
+    `22 ABSENT ${id} passes no insight props, so NO strip is drawn (never a calm-looking empty one)`);
+}
+
+/* ── 23. THE AGING GUARD, in the rendered DOM ────────────────────────────── */
+
+const unagedCohort = COH.cohorts.find((c) => c.ltv.some((v) => v === null));
+const agedCohort = COH.cohorts.find((c) => c.ltv.every((v) => v !== null));
+ok(!!unagedCohort, '23 (capture) the seed carries a cohort with un-aged horizons');
+ok(!!agedCohort, '23 (capture) …and one that is aged at every horizon');
+const cohortSel = '#state-measured [data-testid="an-card-cohorts"]';
+ok(!!(await page.$(cohortSel)), '23 the cohort card mounted');
+
+// THE CELL THAT MUST NOT BE $0.00.
+const unagedIdx = unagedCohort.ltv.findIndex((v) => v === null);
+const unagedH = COH.horizons[unagedIdx];
+const unagedCell = await page.$(`${cohortSel} [data-testid="an-card-cohorts-ltv-${unagedCohort.key}-${unagedH}"]`);
+ok(!!unagedCell, `23 the un-aged D${unagedH} cell for ${unagedCohort.key} is drawn`);
+const unagedTxt = unagedCell ? (await unagedCell.textContent()).trim() : '';
+eq(unagedTxt, '—', `23 …as an EM DASH (${unagedTxt})`);
+ok(unagedTxt !== '$0.00' && unagedTxt !== '0',
+  '23 …and NEVER $0.00, which would read as "they came back and spent nothing"');
+const unagedTitle = unagedCell ? await unagedCell.getAttribute('title') : '';
+ok(unagedTitle.includes('Not aged yet') && unagedTitle.includes('not $0.00'),
+  `23 …with the reason on the cell itself (${unagedTitle})`);
+eq(unagedCohort.aged[unagedIdx], 0,
+  '23 (capture) …and the payload agrees: zero buyers were old enough');
+
+// THE EM DASH IS NOT A BLANKET — proven on the SAME ROW, which is the stronger
+// version of this check. `unagedCohort` is aged at D0 and un-aged beyond it, so
+// one row carries both states and a card that simply dashed everything (or
+// simply printed everything) fails here either way.
+//
+// ⚠️ The fully-aged cohort in this capture is the OLDEST of 30 and the card
+// draws the newest 8, so it is not in the DOM. Asserting against it "passed"
+// only by finding an empty string — which is why this check moved onto a row
+// the card actually renders.
+const agedIdx = unagedCohort.ltv.findIndex((v) => v !== null);
+ok(agedIdx >= 0, '23 (capture) the un-aged cohort is aged at at least one horizon');
+const sameRowAged = await page.$(`${cohortSel} [data-testid="an-card-cohorts-ltv-${unagedCohort.key}-${COH.horizons[agedIdx]}"]`);
+const sameRowTxt = sameRowAged ? (await sameRowAged.textContent()).trim() : '';
+ok(sameRowTxt.includes(money(unagedCohort.ltv[agedIdx])),
+  `23 …and the SAME ROW's aged D${COH.horizons[agedIdx]} cell prints its real figure `
+  + `(${money(unagedCohort.ltv[agedIdx])} vs ${sameRowTxt})`);
+ok(!!agedCohort, '23 (capture) a fully-aged cohort exists in the payload for the CSV to carry');
+
+// The weighted average is weighted PER HORIZON.
+ok(!!(await page.$(`${cohortSel} [data-testid="an-card-cohorts-average"]`)),
+  '23 the size-weighted average row is drawn');
+ok(COH.average.aged.some((n, i) => i > 0 && n !== COH.average.aged[0]),
+  `23 (capture) the average is weighted over different populations per horizon (${JSON.stringify(COH.average.aged)})`);
+
+// The identity + aging warnings the service emitted are on screen.
+const cohWarn = await page.$(`${cohortSel} [data-testid="an-card-cohorts-warnings"]`);
+ok(!!cohWarn, "23 the cohort card renders the service's own warnings");
+const cohWarnTxt = cohWarn ? await cohWarn.innerText() : '';
+for (const w of COH.meta.warnings) {
+  ok(cohWarnTxt.includes(w.reason.slice(0, 40)), `23 …including the '${w.source}' one`);
+}
+ok(!cohWarnTxt.includes('[object Object]'), '23 …and none stringifies as [object Object]');
+
+// A FAILED cohort read is not an empty cohort table.
+ok(!!(await page.$('#state-insight-dead [data-testid="an-card-cohorts"] [data-testid="an-card-failed"]')),
+  "23 a failed cohort read renders the couldn't-load well");
+ok(!(await page.$('#state-insight-dead [data-testid="an-card-cohorts"] [data-testid="an-card-empty"]')),
+  '23 …and NEVER "no new customers were acquired"');
+ok(!!(await page.$('#state-insight-none [data-testid="an-card-cohorts"] [data-testid="an-card-empty"]')),
+  '23 a SUCCEEDED read over a window with no acquisitions DOES render the empty state');
+
+/* ── 24. the composite-fed cards nobody was drawing ──────────────────────── */
+
+const wfSel = '#state-measured [data-testid="an-card-step-waterfall"]';
+ok(!!(await page.$(wfSel)), '24 the step waterfall mounted');
+ok(Array.isArray(DASH.waterfall.steps) && DASH.waterfall.steps.length > 0,
+  `24 (capture) the composite carries ${DASH.waterfall.steps.length} steps`);
+for (const st of DASH.waterfall.steps) {
+  ok(!!(await page.$(`${wfSel} [data-testid="an-card-step-waterfall-step-${st.step}"]`)),
+    `24 …the '${st.step}' step is drawn`);
+}
+const wfText = await textOf(wfSel);
+ok(wfText.includes(int(DASH.waterfall.steps[0].visitors)),
+  `24 …with the server's own visitor count (${int(DASH.waterfall.steps[0].visitors)})`);
+const firstStep = DASH.waterfall.steps[0].step;
+const entryCell = await trimOf(`${wfSel} [data-testid="an-card-step-waterfall-through-${firstStep}"]`);
+eq(entryCell, 'entry',
+  '24 …and the entry step says "entry", NOT "100% through" — 100% of nothing is a claim');
+ok(wfText.includes('page VIEWS, not submits'),
+  '24 …and the card states what it is NOT measuring');
+
+const mvSel = '#state-measured [data-testid="an-card-movers"]';
+ok(!!(await page.$(mvSel)), '24 the movers card mounted');
+const mvText = await textOf(mvSel);
+if ((DASH.movers || []).length > 0) {
+  for (const m of DASH.movers) {
+    ok(mvText.includes(money(Math.abs(m.delta))),
+      `24 …the server's delta ${money(Math.abs(m.delta))} is printed`);
+  }
+} else {
+  ok(mvText.includes('No funnel has a measured change'),
+    '24 …with no movers in the capture, the card says why rather than going blank');
+}
+ok(mvText.includes('is NOT ranked'),
+  '24 …and the card states that an unbaselined funnel is not ranked');
+
+const ecSel = '#state-measured [data-testid="an-card-economics"]';
+ok(!!(await page.$(ecSel)), '24 the unit-economics card mounted');
+const ecText = await textOf(ecSel);
+ok(ecText.includes('Cost coverage'), '24 …printing the cost-coverage figure that gates the rest');
+ok(ecText.includes('no cost is'), '24 …and stating that it re-derives no cost');
+const ecOrders = DASH.kpis.upsell_lines.orders ?? DASH.kpis.orders;
+if (ecOrders && DASH.kpis.net_sales !== null) {
+  ok(ecText.includes(money(DASH.kpis.net_sales / ecOrders)),
+    `24 …and revenue/order is the server's net_sales ÷ orders (${money(DASH.kpis.net_sales / ecOrders)})`);
+}
+
+const tlSel = '#state-measured [data-testid="an-card-top-lists"]';
+ok(!!(await page.$(tlSel)), '24 the top-lists card mounted');
+ok(!!(await page.$(`${tlSel} [data-testid="an-card-top-lists-slice-campaigns"]`)),
+  '24 …with a campaigns slice control');
+const prodSub = await textOf(tlSel);
+ok(prodSub.includes('Gross sales'),
+  '24 …and the products slice captions itself GROSS (the metric that fold actually carries)');
+// SWITCHING SLICES REALLY SWITCHES THE FOLD — clicked, not assumed.
+await page.click(`${tlSel} [data-testid="an-card-top-lists-slice-campaigns"]`);
+await page.waitForTimeout(200);
+const campSub = await textOf(tlSel);
+ok(campSub.includes('Net sales'),
+  '24 …and the campaigns slice captions itself NET, because that fold carries a different metric');
+ok(campSub.includes('Last-touch campaign'), '24 …naming the basis it is on');
+
+const l60Sel = '#state-measured [data-testid="an-card-last-60"]';
+ok(!!(await page.$(l60Sel)), '24 the last-60 card mounted');
+const l60Text = await textOf(l60Sel);
+ok(l60Text.includes('does not follow the date picker'),
+  "24 …stating that its window is NOT the header's");
+ok(l60Text.includes(INS.last_60.window.start) && l60Text.includes(INS.last_60.window.end),
+  `24 …and printing the window it IS on (${INS.last_60.window.start} → ${INS.last_60.window.end})`);
+const l60Measured = INS.last_60.series.filter((p) => p.net_sales !== null).length;
+ok(l60Text.includes(`${l60Measured} of ${INS.last_60.series.length} days measured`),
+  `24 …and admitting how many of its ${INS.last_60.series.length} buckets were measured (${l60Measured})`);
+
+/* ── 25. the insight lane touched only its own API ───────────────────────── */
+
+ok(served.insights >= 1, `25 the real route fetched the insight composite (${served.insights}x)`);
+ok(served.cohorts >= 1, `25 …and the cohort table (${served.cohorts}x)`);
+ok(!!(await page.$('#state-live [data-testid="an-insights-strip"]')),
+  '25 the strip rendered end to end, from a real HTTP response');
+ok(!!(await page.$('#state-live [data-testid="an-card-cohorts"]')),
+  '25 …and so did the cohort card');
+
+/* ── 26. THE PARTIAL (in-progress) DAY — the reviewer's fix, in the DOM ───── */
+
+// The captured payload really is a partial day carrying no downward card.
+eq(ISEED.insights_partial.partial, true, '26 (capture) the partial payload is flagged partial');
+ok(!ISEED.insights_partial.insights.some((c) => c.direction === 'down'),
+  '26 (capture) …and carries NOT ONE downward card');
+
+const partialStrip = '#state-insight-partial [data-testid="an-insights-strip"]';
+ok(!!(await page.$(partialStrip)), '26 the strip mounted on the partial-day state');
+// THE LABEL. A short list on today must not read as "all clear" — the strip
+// tells the operator the day is not over.
+const partialLabel = await page.$(`${partialStrip} [data-testid="an-insights-strip-partial"]`);
+ok(!!partialLabel, '26 the strip LABELS today "in progress"');
+ok((await partialLabel.innerText()).toLowerCase().includes('in progress'),
+  '26 …in those words');
+// NOT ONE downward card in the rendered DOM (bad/warn cards that point down).
+const partialSeverities = await page.$$eval(`${partialStrip} [data-severity]`,
+  (els) => els.map((e) => e.getAttribute('data-severity')));
+console.log(`      partial-day card severities in DOM: ${JSON.stringify(partialSeverities)}`);
+// Every card the server sent survives (all up/neutral); the guarantee is that
+// none is a downward alarm. Cross-check the DOM cards against the payload.
+for (const c of ISEED.insights_partial.insights) {
+  ok(!!(await page.$(`${partialStrip} [data-testid="an-insight-${c.kind}"]`)),
+    `26 the surviving '${c.kind}' (${c.direction}) card is drawn`);
+}
+// The today_partial warning is on screen — the withholding is NAMED.
+const partialNotes = await page.$(`${partialStrip} [data-testid="an-insights-strip-notes"]`);
+const partialNotesTxt = partialNotes ? await partialNotes.innerText() : '';
+ok(partialNotesTxt.toLowerCase().includes('in progress')
+  || partialNotesTxt.toLowerCase().includes('withheld'),
+  `26 the today_partial warning explains the withholding (${partialNotesTxt.slice(0, 80)})`);
+// And it must NOT claim the settled "nothing stood out" — that sentence is only
+// for a complete, fully-examined day.
+ok(!(await textOf(partialStrip)).includes('Nothing stood out'),
+  '26 …and the partial day NEVER prints the settled-day "nothing stood out" verdict');
 
 /* ── screenshots ─────────────────────────────────────────────────────────── */
 
