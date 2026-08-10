@@ -79,3 +79,56 @@ export const SEED_MARKETING_UNATTRIBUTED_DIMENSION = captured.marketing_unattrib
 
 /** Every dimension's fold, for checks that need to pick one. */
 export const SEED_MARKETING_BY_DIMENSION = captured.marketing_by_dimension;
+
+/* ══════════════════════════════════════════════════════════════════════════
+ * LANE 5 — the insight layer's payloads, captured the same way and for the
+ * same reason (./captureInsightsSeed.mjs).
+ *
+ * Re-capture after any insight/cohort service change:
+ *     node client/src/pages/analytics/dashboard/__checks__/captureInsightsSeed.mjs
+ * ═════════════════════════════════════════════════════════════════════════ */
+import capturedInsights from './insights.seed.generated.json';
+
+export const INSIGHT_CAPTURE = capturedInsights.captured_from;
+export const INSIGHT_WINDOWS = capturedInsights.windows;
+
+/**
+ * G. THE EVERYDAY STRIP — several detectors fired, and by luck of the fixture
+ * ALL FOUR SEVERITIES are present (bad · warn · good · info), which is exactly
+ * what the ranking assertion needs and is not something an author would have
+ * thought to stage.
+ */
+export const SEED_INSIGHTS = capturedInsights.insights;
+
+/** H. The same day scoped to one funnel — a strictly smaller card set. */
+export const SEED_INSIGHTS_SCOPED = capturedInsights.insights_scoped;
+
+/**
+ * I. NOTHING FIRED — DERIVED from G by emptying the card list while leaving
+ * every detector marked as HAVING RUN. It cannot be captured: the detectors are
+ * good enough that even a two-order funnel legitimately fires, and a fixture
+ * empty enough to silence all six produces the DEGRADED state instead — which
+ * is the one thing this state must not look like.
+ */
+export const SEED_INSIGHTS_NONE = capturedInsights.insights_none;
+
+/**
+ * J. A DETECTOR THAT COULD NOT RUN. Captured by making the step read genuinely
+ * throw, so `meta.degraded` and `detectors[].ran:false` are the SERVICE'S own
+ * output with its own wording — not this file's guess at it.
+ */
+export const SEED_INSIGHTS_DEGRADED = capturedInsights.insights_degraded;
+
+/**
+ * K. THE COHORT TABLE, carrying BOTH ages at once: a cohort acquired today
+ * (aged [4,0,0,0] — D7/D30/D90 are NULL) beside one acquired 100 days ago (aged
+ * at every horizon). Those nulls are the aging guard, and they are the single
+ * most important cells in this seed: the render check asserts they draw an em
+ * dash and that "$0.00" appears nowhere near them.
+ */
+export const SEED_COHORTS = capturedInsights.cohorts;
+export const SEED_COHORTS_BY_FUNNEL = capturedInsights.cohorts_by_funnel;
+export const SEED_COHORTS_BY_CAMPAIGN = capturedInsights.cohorts_by_campaign;
+
+/** L. A window with no acquisitions — the genuine empty state, captured. */
+export const SEED_COHORTS_EMPTY = capturedInsights.cohorts_empty;

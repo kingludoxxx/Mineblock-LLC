@@ -14,6 +14,7 @@ import { useCallback, useRef, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import DashboardView from './DashboardView.jsx';
 import useDashboardData from './useDashboardData.js';
+import useInsightsData, { COHORT_WINDOW_DAYS } from './useInsightsData.js';
 import { daysAgoIso, todayIso } from './dashFormat.js';
 
 /**
@@ -77,6 +78,39 @@ export default function AnalyticsDashboardPage() {
     data, marketing, marketingError, loadState, error, refresh,
   } = useDashboardData({ start, end, funnelId, onServerWindow });
 
+  /**
+   * THE INSIGHT LANE'S OWN WINDOWS, and they are deliberately NOT the picker's.
+   *
+   *   · the detector cards judge ONE DAY against its own trailing 28-day
+   *     baseline. The natural day is the LAST day of the selected range: an
+   *     operator looking at "last 30 days" is asking about the state of things
+   *     now, and the end of their range is the most recent day they have chosen
+   *     to look at. Clamping to today instead would put a card about today over
+   *     a report about March.
+   *   · cohorts open on their own 90-day ACQUISITION window, because a cohort
+   *     acquired inside a 7-day picker range has had 7 days to come back and
+   *     every horizon past D7 would be blank. The card prints the window it is
+   *     actually on.
+   *
+   * Both windows are visible on their surfaces, so the divergence is stated
+   * rather than discovered.
+   */
+  const insightDay = end || todayIso();
+  const cohortEnd = end || todayIso();
+  const cohortStart = daysAgoIso(COHORT_WINDOW_DAYS - 1);
+  const [cohortGroupBy, setCohortGroupBy] = useState('day');
+
+  const {
+    insights, insightsError, insightsState,
+    cohorts, cohortsError, cohortsState, cohortsCsvUrl,
+  } = useInsightsData({
+    day: insightDay,
+    funnelId,
+    cohortStart,
+    cohortEnd,
+    groupBy: cohortGroupBy,
+  });
+
   const syncParams = useCallback((next) => {
     const q = { start: next.start, end: next.end };
     if (next.funnelId) q.funnel = next.funnelId;
@@ -107,6 +141,29 @@ export default function AnalyticsDashboardPage() {
     navigate(`explorer?${q.toString()}`);
   }, [navigate, start, end, funnelId]);
 
+  /**
+   * An insight card drills into the explorer using THE SERVER'S OWN params.
+   *
+   * ⚠️ THE CARD'S WINDOW WINS, not the picker's. The whole point of the drill
+   * is to show the day against the exact baseline the detector judged it by —
+   * substituting the page's range here would open a view that cannot reproduce
+   * the finding, and an operator who cannot reproduce a card stops believing
+   * the cards.
+   *
+   * Only whitelisted keys are forwarded, so a future server-side addition
+   * cannot inject an arbitrary query param into this app's URL space.
+   */
+  const onDrillInsight = useCallback((deepLink) => {
+    if (!deepLink || deepLink.page !== 'explorer') return;
+    const src = deepLink.params && typeof deepLink.params === 'object' ? deepLink.params : {};
+    const q = new URLSearchParams();
+    for (const k of ['metrics', 'start_day', 'end_day', 'funnel_id', 'dimension', 'granularity']) {
+      if (src[k] !== undefined && src[k] !== null && src[k] !== '') q.set(k, String(src[k]));
+    }
+    if (!q.get('metrics') || !q.get('start_day') || !q.get('end_day')) return;
+    navigate(`explorer?${q.toString()}`);
+  }, [navigate]);
+
   return (
     <DashboardView
       data={data}
@@ -125,6 +182,16 @@ export default function AnalyticsDashboardPage() {
       onOpenExplorer={() => navigate('explorer')}
       onOpenLive={() => navigate(LIVE_VIEW_PATH)}
       onDrillMetric={onDrillMetric}
+      insights={insights}
+      insightsError={insightsError}
+      insightsState={insightsState}
+      cohorts={cohorts}
+      cohortsError={cohortsError}
+      cohortsState={cohortsState}
+      cohortsCsvUrl={cohortsCsvUrl}
+      cohortGroupBy={cohortGroupBy}
+      onCohortGroupByChange={setCohortGroupBy}
+      onDrillInsight={onDrillInsight}
     />
   );
 }

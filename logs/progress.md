@@ -4010,3 +4010,78 @@ POST_PURCHASE_TYPES is imported — to keep the change inside the route file the
 coordinator named (DECISION MADE).
 STATUS: COMPLETE
 ---
+
+---
+TIMESTAMP: 2026-08-10 04:20
+TASK: Analytics insight layer (audit item #5) — insights engine, deep cards,
+cohorts/LTV
+BUILT: A deterministic detector layer ported from funnel-os's
+lb_insights_service.py onto this build's data, plus the cohort/LTV surface.
+SERVER (new files only): services/funnelInsights.js — six detectors (anomaly,
+top_mover, funnel_leak, aov_shift, dead_rail, first_sale) whose ONE truth layer
+is funnelMetrics.runQuery, so every figure comes off the isolated analytics
+pool with REPORT_TZ buckets and the engine's tri-state nulls; every threshold is
+a named export (THRESHOLDS) and the rule table ships as data (RULES/DROPPED).
+services/funnelCohorts.js — first-ever-purchase acquisition cohorts with
+customer-level LTV and repeat retention, an aging guard that returns null for a
+horizon a cohort has not lived to reach, size-weighted averages over the AGED
+population per horizon, and a formula-injection-guarded CSV. routes/
+funnelInsights.js mounts GET /insights, /cohorts, /cohorts.csv, /definitions at
+/api/v1/funnel-insights behind the same auth, the same MetricsError mapping and
+the SAME per-user read budget as the metrics router. CLIENT: insightsApi.js
+(routes + readers), an insights strip, and step-waterfall / movers / economics /
+last-60 / top-lists / cohort cards; the first three read blocks the composite
+has been shipping since Lane 1 and nothing was drawing, so they cost no extra
+request. CohortsPage at /app/analytics/cohorts.
+TESTED: Four new harnesses, all run: server/tests/insights/detectors.mjs
+(269/269, pure — every rule pass + fail + floor case, plus a mutation test:
+weakening the anomaly floor to 6 fails it, and restoring the reference's
+null-coercion fails 11 assertions), cohorts.mjs (84/84, known-answer table
+derived by hand in the comments + CSV injection + validation refusals),
+service.mjs (88/88, the SQL against embedded Postgres — cohort arithmetic
+hand-checked, the cross-funnel LTV rule proven, a missing table degrading to a
+named warning, and a read made to THROW landing in meta.degraded), routes.mjs
+(55/55, HTTP door, 401/403, 422 codes, CSV headers + injection, shared budget,
+app boot). Regressions: metrics engine 323/323, metrics routes 144/144,
+formatterContract 234/234. The seeded render check was EXTENDED (105 -> 196)
+with three new states and captured payloads from a new captureInsightsSeed.mjs.
+vite build exit 0; eslint 0 on every file touched.
+OUTPUT: 496 server-side assertions + 196 rendered-DOM assertions, all green.
+Two real bugs were caught BY EXECUTION and fixed: (1) the "baseline too short"
+disclosure was keyed on the bucket count, but the engine's series is gap-free —
+so a brand-new account got 28 measured-zero baseline days, no warning, and a
+silent detector; it now counts MEASURED days and separately names a flat (sigma
+= 0) baseline. (2) EconomicsCard printed "100.0% of this window's order legs
+have a known cost ... not a claim about the uncosted remainder" because a real
+captured coverage of 99.9904 rounds to 100.0 at one decimal; it now says "just
+under 100%".
+DECISIONS: (1) NO CACHE — the reference upserts insight cards into a Mongo
+collection for 6h. This lane is read-only over the money database and owns no
+table, so caching would mean a migration, a write path and a staleness window on
+numbers budget moves on (DECISION MADE). (2) NO SILENT DEGRADATION — the
+reference "NEVER raises" and returns []; an empty strip with no explanation is a
+claim that nothing is wrong, so failures are caught per-read and per-detector
+and NAMED in meta.degraded (DECISION MADE). (3) THREE PORTED RULES WERE
+TIGHTENED, each because the reference's `or 0` idiom converts a withheld figure
+into a confident zero on an engine whose whole contract is that null is not
+zero: a null baseline point is excluded rather than read as 0; a mover with no
+MEASURED previous day is not ranked; first_sale requires every baseline day to
+be measured AND zero (DECISION MADE). (4) funnel_leak was ADAPTED, not ported —
+the reference measures submits/hits per page and this build records no submit
+event, so the measurable quantity is the step-to-step visitor through-rate the
+dashboard waterfall already draws (DECISION MADE). (5) THE ORPHANED
+pages/performance/LTV.jsx WAS FOLDED, NOT WIRED. Every figure on it was a
+hardcoded literal (avg 312, d30 48, month-1 retention 68%) with a placeholder
+chart; routing it would have shipped invented numbers that are pixel-identical
+to measurements on the one workspace whose discipline is that an unmeasured
+number is an em dash. Its VIEW survives in CohortsPage (four LTV tiles + a
+retention grid) over real data; the file is now a redirect so nothing that
+imports it breaks (DECISION MADE). (6) cardKit's LineCard/HBarCard gained an
+additive `action` pass-through to Card (which already supported it) so two new
+cards can carry a header control; no existing caller passes it (DECISION MADE).
+(7) The em-dash pins in screenshot.mjs were re-baselined with a full per-card
+accounting, and a SHARPER numeric-cell pin was added beside them — the old one
+counts prose punctuation, and the fixture's funnel names were renamed rather
+than the number nudged when that dilution was found (DECISION MADE).
+STATUS: COMPLETE
+---

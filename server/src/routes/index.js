@@ -46,6 +46,7 @@ import cogsAssistantRoutes from './cogsAssistant.js';
 import funnelCostGroupsRoutes from './funnelCostGroups.js';
 import healthAlertsRoutes from './healthAlerts.js';
 import funnelMetricsRoutes from './funnelMetrics.js';
+import funnelInsightsRoutes from './funnelInsights.js';
 import funnelAttributionRoutes from './funnelAttribution.js';
 import funnelTrackingExtrasRoutes from './funnelTrackingExtras.js';
 import funnelCommerceRoutes from './funnelCommerce.js';
@@ -134,6 +135,10 @@ const mountRoutes = (app) => {
   // METRICS ENGINE — the one query API + presets + dashboard composite (authed,
   // funnels permission; read-only, isolated analytics pool, REPORT_TZ buckets).
   app.use('/api/v1/funnel-metrics', funnelMetricsRoutes);
+  // INSIGHT LAYER — deterministic detector cards + acquisition cohorts / LTV
+  // (authed, funnels permission; read-only, NO cache table, runs on the metrics
+  // engine's own isolated analytics pool and shares its per-user read budget).
+  app.use('/api/v1/funnel-insights', funnelInsightsRoutes);
   app.use('/api/v1/funnel-attribution', funnelAttributionRoutes); // ATTRIBUTION LANE: last-touch marketing breakdowns, ROAS, click ledger (authed, funnels permission; isolated analytics pool, read-only, Europe/Madrid days)
   // Settings → Commerce: Shopify catalog snapshot, Shopify↔Whop product map,
   // read-only Shopify shipping zones (authed, funnels permission; additive —

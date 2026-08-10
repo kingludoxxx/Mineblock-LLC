@@ -17,6 +17,20 @@
 //   7 live        — the REAL route end to end (index.jsx + the hook + axios),
 //                   served the same captured payloads over the wire
 //   8 explorer    — Lane 4's route with its module genuinely absent
+//   9 insight-none — LANE 5: every detector RAN and none fired. The ONLY state
+//                    allowed to say "nothing stood out", and it must not look
+//                    like 10 below
+//  10 insight-blind — LANE 5: a detector that COULD NOT RUN. Same empty-ish
+//                    strip, opposite meaning, and the card list that DID fire
+//                    is still shown
+//  11 insight-dead  — LANE 5: the insight request failed. Must show the
+//                    couldn't-load well and must NEVER print "nothing stood
+//                    out today", which is a claim about the business made off a
+//                    request that never came back
+//
+// ⚠️ THE INSIGHT LANE IS ATTACHED TO STATE 1 ONLY. States 2-6 pass no insight
+// props at all, which is how the "a surface that never asked draws no strip"
+// rule is proven: the strip is ABSENT there, not quietly rendered as calm.
 //
 // The catch-all '(none)' funnel bucket needs NO state of its own: Lane 1's real
 // fold already emits one, so state 1 carries it. An earlier revision appended a
@@ -30,6 +44,8 @@ import AnalyticsRoutes from '../../analyticsRoutes.jsx';
 import {
   CAPTURE, CAPTURE_WINDOWS, SEED_DASHBOARD, SEED_MARKETING,
   SEED_MARKETING_UNATTRIBUTED, TTL_DASHBOARD, WITHHELD_DASHBOARD,
+  INSIGHT_CAPTURE, SEED_COHORTS, SEED_COHORTS_EMPTY, SEED_INSIGHTS,
+  SEED_INSIGHTS_DEGRADED, SEED_INSIGHTS_NONE,
 } from './seed.js';
 import '../../../../index.css';
 
@@ -77,7 +93,19 @@ const STATES = [
     id: 'state-measured',
     title: '1 · Measured window (captured)',
     note: 'Lane 1 runDashboard output for a 30-day window, verbatim. The money column is net_sales and the cards must say so; the funnel table draws only the columns the payload actually carries and names the rest underneath.',
-    props: { data: SEED_DASHBOARD, marketing: SEED_MARKETING, loadState: 'ready', error: null },
+    props: {
+      data: SEED_DASHBOARD,
+      marketing: SEED_MARKETING,
+      loadState: 'ready',
+      error: null,
+      // LANE 5, wired on THIS state only — see the note above.
+      insights: SEED_INSIGHTS,
+      insightsState: 'ready',
+      cohorts: SEED_COHORTS,
+      cohortsState: 'ready',
+      cohortsCsvUrl: '/api/v1/funnel-insights/cohorts.csv?group_by=day',
+      cohortGroupBy: 'day',
+    },
   },
   {
     id: 'state-ttl',
@@ -146,6 +174,56 @@ const STATES = [
     note: 'Every block the wrong shape. ErrorBoundary sits at the App root with nothing between it and this workspace, so one thrown render blanks the whole CRM. This must render, not throw.',
     props: { data: HOSTILE_DASHBOARD, marketing: 'not a payload', loadState: 'ready', error: null },
   },
+  {
+    id: 'state-insight-none',
+    title: '9 · Every detector ran, none fired (LANE 5)',
+    note: 'The ONLY state allowed to say "nothing stood out today", because it is the only one in which every check is known to have looked. It names the checks that ran, so the silence is evidence rather than an absence of it.',
+    props: {
+      data: SEED_DASHBOARD,
+      marketing: SEED_MARKETING,
+      loadState: 'ready',
+      error: null,
+      insights: SEED_INSIGHTS_NONE,
+      insightsState: 'ready',
+      cohorts: SEED_COHORTS_EMPTY,
+      cohortsState: 'ready',
+      cohortGroupBy: 'day',
+    },
+  },
+  {
+    id: 'state-insight-blind',
+    title: '10 · A detector that could not run (LANE 5, captured)',
+    note: 'The step read genuinely threw when this payload was captured, so the funnel-leak detector reports ran:false. The cards that DID fire are still true and are still shown; the blind one is NAMED. This must not be pixel-identical to state 9 — a strip that is quiet because it is broken and one that is quiet because the business is fine are opposite facts.',
+    props: {
+      data: SEED_DASHBOARD,
+      marketing: SEED_MARKETING,
+      loadState: 'ready',
+      error: null,
+      insights: SEED_INSIGHTS_DEGRADED,
+      insightsState: 'ready',
+      cohorts: SEED_COHORTS,
+      cohortsState: 'ready',
+      cohortGroupBy: 'day',
+    },
+  },
+  {
+    id: 'state-insight-dead',
+    title: '11 · The insight request failed (LANE 5)',
+    note: 'The composite loaded fine and the insight call did not. The strip must show the couldn\u2019t-load well and must NEVER print "nothing stood out today" \u2014 that is a positive claim about the business made off a request that never came back, on the one surface whose whole job is to say when something is wrong. The figures below are unaffected.',
+    props: {
+      data: SEED_DASHBOARD,
+      marketing: SEED_MARKETING,
+      loadState: 'ready',
+      error: null,
+      insights: null,
+      insightsError: 'Could not load insights (HTTP 502)',
+      insightsState: 'failed',
+      cohorts: null,
+      cohortsError: 'Could not load cohorts (Network Error)',
+      cohortsState: 'failed',
+      cohortGroupBy: 'day',
+    },
+  },
 ];
 
 createRoot(document.getElementById('root')).render(
@@ -153,7 +231,7 @@ createRoot(document.getElementById('root')).render(
     <div className="min-h-screen bg-bg-main">
       <div className="px-6 pt-5 pb-1">
         <p className="text-[11px] text-text-faint" data-testid="an-capture-provenance">
-          {`Payloads captured from metrics@${CAPTURE.metrics_commit} · attribution@${CAPTURE.attribution_commit} · REPORT_TZ ${CAPTURE.report_tz} · ${CAPTURE.database}`}
+          {`Payloads captured from metrics@${CAPTURE.metrics_commit} · attribution@${CAPTURE.attribution_commit} · insights@${INSIGHT_CAPTURE.commit} · REPORT_TZ ${CAPTURE.report_tz} · ${CAPTURE.database}`}
         </p>
       </div>
 

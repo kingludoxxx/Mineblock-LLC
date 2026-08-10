@@ -1,0 +1,4283 @@
+{
+  "captured_at": "2026-08-10T01:45:32.589Z",
+  "captured_from": {
+    "commit": "6eb46e0",
+    "report_tz": "Europe/Madrid",
+    "database": "puure_insights_seed (this lane's own designed fixture)",
+    "today": "2026-08-10"
+  },
+  "windows": {
+    "insights": {
+      "day": "2026-08-10",
+      "baseline_days": 28
+    },
+    "cohorts": {
+      "start": "2026-05-02",
+      "end": "2026-08-10"
+    },
+    "cohorts_empty": {
+      "start": "2026-06-11",
+      "end": "2026-06-21"
+    }
+  },
+  "insights": {
+    "day": "2026-08-10",
+    "timezone": "Europe/Madrid",
+    "insights": [
+      {
+        "kind": "dead_rail",
+        "severity": "bad",
+        "headline": "Meta CAPI token missing on Alpha Breast Lift",
+        "prose": "Meta CAPI token missing on Alpha Breast Lift — paste your Meta Conversions API access token into Funnel Settings → Tracking → Meta Pixel → CAPI token so server-side purchases reach Meta. Until then the browser pixel is the only rail, and it is the one ad blockers stop.",
+        "deep_link": {
+          "page": "funnel_tracking",
+          "params": {
+            "funnel_id": "f-alpha"
+          }
+        },
+        "evidence": {
+          "funnel_id": "f-alpha",
+          "platform": "meta_pixel",
+          "signal": "capi_token_missing"
+        }
+      },
+      {
+        "kind": "funnel_leak",
+        "severity": "warn",
+        "headline": "Product → Checkout on Alpha Breast Lift fell to 3.3%",
+        "prose": "Step-through from Product → Checkout on Alpha Breast Lift dropped to 3.3% today vs a 50.0% 28-day average (60 visitors on Product today). This build records page VIEWS, not form submits, so this is a visitor through-rate between consecutive steps — not a submit rate.",
+        "deep_link": {
+          "page": "explorer",
+          "params": {
+            "metrics": "conv_pct",
+            "start_day": "2026-07-13",
+            "end_day": "2026-08-10",
+            "funnel_id": "f-alpha"
+          }
+        },
+        "evidence": {
+          "funnel_id": "f-alpha",
+          "from_step": "product",
+          "to_step": "checkout",
+          "day_pct": 3.3333,
+          "baseline_pct": 50,
+          "day_upstream_visitors": 60,
+          "baseline_upstream_visitors": 560,
+          "basis": "distinct lb_touches.vid per funnel_pages.type per day, summed (additive)"
+        }
+      },
+      {
+        "kind": "anomaly",
+        "severity": "good",
+        "headline": "Net sales jumped to $218.00",
+        "prose": "Net sales jumped to $218.00 today vs a $101.61 28-day average (28 measured baseline days, σ $8.35).",
+        "deep_link": {
+          "page": "explorer",
+          "params": {
+            "metrics": "net_sales",
+            "start_day": "2026-07-13",
+            "end_day": "2026-08-10"
+          }
+        },
+        "evidence": {
+          "metric": "net_sales",
+          "value": 218,
+          "baseline_mean": 101.61,
+          "baseline_sigma": 8.351,
+          "baseline_days_measured": 28,
+          "direction": "up",
+          "funnel_id": null
+        }
+      },
+      {
+        "kind": "top_mover",
+        "severity": "info",
+        "headline": "Alpha Breast Lift moved the most: +$66.00",
+        "prose": "Alpha Breast Lift moved the most today: net sales $166.00 vs $100.00 the previous day (+$66.00). Only funnels with a measured previous day are ranked — a funnel that was not there yesterday has an unknown change, not a change of its whole value.",
+        "deep_link": {
+          "page": "explorer",
+          "params": {
+            "metrics": "net_sales",
+            "start_day": "2026-07-13",
+            "end_day": "2026-08-10",
+            "funnel_id": "f-alpha"
+          }
+        },
+        "evidence": {
+          "funnel_id": "f-alpha",
+          "label": "Alpha Breast Lift",
+          "net_sales": 166,
+          "previous_net_sales": 100,
+          "delta": 66,
+          "delta_pct": 66
+        }
+      }
+    ],
+    "detectors": [
+      {
+        "kind": "anomaly",
+        "ran": true,
+        "fired": true
+      },
+      {
+        "kind": "top_mover",
+        "ran": true,
+        "fired": true
+      },
+      {
+        "kind": "funnel_leak",
+        "ran": true,
+        "fired": true
+      },
+      {
+        "kind": "aov_shift",
+        "ran": true,
+        "fired": false
+      },
+      {
+        "kind": "dead_rail",
+        "ran": true,
+        "fired": true
+      },
+      {
+        "kind": "first_sale",
+        "ran": true,
+        "fired": false
+      }
+    ],
+    "last_60": {
+      "series": [
+        {
+          "key": "2026-06-12",
+          "future": false,
+          "net_sales": 0,
+          "orders": 0,
+          "sessions": 0,
+          "aov": null,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-06-13",
+          "future": false,
+          "net_sales": 0,
+          "orders": 0,
+          "sessions": 0,
+          "aov": null,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-06-14",
+          "future": false,
+          "net_sales": 0,
+          "orders": 0,
+          "sessions": 0,
+          "aov": null,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-06-15",
+          "future": false,
+          "net_sales": 0,
+          "orders": 0,
+          "sessions": 0,
+          "aov": null,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-06-16",
+          "future": false,
+          "net_sales": 40,
+          "orders": 1,
+          "sessions": 0,
+          "aov": 40,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-06-17",
+          "future": false,
+          "net_sales": 0,
+          "orders": 0,
+          "sessions": 0,
+          "aov": null,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-06-18",
+          "future": false,
+          "net_sales": 0,
+          "orders": 0,
+          "sessions": 0,
+          "aov": null,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-06-19",
+          "future": false,
+          "net_sales": 0,
+          "orders": 0,
+          "sessions": 0,
+          "aov": null,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-06-20",
+          "future": false,
+          "net_sales": 0,
+          "orders": 0,
+          "sessions": 0,
+          "aov": null,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-06-21",
+          "future": false,
+          "net_sales": 0,
+          "orders": 0,
+          "sessions": 0,
+          "aov": null,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-06-22",
+          "future": false,
+          "net_sales": 0,
+          "orders": 0,
+          "sessions": 0,
+          "aov": null,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-06-23",
+          "future": false,
+          "net_sales": 0,
+          "orders": 0,
+          "sessions": 0,
+          "aov": null,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-06-24",
+          "future": false,
+          "net_sales": 0,
+          "orders": 0,
+          "sessions": 0,
+          "aov": null,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-06-25",
+          "future": false,
+          "net_sales": 0,
+          "orders": 0,
+          "sessions": 0,
+          "aov": null,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-06-26",
+          "future": false,
+          "net_sales": 0,
+          "orders": 0,
+          "sessions": 0,
+          "aov": null,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-06-27",
+          "future": false,
+          "net_sales": 0,
+          "orders": 0,
+          "sessions": 0,
+          "aov": null,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-06-28",
+          "future": false,
+          "net_sales": 0,
+          "orders": 0,
+          "sessions": 0,
+          "aov": null,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-06-29",
+          "future": false,
+          "net_sales": 0,
+          "orders": 0,
+          "sessions": 0,
+          "aov": null,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-06-30",
+          "future": false,
+          "net_sales": 0,
+          "orders": 0,
+          "sessions": 0,
+          "aov": null,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-07-01",
+          "future": false,
+          "net_sales": 0,
+          "orders": 0,
+          "sessions": 0,
+          "aov": null,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-07-02",
+          "future": false,
+          "net_sales": 0,
+          "orders": 0,
+          "sessions": 0,
+          "aov": null,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-07-03",
+          "future": false,
+          "net_sales": 0,
+          "orders": 0,
+          "sessions": 0,
+          "aov": null,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-07-04",
+          "future": false,
+          "net_sales": 0,
+          "orders": 0,
+          "sessions": 0,
+          "aov": null,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-07-05",
+          "future": false,
+          "net_sales": 0,
+          "orders": 0,
+          "sessions": 0,
+          "aov": null,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-07-06",
+          "future": false,
+          "net_sales": 0,
+          "orders": 0,
+          "sessions": 0,
+          "aov": null,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-07-07",
+          "future": false,
+          "net_sales": 0,
+          "orders": 0,
+          "sessions": 0,
+          "aov": null,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-07-08",
+          "future": false,
+          "net_sales": 0,
+          "orders": 0,
+          "sessions": 0,
+          "aov": null,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-07-09",
+          "future": false,
+          "net_sales": 0,
+          "orders": 0,
+          "sessions": 0,
+          "aov": null,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-07-10",
+          "future": false,
+          "net_sales": 0,
+          "orders": 0,
+          "sessions": 0,
+          "aov": null,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-07-11",
+          "future": false,
+          "net_sales": 0,
+          "orders": 0,
+          "sessions": 0,
+          "aov": null,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-07-12",
+          "future": false,
+          "net_sales": 0,
+          "orders": 0,
+          "sessions": 0,
+          "aov": null,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-07-13",
+          "future": false,
+          "net_sales": 100,
+          "orders": 2,
+          "sessions": 40,
+          "aov": 50,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-07-14",
+          "future": false,
+          "net_sales": 100,
+          "orders": 2,
+          "sessions": 40,
+          "aov": 50,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-07-15",
+          "future": false,
+          "net_sales": 100,
+          "orders": 2,
+          "sessions": 40,
+          "aov": 50,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-07-16",
+          "future": false,
+          "net_sales": 100,
+          "orders": 2,
+          "sessions": 40,
+          "aov": 50,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-07-17",
+          "future": false,
+          "net_sales": 100,
+          "orders": 2,
+          "sessions": 40,
+          "aov": 50,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-07-18",
+          "future": false,
+          "net_sales": 100,
+          "orders": 2,
+          "sessions": 40,
+          "aov": 50,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-07-19",
+          "future": false,
+          "net_sales": 100,
+          "orders": 2,
+          "sessions": 40,
+          "aov": 50,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-07-20",
+          "future": false,
+          "net_sales": 100,
+          "orders": 2,
+          "sessions": 40,
+          "aov": 50,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-07-21",
+          "future": false,
+          "net_sales": 100,
+          "orders": 2,
+          "sessions": 40,
+          "aov": 50,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-07-22",
+          "future": false,
+          "net_sales": 100,
+          "orders": 2,
+          "sessions": 40,
+          "aov": 50,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-07-23",
+          "future": false,
+          "net_sales": 100,
+          "orders": 2,
+          "sessions": 40,
+          "aov": 50,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-07-24",
+          "future": false,
+          "net_sales": 100,
+          "orders": 2,
+          "sessions": 40,
+          "aov": 50,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-07-25",
+          "future": false,
+          "net_sales": 100,
+          "orders": 2,
+          "sessions": 40,
+          "aov": 50,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-07-26",
+          "future": false,
+          "net_sales": 100,
+          "orders": 2,
+          "sessions": 40,
+          "aov": 50,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-07-27",
+          "future": false,
+          "net_sales": 100,
+          "orders": 2,
+          "sessions": 40,
+          "aov": 50,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-07-28",
+          "future": false,
+          "net_sales": 100,
+          "orders": 2,
+          "sessions": 40,
+          "aov": 50,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-07-29",
+          "future": false,
+          "net_sales": 100,
+          "orders": 2,
+          "sessions": 40,
+          "aov": 50,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-07-30",
+          "future": false,
+          "net_sales": 100,
+          "orders": 2,
+          "sessions": 40,
+          "aov": 50,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-07-31",
+          "future": false,
+          "net_sales": 100,
+          "orders": 2,
+          "sessions": 40,
+          "aov": 50,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-08-01",
+          "future": false,
+          "net_sales": 100,
+          "orders": 2,
+          "sessions": 40,
+          "aov": 50,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-08-02",
+          "future": false,
+          "net_sales": 100,
+          "orders": 2,
+          "sessions": 40,
+          "aov": 50,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-08-03",
+          "future": false,
+          "net_sales": 100,
+          "orders": 2,
+          "sessions": 40,
+          "aov": 50,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-08-04",
+          "future": false,
+          "net_sales": 100,
+          "orders": 2,
+          "sessions": 40,
+          "aov": 50,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-08-05",
+          "future": false,
+          "net_sales": 100,
+          "orders": 2,
+          "sessions": 40,
+          "aov": 50,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-08-06",
+          "future": false,
+          "net_sales": 100,
+          "orders": 2,
+          "sessions": 40,
+          "aov": 50,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-08-07",
+          "future": false,
+          "net_sales": 100,
+          "orders": 2,
+          "sessions": 40,
+          "aov": 50,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-08-08",
+          "future": false,
+          "net_sales": 100,
+          "orders": 2,
+          "sessions": 40,
+          "aov": 50,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-08-09",
+          "future": false,
+          "net_sales": 145,
+          "orders": 3,
+          "sessions": 40,
+          "aov": 48.33,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-08-10",
+          "future": false,
+          "net_sales": 218,
+          "orders": 4,
+          "sessions": 122,
+          "aov": 54.5,
+          "spend": null,
+          "net_profit": null
+        }
+      ],
+      "metrics": [
+        "net_sales",
+        "orders",
+        "sessions",
+        "aov",
+        "spend",
+        "net_profit"
+      ],
+      "window": {
+        "start": "2026-06-12",
+        "end": "2026-08-10",
+        "days": 60,
+        "timezone": "Europe/Madrid"
+      },
+      "sessions_unknown": false,
+      "currency": "USD",
+      "mixed_currency": false
+    },
+    "baseline_window": {
+      "start": "2026-07-13",
+      "end": "2026-08-09",
+      "days": 28,
+      "timezone": "Europe/Madrid"
+    },
+    "thresholds": {
+      "anomaly_sigma": {
+        "value": 2,
+        "source": "reference",
+        "note": "a day outside mean ± 2σ of the trailing 28-day baseline"
+      },
+      "anomaly_min_baseline": {
+        "value": 7,
+        "source": "reference",
+        "note": "MEASURED baseline days required before ±2σ means anything; a null day is not a day"
+      },
+      "aov_shift_min_pct": {
+        "value": 20,
+        "source": "reference",
+        "note": "|AOV delta| vs the baseline mean that counts as a shift"
+      },
+      "aov_min_baseline": {
+        "value": 5,
+        "source": "reference",
+        "note": "baseline days WITH orders and a measured AOV required for an AOV baseline"
+      },
+      "leak_min_day_hits": {
+        "value": 10,
+        "source": "reference",
+        "note": "visitors on the UPSTREAM step today before a step-to-step drop is callable"
+      },
+      "leak_min_base_hits": {
+        "value": 50,
+        "source": "reference",
+        "note": "visitors on the UPSTREAM step across the baseline before it is a baseline"
+      },
+      "leak_drop_ratio": {
+        "value": 0.5,
+        "source": "reference",
+        "note": "today's step-through must fall BELOW half the baseline's to be a leak"
+      },
+      "dead_rail_window_days": {
+        "value": 7,
+        "source": "reference",
+        "note": "the delivery window a rail is judged silent over"
+      },
+      "mover_min_abs_delta": {
+        "value": 0.01,
+        "source": "adapted",
+        "note": "a delta below one cent is rounding, not a move"
+      },
+      "funnel_scan_cap": {
+        "value": 200,
+        "source": "adapted",
+        "note": "breakdown rows read per detector pass (the engine's own MAX_BREAKDOWN_LIMIT)"
+      }
+    },
+    "window": {
+      "start": "2026-06-12",
+      "end": "2026-08-10",
+      "days": 60,
+      "timezone": "Europe/Madrid"
+    },
+    "meta": {
+      "computed_ms": 33,
+      "rows_scanned": 156,
+      "timezone": "Europe/Madrid",
+      "max_cards": 6,
+      "baseline_days": 28,
+      "window": {
+        "start": "2026-06-12",
+        "end": "2026-08-10",
+        "days": 60,
+        "timezone": "Europe/Madrid"
+      },
+      "degraded": [],
+      "warnings": []
+    }
+  },
+  "insights_scoped": {
+    "day": "2026-08-10",
+    "timezone": "Europe/Madrid",
+    "insights": [
+      {
+        "kind": "anomaly",
+        "severity": "good",
+        "headline": "Net sales jumped to $52.00",
+        "prose": "Net sales jumped to $52.00 today vs a $1.61 28-day average (28 measured baseline days, σ $8.35).",
+        "deep_link": {
+          "page": "explorer",
+          "params": {
+            "metrics": "net_sales",
+            "start_day": "2026-07-13",
+            "end_day": "2026-08-10"
+          }
+        },
+        "evidence": {
+          "metric": "net_sales",
+          "value": 52,
+          "baseline_mean": 1.61,
+          "baseline_sigma": 8.351,
+          "baseline_days_measured": 28,
+          "direction": "up",
+          "funnel_id": null
+        }
+      },
+      {
+        "kind": "top_mover",
+        "severity": "info",
+        "headline": "Beta Activator Oil moved the most: +$7.00",
+        "prose": "Beta Activator Oil moved the most today: net sales $52.00 vs $45.00 the previous day (+$7.00). Only funnels with a measured previous day are ranked — a funnel that was not there yesterday has an unknown change, not a change of its whole value.",
+        "deep_link": {
+          "page": "explorer",
+          "params": {
+            "metrics": "net_sales",
+            "start_day": "2026-07-13",
+            "end_day": "2026-08-10",
+            "funnel_id": "f-beta"
+          }
+        },
+        "evidence": {
+          "funnel_id": "f-beta",
+          "label": "Beta Activator Oil",
+          "net_sales": 52,
+          "previous_net_sales": 45,
+          "delta": 7,
+          "delta_pct": 15.5556
+        }
+      }
+    ],
+    "detectors": [
+      {
+        "kind": "anomaly",
+        "ran": true,
+        "fired": true
+      },
+      {
+        "kind": "top_mover",
+        "ran": true,
+        "fired": true
+      },
+      {
+        "kind": "funnel_leak",
+        "ran": true,
+        "fired": false
+      },
+      {
+        "kind": "aov_shift",
+        "ran": true,
+        "fired": false
+      },
+      {
+        "kind": "dead_rail",
+        "ran": true,
+        "fired": false
+      },
+      {
+        "kind": "first_sale",
+        "ran": true,
+        "fired": false
+      }
+    ],
+    "last_60": {
+      "series": [
+        {
+          "key": "2026-06-12",
+          "future": false,
+          "net_sales": 0,
+          "orders": 0,
+          "sessions": 0,
+          "aov": null,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-06-13",
+          "future": false,
+          "net_sales": 0,
+          "orders": 0,
+          "sessions": 0,
+          "aov": null,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-06-14",
+          "future": false,
+          "net_sales": 0,
+          "orders": 0,
+          "sessions": 0,
+          "aov": null,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-06-15",
+          "future": false,
+          "net_sales": 0,
+          "orders": 0,
+          "sessions": 0,
+          "aov": null,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-06-16",
+          "future": false,
+          "net_sales": 0,
+          "orders": 0,
+          "sessions": 0,
+          "aov": null,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-06-17",
+          "future": false,
+          "net_sales": 0,
+          "orders": 0,
+          "sessions": 0,
+          "aov": null,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-06-18",
+          "future": false,
+          "net_sales": 0,
+          "orders": 0,
+          "sessions": 0,
+          "aov": null,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-06-19",
+          "future": false,
+          "net_sales": 0,
+          "orders": 0,
+          "sessions": 0,
+          "aov": null,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-06-20",
+          "future": false,
+          "net_sales": 0,
+          "orders": 0,
+          "sessions": 0,
+          "aov": null,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-06-21",
+          "future": false,
+          "net_sales": 0,
+          "orders": 0,
+          "sessions": 0,
+          "aov": null,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-06-22",
+          "future": false,
+          "net_sales": 0,
+          "orders": 0,
+          "sessions": 0,
+          "aov": null,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-06-23",
+          "future": false,
+          "net_sales": 0,
+          "orders": 0,
+          "sessions": 0,
+          "aov": null,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-06-24",
+          "future": false,
+          "net_sales": 0,
+          "orders": 0,
+          "sessions": 0,
+          "aov": null,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-06-25",
+          "future": false,
+          "net_sales": 0,
+          "orders": 0,
+          "sessions": 0,
+          "aov": null,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-06-26",
+          "future": false,
+          "net_sales": 0,
+          "orders": 0,
+          "sessions": 0,
+          "aov": null,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-06-27",
+          "future": false,
+          "net_sales": 0,
+          "orders": 0,
+          "sessions": 0,
+          "aov": null,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-06-28",
+          "future": false,
+          "net_sales": 0,
+          "orders": 0,
+          "sessions": 0,
+          "aov": null,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-06-29",
+          "future": false,
+          "net_sales": 0,
+          "orders": 0,
+          "sessions": 0,
+          "aov": null,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-06-30",
+          "future": false,
+          "net_sales": 0,
+          "orders": 0,
+          "sessions": 0,
+          "aov": null,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-07-01",
+          "future": false,
+          "net_sales": 0,
+          "orders": 0,
+          "sessions": 0,
+          "aov": null,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-07-02",
+          "future": false,
+          "net_sales": 0,
+          "orders": 0,
+          "sessions": 0,
+          "aov": null,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-07-03",
+          "future": false,
+          "net_sales": 0,
+          "orders": 0,
+          "sessions": 0,
+          "aov": null,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-07-04",
+          "future": false,
+          "net_sales": 0,
+          "orders": 0,
+          "sessions": 0,
+          "aov": null,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-07-05",
+          "future": false,
+          "net_sales": 0,
+          "orders": 0,
+          "sessions": 0,
+          "aov": null,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-07-06",
+          "future": false,
+          "net_sales": 0,
+          "orders": 0,
+          "sessions": 0,
+          "aov": null,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-07-07",
+          "future": false,
+          "net_sales": 0,
+          "orders": 0,
+          "sessions": 0,
+          "aov": null,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-07-08",
+          "future": false,
+          "net_sales": 0,
+          "orders": 0,
+          "sessions": 0,
+          "aov": null,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-07-09",
+          "future": false,
+          "net_sales": 0,
+          "orders": 0,
+          "sessions": 0,
+          "aov": null,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-07-10",
+          "future": false,
+          "net_sales": 0,
+          "orders": 0,
+          "sessions": 0,
+          "aov": null,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-07-11",
+          "future": false,
+          "net_sales": 0,
+          "orders": 0,
+          "sessions": 0,
+          "aov": null,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-07-12",
+          "future": false,
+          "net_sales": 0,
+          "orders": 0,
+          "sessions": 0,
+          "aov": null,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-07-13",
+          "future": false,
+          "net_sales": 0,
+          "orders": 0,
+          "sessions": 0,
+          "aov": null,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-07-14",
+          "future": false,
+          "net_sales": 0,
+          "orders": 0,
+          "sessions": 0,
+          "aov": null,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-07-15",
+          "future": false,
+          "net_sales": 0,
+          "orders": 0,
+          "sessions": 0,
+          "aov": null,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-07-16",
+          "future": false,
+          "net_sales": 0,
+          "orders": 0,
+          "sessions": 0,
+          "aov": null,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-07-17",
+          "future": false,
+          "net_sales": 0,
+          "orders": 0,
+          "sessions": 0,
+          "aov": null,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-07-18",
+          "future": false,
+          "net_sales": 0,
+          "orders": 0,
+          "sessions": 0,
+          "aov": null,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-07-19",
+          "future": false,
+          "net_sales": 0,
+          "orders": 0,
+          "sessions": 0,
+          "aov": null,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-07-20",
+          "future": false,
+          "net_sales": 0,
+          "orders": 0,
+          "sessions": 0,
+          "aov": null,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-07-21",
+          "future": false,
+          "net_sales": 0,
+          "orders": 0,
+          "sessions": 0,
+          "aov": null,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-07-22",
+          "future": false,
+          "net_sales": 0,
+          "orders": 0,
+          "sessions": 0,
+          "aov": null,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-07-23",
+          "future": false,
+          "net_sales": 0,
+          "orders": 0,
+          "sessions": 0,
+          "aov": null,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-07-24",
+          "future": false,
+          "net_sales": 0,
+          "orders": 0,
+          "sessions": 0,
+          "aov": null,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-07-25",
+          "future": false,
+          "net_sales": 0,
+          "orders": 0,
+          "sessions": 0,
+          "aov": null,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-07-26",
+          "future": false,
+          "net_sales": 0,
+          "orders": 0,
+          "sessions": 0,
+          "aov": null,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-07-27",
+          "future": false,
+          "net_sales": 0,
+          "orders": 0,
+          "sessions": 0,
+          "aov": null,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-07-28",
+          "future": false,
+          "net_sales": 0,
+          "orders": 0,
+          "sessions": 0,
+          "aov": null,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-07-29",
+          "future": false,
+          "net_sales": 0,
+          "orders": 0,
+          "sessions": 0,
+          "aov": null,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-07-30",
+          "future": false,
+          "net_sales": 0,
+          "orders": 0,
+          "sessions": 0,
+          "aov": null,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-07-31",
+          "future": false,
+          "net_sales": 0,
+          "orders": 0,
+          "sessions": 0,
+          "aov": null,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-08-01",
+          "future": false,
+          "net_sales": 0,
+          "orders": 0,
+          "sessions": 0,
+          "aov": null,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-08-02",
+          "future": false,
+          "net_sales": 0,
+          "orders": 0,
+          "sessions": 0,
+          "aov": null,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-08-03",
+          "future": false,
+          "net_sales": 0,
+          "orders": 0,
+          "sessions": 0,
+          "aov": null,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-08-04",
+          "future": false,
+          "net_sales": 0,
+          "orders": 0,
+          "sessions": 0,
+          "aov": null,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-08-05",
+          "future": false,
+          "net_sales": 0,
+          "orders": 0,
+          "sessions": 0,
+          "aov": null,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-08-06",
+          "future": false,
+          "net_sales": 0,
+          "orders": 0,
+          "sessions": 0,
+          "aov": null,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-08-07",
+          "future": false,
+          "net_sales": 0,
+          "orders": 0,
+          "sessions": 0,
+          "aov": null,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-08-08",
+          "future": false,
+          "net_sales": 0,
+          "orders": 0,
+          "sessions": 0,
+          "aov": null,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-08-09",
+          "future": false,
+          "net_sales": 45,
+          "orders": 1,
+          "sessions": 0,
+          "aov": 45,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-08-10",
+          "future": false,
+          "net_sales": 52,
+          "orders": 1,
+          "sessions": 0,
+          "aov": 52,
+          "spend": null,
+          "net_profit": null
+        }
+      ],
+      "metrics": [
+        "net_sales",
+        "orders",
+        "sessions",
+        "aov",
+        "spend",
+        "net_profit"
+      ],
+      "window": {
+        "start": "2026-06-12",
+        "end": "2026-08-10",
+        "days": 60,
+        "timezone": "Europe/Madrid"
+      },
+      "sessions_unknown": false,
+      "currency": "USD",
+      "mixed_currency": false
+    },
+    "baseline_window": {
+      "start": "2026-07-13",
+      "end": "2026-08-09",
+      "days": 28,
+      "timezone": "Europe/Madrid"
+    },
+    "thresholds": {
+      "anomaly_sigma": {
+        "value": 2,
+        "source": "reference",
+        "note": "a day outside mean ± 2σ of the trailing 28-day baseline"
+      },
+      "anomaly_min_baseline": {
+        "value": 7,
+        "source": "reference",
+        "note": "MEASURED baseline days required before ±2σ means anything; a null day is not a day"
+      },
+      "aov_shift_min_pct": {
+        "value": 20,
+        "source": "reference",
+        "note": "|AOV delta| vs the baseline mean that counts as a shift"
+      },
+      "aov_min_baseline": {
+        "value": 5,
+        "source": "reference",
+        "note": "baseline days WITH orders and a measured AOV required for an AOV baseline"
+      },
+      "leak_min_day_hits": {
+        "value": 10,
+        "source": "reference",
+        "note": "visitors on the UPSTREAM step today before a step-to-step drop is callable"
+      },
+      "leak_min_base_hits": {
+        "value": 50,
+        "source": "reference",
+        "note": "visitors on the UPSTREAM step across the baseline before it is a baseline"
+      },
+      "leak_drop_ratio": {
+        "value": 0.5,
+        "source": "reference",
+        "note": "today's step-through must fall BELOW half the baseline's to be a leak"
+      },
+      "dead_rail_window_days": {
+        "value": 7,
+        "source": "reference",
+        "note": "the delivery window a rail is judged silent over"
+      },
+      "mover_min_abs_delta": {
+        "value": 0.01,
+        "source": "adapted",
+        "note": "a delta below one cent is rounding, not a move"
+      },
+      "funnel_scan_cap": {
+        "value": 200,
+        "source": "adapted",
+        "note": "breakdown rows read per detector pass (the engine's own MAX_BREAKDOWN_LIMIT)"
+      }
+    },
+    "window": {
+      "start": "2026-06-12",
+      "end": "2026-08-10",
+      "days": 60,
+      "timezone": "Europe/Madrid"
+    },
+    "meta": {
+      "computed_ms": 7,
+      "rows_scanned": 8,
+      "timezone": "Europe/Madrid",
+      "max_cards": 6,
+      "baseline_days": 28,
+      "window": {
+        "start": "2026-06-12",
+        "end": "2026-08-10",
+        "days": 60,
+        "timezone": "Europe/Madrid"
+      },
+      "degraded": [],
+      "warnings": []
+    }
+  },
+  "insights_none": {
+    "day": "2026-08-10",
+    "timezone": "Europe/Madrid",
+    "insights": [],
+    "detectors": [
+      {
+        "kind": "anomaly",
+        "ran": true,
+        "fired": false
+      },
+      {
+        "kind": "top_mover",
+        "ran": true,
+        "fired": false
+      },
+      {
+        "kind": "funnel_leak",
+        "ran": true,
+        "fired": false
+      },
+      {
+        "kind": "aov_shift",
+        "ran": true,
+        "fired": false
+      },
+      {
+        "kind": "dead_rail",
+        "ran": true,
+        "fired": false
+      },
+      {
+        "kind": "first_sale",
+        "ran": true,
+        "fired": false
+      }
+    ],
+    "last_60": {
+      "series": [
+        {
+          "key": "2026-06-12",
+          "future": false,
+          "net_sales": 0,
+          "orders": 0,
+          "sessions": 0,
+          "aov": null,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-06-13",
+          "future": false,
+          "net_sales": 0,
+          "orders": 0,
+          "sessions": 0,
+          "aov": null,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-06-14",
+          "future": false,
+          "net_sales": 0,
+          "orders": 0,
+          "sessions": 0,
+          "aov": null,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-06-15",
+          "future": false,
+          "net_sales": 0,
+          "orders": 0,
+          "sessions": 0,
+          "aov": null,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-06-16",
+          "future": false,
+          "net_sales": 40,
+          "orders": 1,
+          "sessions": 0,
+          "aov": 40,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-06-17",
+          "future": false,
+          "net_sales": 0,
+          "orders": 0,
+          "sessions": 0,
+          "aov": null,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-06-18",
+          "future": false,
+          "net_sales": 0,
+          "orders": 0,
+          "sessions": 0,
+          "aov": null,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-06-19",
+          "future": false,
+          "net_sales": 0,
+          "orders": 0,
+          "sessions": 0,
+          "aov": null,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-06-20",
+          "future": false,
+          "net_sales": 0,
+          "orders": 0,
+          "sessions": 0,
+          "aov": null,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-06-21",
+          "future": false,
+          "net_sales": 0,
+          "orders": 0,
+          "sessions": 0,
+          "aov": null,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-06-22",
+          "future": false,
+          "net_sales": 0,
+          "orders": 0,
+          "sessions": 0,
+          "aov": null,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-06-23",
+          "future": false,
+          "net_sales": 0,
+          "orders": 0,
+          "sessions": 0,
+          "aov": null,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-06-24",
+          "future": false,
+          "net_sales": 0,
+          "orders": 0,
+          "sessions": 0,
+          "aov": null,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-06-25",
+          "future": false,
+          "net_sales": 0,
+          "orders": 0,
+          "sessions": 0,
+          "aov": null,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-06-26",
+          "future": false,
+          "net_sales": 0,
+          "orders": 0,
+          "sessions": 0,
+          "aov": null,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-06-27",
+          "future": false,
+          "net_sales": 0,
+          "orders": 0,
+          "sessions": 0,
+          "aov": null,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-06-28",
+          "future": false,
+          "net_sales": 0,
+          "orders": 0,
+          "sessions": 0,
+          "aov": null,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-06-29",
+          "future": false,
+          "net_sales": 0,
+          "orders": 0,
+          "sessions": 0,
+          "aov": null,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-06-30",
+          "future": false,
+          "net_sales": 0,
+          "orders": 0,
+          "sessions": 0,
+          "aov": null,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-07-01",
+          "future": false,
+          "net_sales": 0,
+          "orders": 0,
+          "sessions": 0,
+          "aov": null,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-07-02",
+          "future": false,
+          "net_sales": 0,
+          "orders": 0,
+          "sessions": 0,
+          "aov": null,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-07-03",
+          "future": false,
+          "net_sales": 0,
+          "orders": 0,
+          "sessions": 0,
+          "aov": null,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-07-04",
+          "future": false,
+          "net_sales": 0,
+          "orders": 0,
+          "sessions": 0,
+          "aov": null,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-07-05",
+          "future": false,
+          "net_sales": 0,
+          "orders": 0,
+          "sessions": 0,
+          "aov": null,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-07-06",
+          "future": false,
+          "net_sales": 0,
+          "orders": 0,
+          "sessions": 0,
+          "aov": null,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-07-07",
+          "future": false,
+          "net_sales": 0,
+          "orders": 0,
+          "sessions": 0,
+          "aov": null,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-07-08",
+          "future": false,
+          "net_sales": 0,
+          "orders": 0,
+          "sessions": 0,
+          "aov": null,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-07-09",
+          "future": false,
+          "net_sales": 0,
+          "orders": 0,
+          "sessions": 0,
+          "aov": null,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-07-10",
+          "future": false,
+          "net_sales": 0,
+          "orders": 0,
+          "sessions": 0,
+          "aov": null,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-07-11",
+          "future": false,
+          "net_sales": 0,
+          "orders": 0,
+          "sessions": 0,
+          "aov": null,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-07-12",
+          "future": false,
+          "net_sales": 0,
+          "orders": 0,
+          "sessions": 0,
+          "aov": null,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-07-13",
+          "future": false,
+          "net_sales": 100,
+          "orders": 2,
+          "sessions": 40,
+          "aov": 50,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-07-14",
+          "future": false,
+          "net_sales": 100,
+          "orders": 2,
+          "sessions": 40,
+          "aov": 50,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-07-15",
+          "future": false,
+          "net_sales": 100,
+          "orders": 2,
+          "sessions": 40,
+          "aov": 50,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-07-16",
+          "future": false,
+          "net_sales": 100,
+          "orders": 2,
+          "sessions": 40,
+          "aov": 50,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-07-17",
+          "future": false,
+          "net_sales": 100,
+          "orders": 2,
+          "sessions": 40,
+          "aov": 50,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-07-18",
+          "future": false,
+          "net_sales": 100,
+          "orders": 2,
+          "sessions": 40,
+          "aov": 50,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-07-19",
+          "future": false,
+          "net_sales": 100,
+          "orders": 2,
+          "sessions": 40,
+          "aov": 50,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-07-20",
+          "future": false,
+          "net_sales": 100,
+          "orders": 2,
+          "sessions": 40,
+          "aov": 50,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-07-21",
+          "future": false,
+          "net_sales": 100,
+          "orders": 2,
+          "sessions": 40,
+          "aov": 50,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-07-22",
+          "future": false,
+          "net_sales": 100,
+          "orders": 2,
+          "sessions": 40,
+          "aov": 50,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-07-23",
+          "future": false,
+          "net_sales": 100,
+          "orders": 2,
+          "sessions": 40,
+          "aov": 50,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-07-24",
+          "future": false,
+          "net_sales": 100,
+          "orders": 2,
+          "sessions": 40,
+          "aov": 50,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-07-25",
+          "future": false,
+          "net_sales": 100,
+          "orders": 2,
+          "sessions": 40,
+          "aov": 50,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-07-26",
+          "future": false,
+          "net_sales": 100,
+          "orders": 2,
+          "sessions": 40,
+          "aov": 50,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-07-27",
+          "future": false,
+          "net_sales": 100,
+          "orders": 2,
+          "sessions": 40,
+          "aov": 50,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-07-28",
+          "future": false,
+          "net_sales": 100,
+          "orders": 2,
+          "sessions": 40,
+          "aov": 50,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-07-29",
+          "future": false,
+          "net_sales": 100,
+          "orders": 2,
+          "sessions": 40,
+          "aov": 50,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-07-30",
+          "future": false,
+          "net_sales": 100,
+          "orders": 2,
+          "sessions": 40,
+          "aov": 50,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-07-31",
+          "future": false,
+          "net_sales": 100,
+          "orders": 2,
+          "sessions": 40,
+          "aov": 50,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-08-01",
+          "future": false,
+          "net_sales": 100,
+          "orders": 2,
+          "sessions": 40,
+          "aov": 50,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-08-02",
+          "future": false,
+          "net_sales": 100,
+          "orders": 2,
+          "sessions": 40,
+          "aov": 50,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-08-03",
+          "future": false,
+          "net_sales": 100,
+          "orders": 2,
+          "sessions": 40,
+          "aov": 50,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-08-04",
+          "future": false,
+          "net_sales": 100,
+          "orders": 2,
+          "sessions": 40,
+          "aov": 50,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-08-05",
+          "future": false,
+          "net_sales": 100,
+          "orders": 2,
+          "sessions": 40,
+          "aov": 50,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-08-06",
+          "future": false,
+          "net_sales": 100,
+          "orders": 2,
+          "sessions": 40,
+          "aov": 50,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-08-07",
+          "future": false,
+          "net_sales": 100,
+          "orders": 2,
+          "sessions": 40,
+          "aov": 50,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-08-08",
+          "future": false,
+          "net_sales": 100,
+          "orders": 2,
+          "sessions": 40,
+          "aov": 50,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-08-09",
+          "future": false,
+          "net_sales": 145,
+          "orders": 3,
+          "sessions": 40,
+          "aov": 48.33,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-08-10",
+          "future": false,
+          "net_sales": 218,
+          "orders": 4,
+          "sessions": 122,
+          "aov": 54.5,
+          "spend": null,
+          "net_profit": null
+        }
+      ],
+      "metrics": [
+        "net_sales",
+        "orders",
+        "sessions",
+        "aov",
+        "spend",
+        "net_profit"
+      ],
+      "window": {
+        "start": "2026-06-12",
+        "end": "2026-08-10",
+        "days": 60,
+        "timezone": "Europe/Madrid"
+      },
+      "sessions_unknown": false,
+      "currency": "USD",
+      "mixed_currency": false
+    },
+    "baseline_window": {
+      "start": "2026-07-13",
+      "end": "2026-08-09",
+      "days": 28,
+      "timezone": "Europe/Madrid"
+    },
+    "thresholds": {
+      "anomaly_sigma": {
+        "value": 2,
+        "source": "reference",
+        "note": "a day outside mean ± 2σ of the trailing 28-day baseline"
+      },
+      "anomaly_min_baseline": {
+        "value": 7,
+        "source": "reference",
+        "note": "MEASURED baseline days required before ±2σ means anything; a null day is not a day"
+      },
+      "aov_shift_min_pct": {
+        "value": 20,
+        "source": "reference",
+        "note": "|AOV delta| vs the baseline mean that counts as a shift"
+      },
+      "aov_min_baseline": {
+        "value": 5,
+        "source": "reference",
+        "note": "baseline days WITH orders and a measured AOV required for an AOV baseline"
+      },
+      "leak_min_day_hits": {
+        "value": 10,
+        "source": "reference",
+        "note": "visitors on the UPSTREAM step today before a step-to-step drop is callable"
+      },
+      "leak_min_base_hits": {
+        "value": 50,
+        "source": "reference",
+        "note": "visitors on the UPSTREAM step across the baseline before it is a baseline"
+      },
+      "leak_drop_ratio": {
+        "value": 0.5,
+        "source": "reference",
+        "note": "today's step-through must fall BELOW half the baseline's to be a leak"
+      },
+      "dead_rail_window_days": {
+        "value": 7,
+        "source": "reference",
+        "note": "the delivery window a rail is judged silent over"
+      },
+      "mover_min_abs_delta": {
+        "value": 0.01,
+        "source": "adapted",
+        "note": "a delta below one cent is rounding, not a move"
+      },
+      "funnel_scan_cap": {
+        "value": 200,
+        "source": "adapted",
+        "note": "breakdown rows read per detector pass (the engine's own MAX_BREAKDOWN_LIMIT)"
+      }
+    },
+    "window": {
+      "start": "2026-06-12",
+      "end": "2026-08-10",
+      "days": 60,
+      "timezone": "Europe/Madrid"
+    },
+    "meta": {
+      "computed_ms": 33,
+      "rows_scanned": 156,
+      "timezone": "Europe/Madrid",
+      "max_cards": 6,
+      "baseline_days": 28,
+      "window": {
+        "start": "2026-06-12",
+        "end": "2026-08-10",
+        "days": 60,
+        "timezone": "Europe/Madrid"
+      },
+      "degraded": [],
+      "warnings": []
+    }
+  },
+  "insights_degraded": {
+    "day": "2026-08-10",
+    "timezone": "Europe/Madrid",
+    "insights": [
+      {
+        "kind": "dead_rail",
+        "severity": "bad",
+        "headline": "Meta CAPI token missing on Alpha Breast Lift",
+        "prose": "Meta CAPI token missing on Alpha Breast Lift — paste your Meta Conversions API access token into Funnel Settings → Tracking → Meta Pixel → CAPI token so server-side purchases reach Meta. Until then the browser pixel is the only rail, and it is the one ad blockers stop.",
+        "deep_link": {
+          "page": "funnel_tracking",
+          "params": {
+            "funnel_id": "f-alpha"
+          }
+        },
+        "evidence": {
+          "funnel_id": "f-alpha",
+          "platform": "meta_pixel",
+          "signal": "capi_token_missing"
+        }
+      },
+      {
+        "kind": "anomaly",
+        "severity": "good",
+        "headline": "Net sales jumped to $218.00",
+        "prose": "Net sales jumped to $218.00 today vs a $101.61 28-day average (28 measured baseline days, σ $8.35).",
+        "deep_link": {
+          "page": "explorer",
+          "params": {
+            "metrics": "net_sales",
+            "start_day": "2026-07-13",
+            "end_day": "2026-08-10"
+          }
+        },
+        "evidence": {
+          "metric": "net_sales",
+          "value": 218,
+          "baseline_mean": 101.61,
+          "baseline_sigma": 8.351,
+          "baseline_days_measured": 28,
+          "direction": "up",
+          "funnel_id": null
+        }
+      },
+      {
+        "kind": "top_mover",
+        "severity": "info",
+        "headline": "Alpha Breast Lift moved the most: +$66.00",
+        "prose": "Alpha Breast Lift moved the most today: net sales $166.00 vs $100.00 the previous day (+$66.00). Only funnels with a measured previous day are ranked — a funnel that was not there yesterday has an unknown change, not a change of its whole value.",
+        "deep_link": {
+          "page": "explorer",
+          "params": {
+            "metrics": "net_sales",
+            "start_day": "2026-07-13",
+            "end_day": "2026-08-10",
+            "funnel_id": "f-alpha"
+          }
+        },
+        "evidence": {
+          "funnel_id": "f-alpha",
+          "label": "Alpha Breast Lift",
+          "net_sales": 166,
+          "previous_net_sales": 100,
+          "delta": 66,
+          "delta_pct": 66
+        }
+      }
+    ],
+    "detectors": [
+      {
+        "kind": "anomaly",
+        "ran": true,
+        "fired": true
+      },
+      {
+        "kind": "top_mover",
+        "ran": true,
+        "fired": true
+      },
+      {
+        "kind": "funnel_leak",
+        "ran": false,
+        "fired": false
+      },
+      {
+        "kind": "aov_shift",
+        "ran": true,
+        "fired": false
+      },
+      {
+        "kind": "dead_rail",
+        "ran": true,
+        "fired": true
+      },
+      {
+        "kind": "first_sale",
+        "ran": true,
+        "fired": false
+      }
+    ],
+    "last_60": {
+      "series": [
+        {
+          "key": "2026-06-12",
+          "future": false,
+          "net_sales": 0,
+          "orders": 0,
+          "sessions": 0,
+          "aov": null,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-06-13",
+          "future": false,
+          "net_sales": 0,
+          "orders": 0,
+          "sessions": 0,
+          "aov": null,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-06-14",
+          "future": false,
+          "net_sales": 0,
+          "orders": 0,
+          "sessions": 0,
+          "aov": null,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-06-15",
+          "future": false,
+          "net_sales": 0,
+          "orders": 0,
+          "sessions": 0,
+          "aov": null,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-06-16",
+          "future": false,
+          "net_sales": 40,
+          "orders": 1,
+          "sessions": 0,
+          "aov": 40,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-06-17",
+          "future": false,
+          "net_sales": 0,
+          "orders": 0,
+          "sessions": 0,
+          "aov": null,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-06-18",
+          "future": false,
+          "net_sales": 0,
+          "orders": 0,
+          "sessions": 0,
+          "aov": null,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-06-19",
+          "future": false,
+          "net_sales": 0,
+          "orders": 0,
+          "sessions": 0,
+          "aov": null,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-06-20",
+          "future": false,
+          "net_sales": 0,
+          "orders": 0,
+          "sessions": 0,
+          "aov": null,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-06-21",
+          "future": false,
+          "net_sales": 0,
+          "orders": 0,
+          "sessions": 0,
+          "aov": null,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-06-22",
+          "future": false,
+          "net_sales": 0,
+          "orders": 0,
+          "sessions": 0,
+          "aov": null,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-06-23",
+          "future": false,
+          "net_sales": 0,
+          "orders": 0,
+          "sessions": 0,
+          "aov": null,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-06-24",
+          "future": false,
+          "net_sales": 0,
+          "orders": 0,
+          "sessions": 0,
+          "aov": null,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-06-25",
+          "future": false,
+          "net_sales": 0,
+          "orders": 0,
+          "sessions": 0,
+          "aov": null,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-06-26",
+          "future": false,
+          "net_sales": 0,
+          "orders": 0,
+          "sessions": 0,
+          "aov": null,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-06-27",
+          "future": false,
+          "net_sales": 0,
+          "orders": 0,
+          "sessions": 0,
+          "aov": null,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-06-28",
+          "future": false,
+          "net_sales": 0,
+          "orders": 0,
+          "sessions": 0,
+          "aov": null,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-06-29",
+          "future": false,
+          "net_sales": 0,
+          "orders": 0,
+          "sessions": 0,
+          "aov": null,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-06-30",
+          "future": false,
+          "net_sales": 0,
+          "orders": 0,
+          "sessions": 0,
+          "aov": null,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-07-01",
+          "future": false,
+          "net_sales": 0,
+          "orders": 0,
+          "sessions": 0,
+          "aov": null,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-07-02",
+          "future": false,
+          "net_sales": 0,
+          "orders": 0,
+          "sessions": 0,
+          "aov": null,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-07-03",
+          "future": false,
+          "net_sales": 0,
+          "orders": 0,
+          "sessions": 0,
+          "aov": null,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-07-04",
+          "future": false,
+          "net_sales": 0,
+          "orders": 0,
+          "sessions": 0,
+          "aov": null,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-07-05",
+          "future": false,
+          "net_sales": 0,
+          "orders": 0,
+          "sessions": 0,
+          "aov": null,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-07-06",
+          "future": false,
+          "net_sales": 0,
+          "orders": 0,
+          "sessions": 0,
+          "aov": null,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-07-07",
+          "future": false,
+          "net_sales": 0,
+          "orders": 0,
+          "sessions": 0,
+          "aov": null,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-07-08",
+          "future": false,
+          "net_sales": 0,
+          "orders": 0,
+          "sessions": 0,
+          "aov": null,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-07-09",
+          "future": false,
+          "net_sales": 0,
+          "orders": 0,
+          "sessions": 0,
+          "aov": null,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-07-10",
+          "future": false,
+          "net_sales": 0,
+          "orders": 0,
+          "sessions": 0,
+          "aov": null,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-07-11",
+          "future": false,
+          "net_sales": 0,
+          "orders": 0,
+          "sessions": 0,
+          "aov": null,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-07-12",
+          "future": false,
+          "net_sales": 0,
+          "orders": 0,
+          "sessions": 0,
+          "aov": null,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-07-13",
+          "future": false,
+          "net_sales": 100,
+          "orders": 2,
+          "sessions": 40,
+          "aov": 50,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-07-14",
+          "future": false,
+          "net_sales": 100,
+          "orders": 2,
+          "sessions": 40,
+          "aov": 50,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-07-15",
+          "future": false,
+          "net_sales": 100,
+          "orders": 2,
+          "sessions": 40,
+          "aov": 50,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-07-16",
+          "future": false,
+          "net_sales": 100,
+          "orders": 2,
+          "sessions": 40,
+          "aov": 50,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-07-17",
+          "future": false,
+          "net_sales": 100,
+          "orders": 2,
+          "sessions": 40,
+          "aov": 50,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-07-18",
+          "future": false,
+          "net_sales": 100,
+          "orders": 2,
+          "sessions": 40,
+          "aov": 50,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-07-19",
+          "future": false,
+          "net_sales": 100,
+          "orders": 2,
+          "sessions": 40,
+          "aov": 50,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-07-20",
+          "future": false,
+          "net_sales": 100,
+          "orders": 2,
+          "sessions": 40,
+          "aov": 50,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-07-21",
+          "future": false,
+          "net_sales": 100,
+          "orders": 2,
+          "sessions": 40,
+          "aov": 50,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-07-22",
+          "future": false,
+          "net_sales": 100,
+          "orders": 2,
+          "sessions": 40,
+          "aov": 50,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-07-23",
+          "future": false,
+          "net_sales": 100,
+          "orders": 2,
+          "sessions": 40,
+          "aov": 50,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-07-24",
+          "future": false,
+          "net_sales": 100,
+          "orders": 2,
+          "sessions": 40,
+          "aov": 50,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-07-25",
+          "future": false,
+          "net_sales": 100,
+          "orders": 2,
+          "sessions": 40,
+          "aov": 50,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-07-26",
+          "future": false,
+          "net_sales": 100,
+          "orders": 2,
+          "sessions": 40,
+          "aov": 50,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-07-27",
+          "future": false,
+          "net_sales": 100,
+          "orders": 2,
+          "sessions": 40,
+          "aov": 50,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-07-28",
+          "future": false,
+          "net_sales": 100,
+          "orders": 2,
+          "sessions": 40,
+          "aov": 50,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-07-29",
+          "future": false,
+          "net_sales": 100,
+          "orders": 2,
+          "sessions": 40,
+          "aov": 50,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-07-30",
+          "future": false,
+          "net_sales": 100,
+          "orders": 2,
+          "sessions": 40,
+          "aov": 50,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-07-31",
+          "future": false,
+          "net_sales": 100,
+          "orders": 2,
+          "sessions": 40,
+          "aov": 50,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-08-01",
+          "future": false,
+          "net_sales": 100,
+          "orders": 2,
+          "sessions": 40,
+          "aov": 50,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-08-02",
+          "future": false,
+          "net_sales": 100,
+          "orders": 2,
+          "sessions": 40,
+          "aov": 50,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-08-03",
+          "future": false,
+          "net_sales": 100,
+          "orders": 2,
+          "sessions": 40,
+          "aov": 50,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-08-04",
+          "future": false,
+          "net_sales": 100,
+          "orders": 2,
+          "sessions": 40,
+          "aov": 50,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-08-05",
+          "future": false,
+          "net_sales": 100,
+          "orders": 2,
+          "sessions": 40,
+          "aov": 50,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-08-06",
+          "future": false,
+          "net_sales": 100,
+          "orders": 2,
+          "sessions": 40,
+          "aov": 50,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-08-07",
+          "future": false,
+          "net_sales": 100,
+          "orders": 2,
+          "sessions": 40,
+          "aov": 50,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-08-08",
+          "future": false,
+          "net_sales": 100,
+          "orders": 2,
+          "sessions": 40,
+          "aov": 50,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-08-09",
+          "future": false,
+          "net_sales": 145,
+          "orders": 3,
+          "sessions": 40,
+          "aov": 48.33,
+          "spend": null,
+          "net_profit": null
+        },
+        {
+          "key": "2026-08-10",
+          "future": false,
+          "net_sales": 218,
+          "orders": 4,
+          "sessions": 122,
+          "aov": 54.5,
+          "spend": null,
+          "net_profit": null
+        }
+      ],
+      "metrics": [
+        "net_sales",
+        "orders",
+        "sessions",
+        "aov",
+        "spend",
+        "net_profit"
+      ],
+      "window": {
+        "start": "2026-06-12",
+        "end": "2026-08-10",
+        "days": 60,
+        "timezone": "Europe/Madrid"
+      },
+      "sessions_unknown": false,
+      "currency": "USD",
+      "mixed_currency": false
+    },
+    "baseline_window": {
+      "start": "2026-07-13",
+      "end": "2026-08-09",
+      "days": 28,
+      "timezone": "Europe/Madrid"
+    },
+    "thresholds": {
+      "anomaly_sigma": {
+        "value": 2,
+        "source": "reference",
+        "note": "a day outside mean ± 2σ of the trailing 28-day baseline"
+      },
+      "anomaly_min_baseline": {
+        "value": 7,
+        "source": "reference",
+        "note": "MEASURED baseline days required before ±2σ means anything; a null day is not a day"
+      },
+      "aov_shift_min_pct": {
+        "value": 20,
+        "source": "reference",
+        "note": "|AOV delta| vs the baseline mean that counts as a shift"
+      },
+      "aov_min_baseline": {
+        "value": 5,
+        "source": "reference",
+        "note": "baseline days WITH orders and a measured AOV required for an AOV baseline"
+      },
+      "leak_min_day_hits": {
+        "value": 10,
+        "source": "reference",
+        "note": "visitors on the UPSTREAM step today before a step-to-step drop is callable"
+      },
+      "leak_min_base_hits": {
+        "value": 50,
+        "source": "reference",
+        "note": "visitors on the UPSTREAM step across the baseline before it is a baseline"
+      },
+      "leak_drop_ratio": {
+        "value": 0.5,
+        "source": "reference",
+        "note": "today's step-through must fall BELOW half the baseline's to be a leak"
+      },
+      "dead_rail_window_days": {
+        "value": 7,
+        "source": "reference",
+        "note": "the delivery window a rail is judged silent over"
+      },
+      "mover_min_abs_delta": {
+        "value": 0.01,
+        "source": "adapted",
+        "note": "a delta below one cent is rounding, not a move"
+      },
+      "funnel_scan_cap": {
+        "value": 200,
+        "source": "adapted",
+        "note": "breakdown rows read per detector pass (the engine's own MAX_BREAKDOWN_LIMIT)"
+      }
+    },
+    "window": {
+      "start": "2026-06-12",
+      "end": "2026-08-10",
+      "days": 60,
+      "timezone": "Europe/Madrid"
+    },
+    "meta": {
+      "computed_ms": 9,
+      "rows_scanned": 156,
+      "timezone": "Europe/Madrid",
+      "max_cards": 6,
+      "baseline_days": 28,
+      "window": {
+        "start": "2026-06-12",
+        "end": "2026-08-10",
+        "days": 60,
+        "timezone": "Europe/Madrid"
+      },
+      "degraded": [
+        {
+          "source": "steps",
+          "reason": "steps could not be read: relation \"funnel_pages\" does not exist"
+        }
+      ],
+      "warnings": [
+        {
+          "source": "steps",
+          "reason": "the page/touch ledger is not present on this database, so the funnel-leak detector did not run."
+        }
+      ]
+    }
+  },
+  "cohorts": {
+    "range": {
+      "start": "2026-05-02",
+      "end": "2026-08-10",
+      "days": 101,
+      "timezone": "Europe/Madrid",
+      "today": "2026-08-10"
+    },
+    "group_by": "day",
+    "horizons": [
+      0,
+      7,
+      30,
+      90
+    ],
+    "cohorts": [
+      {
+        "key": "2026-08-10",
+        "label": "2026-08-10",
+        "size": 4,
+        "ltv": [
+          54.5,
+          null,
+          null,
+          null
+        ],
+        "retention": [
+          100,
+          null,
+          null,
+          null
+        ],
+        "aged": [
+          4,
+          0,
+          0,
+          0
+        ],
+        "revenue_to_date": 218
+      },
+      {
+        "key": "2026-08-09",
+        "label": "2026-08-09",
+        "size": 3,
+        "ltv": [
+          48.33,
+          null,
+          null,
+          null
+        ],
+        "retention": [
+          100,
+          null,
+          null,
+          null
+        ],
+        "aged": [
+          3,
+          0,
+          0,
+          0
+        ],
+        "revenue_to_date": 145
+      },
+      {
+        "key": "2026-08-08",
+        "label": "2026-08-08",
+        "size": 2,
+        "ltv": [
+          50,
+          null,
+          null,
+          null
+        ],
+        "retention": [
+          100,
+          null,
+          null,
+          null
+        ],
+        "aged": [
+          2,
+          0,
+          0,
+          0
+        ],
+        "revenue_to_date": 100
+      },
+      {
+        "key": "2026-08-07",
+        "label": "2026-08-07",
+        "size": 2,
+        "ltv": [
+          50,
+          null,
+          null,
+          null
+        ],
+        "retention": [
+          100,
+          null,
+          null,
+          null
+        ],
+        "aged": [
+          2,
+          0,
+          0,
+          0
+        ],
+        "revenue_to_date": 100
+      },
+      {
+        "key": "2026-08-06",
+        "label": "2026-08-06",
+        "size": 2,
+        "ltv": [
+          50,
+          null,
+          null,
+          null
+        ],
+        "retention": [
+          100,
+          null,
+          null,
+          null
+        ],
+        "aged": [
+          2,
+          0,
+          0,
+          0
+        ],
+        "revenue_to_date": 100
+      },
+      {
+        "key": "2026-08-05",
+        "label": "2026-08-05",
+        "size": 2,
+        "ltv": [
+          50,
+          null,
+          null,
+          null
+        ],
+        "retention": [
+          100,
+          null,
+          null,
+          null
+        ],
+        "aged": [
+          2,
+          0,
+          0,
+          0
+        ],
+        "revenue_to_date": 100
+      },
+      {
+        "key": "2026-08-04",
+        "label": "2026-08-04",
+        "size": 2,
+        "ltv": [
+          50,
+          null,
+          null,
+          null
+        ],
+        "retention": [
+          100,
+          null,
+          null,
+          null
+        ],
+        "aged": [
+          2,
+          0,
+          0,
+          0
+        ],
+        "revenue_to_date": 100
+      },
+      {
+        "key": "2026-08-03",
+        "label": "2026-08-03",
+        "size": 2,
+        "ltv": [
+          50,
+          50,
+          null,
+          null
+        ],
+        "retention": [
+          100,
+          0,
+          null,
+          null
+        ],
+        "aged": [
+          2,
+          2,
+          0,
+          0
+        ],
+        "revenue_to_date": 100
+      },
+      {
+        "key": "2026-08-02",
+        "label": "2026-08-02",
+        "size": 2,
+        "ltv": [
+          50,
+          50,
+          null,
+          null
+        ],
+        "retention": [
+          100,
+          0,
+          null,
+          null
+        ],
+        "aged": [
+          2,
+          2,
+          0,
+          0
+        ],
+        "revenue_to_date": 100
+      },
+      {
+        "key": "2026-08-01",
+        "label": "2026-08-01",
+        "size": 2,
+        "ltv": [
+          50,
+          50,
+          null,
+          null
+        ],
+        "retention": [
+          100,
+          0,
+          null,
+          null
+        ],
+        "aged": [
+          2,
+          2,
+          0,
+          0
+        ],
+        "revenue_to_date": 100
+      },
+      {
+        "key": "2026-07-31",
+        "label": "2026-07-31",
+        "size": 2,
+        "ltv": [
+          50,
+          50,
+          null,
+          null
+        ],
+        "retention": [
+          100,
+          0,
+          null,
+          null
+        ],
+        "aged": [
+          2,
+          2,
+          0,
+          0
+        ],
+        "revenue_to_date": 100
+      },
+      {
+        "key": "2026-07-30",
+        "label": "2026-07-30",
+        "size": 2,
+        "ltv": [
+          50,
+          50,
+          null,
+          null
+        ],
+        "retention": [
+          100,
+          0,
+          null,
+          null
+        ],
+        "aged": [
+          2,
+          2,
+          0,
+          0
+        ],
+        "revenue_to_date": 100
+      },
+      {
+        "key": "2026-07-29",
+        "label": "2026-07-29",
+        "size": 2,
+        "ltv": [
+          50,
+          50,
+          null,
+          null
+        ],
+        "retention": [
+          100,
+          0,
+          null,
+          null
+        ],
+        "aged": [
+          2,
+          2,
+          0,
+          0
+        ],
+        "revenue_to_date": 100
+      },
+      {
+        "key": "2026-07-28",
+        "label": "2026-07-28",
+        "size": 2,
+        "ltv": [
+          50,
+          50,
+          null,
+          null
+        ],
+        "retention": [
+          100,
+          0,
+          null,
+          null
+        ],
+        "aged": [
+          2,
+          2,
+          0,
+          0
+        ],
+        "revenue_to_date": 100
+      },
+      {
+        "key": "2026-07-27",
+        "label": "2026-07-27",
+        "size": 2,
+        "ltv": [
+          50,
+          50,
+          null,
+          null
+        ],
+        "retention": [
+          100,
+          0,
+          null,
+          null
+        ],
+        "aged": [
+          2,
+          2,
+          0,
+          0
+        ],
+        "revenue_to_date": 100
+      },
+      {
+        "key": "2026-07-26",
+        "label": "2026-07-26",
+        "size": 2,
+        "ltv": [
+          50,
+          50,
+          null,
+          null
+        ],
+        "retention": [
+          100,
+          0,
+          null,
+          null
+        ],
+        "aged": [
+          2,
+          2,
+          0,
+          0
+        ],
+        "revenue_to_date": 100
+      },
+      {
+        "key": "2026-07-25",
+        "label": "2026-07-25",
+        "size": 2,
+        "ltv": [
+          50,
+          50,
+          null,
+          null
+        ],
+        "retention": [
+          100,
+          0,
+          null,
+          null
+        ],
+        "aged": [
+          2,
+          2,
+          0,
+          0
+        ],
+        "revenue_to_date": 100
+      },
+      {
+        "key": "2026-07-24",
+        "label": "2026-07-24",
+        "size": 2,
+        "ltv": [
+          50,
+          50,
+          null,
+          null
+        ],
+        "retention": [
+          100,
+          0,
+          null,
+          null
+        ],
+        "aged": [
+          2,
+          2,
+          0,
+          0
+        ],
+        "revenue_to_date": 100
+      },
+      {
+        "key": "2026-07-23",
+        "label": "2026-07-23",
+        "size": 2,
+        "ltv": [
+          50,
+          50,
+          null,
+          null
+        ],
+        "retention": [
+          100,
+          0,
+          null,
+          null
+        ],
+        "aged": [
+          2,
+          2,
+          0,
+          0
+        ],
+        "revenue_to_date": 100
+      },
+      {
+        "key": "2026-07-22",
+        "label": "2026-07-22",
+        "size": 2,
+        "ltv": [
+          50,
+          50,
+          null,
+          null
+        ],
+        "retention": [
+          100,
+          0,
+          null,
+          null
+        ],
+        "aged": [
+          2,
+          2,
+          0,
+          0
+        ],
+        "revenue_to_date": 100
+      },
+      {
+        "key": "2026-07-21",
+        "label": "2026-07-21",
+        "size": 2,
+        "ltv": [
+          50,
+          50,
+          null,
+          null
+        ],
+        "retention": [
+          100,
+          0,
+          null,
+          null
+        ],
+        "aged": [
+          2,
+          2,
+          0,
+          0
+        ],
+        "revenue_to_date": 100
+      },
+      {
+        "key": "2026-07-20",
+        "label": "2026-07-20",
+        "size": 2,
+        "ltv": [
+          50,
+          50,
+          null,
+          null
+        ],
+        "retention": [
+          100,
+          0,
+          null,
+          null
+        ],
+        "aged": [
+          2,
+          2,
+          0,
+          0
+        ],
+        "revenue_to_date": 100
+      },
+      {
+        "key": "2026-07-19",
+        "label": "2026-07-19",
+        "size": 2,
+        "ltv": [
+          50,
+          50,
+          null,
+          null
+        ],
+        "retention": [
+          100,
+          0,
+          null,
+          null
+        ],
+        "aged": [
+          2,
+          2,
+          0,
+          0
+        ],
+        "revenue_to_date": 100
+      },
+      {
+        "key": "2026-07-18",
+        "label": "2026-07-18",
+        "size": 2,
+        "ltv": [
+          50,
+          50,
+          null,
+          null
+        ],
+        "retention": [
+          100,
+          0,
+          null,
+          null
+        ],
+        "aged": [
+          2,
+          2,
+          0,
+          0
+        ],
+        "revenue_to_date": 100
+      },
+      {
+        "key": "2026-07-17",
+        "label": "2026-07-17",
+        "size": 2,
+        "ltv": [
+          50,
+          50,
+          null,
+          null
+        ],
+        "retention": [
+          100,
+          0,
+          null,
+          null
+        ],
+        "aged": [
+          2,
+          2,
+          0,
+          0
+        ],
+        "revenue_to_date": 100
+      },
+      {
+        "key": "2026-07-16",
+        "label": "2026-07-16",
+        "size": 2,
+        "ltv": [
+          50,
+          50,
+          null,
+          null
+        ],
+        "retention": [
+          100,
+          0,
+          null,
+          null
+        ],
+        "aged": [
+          2,
+          2,
+          0,
+          0
+        ],
+        "revenue_to_date": 100
+      },
+      {
+        "key": "2026-07-15",
+        "label": "2026-07-15",
+        "size": 2,
+        "ltv": [
+          50,
+          50,
+          null,
+          null
+        ],
+        "retention": [
+          100,
+          0,
+          null,
+          null
+        ],
+        "aged": [
+          2,
+          2,
+          0,
+          0
+        ],
+        "revenue_to_date": 100
+      },
+      {
+        "key": "2026-07-14",
+        "label": "2026-07-14",
+        "size": 2,
+        "ltv": [
+          50,
+          50,
+          null,
+          null
+        ],
+        "retention": [
+          100,
+          0,
+          null,
+          null
+        ],
+        "aged": [
+          2,
+          2,
+          0,
+          0
+        ],
+        "revenue_to_date": 100
+      },
+      {
+        "key": "2026-07-13",
+        "label": "2026-07-13",
+        "size": 2,
+        "ltv": [
+          50,
+          50,
+          null,
+          null
+        ],
+        "retention": [
+          100,
+          0,
+          null,
+          null
+        ],
+        "aged": [
+          2,
+          2,
+          0,
+          0
+        ],
+        "revenue_to_date": 100
+      },
+      {
+        "key": "2026-05-02",
+        "label": "2026-05-02",
+        "size": 3,
+        "ltv": [
+          136.67,
+          156.67,
+          168.33,
+          181.67
+        ],
+        "retention": [
+          100,
+          33.3,
+          66.7,
+          66.7
+        ],
+        "aged": [
+          3,
+          3,
+          3,
+          3
+        ],
+        "revenue_to_date": 545
+      }
+    ],
+    "average": {
+      "ltv": [
+        54.27,
+        56.81,
+        168.33,
+        181.67
+      ],
+      "retention": [
+        100,
+        2.1,
+        66.7,
+        66.7
+      ],
+      "aged": [
+        64,
+        47,
+        3,
+        3
+      ]
+    },
+    "totals": {
+      "buyers": 64,
+      "cohorts": 30,
+      "revenue_to_date": 3608,
+      "anonymous_paid_sessions": 1,
+      "truncated": false
+    },
+    "basis": "first-ever paid session inside the window; LTV revenue is customer-level across every funnel",
+    "identity": "LOWER(TRIM(customer->>'email')) — the same identity the new/returning KPI uses",
+    "meta": {
+      "computed_ms": 4,
+      "rows_scanned": 131,
+      "timezone": "Europe/Madrid",
+      "max_buyers": 20000,
+      "window": {
+        "start": "2026-05-02",
+        "end": "2026-08-10",
+        "days": 101,
+        "timezone": "Europe/Madrid"
+      },
+      "warnings": [
+        {
+          "source": "identity",
+          "reason": "1 paid session(s) in this window carry no email and cannot be tied to a person, so they are in NO cohort. Their money is missing from every figure on this card — it is not zero, it is unattributable."
+        },
+        {
+          "source": "aging",
+          "reason": "65 cell(s) are blank because their cohort has not lived long enough to reach that horizon yet. A horizon a cohort cannot have reached is withheld, never reported as $0.00."
+        }
+      ]
+    }
+  },
+  "cohorts_by_funnel": {
+    "range": {
+      "start": "2026-05-02",
+      "end": "2026-08-10",
+      "days": 101,
+      "timezone": "Europe/Madrid",
+      "today": "2026-08-10"
+    },
+    "group_by": "funnel",
+    "horizons": [
+      0,
+      7,
+      30,
+      90
+    ],
+    "cohorts": [
+      {
+        "key": "f-alpha",
+        "label": "Alpha Breast Lift",
+        "size": 61,
+        "ltv": [
+          52.07,
+          53.7,
+          135,
+          155
+        ],
+        "retention": [
+          100,
+          2.2,
+          50,
+          50
+        ],
+        "aged": [
+          61,
+          46,
+          2,
+          2
+        ],
+        "revenue_to_date": 3276
+      },
+      {
+        "key": "f-beta",
+        "label": "Beta Activator Oil",
+        "size": 3,
+        "ltv": [
+          99,
+          200,
+          235,
+          235
+        ],
+        "retention": [
+          100,
+          0,
+          100,
+          100
+        ],
+        "aged": [
+          3,
+          1,
+          1,
+          1
+        ],
+        "revenue_to_date": 332
+      }
+    ],
+    "average": {
+      "ltv": [
+        54.27,
+        56.81,
+        168.33,
+        181.67
+      ],
+      "retention": [
+        100,
+        2.2,
+        66.7,
+        66.7
+      ],
+      "aged": [
+        64,
+        47,
+        3,
+        3
+      ]
+    },
+    "totals": {
+      "buyers": 64,
+      "cohorts": 2,
+      "revenue_to_date": 3608,
+      "anonymous_paid_sessions": 1,
+      "truncated": false
+    },
+    "basis": "first-ever paid session inside the window; LTV revenue is customer-level across every funnel",
+    "identity": "LOWER(TRIM(customer->>'email')) — the same identity the new/returning KPI uses",
+    "meta": {
+      "computed_ms": 2,
+      "rows_scanned": 131,
+      "timezone": "Europe/Madrid",
+      "max_buyers": 20000,
+      "window": {
+        "start": "2026-05-02",
+        "end": "2026-08-10",
+        "days": 101,
+        "timezone": "Europe/Madrid"
+      },
+      "warnings": [
+        {
+          "source": "identity",
+          "reason": "1 paid session(s) in this window carry no email and cannot be tied to a person, so they are in NO cohort. Their money is missing from every figure on this card — it is not zero, it is unattributable."
+        }
+      ]
+    }
+  },
+  "cohorts_by_campaign": {
+    "range": {
+      "start": "2026-05-02",
+      "end": "2026-08-10",
+      "days": 101,
+      "timezone": "Europe/Madrid",
+      "today": "2026-08-10"
+    },
+    "group_by": "campaign",
+    "horizons": [
+      0,
+      7,
+      30,
+      90
+    ],
+    "cohorts": [
+      {
+        "key": "(no campaign)",
+        "label": "(no campaign)",
+        "size": 59,
+        "ltv": [
+          49.2,
+          50,
+          null,
+          null
+        ],
+        "retention": [
+          100,
+          0,
+          null,
+          null
+        ],
+        "aged": [
+          59,
+          44,
+          0,
+          0
+        ],
+        "revenue_to_date": 2903
+      },
+      {
+        "key": "spring-lift",
+        "label": "spring-lift",
+        "size": 3,
+        "ltv": [
+          95,
+          135,
+          135,
+          155
+        ],
+        "retention": [
+          100,
+          50,
+          50,
+          50
+        ],
+        "aged": [
+          3,
+          2,
+          2,
+          2
+        ],
+        "revenue_to_date": 385
+      },
+      {
+        "key": "oil-retarget",
+        "label": "oil-retarget",
+        "size": 2,
+        "ltv": [
+          142.5,
+          200,
+          235,
+          235
+        ],
+        "retention": [
+          100,
+          0,
+          100,
+          100
+        ],
+        "aged": [
+          2,
+          1,
+          1,
+          1
+        ],
+        "revenue_to_date": 320
+      }
+    ],
+    "average": {
+      "ltv": [
+        54.26,
+        56.81,
+        168.33,
+        181.67
+      ],
+      "retention": [
+        100,
+        2.1,
+        66.7,
+        66.7
+      ],
+      "aged": [
+        64,
+        47,
+        3,
+        3
+      ]
+    },
+    "totals": {
+      "buyers": 64,
+      "cohorts": 3,
+      "revenue_to_date": 3608,
+      "anonymous_paid_sessions": 1,
+      "truncated": false
+    },
+    "basis": "first-ever paid session inside the window; LTV revenue is customer-level across every funnel",
+    "identity": "LOWER(TRIM(customer->>'email')) — the same identity the new/returning KPI uses",
+    "meta": {
+      "computed_ms": 2,
+      "rows_scanned": 131,
+      "timezone": "Europe/Madrid",
+      "max_buyers": 20000,
+      "window": {
+        "start": "2026-05-02",
+        "end": "2026-08-10",
+        "days": 101,
+        "timezone": "Europe/Madrid"
+      },
+      "warnings": [
+        {
+          "source": "identity",
+          "reason": "1 paid session(s) in this window carry no email and cannot be tied to a person, so they are in NO cohort. Their money is missing from every figure on this card — it is not zero, it is unattributable."
+        },
+        {
+          "source": "aging",
+          "reason": "2 cell(s) are blank because their cohort has not lived long enough to reach that horizon yet. A horizon a cohort cannot have reached is withheld, never reported as $0.00."
+        }
+      ]
+    }
+  },
+  "cohorts_empty": {
+    "range": {
+      "start": "2026-06-11",
+      "end": "2026-06-21",
+      "days": 11,
+      "timezone": "Europe/Madrid",
+      "today": "2026-08-10"
+    },
+    "group_by": "day",
+    "horizons": [
+      0,
+      7,
+      30,
+      90
+    ],
+    "cohorts": [],
+    "average": {
+      "ltv": [
+        null,
+        null,
+        null,
+        null
+      ],
+      "retention": [
+        null,
+        null,
+        null,
+        null
+      ],
+      "aged": [
+        0,
+        0,
+        0,
+        0
+      ]
+    },
+    "totals": {
+      "buyers": 0,
+      "cohorts": 0,
+      "revenue_to_date": 0,
+      "anonymous_paid_sessions": 0,
+      "truncated": false
+    },
+    "basis": "first-ever paid session inside the window; LTV revenue is customer-level across every funnel",
+    "identity": "LOWER(TRIM(customer->>'email')) — the same identity the new/returning KPI uses",
+    "meta": {
+      "computed_ms": 1,
+      "rows_scanned": 0,
+      "timezone": "Europe/Madrid",
+      "max_buyers": 20000,
+      "window": {
+        "start": "2026-06-11",
+        "end": "2026-06-21",
+        "days": 11,
+        "timezone": "Europe/Madrid"
+      },
+      "warnings": []
+    }
+  }
+}
