@@ -79,7 +79,7 @@ const navGroups = [
     icon: Waypoints,
     items: [
       { to: '/app/crm/funnels', icon: Waypoints, label: 'Funnels', permission: 'funnels:access' },
-      { to: '/app/crm/builder', icon: LayoutTemplate, label: 'Funnel Builder', permission: 'funnels:access' },
+      { to: '/app/crm/builder', icon: LayoutDashboard, label: 'CRM Dashboard', permission: 'funnels:access' },
       { to: '/app/crm/templates', icon: Copy, label: 'Templates', permission: 'funnels:access' },
       { to: '/app/crm/live', icon: Radio, label: 'Live View', permission: 'funnels:access' },
       { to: '/app/crm/settings', icon: Plug, label: 'Settings', permission: 'funnels:access' },

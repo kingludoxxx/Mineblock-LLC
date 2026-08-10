@@ -142,7 +142,7 @@ export default function App() {
           <Route path="crm/failed-payments" element={<PageGate permission="orders:access"><CrmFrame path="/app/production/listicle-builder/orders/failed-payments" title="Failed payments" /></PageGate>} />
           <Route path="crm/subscriptions" element={<PageGate permission="orders:access"><CrmFrame path="/app/production/listicle-builder/orders/subscriptions" title="Subscriptions" /></PageGate>} />
           <Route path="crm/funnels" element={<PageGate permission="funnels:access"><CrmFrame path="/app/production/listicle-builder/websites" title="Funnels" /></PageGate>} />
-          <Route path="crm/builder" element={<PageGate permission="funnels:access"><CrmFrame path="/app/production/listicle-builder" title="Funnel Builder" /></PageGate>} />
+          <Route path="crm/builder" element={<PageGate permission="funnels:access"><CrmFrame path="/app/production/listicle-builder" title="CRM Dashboard" /></PageGate>} />
           <Route path="crm/analytics" element={<PageGate permission="funnels:access"><CrmFrame path="/app/production/listicle-builder/analytics" title="Analytics" /></PageGate>} />
           <Route path="crm/costs" element={<PageGate permission="funnels:access"><CrmFrame path="/app/production/listicle-builder/costs" title="Costs & P&L" /></PageGate>} />
           <Route path="crm/live" element={<PageGate permission="funnels:access"><CrmFrame path="/app/production/listicle-builder/live" title="Live View" /></PageGate>} />
