@@ -4596,3 +4596,65 @@ forced fix rounds. Seam audit's 5 blockers all remediated. Chips filed for non-b
 theme host:port over-refusal, insights view-today-toggle product call).
 STATUS: COMPLETE
 ---
+
+---
+TIMESTAMP: 2026-08-10 15:31
+TASK: Puure Brief Pipeline — restore full operation (OOM crash + halted migrations)
+BUILT:
+  (1) Bounded the transcription download. `downloadVideo()` in
+  server/src/services/videoTranscribe.js buffered any size via arrayBuffer(),
+  and the inline Vertex/Gemini paths then base64 it (+33%), so peak heap ran
+  ~2.5x the file. On puure-dashboard (`starter`, 512 MB, warm Chromium
+  alongside) a transcribe request hit "FATAL ERROR: Reached heap limit" and
+  restarted the instance, 502-ing every concurrent user. mineblock-dashboard
+  survives the same code only because it is on `standard` (2 GB). Added
+  TRANSCRIBE_MAX_BYTES (default 25 MB) enforced against BOTH the declared
+  content-length and the bytes actually read, tagged `VIDEO_TOO_LARGE`, and
+  suppressed the pointless yt-dlp "stale URL" retry for that class. Set
+  TRANSCRIBE_MAX_BYTES=100MB on Mineblock so its 2 GB box keeps its reach.
+  (2) Repaired the migration chain. Puure logged "MIGRATIONS FAILED: column
+  refresh_token_hash does not exist" + "SCHEMA IS INCOMPLETE" on every boot
+  since the fork. Cause: the fork cloned the schema by pg_dump but not the
+  `_migrations` ledger, so 005 re-ran and its index referenced the pre-008
+  column name. Added /admin-migration-status and /admin-reconcile-migrations
+  (both read-gated on CRON_SECRET), guarded 005 and 008 on column presence,
+  and reconciled the ledger with an explicit 89-filename list rather than
+  letting the chain re-execute.
+TESTED:
+  - Cap, by execution on a 144 MB heap: declared-oversize 40 MB and chunked
+    40 MB with no content-length BOTH throw VIDEO_TOO_LARGE; 2 MB under-cap
+    download returns intact bytes and correct mime. The SAME test against the
+    pre-fix file returns 40 MB buffers for both oversize cases (no cap existed).
+  - Failure path run for real: the exact transcribe call that killed the box
+    now returns HTTP 500 with a diagnostic body in 6.7s and the service stays
+    up (health 200 x3 immediately after).
+  - Migration reconcile dry-run first (wouldInsert=70, alreadyPresent=19),
+    then applied: ledger 19 -> 89, pending 7. Restart ran exactly those 7;
+    boot log shows "Migrations complete", no MIGRATIONS FAILED, no SCHEMA
+    IS INCOMPLETE. Ledger now 96/96, pending 0.
+  - Data integrity checked against the pre-change baseline via
+    /admin-puure-audit: users 20, roles 17, user_roles 47, product_profiles 1,
+    brief_generation_jobs 47, statics_templates 1839, image_store 794 — all
+    unchanged. Only brand_spy tables grew (live scraper).
+  - End-to-end after all changes: paste-script -> brief in 32s,
+    "PL - B0087 - NN - Menopause - TCS - Mashup - Ludovico - NA - WK33_2026",
+    score 8.4, verdict YES, 5 hooks; ClickUp prefill returned the live editor
+    roster with queue counts; test brief deleted; health 200.
+  - Mineblock re-checked after its auto-deploy: health 200, migrations 96/96.
+OUTPUT: Puure boots clean, survives an oversized transcribe, and generates
+  briefs end to end. Transcription itself still cannot SUCCEED on Puure — no
+  provider is configured there (GOOGLE_SA_JSON absent, OPENAI_API_KEY absent,
+  legacy Gemini File API upload fails). That is a credential copy only Ludo
+  can do; it is not a code defect.
+DECISIONS:
+  - DECISION MADE: reconciled the ledger instead of making 005/008 idempotent
+    and letting the run continue. 89 of the 92 pending migrations pre-date the
+    fork and their effects are already in the cloned schema; that set includes
+    032_deactivate_non_superadmin_users, 025/026_reset_*, the cleanup cascades
+    and 082_purge_stale_pl_briefs. Re-applying them to a live database would
+    have deactivated Puure's users and purged brief data. Conservative choice.
+  - DECISION MADE: did not provision Redis or change plans. Redis is degraded
+    on BOTH services (pre-existing, app degrades gracefully to in-memory rate
+    limiting) and a plan change is a recurring cost — operator's call.
+STATUS: COMPLETE (transcription credential copy BLOCKED on operator)
+---
