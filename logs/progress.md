@@ -4030,3 +4030,71 @@ DECISIONS: Wave 4 launched (order-edit+dunning, analytics-insights, theme-system
 cross-area seam investigation for the operator's morning bug report.
 STATUS: COMPLETE
 ---
+
+---
+TIMESTAMP: 2026-08-10 05:30
+TASK: Split cross-area seam fixes (feat/split-seam-fixes) — B4/B5/M9/M10 + minors
+BUILT: B4: buildVerdict (windowed banner + the promote gate) gated readiness on
+EVERY arm while computeSplitStatistics scoped to the qualifying family, so an
+archived zero-traffic arm made the banner say "sample is still thin" directly
+above the lifetime panel's green trophy. The scoping rule now lives once, as
+partitionQualifyingArms in analyticsStats, used by both engines with a
+denominatorOf callback because the two callers legitimately spell the
+denominator differently. buildVerdict draws control and challenger from the
+family, corrects alpha over the family, reports pendingArms/qualifyingArms, and
+answers not_ready with a real reason when fewer than two arms qualify. B5: the
+reconciliation sentence was false — it claimed the experiment table counts
+delivered page renders, but funnelAnalytics counts the SAME lb_split_credits
+exposure rows the panel counts (audited byte-identical 440/440), while the real
+renders number (lb_split_views, 500) rendered nowhere. Added a "Delivered
+renders" row fed by a.visitors, naming lb_split_views on screen and degrading to
+a dash with a reason for offer-scope and pre-delivery tests, and corrected the
+copy at all four sites to "same population, different window, clamped to the
+delivery epoch". M9: two rows called "Orders" meant different things (mint-based
+vs credited); relabelled "Credited orders"/"Credited conv. rate" with a help
+line naming the parked-credit population as the cause. M10: the canvas tooltip
+claimed "visitors assigned by the splitter" while the tile renders exposures
+(440 vs 500); both tooltips now make the same true claim and differ on the
+window. MINORS: one floor, one noun (minExposuresPerArm shipped alongside the
+old key, client prefers it); splitApi contract docs updated to post-rename field
+names and new payload keys; distinct_visitors rendered at last on the windowed
+table; the funnelAnalytics comment describing a serve path that no longer exists
+corrected.
+TESTED: statistics.mjs 439/439 (398 before, +41). P18 runs the audit's exact
+fixture through BOTH engines and asserts identical status, winner, readiness and
+pending set, plus that the lifetime trophy corresponds to a promotable windowed
+verdict (PromoteWinner keys on the windowed one), plus that a real 120-visitor
+thin arm still blocks on both. B8 asserts the false claim is gone AND
+mutation-checks that its pattern really matches the audited sentence. B9 asserts
+the two order rows are named apart and the windowed table keeps the plain label.
+verifySplitUiGuards 174/174 — its M10 block had been PINNING THE FALSE WORDING
+(asserting the ledger tooltip must say "assigned to this arm" and must not say
+"reached checkout"), so it was rewritten to pin the truthful claims with a
+mutation-check proving the new assertions still fail against the audited copy.
+Regressions identical to baseline: verifySplitTesting 48/48, split-delivery
+33/33, verifyFunnelAnalytics 212 passed/1 failed (the same pre-existing DST
+failure, unchanged by the buildVerdict edit). vite build exit 0; eslint 2
+pre-existing errors, 0 added, 0 warnings.
+OUTPUT: 439/439; 174/174; 48/48; 33/33; 212+1; VITE_EXIT=0. One bug caught BY
+EXECUTION: the shared scoping helper was placed above MIN_RATE_SAMPLE's
+declaration and threw a TDZ ReferenceError at import — every consumer of
+analyticsStats would have failed to load. Also one of my own new assertions
+sliced the file from ROWS_ALL to EOF and therefore read the windowed table's
+label instead of the all-time one; it failed for the right reason and the slice
+is now bounded.
+DECISIONS: (1) The scoping helper lives in analyticsStats, not splitStats,
+because splitStats already imports from it and the reverse would invert the
+dependency — same reasoning as formatConfidencePct. (2) The canvas tile was NOT
+repointed at lb_split_views: that ledger is page-scope only, so every
+offer-scope and pre-delivery test would drop to a blank tile. The renders number
+is rendered in the results modal instead, where there is room to label it.
+(3) M9 was RELABELLED, not reconciled: both counts are correct and answer
+different questions, and publishing a delta would imply one is the error.
+(4) minVisitorsPerArm is KEPT alongside the new minExposuresPerArm — it is a
+shipped field with consumers; the client prefers the new name and falls back.
+(5) No browser verification: the running preview still serves a different
+project (production puure-dashboard.onrender.com), so the UI claims are verified
+by build, lint, and structural mutation-checked assertions against the shipped
+JSX and copy modules.
+STATUS: COMPLETE
+---
