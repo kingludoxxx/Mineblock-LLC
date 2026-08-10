@@ -49,6 +49,8 @@ import funnelMetricsRoutes from './funnelMetrics.js';
 import funnelAttributionRoutes from './funnelAttribution.js';
 import funnelTrackingExtrasRoutes from './funnelTrackingExtras.js';
 import funnelCommerceRoutes from './funnelCommerce.js';
+import orderEditRoutes from './orderEdit.js';
+import dunningRoutes from './dunning.js';
 
 const mountRoutes = (app) => {
   app.use('/api/v1/users', userRoutes);
@@ -139,6 +141,18 @@ const mountRoutes = (app) => {
   // read-only Shopify shipping zones (authed, funnels permission; additive —
   // prices are DISPLAY data, the checkout re-prices server-side).
   app.use('/api/v1/funnel-commerce', funnelCommerceRoutes);
+  // POST-PURCHASE ORDER EDIT — line-item + address correction on a settled
+  // order (authed, orders permission). Append-only version ledger; re-prices
+  // added lines through checkoutPricing READ-ONLY; NEVER moves co_sessions
+  // .total and NEVER calls a gateway — the delta is parked as a
+  // needs-settlement row for the integrator (contract in the route header).
+  app.use('/api/v1/order-edit', orderEditRoutes);
+  // DUNNING — failed-payment queue projected READ-ONLY out of
+  // co_upsell_charges / co_sessions, with a fixed 1h/24h/72h retry ladder. A
+  // retry RECORDS INTENT ONLY; the re-charge is the same integrator money seam
+  // (contract in the route header). Sends one exactly-once Klaviyo
+  // 'Payment Failed' event per queued failure.
+  app.use('/api/v1/dunning', dunningRoutes);
   // MEDIA LIBRARY routes are mounted in app.js, AHEAD of the global body
   // parser, so the router's own 7mb cap is real (see app.js media mount).
 };

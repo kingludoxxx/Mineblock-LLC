@@ -4012,6 +4012,93 @@ STATUS: COMPLETE
 ---
 
 ---
+TIMESTAMP: 2026-08-10 03:55
+TASK: Audit gap #2 — post-purchase ORDER EDIT + DUNNING (branch feat/order-edit-dunning)
+BUILT: Two additive lanes, neither of which moves money.
+(A) ORDER EDIT. services/orderEditService.js owns three new tables:
+co_order_edits (APPEND-ONLY version ledger — one immutable row per edit carrying
+the delta AND both whole snapshots; UNIQUE(session_id,version) is the optimistic
+-concurrency arbiter, UNIQUE(session_id,edit_id) turns a client retry into a
+replay), co_order_edit_pushes (mutable Shopify mirror state, co_orders'
+skipped/claimed/pushed/needs_review vocabulary), co_order_edit_settlements (the
+MONEY SEAM: direction charge|refund, amount always a positive magnitude,
+status needs_settlement|settled|waived|failed). Added lines are re-priced
+server-side through checkoutPricing.js READ-ONLY, preserving its two distinct
+failure classes (503 pricing_unavailable vs 422 invalid_variant).
+co_sessions.total is NEVER written — it is the captured amount and the refund
+ceiling. services/shopifyOrderEdit.js mirrors the edit via the Admin API
+(address REST PUT first, then orderEditBegin/AddVariant/SetQuantity/Commit),
+OPT-IN behind SHOPIFY_ORDER_EDIT_ENABLED=1 because orderEditCommit is additive
+and non-idempotent; failure is non-fatal and never auto-retried. routes/
+orderEdit.js exposes GET /:sessionId, POST /:sessionId/preview, POST
+/:sessionId/commit, GET /by-order/:orderId, GET /settlements, POST
+/settlements/:editRowId/resolve. Client: OrderEditModal.jsx (with the delta
+summary the reference lacks entirely) + a post-purchase-edits panel and a live
+Edit button on OrderDetailPage.
+(B) DUNNING. services/dunningService.js owns co_dunning_queue (projected
+READ-ONLY out of co_upsell_charges + co_sessions.last_failed_payment_id; fixed
+1h/24h/72h ladder materialised into next_retry_at; explicit states scheduled/
+exhausted/not_retryable/stale/recovered/closed) and co_dunning_retry_requests
+(APPEND-ONLY intent, UNIQUE(queue_id,attempt_no)). One 22-marker hard-decline
+denylist and one 10-bucket reporting taxonomy. A retry RECORDS INTENT — no
+gateway call — via an atomic conditional UPDATE that mints the attempt number,
+enforces the cap and enforces a 60s spacing floor. One exactly-once Klaviyo
+'Payment Failed' event per queued failure (lb_integration_sends claim
+kdf_<queue_id>, claim-before-send, release-on-failure and release-on-throw).
+routes/dunning.js: GET /config, GET|POST /failed-payments, POST /scan, GET
+/failed-payments/:id, POST /failed-payments/:id/retry, POST
+/failed-payments/:id/close. Client: FailedPaymentsPage.jsx + sidebar/route line.
+TESTED: Three new in-process harnesses against embedded PG 5433 on their own
+databases (puure_orderedit, puure_dunning), driving the REAL routers through the
+real auth chain, with Shopify mocked at the fetch boundary and Klaviyo swapped
+at the service _deps seam.
+OUTPUT: order-edit.mjs 77/77 · dunning.mjs 74/74 · post-purchase-ui.mjs 27/27 ·
+regression orders-extras.mjs 150/150 · money-path set 322/325 (the 3 failures in
+upsell-page.mjs are PRE-EXISTING — reproduced identically on a stashed clean
+tree at 6eb46e0; they need live Shopify creds. review-regression.mjs needs a
+live server on :4003 — ECONNREFUSED, also environmental). vite build exit 0;
+eslint 0 on all five changed/new client files (Sidebar's unused-useAuth error is
+pre-existing on main); node --check OK on all six server files.
+Edge cases driven, not assumed: Shopify transport failure vs unknown variant vs
+DRAFT product; a NULL line price refused as unpriced_line rather than summed as
+0; a genuine 0 price accepted; stale base_version; replayed edit_id; refunded
+session; fulfilled order; blank address1; non-array/array-typed bodies; over-long
+ids; an out-of-range window clamped; a Shopify commit failure leaving the edit
+standing; an address failure aborting BEFORE the additive commit; a Klaviyo send
+that fails and one that throws, both releasing the claim; a double-clicked retry.
+DECISIONS:
+(1) TWO BUGS FOUND BY THE HARNESS AND FIXED, both real. First: the per-edit
+delta was originally measured against captured_total, so the SECOND edit and
+every one after it re-booked the first edit's still-open divergence a second
+time. It now measures owed_after − owed_before, which makes the open settlement
+rows SUM EXACTLY to owed_now − captured_total — an identity the harness asserts.
+Second: a double-clicked Retry burned two of three ladder rungs in under a
+second (each click is a genuinely separate request, so the atomic claim alone
+could not refuse it). Added RETRY_MIN_SPACING_SECONDS=60, published in /config.
+(2) co_sessions.total is never written by an edit (DECISION MADE). The
+reference lets `total` rise by what its gateway collected inline; we do not
+charge inline, so any movement would be a claim about money that never moved
+and would silently shift the refund ceiling.
+(3) Shopify write-back is BUILT but OFF by default (DECISION MADE). The Order
+Editing API is additive and non-idempotent with no idempotency key; the only
+protection is the caller never issuing a second push, which the immutable
+co_order_edits row provides. Opt-in per deployment, mirroring
+shopifyOrderCreateEnabled(), so a shared-codebase deploy cannot edit another
+store's orders.
+(4) Address fields use OUR stored shape (address1/address2/city/state/zip/
+country) rather than the reference's province_code/country_code, which nothing
+else in this codebase reads; reference-shaped keys are mapped on input.
+(5) Shipping/tax/discount are held CONSTANT across an edit (DECISION MADE) —
+re-quoting freight and re-running a discount belong to lanes that are read-only
+to this one.
+(6) checkoutSchema.js was NOT modified and co_upsell_charges was NOT altered
+(DECISION MADE) — the dunning queue owns its own tables and only READS the
+money ledger, so it can never become a second source of truth about money.
+(7) The retry-intent ledger is append-only and carries no status; mutable
+schedule state lives on the queue row, so the intent table stays trustworthy
+history.
+STATUS: COMPLETE — the two money-seam contracts are documented in the headers of
+routes/orderEdit.js and routes/dunning.js for the integrator.
 TIMESTAMP: 2026-08-10 03:25 (Europe/Madrid)
 TASK: Night release 2 — split test + tracking + COGS + wave-2 builder features
 BUILT: 10 review-cleared branches merged (split-statistics, split-ui-parity, s2s-networks,
@@ -4172,5 +4259,67 @@ OUTPUT: puure-dashboard.onrender.com live at 1dd2af2.
 DECISIONS: Chips filed for the audit's non-blocking items (fabricated Settings tabs, consent-cookie
 posture, raw reset-token logging, brand-variable renderer consumers). Theme (FIX-FIRST: SSRF
 bypass) + order-edit/dunning (review) + analytics-insights still in flight.
+STATUS: COMPLETE
+---
+
+---
+TIMESTAMP: 2026-08-10 05:10
+TASK: Order-edit + dunning — coordinator review remediation (FIX-FIRST, no blockers)
+BUILT: Rebased onto current main (6eb46e0→0f38f53 via git merge; only logs/progress.md
+conflicted, unioned append/append). Then, on the same branch:
+MAJOR — the no_saved_payment_method precondition, previously enforced NOWHERE on the write
+path (only in readQueueRow's display flag). (1) requestRetry's atomic claim WHERE now carries
+`AND EXISTS (SELECT 1 FROM co_sessions s WHERE s.id = q.session_id AND COALESCE(payment_method_id,'')<>'')`,
+so a scheduled row on a card-less session refuses (error no_saved_payment_method) WITHOUT
+advancing attempts or writing an intent row; the lost-claim re-read now joins co_sessions so
+the missing-card refusal is named precisely. (2) listQueue now selects has_saved_pm and
+retry_possible per row (LEFT JOIN co_sessions), and FailedPaymentsPage gates the Request-retry
+button on r.retry_possible (showing "no saved card" otherwise) instead of state==='scheduled'
+alone.
+MINOR-1 — shopifyOrderEdit.js address PUT sent the shipping address as BOTH shipping_address
+AND billing_address (a shipping correction silently overwrote real billing). Now pushes
+shipping_address only; billing is never touched.
+MINOR-2 — resolveSettlement now sets a `variance` boolean (new column + partial index) in the
+same atomic UPDATE when a `settled` outcome's settled_amount differs from the row's owed
+`amount` beyond a half-cent. The operator attestation still stands (not refused), but a $19
+refund marked settled at $1 is flagged and queryable; the flag rides listSettlements and the
+co_events audit row. waived/failed/no-amount carry no variance.
+MINOR-3 — one line added to BOTH money-seam contracts (route header + service header): the
+charger MUST re-verify the underlying charge is still declined at charge time (out-of-band
+recovery + up-to-72h scan lag).
+NIT-1 (done) — price-drift guard: commit accepts expected_total_delta (the number the operator
+saw); a commit whose freshly re-priced delta differs beyond epsilon is refused 409 price_changed
+with the new figures; the modal re-previews (refresh nonce) so the operator re-confirms the new
+amount. Omitting the field opts out.
+NIT-2 (done, as documentation) — the settlement-identity precondition (captured_total ==
+owed-at-purchase) is now stated in the read-surface comment; deliberately NOT published as a
+boolean, because post-edit session.subtotal cannot reconstruct the original owed amount to test
+it honestly (a guessed flag would be worse than the note).
+TESTED: Extended both harnesses. dunning.mjs +7 (D12b: list gating retry_possible/has_saved_pm
+false for a no-card session; the write-path claim refuses without incrementing attempts and
+writes no intent row; a card REMOVED after scheduling is caught by the claim WHERE, not a stale
+read; both refusals burn no rung). order-edit.mjs +11 (E9 variance: on-amount settle → false,
+$19-owed settled at $1 → true + persisted + evented; E13b: address PUT asserted to send
+shipping_address and NOT billing_address, waived → no variance; E17 price-drift: stale delta →
+409 price_changed with fresh figures + no version row, re-confirm at new delta commits,
+omitting the field opts out). post-purchase-ui.mjs +6 (U10 button gates on retry_possible and
+NOT on bare state; U11 price-drift confirm-again loop).
+OUTPUT: order-edit 88/88 · dunning 81/81 · post-purchase-ui 33/33 · regression orders-extras
+150/150 · money-path 322/325 (the same 3 upsell-page failures reproduce on a clean tree and
+need live Shopify creds; review-regression needs a live server on :4003 — both environmental,
+unchanged by this work). vite build exit 0; eslint 0 on all changed client files; node --check
+OK on all changed server files. The MAJOR was verified BY MUTATION: stripping the PM off a
+scheduled row's session and firing the retry returned 409 no_saved_payment_method with attempts
+still 0.
+DECISIONS: (1) The PM guard lives in the claim WHERE (not a read-then-write) so a card removed
+between the display flag and the click is still refused — the display flag is advisory, the
+claim is the authority (DECISION MADE). (2) The variance check is a FLAG, not a refusal — an
+operator may legitimately settle at a different number (partial, fee, goodwill), so the
+attestation stands and the discrepancy is made queryable rather than blocked (DECISION MADE).
+(3) The billing address is never written by an order edit at all — a shipping edit changes
+shipping; billing is a distinct field this lane has no mandate to touch (DECISION MADE).
+(4) list retry_possible deliberately excludes the 60s spacing floor — a row inside its cooldown
+is "retryable, just not this second", and the button answers "possible at all?", not "right
+now?" (DECISION MADE).
 STATUS: COMPLETE
 ---
