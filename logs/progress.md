@@ -4010,3 +4010,23 @@ POST_PURCHASE_TYPES is imported — to keep the change inside the route file the
 coordinator named (DECISION MADE).
 STATUS: COMPLETE
 ---
+
+---
+TIMESTAMP: 2026-08-10 03:25 (Europe/Madrid)
+TASK: Night release 2 — split test + tracking + COGS + wave-2 builder features
+BUILT: 10 review-cleared branches merged (split-statistics, split-ui-parity, s2s-networks,
+block-field-editors, ai-developer-extras, live-view-presentation, clone-from-shopify,
+cogs-assistant, cost-groups, + integrator wirings: /pb public mount, funnelCosts conflict
+union threading executor + membership ledger). Deployed dep-d9si5d67bikc739jieqg @ 6eb46e0.
+TESTED: Final sweep 6,743 assertions, 0 failures (after fixing a scripted-merge marker leak
+in routes/index.js caught by the sweep, and an assistant harness fixture the new item-existence
+guard correctly refused). Live pass: all new API surfaces answering honestly; /pb anti-probing
+byte-identical on distinct forged tokens. Browser drive vs operator screenshots: tracking
+directory (GTM card + 12 networks + Fire Purchase panel), Meta detail (ad tracking URL with
+campaign macros, click-id params, delivered-24h), funnel settings nav, Live View (tiles with
+honest currency caption, globe empty state, activity rail with real events) — all match.
+OUTPUT: puure-dashboard.onrender.com live at 6eb46e0.
+DECISIONS: Wave 4 launched (order-edit+dunning, analytics-insights, theme-system) + the
+cross-area seam investigation for the operator's morning bug report.
+STATUS: COMPLETE
+---
