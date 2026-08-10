@@ -56,6 +56,7 @@ const hit = async (tok) => {
   const r = await hit(tok);
   check(r.status === 302
     && r.loc.includes('/f/resume-probe')
+    && r.loc.includes('s=cos_open1')
     && r.loc.includes('resume=cos_open1')
     && r.loc.includes('co_session_id=cos_open1'), 'unpaid -> checkout page w/ params', r.loc);
   const ev = await pgQuery(`SELECT kind FROM co_events WHERE session_id = 'cos_open1' AND kind = 'resume'`);
