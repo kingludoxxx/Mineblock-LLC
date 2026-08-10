@@ -77,20 +77,34 @@ export function fmtCount(v) {
  * the tooltip must say which, so a per-arm figure is never explained with the
  * other source's definition.
  *
- *  'overlay' — funnelAnalytics' per-arm rows. Its `visitors` is a checkout-mint
- *              count (`submits: visitors`, "an exposure IS a checkout mint here"),
- *              i.e. visitors who REACHED CHECKOUT — the results modal's own
- *              wording for the same number.
- *  'ledger'  — lb_split_credits exposure rows: visitors ASSIGNED to the arm by
- *              the splitter, whether or not they went any further.
+ * BOTH SOURCES COUNT THE SAME EVENT. The earlier wording here said the ledger
+ * tile showed "visitors ASSIGNED to the arm by the splitter, whether or not they
+ * went any further" — and that is not what the tile renders. The canvas ledger
+ * fallback reads `exposures`, which is a count of lb_split_credits EXPOSURE rows,
+ * i.e. visitors who reached checkout; the number the old sentence described
+ * (everyone the splitter assigned) lives in lb_split_views and is a different,
+ * larger figure. Measured on the audit fixture: the tile showed 440 while the
+ * splitter had actually assigned 500.
+ *
+ * The tooltips now differ on the only axis they ACTUALLY differ on — the window:
+ *
+ *  'overlay' — funnelAnalytics' per-arm rows: the same exposure rows, counted
+ *              over the SELECTED WINDOW and clamped to the delivery epoch.
+ *  'ledger'  — lb_split_credits exposure rows, counted over the test's WHOLE
+ *              LIFETIME (the fallback when the analytics overlay is absent).
+ *
+ * The delivered-render count is deliberately NOT shown here: pointing the tile
+ * at it would blank the tile for every offer-scope and pre-delivery test, where
+ * lb_split_views is empty. It is rendered instead in the results modal's
+ * all-time table, which has room to label it.
  */
 export const TILE_SOURCES = ['overlay', 'ledger'];
 
 const VISITORS_TITLE = {
   overlay:
-    "Visitors who reached checkout on this arm, over the test's lifetime. Bot-inclusive. Blank means nothing was recorded, not zero.",
+    'Visitors who reached checkout on this arm, over the selected window (clamped to the delivery epoch). Bot-inclusive. Blank means nothing was recorded, not zero.',
   ledger:
-    "Visitors assigned to this arm by the splitter, over the test's lifetime. Bot-inclusive. Blank means nothing was recorded, not zero.",
+    "Visitors who reached checkout on this arm, over the test's whole lifetime. Bot-inclusive. Blank means nothing was recorded, not zero. Not the same as page renders — see the results modal for those.",
 };
 
 const CTR_TITLE =

@@ -148,16 +148,40 @@ ok(CANVAS_TILES.length === 3, 'CANVAS_TILES: exactly three tiles', String(CANVAS
   ok(CANVAS_TILES.every((t) => typeof t.title({}) === 'string' && t.title({}).length > 20),
     'CANVAS_TILES: every tile has a tooltip even for an empty arm');
 
-  // M3 — THE VISITORS TOOLTIP IS SOURCE-AWARE. The overlay's per-arm visitors
-  // is a checkout-mint count; the ledger's is everyone the splitter assigned.
-  // One sentence cannot be true of both.
+  // M3/M10 — THE VISITORS TOOLTIP IS SOURCE-AWARE, AND BOTH CLAIMS ARE TRUE.
+  //
+  // This block previously PINNED A FALSE SENTENCE: it asserted the ledger tile
+  // said "assigned to this arm by the splitter" and that it must NOT say
+  // "reached checkout". The tile renders `exposures` — lb_split_credits exposure
+  // rows — which IS the reached-checkout count, so the guard was holding the lie
+  // in place (measured: tile 440, splitter-assigned 500). Both tooltips now make
+  // the same, true claim about WHAT is counted and differ on the WINDOW, which
+  // is the only axis on which they actually differ.
   const overlayTitle = byKey.visitors.title({ source: 'overlay' });
   const ledgerTitle = byKey.visitors.title({ source: 'ledger' });
   ok(overlayTitle !== ledgerTitle, 'M3: the Visitors tooltip DIFFERS by source', `${overlayTitle} === ${ledgerTitle}`);
-  ok(overlayTitle.includes('reached checkout'), 'M3: overlay mode says "reached checkout" (the results modal wording)', overlayTitle);
-  ok(ledgerTitle.includes('assigned to this arm'), 'M3: ledger mode says "assigned to this arm"', ledgerTitle);
-  ok(!ledgerTitle.includes('reached checkout'), 'M3: ledger mode does NOT claim the checkout definition', ledgerTitle);
-  ok(byKey.visitors.title({}) === ledgerTitle, 'M3: an unknown source falls back to the narrower (ledger) claim');
+  ok(overlayTitle.includes('reached checkout'), 'M10: overlay mode says "reached checkout" (what the exposure row is)', overlayTitle);
+  ok(ledgerTitle.includes('reached checkout'), 'M10: ledger mode makes the SAME true claim — it counts the same event', ledgerTitle);
+  // The false wording must be gone from BOTH, in every casing.
+  for (const [name, title] of [['overlay', overlayTitle], ['ledger', ledgerTitle]]) {
+    ok(!/assigned to this arm by the splitter/i.test(title),
+      `M10: ${name} mode no longer claims "assigned to this arm by the splitter"`, title);
+  }
+  // They differ on the WINDOW, and each says which.
+  ok(/selected window/i.test(overlayTitle), 'M10: overlay names its window', overlayTitle);
+  ok(/lifetime/i.test(ledgerTitle), 'M10: ledger names its lifetime scope', ledgerTitle);
+  ok(/page renders/i.test(ledgerTitle),
+    'M10: ledger mode points at where the real render count lives', ledgerTitle);
+  ok(byKey.visitors.title({}) === ledgerTitle, 'M3: an unknown source falls back to the lifetime (ledger) claim');
+  // MUTATION CHECK — the assertions above must actually be able to fail. If the
+  // copy reverted to the audited wording, this block must catch it.
+  {
+    const reverted = "Visitors assigned to this arm by the splitter, over the test's lifetime.";
+    ok(/assigned to this arm by the splitter/i.test(reverted),
+      'M10 mutation-check: the guard detects the false wording if it returns');
+    ok(!/reached checkout/i.test(reverted),
+      'M10 mutation-check: the reverted wording fails the truthful-claim assertion');
+  }
   ok(byKey.ctr.title({}).includes('product call'), 'M3: the CTR tooltip names it a product call, not a measurement gap', byKey.ctr.title({}));
   ok(byKey.ctr.title({}).includes('per-PAGE ctr does exist'), 'm6: the CTR rationale concedes the per-page ctr exists');
 }

@@ -35,6 +35,7 @@ import {
 } from '../../src/services/splitStats.js';
 import {
   normalCdf, tTestTwoSidedP, varianceFromSums, formatConfidencePct, buildVerdict,
+  partitionQualifyingArms,
 } from '../../src/services/analyticsStats.js';
 import { ensureSplitTables } from '../../src/services/splitTestSchema.js';
 import { readResults, recordExposure, creditConversion, voidCredit } from '../../src/services/splitCredits.js';
@@ -745,6 +746,92 @@ function proseBuilders() {
     `positive control: splitStats prints a numeric confidence too (got: ${ordinarySplit.verdict.headline})`);
 }
 
+// ── P18 · THE WINDOWED VERDICT IS SCOPED THE SAME WAY AS THE LIFETIME ONE ──
+//
+// B4: buildVerdict drives the WINDOWED banner AND, through it, the promote
+// button, while computeSplitStatistics drives the lifetime panel 30px below.
+// buildVerdict gated on EVERY arm, so an archived zero-traffic arm — which the
+// ledger returns on essentially every concluded test — made it say "sample is
+// still thin" directly above a green trophy on the same screen.
+function windowedScoping() {
+  hr('P18 · buildVerdict scopes to the qualifying family, like splitStats');
+
+  const healthy = [
+    { arm_key: 'a', is_control: true, visitors: 4000, orders: 400, net_revenue: 20000, net_revenue_sum_squares: 200000 },
+    { arm_key: 'b', is_control: false, visitors: 4000, orders: 440, net_revenue: 21000, net_revenue_sum_squares: 220000 },
+  ];
+  // THE AUDIT'S EXACT FIXTURE: the same test plus an archived, zero-traffic arm.
+  const archived = { arm_key: 'c', is_control: false, visitors: 0, orders: 0, net_revenue: 0, net_revenue_sum_squares: 0 };
+
+  const clean = buildVerdict(healthy);
+  const withArchived = buildVerdict([...healthy, archived]);
+
+  assert(clean.status === 'winner', `the 2-arm test alone is a winner (${clean.status})`);
+  assert(withArchived.status === clean.status,
+    `adding a zero-traffic archived arm does NOT change the status (got ${withArchived.status})`);
+  assert(withArchived.leader === clean.leader, 'nor the leader');
+  assert(withArchived.sample.ready === true, 'readiness is TRUE despite the archived arm');
+  assert(withArchived.sample.thinArms.length === 0,
+    `the archived arm is NOT reported as thin (got ${JSON.stringify(withArchived.sample.thinArms)})`);
+  assert(withArchived.sample.pendingArms.join() === 'c',
+    `it is reported as PENDING instead (got ${JSON.stringify(withArchived.sample.pendingArms)})`);
+  assert(withArchived.sample.qualifyingArms.join() === 'a,b', 'the family is the two real arms');
+  assert(withArchived.sample.comparisons === clean.sample.comparisons,
+    'Bonferroni counts only the qualifying comparisons');
+  assert(withArchived.sample.alphaAdjusted === clean.sample.alphaAdjusted,
+    'so the corrected bar is unchanged');
+  assert(/still collecting/.test(withArchived.body || ''),
+    `the pending arm is explained in prose (got: ${withArchived.body})`);
+
+  // THE TWO PANELS MUST AGREE. Same fixture through both engines.
+  const lifetime = computeSplitStatistics([
+    arm('a', { control: true, exposures: 4000, conversions: 400, revenue: 20000, sumsq: 200000 }),
+    arm('b', { control: false, exposures: 4000, conversions: 440, revenue: 21000, sumsq: 220000 }),
+    arm('c', { control: false, exposures: 0, conversions: 0, revenue: 0, sumsq: 0 }),
+  ]);
+  assert(lifetime.verdict.status === withArchived.status,
+    `both engines report the SAME status on one fixture `
+    + `(lifetime ${lifetime.verdict.status} vs windowed ${withArchived.status})`);
+  assert(lifetime.verdict.winner === withArchived.leader,
+    `and the SAME winning arm (lifetime ${lifetime.verdict.winner} vs windowed ${withArchived.leader})`);
+  assert(lifetime.verdict.ready === withArchived.sample.ready, 'and the same readiness');
+  assert(lifetime.verdict.pending_arms.join() === withArchived.sample.pendingArms.join(),
+    'and the same pending set');
+
+  // TROPHY AND PROMOTE AGREE. PromoteWinner keys on the WINDOWED verdict, so a
+  // trophy the lifetime panel renders must correspond to a promotable windowed
+  // verdict — the contradiction the audit reproduced.
+  assert(lifetime.arms.b.is_winner === true, 'the lifetime panel marks b the winner');
+  assert(withArchived.status === 'winner' && withArchived.leader === 'b',
+    'and the windowed verdict — which gates the promote button — names the same arm');
+
+  // A REAL thin arm must still block, on BOTH engines.
+  const thinArm = { arm_key: 'c', is_control: false, visitors: 120, orders: 12, net_revenue: 600, net_revenue_sum_squares: 40000 };
+  const blocked = buildVerdict([...healthy, thinArm]);
+  assert(blocked.sample.pendingArms.length === 0, 'a 120-visitor arm is NOT pending');
+  assert(blocked.sample.thinArms.join() === 'c', 'it is THIN — inside the family');
+  assert(blocked.status === 'not_ready', `and it blocks the winner (${blocked.status})`);
+  assert(blocked.sample.comparisons === 2, 'and it DOES add a comparison');
+
+  // Fewer than two qualifying arms: reported as such, not as a thin-sample
+  // complaint about arms that are not in the test.
+  const onlyOne = buildVerdict([
+    { arm_key: 'a', is_control: true, visitors: 4000, orders: 400, net_revenue: 20000, net_revenue_sum_squares: 200000 },
+    { arm_key: 'b', is_control: false, visitors: 3, orders: 1, net_revenue: 50, net_revenue_sum_squares: 2500 },
+  ]);
+  assert(onlyOne.status === 'not_ready', 'one qualifying arm -> not_ready');
+  assert(/at least two arms/i.test(onlyOne.body || onlyOne.headline),
+    `and the prose names the real reason (got: ${onlyOne.headline} / ${onlyOne.body})`);
+  assert(!findNonFinite(withArchived), 'the scoped windowed verdict carries no NaN/Infinity');
+
+  // The shared helper itself.
+  const { qualifying, pending } = partitionQualifyingArms(
+    [{ n: 0 }, { n: 29 }, { n: 30 }, { n: 5000 }, { n: NaN }, {}], (r) => r.n
+  );
+  assert(qualifying.length === 2, `the floor is inclusive at 30 (qualifying ${qualifying.length})`);
+  assert(pending.length === 4, 'and everything below it — including NaN and missing — is pending');
+}
+
 // ── P17 · THE TWO NARRATION FIXES ──────────────────────────────────────────
 function narration() {
   hr('P17 · not-ready prose is PER ARM, and the corrected bar is explained');
@@ -1415,6 +1502,65 @@ async function clientBoundary() {
   assert(vsControl.length > 0 && vsControl.every((c) => !/cap:\s*true/.test(c)),
     `the vs-control cell is deliberately uncapped (${vsControl.join(' | ')})`);
 
+  // ── B8 · THE RECONCILIATION COPY IS TRUE, AND THE RENDERS ROW EXISTS ────
+  //
+  // B5: the panel claimed the experiment table counts "delivered page renders,
+  // a larger number and a different population". It does not — funnelAnalytics'
+  // readArmSessions is `COUNT(*) … WHERE kind = 'exposure'` over the SAME ledger
+  // this panel reads, measured byte-identical at 440/440 — while the real
+  // renders number (lb_split_views) rendered nowhere. Both halves are checked:
+  // the false sentence must be gone, AND the real number must have a row.
+  hr('B8 · the reconciliation copy is true and the renders row is rendered');
+  const modalSrcB8 = readFileSync(
+    new URL('../../../client/src/components/funnels/split/SplitResultsModal.jsx', import.meta.url),
+    'utf8'
+  );
+  // The audited false claim, in the shape it was written.
+  const FALSE_CLAIM = /table below counts delivered page renders/i;
+  assert(!FALSE_CLAIM.test(modalSrcB8),
+    'the false "table below counts delivered page renders" claim is gone');
+  // MUTATION CHECK — the pattern must actually match the audited sentence, or
+  // the assertion above is vacuous.
+  assert(FALSE_CLAIM.test('The experiment table below counts delivered page renders, which is larger.'),
+    'B8 mutation-check: the pattern DOES match the audited wording');
+  // The replacement must state the true relationship.
+  assert(/same population/i.test(modalSrcB8),
+    'the copy now says the two tables count the same population');
+  assert(/clamped to the delivery epoch/i.test(modalSrcB8),
+    'and names the window as the actual difference');
+  // The real renders number has its own labelled row, fed by `visitors`.
+  assert(/Delivered renders/.test(modalSrcB8), 'a "Delivered renders" row exists');
+  assert(/fmtInt\(a\.visitors\)/.test(modalSrcB8),
+    'and it is fed by a.visitors — the lb_split_views count, not exposures');
+  assert(/lb_split_views/.test(modalSrcB8), 'and names its source on screen');
+
+  // M9 — the two "Orders" rows are named apart.
+  hr('B9 · the ledger-side order rows are labelled by their numerator');
+  assert(/Credited orders/.test(modalSrcB8), 'the all-time row is "Credited orders"');
+  assert(/Credited conv\. rate/.test(modalSrcB8), 'and the rate is "Credited conv. rate"');
+  assert(/legs still waiting on their exposure row/i.test(modalSrcB8),
+    'and one help line names WHY the two differ (the parked-credit population)');
+  // The windowed table keeps the plain label — they must not both be "Orders".
+  // The slice is BOUNDED to the ROWS_ALL array: taking everything after its
+  // declaration swept in the windowed ROWS table further down the file, so the
+  // assertion was reading the wrong array (and failed for the right reason).
+  const allTimeStart = modalSrcB8.indexOf('const ROWS_ALL');
+  const allTimeBlock = modalSrcB8.slice(allTimeStart, modalSrcB8.indexOf('\n  ];', allTimeStart));
+  assert(allTimeStart > 0 && allTimeBlock.length > 200, 'the ROWS_ALL block was located');
+  assert(!/label: 'Orders'/.test(allTimeBlock),
+    'the all-time table no longer carries a bare "Orders" label');
+  assert(/label: 'Credited orders'/.test(allTimeBlock), 'it carries the disambiguated one');
+  // And the WINDOWED table still says plain "Orders" — the two are named apart,
+  // not renamed to match.
+  const windowedBlock = modalSrcB8.slice(modalSrcB8.indexOf('const ROWS = ['));
+  assert(/label: 'Orders'/.test(windowedBlock),
+    'the windowed table keeps the plain "Orders" label');
+
+  // The distinct-visitors row, previously computed and rendered nowhere.
+  assert(/label: 'Distinct visitors'/.test(modalSrcB8), 'a "Distinct visitors" row exists');
+  assert(/fmtInt\(m\.distinct_visitors\)/.test(modalSrcB8),
+    'fed by the field the service has always shipped');
+
   delete globalThis.__SPLIT_API_STUB__;
 }
 
@@ -1424,6 +1570,7 @@ async function main() {
   knownAnswers();
   properties();
   proseBuilders();
+  windowedScoping();
   narration();
   await clientBoundary();
 
