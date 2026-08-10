@@ -753,6 +753,10 @@ router.post('/ads/:id/transcribe', validateUuidParam('id'), async (req, res, nex
         try {
           transcription = await transcribeVideoUrl(ad.videoUrl);
         } catch (err) {
+          // A size refusal is about the asset, not the URL — re-fetching a
+          // fresh link yields the same oversized file, so fail fast instead of
+          // paying for a yt-dlp round trip that cannot succeed.
+          if (err.code === 'VIDEO_TOO_LARGE') throw err;
           // Stored fbcdn URL expired (403 etc.) — the ad may still be live
           // in the FB Ad Library. Pull a fresh URL via yt-dlp and retry once.
           const archiveId = ad.adArchiveId || ad.ad_archive_id;

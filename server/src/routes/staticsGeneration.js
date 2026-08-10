@@ -1167,6 +1167,51 @@ router.post('/admin-puure-audit', async (req, res) => {
   }
 });
 
+// ─── /admin-migration-status — what the migration ledger thinks ran ──────
+// Read-only. Exists because a forked instance clones its SCHEMA via pg_dump
+// but not the `_migrations` ledger, so the runner re-runs migrations whose
+// effects are already present — and one of those failing halts every later
+// migration ("SCHEMA IS INCOMPLETE"). This reports the gap so the ledger can
+// be reconciled deliberately instead of guessed at.
+router.post('/admin-migration-status', async (req, res) => {
+  const cronSecret = process.env.CRON_SECRET;
+  if (!cronSecret || req.headers['x-cron-secret'] !== cronSecret) {
+    return res.status(403).json({ success: false, error: { message: 'Forbidden' } });
+  }
+  try {
+    const { default: fs } = await import('node:fs');
+    const { default: path } = await import('node:path');
+    const { fileURLToPath } = await import('node:url');
+
+    const here = path.dirname(fileURLToPath(import.meta.url));
+    const migrationsDir = path.resolve(here, '../../migrations');
+    const onDisk = fs.readdirSync(migrationsDir).filter(f => f.endsWith('.sql')).sort();
+
+    const ledgerRows = await pgQuery('SELECT filename FROM _migrations ORDER BY filename');
+    const applied = new Set(ledgerRows.map(r => r.filename));
+    const pending = onDisk.filter(f => !applied.has(f));
+
+    const sessionCols = await pgQuery(
+      `SELECT column_name FROM information_schema.columns
+        WHERE table_schema = 'public' AND table_name = 'sessions'
+        ORDER BY column_name`
+    );
+
+    return res.json({
+      success: true,
+      onDisk: onDisk.length,
+      applied: applied.size,
+      pendingCount: pending.length,
+      firstPending: pending[0] ?? null,
+      pending,
+      sessionsColumns: sessionCols.map(r => r.column_name),
+    });
+  } catch (err) {
+    console.error('[admin-migration-status] error:', err);
+    return res.status(500).json({ success: false, error: { message: err.message } });
+  }
+});
+
 // ─── /admin-pgdump-data-copy — async pg_dump for wholesale tables ────────
 // Fires pg_dump/psql in background, returns job_id immediately (Cloudflare
 // caps sync requests at ~100s). Poll /admin-pgdump-data-status?job_id=X.
