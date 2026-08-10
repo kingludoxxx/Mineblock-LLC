@@ -115,10 +115,11 @@ export const TOKEN_SUPPORT = Object.freeze({
 // ── SEEDED PRESET LIBRARY — 7, ported verbatim ──────────────────────────────
 // listicle_themes_service.py:66-158. Values are copied LITERALLY, including
 // the reference's inconsistent hex casing and the deliberate house-style
-// quirk that cta_bg stays Slash green (#5FAE5F) in 4 of 7 presets even where
-// `primary` is something else entirely. That is not a bug to tidy — it is the
-// reference's brand decision, and normalizing it would silently redesign
-// three presets.
+// quirk: cta_bg is pinned to Slash green (#5FAE5F) on 5 of the 7 presets, and
+// on 4 of those it deliberately DISAGREES with `primary` (editorial, health,
+// editorial-dark, conversion-dr). That is not a bug to tidy — it is the
+// reference's brand decision, and normalizing cta_bg to primary would silently
+// redesign those four.
 //
 // Presets are CONSTANTS, never rows (see funnelThemesSchema.js). is_preset and
 // the read-only stamp are applied at read time by listPresets().
@@ -482,9 +483,24 @@ export function applyPlanToSettings(plan, settings) {
 //
 // What is NOT ported: the reference follows external stylesheets never, and
 // neither do we — extraction sees the initial HTML document only.
+//
+// AND WHAT IS DELIBERATELY *NOT* copied: the reference's
+// `font-family\s*:\s*([^;]+?);` regex. It has two defects this port fixes.
+//   M2 (perf) — `([^;]+?);` on a 2MB paste with no semicolon is catastrophic
+//     backtracking: it stalled the single-threaded process ~9s, and this
+//     process also serves live checkout. extractFonts below is a LINEAR scan
+//     with a per-declaration character cap, so a hostile body is O(n).
+//   M3 (correctness) — requiring a trailing `;` means the reference finds NO
+//     fonts in minified CSS (`h1{font-family:Inter}`) or inline style
+//     attributes (`style="font-family:Inter"`) — i.e. the headline import
+//     feature guts itself on real pages. The scan instead ends a declaration
+//     at `;`, the rule boundary `}`, a tag boundary `<`, or the cap.
 const HEX_RE = /#[0-9a-fA-F]{3,8}\b/g;
 const RGB_RE = /rgba?\(\s*(\d{1,3})\s*,\s*(\d{1,3})\s*,\s*(\d{1,3})/gi;
-const FONT_RE = /font-family\s*:\s*([^;]+?);/gi;
+const FONT_DECL_RE = /font-family\s*:/gi;
+// A real font stack is short; this bounds each declaration read so no single
+// match can walk the whole document.
+const FONT_DECL_MAX = 200;
 
 const clampByte = (n) => Math.max(0, Math.min(255, n));
 
@@ -527,12 +543,43 @@ export function extractPalette(html) {
     .map(([c, n]) => [expand3Hex(c), n]);
 }
 
+// Pull the first family name out of a raw declaration body. Handles a quoted
+// first family ('Inter', …) and an unquoted one, and never lets trailing junk
+// from a boundary-terminated read (Inter">text) contaminate the name.
+function firstFamily(decl) {
+  const first = String(decl).split(',')[0].trim();
+  if (!first) return '';
+  if (first[0] === "'" || first[0] === '"') {
+    const q = first[0];
+    const idx = first.indexOf(q, 1);
+    return (idx > 0 ? first.slice(1, idx) : first.slice(1)).trim();
+  }
+  // Unquoted: cut at the first char that cannot be part of a family token.
+  return first.replace(/["'>;}].*$/s, '').trim();
+}
+
+// LINEAR font extraction (see the FONT_DECL_RE note above). For each
+// `font-family:` occurrence, read forward to the first boundary (`;` `}` `<`)
+// or FONT_DECL_MAX chars — no backtracking, no trailing-`;` requirement.
 export function extractFonts(html) {
   const s = typeof html === 'string' ? html : '';
   const hits = {};
-  for (const m of s.matchAll(FONT_RE)) {
-    const ff = String(m[1]).split(',')[0].trim().replace(/^['"]/, '').replace(/['"]$/, '').trim();
+  FONT_DECL_RE.lastIndex = 0;
+  let m;
+  while ((m = FONT_DECL_RE.exec(s)) !== null) {
+    const start = m.index + m[0].length;
+    let end = start;
+    const limit = Math.min(s.length, start + FONT_DECL_MAX);
+    while (end < limit) {
+      const ch = s.charCodeAt(end);
+      // ; (59)  } (125)  < (60)
+      if (ch === 59 || ch === 125 || ch === 60) break;
+      end += 1;
+    }
+    const ff = firstFamily(s.slice(start, end));
     if (ff.length >= 2 && ff.length <= 50) hits[ff] = (hits[ff] || 0) + 1;
+    // Advance past what we consumed so an overlapping match can't re-scan it.
+    FONT_DECL_RE.lastIndex = end;
   }
   return Object.entries(hits).sort((a, b) => b[1] - a[1]);
 }

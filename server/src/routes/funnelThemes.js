@@ -12,14 +12,18 @@
 //     is a whole-object PATCH, so every writer must go through the client's one
 //     serialized read-merge-write queue (enqueueSettingsSave → saveFunnelPatch);
 //     a second server-side door would be a second read-modify-write racing the
-//     first, which is precisely the bug that queue was built to close.
+//     first, which is precisely the bug that queue was built to close. The
+//     client re-derives the destructive diff against the FRESH row at commit
+//     (M1 — see themePlan.js), so a plan left open in a modal can never commit
+//     a stale overwrite.
 //
-//  2. IMPORT-URL IS SSRF-GUARDED. The reference has no guard at all: it accepts
-//     http://, follows redirects, and returns the raw connection error, which
-//     together are a working blind-SSRF oracle against the metadata service.
-//     We reuse trackingDelivery.endpointAllowed — the same DNS-resolving,
-//     fail-closed guard the postback lane uses — plus redirect:'manual', a body
-//     cap, and a fixed error code.
+//  2. IMPORT-URL IS SSRF-GUARDED WITH A PINNED IP. The reference has no guard
+//     at all: it accepts http://, follows redirects, and returns the raw
+//     connection error, together a working blind-SSRF oracle. We resolve the
+//     host ONCE, validate every answer (incl. NAT64 / 6to4 tunnels), and
+//     connect to the PINNED address so fetch cannot re-resolve to a private IP
+//     (themeImportGuard.js). Redirects are refused, the body is capped, and the
+//     route is rate-limited — it is the only outbound-fetching door in the lane.
 //
 //  3. THEME A/B IS OUT OF SCOPE for this lane and is NOT stubbed. See the
 //     block above the router export.
@@ -31,9 +35,10 @@ import { Router } from 'express';
 import { randomUUID } from 'crypto';
 import { authenticate } from '../middleware/auth.js';
 import { requirePermission } from '../middleware/rbac.js';
+import { checkRateLimit } from '../middleware/rateLimiter.js';
 import { pgQuery } from '../db/pg.js';
 import { ensureFunnelThemesTables } from '../services/funnelThemesSchema.js';
-import { endpointAllowed } from '../services/trackingDelivery.js';
+import { safeFetchHtml, ImportGuardError } from '../services/themeImportGuard.js';
 import {
   DEFAULT_WORKSPACE, TOKEN_KEYS, TOKEN_DEFAULTS, TOKEN_SUPPORT, ThemeError,
   listPresets, getPreset, sanitizeTokens, sanitizeName, sanitizeUrl,
@@ -42,15 +47,6 @@ import {
 
 const router = Router();
 router.use(authenticate, requirePermission('funnels', 'access'));
-
-router.use(async (req, res, next) => {
-  try {
-    await ensureFunnelThemesTables();
-    next();
-  } catch (err) {
-    next(err);
-  }
-});
 
 const NOT_FOUND_CODES = new Set(['theme_not_found', 'funnel_not_found']);
 
@@ -70,29 +66,47 @@ const guard = (name, fn) => async (req, res) => {
 const userId = (req) => String((req.user && (req.user.email || req.user.id)) || '');
 const themeId = () => `thm_${randomUUID().replace(/-/g, '').slice(0, 10)}`;
 
-// postgres.js returns JSONB as a parsed object already; the COALESCE is for a
-// row written before the NOT NULL default (there are none, but a read that
-// assumes shape is how a null becomes a 500).
-const rowOut = (r) => ({
-  id: r.id,
-  name: r.name,
-  tokens: r.tokens && typeof r.tokens === 'object' ? r.tokens : {},
-  preview_url: r.preview_url || '',
-  imported_from: r.imported_from || '',
-  is_preset: false,
-  created_at: r.created_at,
-  updated_at: r.updated_at,
-});
+// The honest per-VALUE support summary for a token bag. Cards and grids read
+// THIS (via each theme's plan_preview), never the static per-KEY TOKEN_SUPPORT
+// map — because whether a token reaches the page is per-value: editorial's
+// font_body is 'partial' as a KEY but resolves to nothing for THAT stack, so it
+// must count as not-applied for editorial specifically (M4).
+const previewOf = (tokens) => buildApplyPlan(tokens && typeof tokens === 'object' ? tokens : {}, {});
+
+// A name may be omitted (partial PATCH) but if present it must be a string — a
+// non-string used to be silently coerced to 'Untitled theme' and 200'd (m3).
+function requireStringNameIfPresent(body) {
+  if (body.name !== undefined && typeof body.name !== 'string') throw new ThemeError('name_must_be_string');
+}
+
+// postgres.js returns JSONB as a parsed object already; the guard on `tokens`
+// is for a row written before the NOT NULL default (there are none, but a read
+// that assumes shape is how a null becomes a 500).
+const rowOut = (r) => {
+  const tokens = r.tokens && typeof r.tokens === 'object' ? r.tokens : {};
+  return {
+    id: r.id,
+    name: r.name,
+    tokens,
+    preview_url: r.preview_url || '',
+    imported_from: r.imported_from || '',
+    is_preset: false,
+    plan_preview: previewOf(tokens),
+    created_at: r.created_at,
+    updated_at: r.updated_at,
+  };
+};
 
 // ── GET /presets — the seeded library + the honest token map ────────────────
-// TOKEN_SUPPORT rides along on purpose: the Themes section renders "what this
-// actually changes" straight from the server's own map rather than keeping a
-// second copy that can drift out of agreement with the renderer.
+// Registered BEFORE the ensure-tables middleware: presets are in-memory
+// constants, so listing them must never depend on the database (NIT). Each
+// preset carries its own plan_preview so a gallery card can show the true
+// "N of 11 reach the page" without a second round-trip.
 router.get('/presets', guard('presets', async (req, res) => {
   res.json({
     success: true,
     data: {
-      presets: listPresets(),
+      presets: listPresets().map((p) => ({ ...p, plan_preview: previewOf(p.tokens) })),
       token_keys: TOKEN_KEYS,
       token_defaults: TOKEN_DEFAULTS,
       token_support: TOKEN_SUPPORT,
@@ -100,16 +114,30 @@ router.get('/presets', guard('presets', async (req, res) => {
   });
 }));
 
+// Everything past here touches lb_funnel_themes, so ensure the table first.
+router.use(async (req, res, next) => {
+  try {
+    await ensureFunnelThemesTables();
+    next();
+  } catch (err) {
+    next(err);
+  }
+});
+
 // ── GET / — saved themes, newest first ─────────────────────────────────────
+// LIMIT 201 so a workspace that has grown past the display cap is SIGNALLED
+// (truncated:true) rather than silently dropping the overflow (m2).
+const LIST_CAP = 200;
 router.get('/', guard('list', async (req, res) => {
   const rows = await pgQuery(
     `SELECT * FROM lb_funnel_themes
       WHERE workspace_id = $1 AND archived = FALSE
       ORDER BY updated_at DESC
-      LIMIT 200`,
+      LIMIT ${LIST_CAP + 1}`,
     [DEFAULT_WORKSPACE],
   );
-  res.json({ success: true, data: { themes: rows.map(rowOut) } });
+  const truncated = rows.length > LIST_CAP;
+  res.json({ success: true, data: { themes: rows.slice(0, LIST_CAP).map(rowOut), truncated } });
 }));
 
 // ── POST / — create ────────────────────────────────────────────────────────
@@ -117,6 +145,7 @@ router.get('/', guard('list', async (req, res) => {
 // an operator-chosen name, exactly as the reference intends.
 router.post('/', guard('create', async (req, res) => {
   const body = req.body || {};
+  requireStringNameIfPresent(body);
   const tokens = sanitizeTokens(body.tokens);
   const rows = await pgQuery(
     `INSERT INTO lb_funnel_themes
@@ -140,6 +169,7 @@ router.post('/', guard('create', async (req, res) => {
 // name+tokens wholesale, which turns a rename into a token wipe.
 router.patch('/:id', guard('update', async (req, res) => {
   const body = req.body || {};
+  requireStringNameIfPresent(body);
   const sets = ['updated_at = NOW()'];
   const params = [];
   let i = 1;
@@ -173,8 +203,9 @@ router.delete('/:id', guard('remove', async (req, res) => {
 
 // ── POST /apply-plan — what applying this theme would change ───────────────
 // { funnel_id, theme_id? | preset_slug? | tokens? } → the plan. WRITES NOTHING.
-// The client renders the plan as the confirm dialog and then applies
-// plan.writes inside saveFunnelPatch.
+// The client renders the plan as the confirm dialog, and at COMMIT re-derives
+// the destructive diff against the fresh funnel row (M1) so a stale plan can
+// never overwrite a value the dialog didn't show.
 router.post('/apply-plan', guard('apply-plan', async (req, res) => {
   const body = req.body || {};
   const funnelId = String(body.funnel_id || '');
@@ -202,6 +233,7 @@ router.post('/apply-plan', guard('apply-plan', async (req, res) => {
     source = { kind: 'theme', id: rows[0].id, name: rows[0].name };
     tokens = rows[0].tokens || {};
   } else if (body.tokens !== undefined) {
+    requireStringNameIfPresent(body);
     source = { kind: 'draft', id: null, name: sanitizeName(body.name) };
     tokens = sanitizeTokens(body.tokens);
   } else {
@@ -217,119 +249,79 @@ router.post('/apply-plan', guard('apply-plan', async (req, res) => {
 // Persists NOTHING. The operator names the draft and POSTs it to `/`.
 const IMPORT_TIMEOUT_MS = 15_000;
 const IMPORT_BYTES_MAX = 2 * 1024 * 1024; // 2MB of HTML is far past any real <head>
+const IMPORT_RATE_MAX = 20;               // fetches per window, per operator
+const IMPORT_RATE_WINDOW_SEC = 60;
+
+// Injectable for the harness (assert the rate-limit refusal without hammering
+// a shared limiter). Mirrors the aiMedia _hooks pattern.
+export const _hooks = { checkRateLimit, safeFetchHtml };
+
+const importRefusal = (res, code, message) =>
+  res.status(422).json({ success: false, error: { code, message } });
 
 router.post('/import-url', guard('import-url', async (req, res) => {
   const raw = String((req.body || {}).url || '').trim();
   if (!raw) throw new ThemeError('url_required');
-  // Bare-host convenience, same as the reference — but https, never http.
-  const url = /^https?:\/\//i.test(raw) ? raw : `https://${raw}`;
 
-  // THE GUARD, IN TWO PARTS.
-  //
-  // PART 1 — https-only, checked HERE and not delegated. endpointAllowed has a
-  // deliberate escape hatch for its own caller: when NODE_ENV !== 'production'
-  // it ALLOWS http://localhost, http://127.0.0.1 and http://[::1] so a
-  // developer can point a postback at a loopback relay. That is right for the
-  // tracking lane and wrong for this one — import-url takes an OPERATOR-SUPPLIED
-  // url, so inheriting that hatch makes `http://127.0.0.1:5433/` a working
-  // request against the local Postgres in every dev and staging environment.
-  // Caught by execution: the SSRF block below failed on exactly that target
-  // until this pre-check existed. A shared guard's exceptions belong to the
-  // caller that asked for them.
-  //
-  // PART 2 — endpointAllowed: literal-IP check, DNS resolution, and every
-  // resolved answer required to be public unicast, failing CLOSED on a
-  // resolution error. Reached only once the scheme is already https.
-  let scheme = '';
-  try { scheme = new URL(url).protocol; } catch { scheme = ''; }
-  const verdict = scheme === 'https:' ? await endpointAllowed(url) : 'scheme';
-  if (verdict !== true) {
-    // One fixed code for every refusal reason. The reference returns the raw
-    // exception text, which turns the endpoint into a blind-SSRF oracle:
-    // ECONNREFUSED vs EHOSTUNREACH vs a timeout maps out an internal network.
-    // The operator gets the actionable half; the class stays in the log.
-    console.warn(`[funnelThemes] import-url refused (${verdict})`);
-    return res.status(422).json({
+  // SCHEME (m1). If the operator typed an explicit scheme that is not http(s),
+  // REFUSE it — do not rewrite `file:///etc/passwd` into a bogus
+  // `https://file:///etc/passwd`. A bare host (no scheme) is upgraded to https.
+  const hasScheme = /^[a-z][a-z0-9+.-]*:/i.test(raw);
+  if (hasScheme && !/^https?:\/\//i.test(raw)) {
+    return importRefusal(res, 'url_not_allowed', 'That URL could not be fetched. Public https pages only.');
+  }
+  const url = hasScheme ? raw : `https://${raw}`;
+
+  // RATE LIMIT (M2). This is the lane's only route that makes an outbound
+  // request; without a cap it is a fetch amplifier. checkRateLimit increments
+  // per call (aiMedia pattern).
+  const who = userId(req) || 'anon';
+  const rl = await _hooks.checkRateLimit(`theme-import:${who}`, IMPORT_RATE_MAX, IMPORT_RATE_WINDOW_SEC);
+  if (!rl.allowed) {
+    res.set('Retry-After', String(rl.retryAfter || IMPORT_RATE_WINDOW_SEC));
+    return res.status(429).json({
       success: false,
-      error: {
-        code: 'url_not_allowed',
-        message: 'That URL could not be fetched. Public https pages only.',
-      },
+      error: { code: 'rate_limited', message: 'Too many imports — try again shortly.' },
     });
   }
 
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), IMPORT_TIMEOUT_MS);
-  if (timer.unref) timer.unref();
-  let html = '';
+  // THE FETCH. safeFetchHtml resolves the host ONCE, validates every answer
+  // (private / loopback / link-local / CGNAT / NAT64 / 6to4 all refused), pins
+  // the address, and connects to the pin so there is no re-resolution window
+  // (B1 / M5). https only; redirects refused; body capped.
+  let result;
   try {
-    const resp = await fetch(url, {
-      // redirect:'manual' — a 302 from a validated host to an unvalidated one
-      // walks straight past the guard. The reference follows redirects, which
-      // is the hole that makes its guardlessness exploitable from a public URL.
-      redirect: 'manual',
-      signal: controller.signal,
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
-        Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-      },
-    });
-    if (resp.status >= 300 && resp.status < 400) {
-      return res.status(422).json({
-        success: false,
-        error: { code: 'url_redirected', message: 'That URL redirects. Enter the final page URL directly.' },
-      });
-    }
-    if (!resp.ok) {
-      return res.status(422).json({
-        success: false,
-        error: { code: 'fetch_failed', message: `The page answered ${resp.status}.` },
-      });
-    }
-    const ctype = String(resp.headers.get('content-type') || '');
-    if (ctype && !/text\/html|application\/xhtml|text\/plain/i.test(ctype)) {
-      return res.status(422).json({
-        success: false,
-        error: { code: 'not_html', message: 'That URL is not an HTML page.' },
-      });
-    }
-    // Bounded read. `resp.text()` on an endless body is an OOM, and neither a
-    // Content-Length header nor a content-type is trustworthy enough to skip
-    // counting the bytes that actually arrive.
-    html = await readCapped(resp, IMPORT_BYTES_MAX);
+    result = await _hooks.safeFetchHtml(url, { maxBytes: IMPORT_BYTES_MAX, timeoutMs: IMPORT_TIMEOUT_MS });
   } catch (err) {
-    console.warn('[funnelThemes] import-url fetch failed:', err && err.name === 'AbortError' ? 'timeout' : (err && err.message));
-    return res.status(422).json({
-      success: false,
-      error: { code: 'fetch_failed', message: 'That page could not be fetched.' },
-    });
-  } finally {
-    clearTimeout(timer);
+    // One coarse class per failure reason. The reference returns str(exc),
+    // which turns the endpoint into a blind-SSRF oracle (ECONNREFUSED vs
+    // EHOSTUNREACH vs timeout maps the internal network). The operator gets the
+    // actionable half; the detail stays in the log.
+    if (err instanceof ImportGuardError) {
+      const code = err.code === 'redirect' ? 'url_redirected'
+        : err.code === 'not_html' ? 'not_html'
+          : (err.code === 'scheme' || err.code === 'blocked') ? 'url_not_allowed'
+            : 'fetch_failed';
+      const message = code === 'url_not_allowed' ? 'That URL could not be fetched. Public https pages only.'
+        : code === 'url_redirected' ? 'That URL redirects. Enter the final page URL directly.'
+          : code === 'not_html' ? 'That URL is not an HTML page.'
+            : 'That page could not be fetched.';
+      console.warn(`[funnelThemes] import-url refused (${err.code})`);
+      return importRefusal(res, code, message);
+    }
+    console.warn('[funnelThemes] import-url fetch failed:', err && err.message);
+    return importRefusal(res, 'fetch_failed', 'That page could not be fetched.');
   }
 
-  const draft = buildDraftFromHtml(html, url);
-  // The draft is shown next to what applying it would actually do, so the
-  // operator never saves a theme believing it carries more than it does.
-  res.json({ success: true, data: { draft, plan_preview: buildApplyPlan(draft.tokens, {}) } });
+  const draft = buildDraftFromHtml(result.body, url);
+  // The draft rides next to what applying it would actually do (plan_preview),
+  // so the operator never saves a theme believing it carries more than it does.
+  // `truncated` tells the UI the page was longer than the read cap.
+  res.json({
+    success: true,
+    data: { draft, plan_preview: buildApplyPlan(draft.tokens, {}), truncated: result.truncated === true },
+  });
 }));
-
-async function readCapped(resp, maxBytes) {
-  if (!resp.body || typeof resp.body.getReader !== 'function') {
-    const text = await resp.text();
-    return text.slice(0, maxBytes);
-  }
-  const reader = resp.body.getReader();
-  const chunks = [];
-  let total = 0;
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    total += value.length;
-    if (total > maxBytes) { chunks.push(value); try { await reader.cancel(); } catch { /* already closed */ } break; }
-    chunks.push(value);
-  }
-  return Buffer.concat(chunks.map((c) => Buffer.from(c))).subarray(0, maxBytes).toString('utf8');
-}
 
 // ── THEME A/B — DELIBERATELY NOT BUILT ─────────────────────────────────────
 // The reference ships POST /websites/{wid}/theme-ab: a sticky per-site cookie

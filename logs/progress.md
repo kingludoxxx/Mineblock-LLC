@@ -4218,3 +4218,68 @@ by build, lint, and structural mutation-checked assertions against the shipped
 JSX and copy modules.
 STATUS: COMPLETE
 ---
+
+---
+TIMESTAMP: 2026-08-10 04:30
+TASK: Theme system (audit #7) — FIX-FIRST review round 1 (B1/M1/M2/M4 + ride-alongs)
+BUILT: Addressed the coordinator's 4 blockers and 6 ride-alongs on feat/theme-system,
+after merging current main (1dd2af2; progress.md union-resolved).
+ B1+M5 (SSRF TOCTOU/rebinding + IPv6 tunnels): NEW self-contained guard
+   server/src/services/themeImportGuard.js — resolves the host ONCE, validates every
+   answer, and connects to the PINNED literal via https.request's `lookup` hook so fetch
+   cannot re-resolve to a private IP. classifyAddress decodes IPv4-mapped, NAT64
+   (64:ff9b::/96) and 6to4 (2002::/16) and gates the embedded v4, plus full IPv4/IPv6
+   reserved ranges. import-url now calls safeFetchHtml (https-only, redirects refused,
+   body capped) instead of the tracking lane's endpointAllowed — the shared guard was
+   left untouched so the tracking/money lane is unperturbed.
+ M1 (stale apply plan): NEW client/src/components/funnels/settings/themePlan.js
+   (framework-free: recomputeDiff/overwriteSignature/applyWrites). ThemesSection.doApply
+   re-derives the destructive diff against the FRESH row INSIDE saveFunnelPatch, before
+   the PATCH; a changed overwrite set aborts the commit and re-renders the confirm with
+   the true diff (stale banner) for a second confirm. Atomic — the fresh row checked is
+   the row being written.
+ M2 (quadratic FONT_RE DoS): replaced the backtracking regex with a linear scanner
+   (per-declaration 200-char cap) + added checkRateLimit to import-url (20/60s/operator,
+   the lane's only outbound-fetch route).
+ M4 (token over-claim): server now returns per-theme plan_preview on GET /presets and
+   GET / (and import-url); cards/counts/badges render from that honest per-VALUE answer.
+   SUPPORT_BADGE no longer maps 'variable' to green "Applied" — colors show "CSS var"
+   (amber, page CSS must read it); only a resolved font shows "Applied".
+ Ride-alongs: M3 font extraction no longer needs a trailing ; (minified + inline CSS
+   now yield fonts; stops at } / < / cap — m5 rule boundary); m1 non-http schemes refused
+   by scheme, not rewritten to bogus https; m2 GET / returns truncated flag; m3
+   non-string PATCH/POST name -> 422; m4 delete now behind a confirm modal; NIT /presets
+   registered ahead of the DB-ensure middleware (DB-free); NIT preset prose fixed to
+   "5 of 7 pinned, 4 of 7 differ from primary".
+TESTED: themes.mjs extended to 162 assertions (was 118): SSRF corpus grown to 20 hostile
+targets incl. NAT64/6to4/CGNAT/ULA, plus a dedicated guard section run under
+NODE_ENV=production (classify all reserved ranges both families; rebinding probe proves
+one resolution + pin; mixed public/private set refused whole; safeFetchHtml refuses
+scheme + pinned-loopback with no socket); rate-limit 429 via injected hook; 2MB
+semicolon-free font input completes in <1ms (budget 200ms) + parse of a ~2MB body <500ms;
+M3 minified/inline extraction; M4 editorial resolves 2 not 3; m3 422s; m2 truncation
+flag; M1 stale-plan recompute reproduces the reviewer's #00FF00 and #123456->#654321
+cases and confirms idempotent re-apply is not flagged. Full result 162/162.
+Regressions all green and unchanged: render-settings 30/30, patch-settings 22/22,
+tracking-tab 19/19, commerce 312/312, domains-tab 58/58, money-path/ssrf-guard 15/15
+(tracking lane unperturbed). vite build clean (685ms). eslint 159 problems (143 errors)
+WITH and WITHOUT the lane — 0 added; new client files lint clean. Live mount reconfirmed
+through routes/index.js (GET /presets unauthed -> 401, DB-free).
+OUTPUT: themes 162/162; regressions 456/456 across six suites.
+DECISIONS: (1) SSRF guard kept LANE-LOCAL rather than editing the shared endpointAllowed
+in trackingDelivery.js — the fix requires resolve-once-and-pin (endpointAllowed cannot
+pin, and its fetch re-resolves), and touching the money/tracking guard would put that
+lane's 15-test SSRF regression and live postbacks at risk for no benefit (DECISION MADE).
+(2) The pin uses https.request's built-in `lookup` option (one resolution, used for the
+socket) rather than an undici custom dispatcher — undici is not a direct dep here and the
+lookup hook is dependency-free and gives correct TLS SNI/cert validation against the
+original hostname (DECISION MADE). (3) STRICT resolution: a hostname that resolves to a
+mixed public+private answer set is refused whole (it is a rebinding setup), matching the
+existing endpointAllowed posture (DECISION MADE). (4) M1 stale-detection lives client-side
+inside saveFunnelPatch's build callback because that is the only point where the row being
+validated IS the row being written; a server pre-check would reopen the TOCTOU. The pure
+helper is in its own JS file so the harness executes it (DECISION MADE). (5) The 2MB
+font bomb yields ZERO families (a 200-char capped read exceeds the 50-char name limit) —
+this is the honest result, asserted as "no giant family ever emitted" (DECISION MADE).
+STATUS: COMPLETE
+---

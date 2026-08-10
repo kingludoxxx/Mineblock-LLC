@@ -44,9 +44,19 @@ await sql`INSERT INTO roles (id, name, permissions) VALUES ('r_thm_test', 'theme
 await sql`DELETE FROM user_roles WHERE user_id = 'u_thm_test'`;
 await sql`INSERT INTO user_roles (user_id, role_id) VALUES ('u_thm_test', 'r_thm_test')`;
 
-const themesRouter = (await import('../../src/routes/funnelThemes.js')).default;
+const themesMod = await import('../../src/routes/funnelThemes.js');
+const themesRouter = themesMod.default;
 const T = await import('../../src/services/funnelThemes.js');
+const G = await import('../../src/services/themeImportGuard.js');
+const PLAN = await import('../../../client/src/components/funnels/settings/themePlan.js');
 const { funnelSettingsHead, FUNNEL_FONTS } = await import('../../src/services/funnelRender.js');
+
+// Neutralize the shared rate limiter for every import-url test EXCEPT the one
+// that asserts the 429 — otherwise the SSRF corpus (16 calls) trips the cap and
+// its assertions read the limiter's refusal, not the guard's. The dedicated
+// rate-limit test flips this to a denying stub and restores it.
+const RL_ALLOW = async () => ({ allowed: true, remaining: 99, retryAfter: 0 });
+themesMod._hooks.checkRateLimit = RL_ALLOW;
 
 const app = express();
 app.use(express.json({ limit: '2mb' }));
@@ -568,6 +578,10 @@ await sql`UPDATE funnels SET settings = ${sql.json({ brand_colors: { primary: '#
     ['https://172.16.0.1/', 'private 172.16/12'],
     ['https://[::1]/', 'IPv6 loopback'],
     ['https://[::ffff:169.254.169.254]/', 'IPv4-mapped IPv6 metadata'],
+    ['https://[64:ff9b::a9fe:a9fe]/', 'NAT64 well-known prefix → 169.254.169.254 (M5)'],
+    ['https://[2002:a9fe:a9fe::]/', '6to4 → 169.254.169.254 (M5)'],
+    ['https://[fd00::1]/', 'IPv6 unique-local'],
+    ['https://100.64.0.1/', 'CGNAT 100.64/10'],
     ['https://localhost/', 'localhost by name'],
     ['https://metadata.google.internal/', 'GCP metadata by name'],
     ['file:///etc/passwd', 'file scheme'],
@@ -605,9 +619,11 @@ await sql`UPDATE funnels SET settings = ${sql.json({ brand_colors: { primary: '#
 }
 
 // ── import-url happy path against a local fixture server ───────────────────
-// endpointAllowed refuses loopback, so the guard cannot be exercised end-to-end
-// against a local server by design. The fetch+parse half is proven by driving
-// buildDraftFromHtml over the SAME bytes the server would have returned.
+// The guard refuses loopback by design, so the route cannot be exercised
+// end-to-end against a local server. The fetch+parse half is proven by driving
+// buildDraftFromHtml over the SAME bytes the server would have returned, and
+// safeFetchHtml's own read/redirect behavior is proven in the guard section
+// below with an injected resolver.
 {
   const fx = express();
   fx.get('/p', (_q, s) => s.type('html').send(FIXTURE));
@@ -633,6 +649,268 @@ await sql`UPDATE funnels SET settings = ${sql.json({ brand_colors: { primary: '#
     r3.status === 404 && r3.j.error.code === 'theme_not_found', JSON.stringify(r3));
   const [row] = await sql`SELECT archived FROM lb_funnel_themes WHERE id = ${createdId}`;
   check('route: the row survives as archived (provenance kept)', row && row.archived === true);
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// 9. SSRF GUARD (B1 + M5) — resolve once, classify, pin. Under production.
+// ════════════════════════════════════════════════════════════════════════════
+// The guard reads NODE_ENV nowhere — it has NO dev hatch, unlike the tracking
+// lane's endpointAllowed — so its verdicts are identical in dev and prod. We
+// assert that explicitly by running the whole block with NODE_ENV='production'.
+// (The DB pool was created at import under 'development'; flipping the env now
+// only affects code that reads it live, and the guard doesn't.)
+{
+  const prevEnv = process.env.NODE_ENV;
+  process.env.NODE_ENV = 'production';
+
+  // ── classifyAddress — every reserved range, both families ──
+  const publicAddrs = ['1.1.1.1', '8.8.8.8', '93.184.216.34', '2606:2800:220:1:248:1893:25c8:1946'];
+  const privateAddrs = [
+    '0.0.0.0', '10.0.0.5', '127.0.0.1', '169.254.169.254', '172.16.0.1', '172.31.255.255',
+    '192.168.1.1', '100.64.0.1', '100.127.255.255', '224.0.0.1', '255.255.255.255',
+    '::1', '::', 'fe80::1', 'fc00::1', 'fd12:3456::1', 'ff02::1',
+    '::ffff:127.0.0.1', '::ffff:169.254.169.254',
+    '64:ff9b::a9fe:a9fe',           // NAT64 → 169.254.169.254 (M5)
+    '64:ff9b::7f00:1',              // NAT64 → 127.0.0.1 (M5)
+    '2002:a9fe:a9fe::',            // 6to4 → 169.254.169.254 (M5)
+    '2002:7f00:1::',              // 6to4 → 127.0.0.1 (M5)
+    '2002:0a00:0001::',           // 6to4 → 10.0.0.1 (M5)
+  ];
+  check('guard: every public literal classifies public (prod)',
+    publicAddrs.every((a) => G.classifyAddress(a).public === true),
+    publicAddrs.filter((a) => !G.classifyAddress(a).public).join(','));
+  check('guard: every reserved/private/tunnel literal classifies private (prod)',
+    privateAddrs.every((a) => G.classifyAddress(a).public === false),
+    privateAddrs.filter((a) => G.classifyAddress(a).public).join(','));
+
+  // The two IPv6 literals the reviewer named explicitly.
+  check('guard: NAT64 [64:ff9b::a9fe:a9fe] refused (M5)', G.classifyAddress('64:ff9b::a9fe:a9fe').public === false);
+  check('guard: 6to4 [2002:a9fe:a9fe::] refused (M5)', G.classifyAddress('2002:a9fe:a9fe::').public === false);
+  // A genuinely public 6to4-encoded v4 must still pass (the gate is on the
+  // EMBEDDED address, not a blanket 2002:: ban).
+  check('guard: 6to4 wrapping a PUBLIC v4 (2002:0808:0808::) stays public',
+    G.classifyAddress('2002:0808:0808::').public === true);
+  check('guard: junk is not public', !G.classifyAddress('nope').public && !G.classifyAddress('').public);
+
+  // ── assessHostname — single resolution, strict, pinned ──
+  {
+    const a = await G.assessHostname('8.8.8.8', {});
+    check('guard: a public literal host is allowed and pins itself', a.allowed && a.pinnedIp === '8.8.8.8');
+    const b = await G.assessHostname('10.0.0.5', {});
+    check('guard: a private literal host is refused', b.allowed === false);
+  }
+  {
+    // REBINDING PROBE. A resolver that answers PUBLIC first then LOOPBACK.
+    // assessHostname resolves EXACTLY ONCE and pins that answer — the second
+    // (poisoned) answer is never consulted, so there is no TOCTOU window.
+    let calls = 0;
+    const rebinder = async () => { calls += 1; return calls === 1 ? [{ address: '1.2.3.4', family: 4 }] : [{ address: '127.0.0.1', family: 4 }]; };
+    const a = await G.assessHostname('rebind.evil.test', { resolve: rebinder });
+    check('guard: rebinding — resolves once, pins the first (public) answer',
+      a.allowed && a.pinnedIp === '1.2.3.4' && calls === 1, JSON.stringify({ a, calls }));
+  }
+  {
+    // The reviewer's exact scenario collapsed into one resolution: the address
+    // the socket WOULD connect to is loopback → refused, no connection made.
+    const toLoopback = async () => [{ address: '127.0.0.1', family: 4 }];
+    const a = await G.assessHostname('sneaky.test', { resolve: toLoopback });
+    check('guard: a host that resolves to loopback is REFUSED (connect never happens)', a.allowed === false);
+  }
+  {
+    // STRICT set: a mixed public+private answer is a rebinding setup → refused.
+    const mixed = async () => [{ address: '93.184.216.34', family: 4 }, { address: '127.0.0.1', family: 4 }];
+    const a = await G.assessHostname('mixed.test', { resolve: mixed });
+    check('guard: a mixed public+private answer set is refused whole', a.allowed === false);
+  }
+  {
+    const failing = async () => { throw new Error('ENOTFOUND'); };
+    const a = await G.assessHostname('nx.test', { resolve: failing });
+    check('guard: a resolution failure fails CLOSED', a.allowed === false && a.reason === 'dns');
+    const empty = async () => [];
+    const b = await G.assessHostname('empty.test', { resolve: empty });
+    check('guard: an empty answer set fails closed', b.allowed === false);
+  }
+
+  // ── safeFetchHtml — scheme + pinned-private refusal, no socket ──
+  {
+    let threw = null;
+    try { await G.safeFetchHtml('http://example.com/', { resolve: async () => [{ address: '8.8.8.8', family: 4 }] }); }
+    catch (e) { threw = e; }
+    check('guard: safeFetchHtml refuses http:// by scheme', threw instanceof G.ImportGuardError && threw.code === 'scheme');
+  }
+  {
+    let threw = null;
+    // Resolves to loopback → the pin is loopback → blocked before any connect.
+    try { await G.safeFetchHtml('https://sneaky.test/', { resolve: async () => [{ address: '127.0.0.1', family: 4 }] }); }
+    catch (e) { threw = e; }
+    check('guard: safeFetchHtml blocks a host that would connect to loopback',
+      threw instanceof G.ImportGuardError && threw.code === 'blocked', String(threw && threw.code));
+  }
+  {
+    let threw = null;
+    try { await G.safeFetchHtml('https://[64:ff9b::a9fe:a9fe]/', {}); }
+    catch (e) { threw = e; }
+    check('guard: safeFetchHtml blocks a NAT64 literal target', threw instanceof G.ImportGuardError && threw.code === 'blocked');
+  }
+
+  process.env.NODE_ENV = prevEnv;
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// 10. IMPORT-URL RATE LIMIT (M2)
+// ════════════════════════════════════════════════════════════════════════════
+{
+  const prev = themesMod._hooks.checkRateLimit;
+  themesMod._hooks.checkRateLimit = async () => ({ allowed: false, remaining: 0, retryAfter: 42 });
+  const r = await req('POST', '/import-url', { url: 'https://example.com' });
+  check('rate: import-url over the cap → 429 rate_limited', r.status === 429 && r.j.error.code === 'rate_limited', JSON.stringify(r));
+  themesMod._hooks.checkRateLimit = prev; // restore the allow-stub
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// 11. FONT EXTRACTION — perf (M2) + trailing-`;`-free (M3) + boundaries (m5)
+// ════════════════════════════════════════════════════════════════════════════
+{
+  // M2 PERF. The reference's `([^;]+?);` regex is catastrophic on a semicolon-
+  // free 2MB paste (~9s). The linear scanner must complete well under budget.
+  const bomb = 'font-family:' + 'a'.repeat(2 * 1024 * 1024); // no ';', '}', or '<'
+  const t0 = process.hrtime.bigint();
+  const fonts = T.extractFonts(bomb);
+  const ms = Number(process.hrtime.bigint() - t0) / 1e6;
+  check(`perf: 2MB semicolon-free font input completes under 200ms (${ms.toFixed(1)}ms)`, ms < 200, `${ms}ms`);
+  // The declaration read is capped at 200 chars, so the 2MB family is bounded;
+  // 200 chars then exceeds the 50-char family-name limit, so it is dropped —
+  // no giant string is ever emitted, and every emitted family is <= 50 chars.
+  check('perf: the capped read never emits a giant family (all <= 50 chars)',
+    fonts.every(([f]) => f.length <= 50), JSON.stringify(fonts).slice(0, 80));
+
+  // Also prove the FULL palette+font extraction of a 2MB body is fast (the
+  // route parses whatever comes back).
+  const big = '<style>' + 'a{color:#5FAE5F}'.repeat(120000) + '</style>';
+  const t1 = process.hrtime.bigint();
+  T.extractPalette(big); T.extractFonts(big);
+  const ms2 = Number(process.hrtime.bigint() - t1) / 1e6;
+  check(`perf: extracting a ${(big.length / 1e6).toFixed(1)}MB body completes under 500ms (${ms2.toFixed(1)}ms)`, ms2 < 500, `${ms2}ms`);
+
+  // M3 — no trailing semicolon required. Minified + inline CSS must yield fonts.
+  check('m3: minified rule with no trailing ; extracts the family',
+    T.extractFonts('h1{font-family:Inter}').some(([f]) => f === 'Inter'));
+  check('m3: inline style attribute (no ;) extracts the family',
+    T.extractFonts('<div style="font-family:Poppins">x</div>').some(([f]) => f === 'Poppins'));
+  check('m3: quoted family in an inline attribute is clean (no trailing quote junk)',
+    T.extractFonts(`<div style="font-family:'Open Sans', sans-serif">x</div>`).some(([f]) => f === 'Open Sans'));
+  check('m3: minified multi-rule counts each occurrence',
+    (() => { const f = Object.fromEntries(T.extractFonts('a{font-family:Inter}b{font-family:Inter}c{font-family:Lato}')); return f.Inter === 2 && f.Lato === 1; })());
+
+  // m5 — the read stops at the rule boundary `}` and never bleeds the next rule.
+  check('m5: a family read stops at } and does not swallow the next selector',
+    T.extractFonts('a{font-family:Inter}b{color:red}').every(([f]) => f === 'Inter'));
+  check('m5: a boundary-terminated unquoted family drops trailing markup',
+    T.extractFonts('<span style="font-family:Merriweather">').some(([f]) => f === 'Merriweather'));
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// 12. HONEST PER-VALUE SUPPORT (M4) — plan_preview on every list row
+// ════════════════════════════════════════════════════════════════════════════
+{
+  const r = await req('GET', '/presets');
+  const byslug = Object.fromEntries(r.j.data.presets.map((p) => [p.preset_slug, p]));
+  check('M4: every preset carries a plan_preview', r.j.data.presets.every((p) => p.plan_preview && Array.isArray(p.plan_preview.writes)));
+
+  // brand's font (Inter) resolves → 3 writes; editorial's serif font does NOT
+  // resolve → only 2 writes. The static per-key map would over-claim editorial
+  // as 3; the per-value preview is the honest answer.
+  check('M4: brand resolves 3 tokens (2 colors + font)', byslug.brand.plan_preview.writes.length === 3, JSON.stringify(byslug.brand.plan_preview.writes.map((w) => w.token)));
+  check('M4: editorial resolves only 2 (its serif font is not on the allowlist)',
+    byslug.editorial.plan_preview.writes.length === 2
+    && byslug.editorial.plan_preview.writes.every((w) => w.token !== 'font_body'),
+    JSON.stringify(byslug.editorial.plan_preview.writes.map((w) => w.token)));
+  check('M4: editorial-dark also resolves only 2 (serif font unsupported)',
+    byslug['editorial-dark'].plan_preview.writes.length === 2);
+  check('M4: no write is ever labelled a plain green "Applied" for a color — colors are "variable"',
+    r.j.data.presets.every((p) => p.plan_preview.writes.filter((w) => w.path.startsWith('brand_colors')).every((w) => w.support === 'variable')));
+
+  // A saved theme also gets a per-value preview.
+  const cr = await req('POST', '/', { name: 'Preview Me', tokens: T.getPreset('tech').tokens });
+  check('M4: a saved theme row carries plan_preview too', cr.j.data.theme.plan_preview && cr.j.data.theme.plan_preview.writes.length === 3);
+  await req('DELETE', `/${cr.j.data.theme.id}`);
+}
+
+// ── m3: non-string PATCH/POST name → 422 (not a silent Untitled 200) ───────
+{
+  const cr = await req('POST', '/', { name: 'Rename Target', tokens: {} });
+  const id = cr.j.data.theme.id;
+  const r = await req('PATCH', `/${id}`, { name: { evil: 1 } });
+  check('m3: non-string PATCH name → 422', r.status === 422 && r.j.error.code === 'name_must_be_string', JSON.stringify(r));
+  const r2 = await req('POST', '/', { name: 123, tokens: {} });
+  check('m3: non-string POST name → 422', r2.status === 422 && r2.j.error.code === 'name_must_be_string', JSON.stringify(r2));
+  // A missing name is still fine (partial PATCH).
+  const r3 = await req('PATCH', `/${id}`, { preview_url: 'https://x/y.png' });
+  check('m3: an omitted name still allows a partial PATCH', r3.status === 200);
+  await req('DELETE', `/${id}`);
+}
+
+// ── m2: GET / truncation signal ────────────────────────────────────────────
+{
+  const r = await req('GET', '/');
+  check('m2: GET / reports a truncated flag (false at low counts)',
+    r.status === 200 && r.j.data.truncated === false, JSON.stringify(r.j.data.truncated));
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// 13. STALE-PLAN GUARD (M1) — the pure client helper, executed
+// ════════════════════════════════════════════════════════════════════════════
+// recomputeDiff is what runs at COMMIT inside saveFunnelPatch. It re-derives the
+// overwrite set against the FRESH row, so a plan minted against an older
+// snapshot is caught before the PATCH lands.
+{
+  const writes = T.buildApplyPlan(T.getPreset('brand').tokens, {}).writes; // 3 writes: primary, secondary, font
+  check('M1: writes carry the three live paths',
+    writes.map((w) => w.path).sort().join(',') === 'brand_colors.primary,brand_colors.secondary,fonts.family');
+
+  // Plan minted when the funnel had NO colors → zero overwrites shown.
+  const planTime = PLAN.recomputeDiff(writes, {});
+  check('M1: at plan time (empty settings) there are no overwrites', planTime.overwrites.length === 0 && planTime.changed_count === 3);
+
+  // The reviewer's exact bug: an interim tab sets #00FF00 after the preview.
+  // Recomputing against the fresh row surfaces the destructive overwrite that
+  // the stale dialog never showed.
+  const fresh = PLAN.recomputeDiff(writes, { brand_colors: { primary: '#00FF00' } });
+  check('M1: recompute against the FRESH row surfaces the interim #00FF00 as a destroyed value',
+    fresh.overwrites.some((o) => o.path === 'brand_colors.primary' && o.from === '#00FF00' && o.to === '#5FAE5F'),
+    JSON.stringify(fresh.overwrites));
+  check('M1: the signatures differ, so the commit path detects the stale plan and re-confirms',
+    PLAN.overwriteSignature(planTime.overwrites) !== PLAN.overwriteSignature(fresh.overwrites));
+
+  // The reviewer's other case: dialog said #123456→ but the row now holds a
+  // different value; the true "from" is the fresh one, never the stale one.
+  const staleShown = PLAN.recomputeDiff(writes, { brand_colors: { primary: '#123456' } });
+  const nowHolds = PLAN.recomputeDiff(writes, { brand_colors: { primary: '#654321' } });
+  check('M1: the recomputed "from" is the fresh value, never the plan-time one',
+    nowHolds.overwrites.find((o) => o.path === 'brand_colors.primary').from === '#654321'
+    && PLAN.overwriteSignature(staleShown.overwrites) !== PLAN.overwriteSignature(nowHolds.overwrites));
+
+  // Re-applying the very same values is idempotent — signatures match → commit
+  // proceeds without a false "stale" bounce.
+  const applied = PLAN.applyWrites({}, writes);
+  const reDiff = PLAN.recomputeDiff(writes, applied);
+  check('M1: re-applying identical values is NOT flagged stale (signatures match)',
+    PLAN.overwriteSignature(reDiff.overwrites) === PLAN.overwriteSignature(reDiff.overwrites)
+    && reDiff.overwrites.length === 0 && reDiff.changed_count === 0);
+
+  // colors compare case-insensitively, matching the server; the font sentinel
+  // 'default' is a fill, not an overwrite.
+  const ci = PLAN.recomputeDiff(writes, { brand_colors: { primary: '#5fae5f' }, fonts: { family: 'default' } });
+  check('M1: a case-different same color is not a change; fonts "default" is a fill not an overwrite',
+    !ci.overwrites.some((o) => o.path === 'brand_colors.primary')
+    && !ci.overwrites.some((o) => o.path === 'fonts.family'), JSON.stringify(ci.overwrites));
+
+  // applyWrites is pure and merges without disturbing neighbours.
+  const before = { logo_url: 'https://x/y.png', brand_colors: { secondary: '#111111' } };
+  const after = PLAN.applyWrites(before, writes);
+  check('M1: applyWrites merges the paths and preserves unrelated keys, without mutating input',
+    after.logo_url === 'https://x/y.png' && after.brand_colors.primary === '#5FAE5F'
+    && after.fonts.family === 'inter' && before.fonts === undefined);
 }
 
 // ── cleanup ────────────────────────────────────────────────────────────────

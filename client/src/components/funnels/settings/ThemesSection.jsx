@@ -9,40 +9,46 @@
 // use. So a theme apply is serialized against every other settings save, and
 // funnelRender.js needed no change to support any of this.
 //
-// HONESTY IS THE FEATURE. The reference's token bag is 11 keys wide; the keys
-// this renderer actually reads are 3. The UI never shows a token without
-// showing what it does, and 'Not applied' is rendered as prominently as the
-// swatch beside it. The support copy is fetched from the server's own
-// TOKEN_SUPPORT map rather than duplicated here, so it cannot drift away from
-// what the renderer really does.
+// STALE-PLAN SAFETY (M1). The confirm dialog is minted against the funnel's
+// settings at preview time, but a modal can sit open while another tab edits
+// the funnel. At COMMIT we re-derive the destructive diff against the FRESH row
+// (recomputeDiff, inside the serialized save); if the true overwrite set no
+// longer matches what the operator confirmed, the save is aborted BEFORE the
+// PATCH and the dialog re-renders with the real diff for a second confirm.
+//
+// HONESTY (M4). A card's "N of 11 reach the page" and every per-token badge
+// come from that theme's plan_preview — the server's honest per-VALUE answer —
+// not the static per-KEY support map. editorial's font is 'partial' as a key
+// but resolves to nothing for its serif stack, so it correctly reads as
+// not-applied for editorial. A 'variable' token is never labelled "Applied":
+// it is published as a CSS variable that the page's own CSS must read.
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { RefreshCw, Trash2, Download, Check, AlertTriangle, Palette } from 'lucide-react';
 import api from '../../../services/api';
 import Button from '../../ui/Button';
 import Input from '../../ui/Input';
 import { SettingsCard } from './ui';
-import { isObj, saveFunnelPatch } from './settingsPatch';
+import { saveFunnelPatch } from './settingsPatch';
+import { recomputeDiff, overwriteSignature, applyWrites, isObj } from './themePlan';
 
-// Apply a plan's dotted writes onto a settings object, returning a NEW one.
-// The client deliberately does NOT re-derive which token maps to which key —
-// it only sets the paths the server named, so the mapping has one home.
-function applyWrites(settings, writes) {
-  const out = isObj(settings) ? { ...settings } : {};
-  for (const w of writes || []) {
-    const [head, tail] = String(w.path).split('.');
-    if (!tail) { out[head] = w.to; continue; }
-    out[head] = isObj(out[head]) ? { ...out[head] } : {};
-    out[head][tail] = w.to;
-  }
-  return out;
+// Per-VALUE support, read off a theme's plan_preview. A token that produced a
+// write carries that write's support ('variable' | 'partial'); a token that was
+// skipped is 'none' with the server's reason. This is the honest answer for
+// THIS theme's values, which static per-key support cannot give.
+function supportFromPreview(preview) {
+  const map = {};
+  for (const w of preview?.writes || []) map[w.token] = { support: w.support, note: w.note };
+  for (const s of preview?.skipped || []) map[s.token] = { support: 'none', note: s.note };
+  return map;
 }
 
-const SUPPORT_STYLE = {
-  variable: 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20',
-  partial: 'bg-amber-500/10 text-amber-400 border-amber-500/20',
-  none: 'bg-bg-elevated text-text-faint border-border-default',
+// Deliberately: 'variable' is NOT green "Applied". It is published as a CSS
+// variable and only repaints where the page reads it.
+const SUPPORT_BADGE = {
+  variable: { label: 'CSS var', cls: 'bg-amber-500/10 text-amber-400 border-amber-500/20' },
+  partial: { label: 'Applied', cls: 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20' },
+  none: { label: 'Not applied', cls: 'bg-bg-elevated text-text-faint border-border-default' },
 };
-const SUPPORT_LABEL = { variable: 'Applied', partial: 'Applied (limited)', none: 'Not applied' };
 
 function Swatch({ value }) {
   const ok = /^#[0-9a-fA-F]{3,8}$/.test(String(value || ''));
@@ -59,11 +65,11 @@ function isColorToken(k) {
   return ['primary', 'secondary', 'background', 'foreground', 'muted', 'border', 'cta_bg', 'cta_fg'].includes(k);
 }
 
-// A preset/theme card: four swatches and the two facts that matter.
-function ThemeCard({ theme, support, onApply, onDelete, busy }) {
+// A preset/theme card: four swatches and the two facts that matter — the honest
+// applied count (from plan_preview) and an Apply button.
+function ThemeCard({ theme, onApply, onDelete, busy }) {
   const t = theme.tokens || {};
-  const applied = ['primary', 'secondary', 'font_body']
-    .filter((k) => t[k] && support[k] && support[k].support !== 'none').length;
+  const applied = (theme.plan_preview?.writes || []).length;
   return (
     <div className="rounded-lg border border-border-default bg-bg-elevated/40 p-3 space-y-2.5">
       <div className="flex items-start justify-between gap-2">
@@ -108,10 +114,14 @@ export default function ThemesSection({ funnel, onFunnelUpdated }) {
   const [loading, setLoading] = useState(true);
 
   // apply-confirm state
-  const [confirm, setConfirm] = useState(null); // { source, plan }
+  const [confirm, setConfirm] = useState(null); // { source, funnel, plan, stale? }
   const [applying, setApplying] = useState(false);
   const [applyErr, setApplyErr] = useState('');
   const [applied, setApplied] = useState('');
+
+  // delete-confirm state (m4 — a destructive click must be confirmed)
+  const [pendingDelete, setPendingDelete] = useState(null);
+  const [deleting, setDeleting] = useState(false);
 
   // import state
   const [importUrl, setImportUrl] = useState('');
@@ -145,27 +155,46 @@ export default function ThemesSection({ funnel, onFunnelUpdated }) {
         ? { funnel_id: funnelId, preset_slug: theme.preset_slug }
         : { funnel_id: funnelId, theme_id: theme.id };
       const res = await api.post('/funnel-themes/apply-plan', body);
-      setConfirm(res.data?.data || null);
+      setConfirm(res.data?.data ? { ...res.data.data, stale: false } : null);
     } catch (err) {
       setApplyErr(err.response?.data?.error?.code || 'Could not build the apply plan');
     }
   };
 
   // THE COMMIT. Rides saveFunnelPatch, so it re-GETs the freshest funnel row
-  // inside the shared queue and merges onto that — never onto the snapshot the
-  // plan was built from.
+  // inside the shared queue. The stale check runs against THAT fresh row, before
+  // the PATCH — so a plan minted against an older snapshot cannot silently
+  // destroy an interim-set value (M1).
   const doApply = async () => {
     if (!confirm) return;
     setApplying(true); setApplyErr('');
+    const confirmedSig = overwriteSignature(confirm.plan.overwrites);
     try {
-      const updated = await saveFunnelPatch(funnelId, (fresh) => ({
-        settings: applyWrites(isObj(fresh.settings) ? fresh.settings : {}, confirm.plan.writes),
-      }));
+      const updated = await saveFunnelPatch(funnelId, (fresh) => {
+        const cur = isObj(fresh.settings) ? fresh.settings : {};
+        const freshDiff = recomputeDiff(confirm.plan.writes, cur);
+        if (overwriteSignature(freshDiff.overwrites) !== confirmedSig) {
+          const e = new Error('stale_plan');
+          e.__stalePlan = {
+            ...confirm.plan,
+            writes: freshDiff.writes,
+            overwrites: freshDiff.overwrites,
+            changed_count: freshDiff.changed_count,
+          };
+          throw e;                         // abort BEFORE the PATCH
+        }
+        return { settings: applyWrites(cur, confirm.plan.writes) };
+      });
       onFunnelUpdated?.(updated);
       setApplied(confirm.source?.name || 'Theme');
       setConfirm(null);
       setTimeout(() => setApplied(''), 4000);
     } catch (err) {
+      if (err && err.__stalePlan) {
+        setConfirm({ ...confirm, plan: err.__stalePlan, stale: true });
+        setApplyErr('This funnel changed since the preview — the updated changes are shown below. Review and apply again.');
+        return;
+      }
       setApplyErr(err.response?.data?.error || 'Failed to apply');
     } finally { setApplying(false); }
   };
@@ -175,6 +204,7 @@ export default function ThemesSection({ funnel, onFunnelUpdated }) {
     try {
       const res = await api.post('/funnel-themes/import-url', { url: importUrl.trim() });
       const d = res.data?.data?.draft || null;
+      if (d) d.plan_preview = res.data?.data?.plan_preview || { writes: [], skipped: [] };
       setDraft(d);
       setDraftName(d?.name || '');
     } catch (err) {
@@ -199,13 +229,16 @@ export default function ThemesSection({ funnel, onFunnelUpdated }) {
     } finally { setSavingDraft(false); }
   };
 
-  const deleteTheme = async (theme) => {
+  const confirmDelete = async () => {
+    if (!pendingDelete) return;
+    setDeleting(true); setLoadErr('');
     try {
-      await api.delete(`/funnel-themes/${encodeURIComponent(theme.id)}`);
+      await api.delete(`/funnel-themes/${encodeURIComponent(pendingDelete.id)}`);
+      setPendingDelete(null);
       await load();
     } catch (err) {
       setLoadErr(err.response?.data?.error?.code || 'Delete failed');
-    }
+    } finally { setDeleting(false); }
   };
 
   const unsupported = useMemo(
@@ -213,10 +246,13 @@ export default function ThemesSection({ funnel, onFunnelUpdated }) {
     [support],
   );
 
+  // Per-token support for the import draft grid, from the draft's own preview.
+  const draftSupport = useMemo(() => supportFromPreview(draft?.plan_preview), [draft]);
+
   if (loading) {
     return <div className="flex items-center gap-2 text-sm text-text-muted"><RefreshCw className="w-4 h-4 animate-spin" /> Loading themes…</div>;
   }
-  if (loadErr) {
+  if (loadErr && !themes.length && !presets.length) {
     return (
       <div className="space-y-3">
         <p className="text-sm text-danger">{loadErr}</p>
@@ -241,7 +277,7 @@ export default function ThemesSection({ funnel, onFunnelUpdated }) {
           <Check className="w-4 h-4" /> Applied “{applied}”.
         </div>
       )}
-      {applyErr && <p className="text-sm text-danger">{applyErr}</p>}
+      {loadErr && <p className="text-sm text-danger">{loadErr}</p>}
 
       {/* ── What a theme can actually change ───────────────────────────── */}
       <SettingsCard
@@ -250,12 +286,12 @@ export default function ThemesSection({ funnel, onFunnelUpdated }) {
       >
         <ul className="space-y-1.5 text-xs">
           <li className="text-text-muted">
-            <span className="text-emerald-400 font-medium">Brand colors</span> — published as the
+            <span className="text-amber-400 font-medium">Brand colors</span> — published as the
             <span className="font-mono"> --brand-primary </span> / <span className="font-mono">--brand-secondary </span>
             CSS variables. They repaint a page only where that page’s own CSS reads those variables.
           </li>
           <li className="text-text-muted">
-            <span className="text-amber-400 font-medium">Page font</span> — set only when the theme’s body font
+            <span className="text-emerald-400 font-medium">Page font</span> — set only when the theme’s body font
             is on the visitor-page allowlist. One font governs the whole page, so headings inherit it;
             a theme’s separate heading font cannot be applied.
           </li>
@@ -274,7 +310,7 @@ export default function ThemesSection({ funnel, onFunnelUpdated }) {
         </h4>
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
           {presets.map((p) => (
-            <ThemeCard key={p.id} theme={p} support={support} onApply={openApply} onDelete={deleteTheme} busy={applying} />
+            <ThemeCard key={p.id} theme={p} onApply={openApply} onDelete={setPendingDelete} busy={applying} />
           ))}
         </div>
       </div>
@@ -289,7 +325,7 @@ export default function ThemesSection({ funnel, onFunnelUpdated }) {
         ) : (
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
             {themes.map((t) => (
-              <ThemeCard key={t.id} theme={t} support={support} onApply={openApply} onDelete={deleteTheme} busy={applying} />
+              <ThemeCard key={t.id} theme={t} onApply={openApply} onDelete={setPendingDelete} busy={applying} />
             ))}
           </div>
         )}
@@ -314,21 +350,22 @@ export default function ThemesSection({ funnel, onFunnelUpdated }) {
         {draft && (
           <div className="rounded-lg border border-border-default bg-bg-elevated/40 p-3 space-y-3">
             <div className="text-xs text-text-muted">
-              Extracted from the page. Only the colors and font below reach a visitor page — review, name it, and save.
+              Extracted from the page. Only the tokens marked applied below reach a visitor page — review, name it, and save.
             </div>
             <div className="flex flex-wrap items-center gap-1.5">
               {(draft.palette_full || []).map((c) => <Swatch key={c} value={c} />)}
             </div>
             <div className="grid grid-cols-2 gap-2 text-xs">
               {Object.entries(draft.tokens || {}).map(([k, v]) => {
-                const s = support[k]?.support || 'none';
+                const s = draftSupport[k]?.support || 'none';
+                const badge = SUPPORT_BADGE[s] || SUPPORT_BADGE.none;
                 return (
                   <div key={k} className="flex items-center gap-1.5 min-w-0">
                     {isColorToken(k) && <Swatch value={v} />}
                     <span className="text-text-faint shrink-0">{k}</span>
                     <span className="text-text-muted font-mono truncate">{v}</span>
-                    <span className={`ml-auto shrink-0 px-1.5 py-0.5 rounded border text-[9px] uppercase tracking-wide ${SUPPORT_STYLE[s]}`}>
-                      {SUPPORT_LABEL[s]}
+                    <span className={`ml-auto shrink-0 px-1.5 py-0.5 rounded border text-[9px] uppercase tracking-wide ${badge.cls}`}>
+                      {badge.label}
                     </span>
                   </div>
                 );
@@ -361,8 +398,16 @@ export default function ThemesSection({ funnel, onFunnelUpdated }) {
               </p>
             </div>
 
+            {confirm.stale && (
+              <div className="flex items-start gap-1.5 rounded-lg border border-amber-500/30 bg-amber-500/10 p-2.5 text-xs text-amber-400">
+                <AlertTriangle className="w-3.5 h-3.5 mt-0.5 shrink-0" />
+                The funnel’s settings changed since this preview was built. The values below are refreshed — confirm again to apply them.
+              </div>
+            )}
+
             {/* THE DESTRUCTIVE PART, FIRST AND LOUDEST. An apply replaces
-                hand-tuned colors, so every value being destroyed is named. */}
+                hand-tuned colors, so every value being destroyed is named —
+                and these are the FRESH values when the plan was re-derived. */}
             {confirm.plan.overwrites.length > 0 && (
               <div className="rounded-lg border border-amber-500/20 bg-amber-500/10 p-3 space-y-1.5">
                 <div className="flex items-center gap-1.5 text-xs font-semibold text-amber-400">
@@ -418,11 +463,34 @@ export default function ThemesSection({ funnel, onFunnelUpdated }) {
               </details>
             )}
 
+            {applyErr && <p className="text-xs text-danger">{applyErr}</p>}
+
             <div className="flex items-center gap-2 pt-1">
               <Button onClick={doApply} loading={applying} disabled={confirm.plan.writes.length === 0}>
-                Apply theme
+                {confirm.stale ? 'Apply refreshed changes' : 'Apply theme'}
               </Button>
               <Button variant="secondary" onClick={() => setConfirm(null)} disabled={applying}>Cancel</Button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Delete confirm (m4) ────────────────────────────────────────── */}
+      {pendingDelete && (
+        <div
+          className="fixed inset-0 z-[60] flex items-center justify-center bg-black/60 backdrop-blur-sm p-4"
+          onClick={(e) => { if (e.target === e.currentTarget && !deleting) setPendingDelete(null); }}
+        >
+          <div className="w-full max-w-sm rounded-xl border border-border-default bg-bg-card p-5 space-y-4">
+            <div>
+              <h4 className="text-sm font-semibold text-text-primary">Delete “{pendingDelete.name}”?</h4>
+              <p className="mt-1 text-xs text-text-muted">
+                This removes the theme from your library. Funnels you already applied it to keep their current settings.
+              </p>
+            </div>
+            <div className="flex items-center gap-2">
+              <Button onClick={confirmDelete} loading={deleting}>Delete theme</Button>
+              <Button variant="secondary" onClick={() => setPendingDelete(null)} disabled={deleting}>Cancel</Button>
             </div>
           </div>
         </div>
