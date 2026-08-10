@@ -4154,3 +4154,23 @@ by build, lint, and structural mutation-checked assertions against the shipped
 JSX and copy modules.
 STATUS: COMPLETE
 ---
+
+---
+TIMESTAMP: 2026-08-10 04:05 (Europe/Madrid)
+TASK: Seam-audit remediation deploy — 5 blocker rounds + 2 builder-safety branches
+BUILT: Merged the cross-area seam audit's fixes: tracking-seam (per-network click ids B1, relay
+hardening B2, custom networks in health M5-M7, gated fire-flags M8), split-seam (shared verdict
+scoping B4, truthful population copy + rendered delivered-renders B5, credited-orders labels),
+cogs-seam (full index in membershipFor M2, per-field ship provenance M3, one existence table M4),
+blocks-seam (comparison-table safety M11-M14), ai-wiring-floor (WIRING_KEYS 9→17 both mirrors B3,
+host-change advisories M15), + integrator M1 (resume links carry ?s=). Deployed
+dep-d9siq87avr4c73bc0910 @ 1dd2af2.
+TESTED: Each round revert-checked/mutation-checked before passing; tracking 1139, split 439+174,
+cogs 270, blocks 401, ai-floor 147, all green on merged main. Live pass: tracking-health custom-aware,
+split/cogs/custom-network surfaces answering, forged resume token → 302 home.
+OUTPUT: puure-dashboard.onrender.com live at 1dd2af2.
+DECISIONS: Chips filed for the audit's non-blocking items (fabricated Settings tabs, consent-cookie
+posture, raw reset-token logging, brand-variable renderer consumers). Theme (FIX-FIRST: SSRF
+bypass) + order-edit/dunning (review) + analytics-insights still in flight.
+STATUS: COMPLETE
+---
