@@ -432,6 +432,37 @@ export const SPLIT_MIN_CONVERSIONS_PER_ARM = 25;
 // prints raw counts instead of a percentage that reads as precision.
 export const MIN_RATE_SAMPLE = 30;
 
+// ── THE COMPARISON FAMILY, SHARED BY BOTH VERDICT BUILDERS ─────────────────
+//
+// An arm below the statistics floor is not "thin" — it is NOT YET IN THE
+// EXPERIMENT. Treating it as thin lets one fresh (or archived, zero-traffic)
+// arm hold a conclusive test hostage, and `readResults` returns an archived arm
+// on essentially every concluded test.
+//
+// splitStats fixed this for the LIFETIME panel. buildVerdict — which drives the
+// WINDOWED banner and, through it, the promote button — kept gating on every
+// arm, so the two verdicts on one screen disagreed: "sample is still thin"
+// rendered directly above a green trophy on the same test. One rule now, in one
+// place, used by both.
+//
+// `denominatorOf` is a callback because the two callers legitimately spell the
+// denominator differently (`visitors` on funnelAnalytics rows, `exposures` on
+// ledger rows) — the SCOPING RULE is what must be shared, not the field name.
+export const SPLIT_MIN_STATS_SAMPLE = MIN_RATE_SAMPLE;
+
+export function partitionQualifyingArms(
+  rows, denominatorOf, minStatsSample = SPLIT_MIN_STATS_SAMPLE
+) {
+  const qualifying = [];
+  const pending = [];
+  for (const r of Array.isArray(rows) ? rows : []) {
+    const n = Number(denominatorOf(r));
+    if (Number.isFinite(n) && n >= minStatsSample) qualifying.push(r);
+    else pending.push(r);
+  }
+  return { qualifying, pending };
+}
+
 /**
  * The operator-facing verdict for a whole test.
  *
@@ -476,19 +507,37 @@ export function buildVerdict(arms) {
     };
   }
 
+  // ── THE COMPARISON FAMILY ────────────────────────────────────────────────
+  // Arms below the statistics floor are NOT part of the experiment yet, and
+  // gating on them is how this banner ended up saying "sample is still thin"
+  // directly above a green trophy: an archived zero-traffic arm — which the
+  // ledger returns on essentially every concluded test — made `ready` false
+  // here while the lifetime panel, correctly scoped, named a winner. Same
+  // helper as splitStats now, so the two cannot disagree again.
+  const { qualifying, pending } = partitionQualifyingArms(rows, (r) => r.visitors);
+  const pendingArms = pending.map((r) => r.arm_key);
+
   // Rank on net rev/visitor; an arm with no visitors ranks last (never first
   // on a null) so a zero-traffic arm can't be declared the leader.
   const ranked = [...rows].sort(
     (x, y) => (y.rev_per_visitor ?? -Infinity) - (x.rev_per_visitor ?? -Infinity)
   );
-  const control = rows.find((r) => r.is_control) || ranked[ranked.length - 1];
-  const leader = ranked[0];
-  const challenger = leader.arm_key === control.arm_key ? ranked[1] : leader;
+  // The control and the challenger are drawn from the FAMILY. Falling back to
+  // `ranked[last]` over ALL rows could hand the baseline to a zero-traffic arm,
+  // which is the same defect one level down.
+  const rankedQualifying = ranked.filter((r) => qualifying.includes(r));
+  const control = qualifying.find((r) => r.is_control)
+    || rows.find((r) => r.is_control)
+    || rankedQualifying[rankedQualifying.length - 1]
+    || ranked[ranked.length - 1];
+  const leader = rankedQualifying[0] || ranked[0];
+  const challenger = (leader.arm_key === control.arm_key
+    ? (rankedQualifying[1] || ranked[1])
+    : leader) || leader;
 
-  // Bonferroni FIRST: k arms ⇒ k−1 comparisons against control. Every
-  // comparison below is judged at the adjusted bar, so `significant` on a
-  // comparison and the verdict gate can never disagree.
-  const comparisons = Math.max(1, rows.length - 1);
+  // Bonferroni over the QUALIFYING family only: counting a pending arm would
+  // tighten every other arm's bar for a comparison that is not being made.
+  const comparisons = Math.max(1, qualifying.length - 1);
   const alphaAdjusted = 0.05 / comparisons;
 
   const cmp = (arm) => ({
@@ -547,28 +596,70 @@ export function buildVerdict(arms) {
   const rawRequired = needed.length ? Math.max(...needed) : null;
   const requiredSamplePerArm =
     rawRequired === null ? null : Math.max(rawRequired, SPLIT_MIN_VISITORS_PER_ARM);
-  const thin = rows.filter(
+  // THIN IS JUDGED OVER THE FAMILY, NOT OVER EVERY ROW. A pending arm is
+  // reported separately (`pendingArms`) and blocks nothing.
+  const thin = qualifying.filter(
     (r) =>
       r.visitors < SPLIT_MIN_VISITORS_PER_ARM || r.orders < SPLIT_MIN_CONVERSIONS_PER_ARM
   );
-  const ready = thin.length === 0;
+  const ready = qualifying.length >= 2 && thin.length === 0;
   const sample = {
     ready,
     comparisons,
     alphaAdjusted: round(alphaAdjusted),
+    // ONE FLOOR, ONE NOUN. This surface and the lifetime panel apply the SAME
+    // 300 to the SAME population (exposure rows), but shipped it under two
+    // names — `minVisitorsPerArm` here, `min_exposures_per_arm` there — so the
+    // modal printed "300 visitors" above "300 exposures" for one rule.
+    // `minExposuresPerArm` is the name that matches what is counted; the old
+    // key is kept because it is a shipped field and consumers read it.
     minVisitorsPerArm: SPLIT_MIN_VISITORS_PER_ARM,
+    minExposuresPerArm: SPLIT_MIN_VISITORS_PER_ARM,
     minConversionsPerArm: SPLIT_MIN_CONVERSIONS_PER_ARM,
     thinArms: thin.map((r) => r.arm_key),
+    // Arms still collecting: below the statistics floor, excluded from the
+    // comparison, and NOT counted as thin.
+    pendingArms,
+    qualifyingArms: qualifying.map((r) => r.arm_key),
+    minStatsSample: SPLIT_MIN_STATS_SAMPLE,
     requiredSampleRaw: rawRequired,
     requiredSampleFloored: rawRequired !== null && rawRequired < SPLIT_MIN_VISITORS_PER_ARM,
     sized_on_observed_effect: true,
   };
+  // One sentence, appended wherever a body is built below, so a revoked or
+  // withheld verdict explains the arm that is not in the comparison.
+  const pendingClause = pendingArms.length
+    ? ` ${pendingArms.join(', ')} ${pendingArms.length === 1 ? 'is' : 'are'} still collecting and `
+      + `${pendingArms.length === 1 ? 'is' : 'are'} not part of this comparison yet.`
+    : '';
 
   const totalVisitors = rows.reduce((t, r) => t + r.visitors, 0);
   if (totalVisitors === 0) {
     return {
       status: 'no_data',
       headline: 'No traffic recorded in this window.',
+      leader: null,
+      control: control.arm_key,
+      conversion,
+      revenue,
+      perArm,
+      sample,
+      requiredSamplePerArm: null,
+      ranked: ranked.map((r) => r.arm_key),
+    };
+  }
+
+  // FEWER THAN TWO ARMS IN THE FAMILY — there is traffic, but not on enough
+  // arms to compare. Reported as not_ready (the vocabulary this endpoint's
+  // consumers already handle) with prose that names the real reason, rather
+  // than as a thin-sample complaint about arms that are not in the test yet.
+  if (qualifying.length < 2) {
+    return {
+      status: 'not_ready',
+      headline: 'Not enough arms have data to compare yet.',
+      body:
+        `A comparison needs at least two arms past ${SPLIT_MIN_STATS_SAMPLE} visitors in this window.`
+        + pendingClause,
       leader: null,
       control: control.arm_key,
       conversion,
@@ -592,6 +683,7 @@ export function buildVerdict(arms) {
         `${challenger.arm_key} is ${dir} ${control.arm_key} on net revenue per visitor` +
         (pct === null ? '' : ` by ${pct}%`) +
         ` — ${formatConfidencePct(revenue.confidence)} confidence.`,
+      ...(pendingClause ? { body: pendingClause.trim() } : {}),
       leader: challenger.arm_key,
       control: control.arm_key,
       conversion,
@@ -615,6 +707,7 @@ export function buildVerdict(arms) {
         (requiredSamplePerArm
           ? `. At the current gap that is about ${requiredSamplePerArm.toLocaleString('en-US')} visitors per arm.`
           : '.'),
+      ...(pendingClause ? { body: pendingClause.trim() } : {}),
       leader: challenger.arm_key,
       control: control.arm_key,
       conversion,
@@ -633,6 +726,7 @@ export function buildVerdict(arms) {
       (requiredSamplePerArm
         ? `. Proving the gap would take about ${requiredSamplePerArm.toLocaleString('en-US')} visitors per arm.`
         : '. The observed gap is zero, so no amount of traffic will prove it.'),
+    ...(pendingClause ? { body: pendingClause.trim() } : {}),
     leader: challenger.arm_key,
     control: control.arm_key,
     conversion,

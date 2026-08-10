@@ -233,12 +233,18 @@ function CanvasInner() {
           // normalizeMetrics has already converted `cvr` from a fraction to a
           // percent exactly once — it must NOT be scaled again here.
           //
-          // `source` rides along because the two feeds COUNT DIFFERENT THINGS
-          // and the tooltip has to say which: the overlay's per-arm `visitors`
-          // is a checkout-mint count ("an exposure IS a checkout mint here",
-          // funnelAnalytics), i.e. visitors who reached checkout, while the
-          // ledger's is everyone the splitter assigned. One tooltip explaining
-          // both would be wrong under one of them.
+          // `source` rides along because the two feeds cover DIFFERENT WINDOWS
+          // and the tooltip has to say which. They count the SAME EVENT: both
+          // are lb_split_credits exposure rows — visitors who reached checkout
+          // — the overlay over the selected window (clamped to the delivery
+          // epoch), the ledger over the test's whole lifetime.
+          //
+          // This comment used to say the ledger showed "everyone the splitter
+          // assigned". It does not: the fallback below reads `exposures`, and
+          // the splitter-assigned figure is lb_split_views, a larger number
+          // (audited at 500 against the tile's 440). That number is rendered in
+          // the results modal's all-time table, not here — pointing the tile at
+          // it would blank every offer-scope and pre-delivery test.
           return [t.id, Object.fromEntries((overlay.data.arms || []).map((a) => [a.arm_key, {
             source: 'overlay',
             visitors: a.visitors,
