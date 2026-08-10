@@ -869,11 +869,21 @@ export async function closeQueueRow({ queueId: qid, state = 'closed', actor = ''
 //      attempt number is minted by the atomic claim in requestRetry() and
 //      guarded by UNIQUE (queue_id, attempt_no). Re-running the same attempt
 //      can never double-charge;
-//   4. carry metadata `{ co_session_id, kind: 'post_purchase_upsell' | 'base',
-//      charge_row: <source_id>, dunning: true, attempt: <attempt_no> }` —
-//      `kind` and `charge_row` MUST mirror what the original accept path sent,
-//      or an async settlement's webhook routes to the wrong handler and
-//      corrupts a paid order;
+//   4. carry metadata that MIRRORS THE ORIGINAL ACCEPT PATH BYTE-FOR-BYTE. The
+//      live webhook router keys STRICTLY on the literal string 'upsell'
+//      (gatewayWebhooks.js: the Whop path at `kind === 'upsell'`, the Stripe
+//      twin at `(metadata.kind || '') === 'upsell'`), and the accept path
+//      stamps exactly these values (checkoutPublic.js):
+//        - an UPSELL charge → `{ co_session_id, kind: 'upsell', charge_row: <source_id> }`
+//        - a BASE charge    → `{ co_session_id, kind: '0' }`  (absent is also
+//          treated as base — the router maps '0' → '' before matching)
+//      ⛔ Do NOT invent a kind. A value like 'post_purchase_upsell' or 'base'
+//      matches NOTHING: the webhook skips the upsell branch, falls through to
+//      the base handler, finds the session already 'paid', acks already_paid,
+//      and NEVER calls settleUpsellCharge — so the money is captured while the
+//      charge row stays 'declined' and gets re-dunned. For a dunning retry the
+//      source is an upsell charge row, so `kind: 'upsell'` + the row's own id
+//      as `charge_row` is the correct, and only, value;
 //   5. report the outcome back through the EXISTING money-path functions —
 //      settleUpsellCharge / failUpsellCharge in checkoutSettle.js. This module
 //      must NOT be the thing that flips a charge status. It then observes the

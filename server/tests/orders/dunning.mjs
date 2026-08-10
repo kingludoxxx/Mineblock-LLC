@@ -662,6 +662,56 @@ const SOFT_ID = `dq_u_uc_dn_soft`;
     && /MONEY SEAM/.test(svcSrc) && /settleUpsellCharge/.test(routeSrc));
 }
 
+// ════════════════════════════════════════════════════════════════════════════
+// D16 — CONTRACT ↔ ROUTER LOCK. The metadata `kind` the service header tells the
+// integrator to send MUST equal the literal the LIVE webhook router matches, or
+// a charger built to the doc sends a kind that matches nothing, falls through to
+// the base handler, gets an already_paid ack, and the money is captured while
+// the charge row stays declined. This block reads the live router + accept path
+// and asserts the documented value is byte-identical to what the router keys on,
+// so the two can never silently drift again.
+// ════════════════════════════════════════════════════════════════════════════
+{
+  const svcSrc = readFileSync(resolve(HERE, '../../src/services/dunningService.js'), 'utf8');
+  const whSrc = readFileSync(resolve(HERE, '../../src/routes/gatewayWebhooks.js'), 'utf8');
+  const cpSrc = readFileSync(resolve(HERE, '../../src/routes/checkoutPublic.js'), 'utf8');
+
+  // Every string literal the router equality-checks a `kind` against. '0' is the
+  // base sentinel the router maps to '' before matching; the DISCRIMINATING kind
+  // (the one that routes to the upsell settle path) is everything else.
+  const routerKinds = new Set(
+    [...whSrc.matchAll(/kind[^\n]{0,24}===\s*'([^']+)'/g)].map((m) => m[1])
+  );
+  const discriminating = [...routerKinds].filter((k) => k !== '0' && k !== '');
+  check('D16 the live router discriminates on exactly one kind literal: "upsell"',
+    discriminating.length === 1 && discriminating[0] === 'upsell',
+    JSON.stringify([...routerKinds]));
+
+  const matched = discriminating[0]; // whatever the router actually keys on
+  // The accept path must stamp that same literal for upsells, and '0' for base
+  // (checkoutPublic) — the ground truth the charger must mirror.
+  check('D16 the accept path stamps kind:"upsell" for upsells and kind:"0" for base',
+    new RegExp(`kind: '${matched}'`).test(cpSrc) && /kind: '0'/.test(cpSrc),
+    'checkoutPublic stamp not found');
+
+  // THE LOCK: the dunning service header must document the SAME literal the
+  // router matches, and must NOT ship the poison values the audit caught.
+  check('D16 the service header documents kind:"upsell" — the exact string the router matches',
+    new RegExp(`kind: '${matched}'`).test(svcSrc),
+    'service header does not document the router-matched kind');
+  // The hazard is presenting a poison value AS the kind to send (`kind: 'X'`),
+  // not naming it in a cautionary "do NOT send this" note — the header keeps the
+  // concrete counter-example on purpose, so we forbid only the dangerous form.
+  check('D16 the service header never presents "post_purchase_upsell" as a kind to send',
+    !/kind: 'post_purchase_upsell'/.test(svcSrc), 'poison literal presented as kind');
+  check('D16 the service header never presents a bare "base" as a kind to send (base is absent/"0")',
+    !/kind: 'base'/.test(svcSrc), '"base" presented as kind');
+  check('D16 the service header states the router matches ONLY "upsell"',
+    /matches nothing|keys STRICTLY on|matches only 'upsell'|matches NOTHING/i.test(svcSrc)
+    || /STRICTLY on the literal string 'upsell'/.test(svcSrc),
+    'router-only-matches-upsell note missing');
+}
+
 // ── cleanup ─────────────────────────────────────────────────────────────────
 Object.assign(dun._deps, realDeps);
 await cleanup();
