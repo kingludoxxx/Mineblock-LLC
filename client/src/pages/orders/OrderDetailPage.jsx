@@ -10,11 +10,14 @@ import {
   Pencil,
   Send,
   Plus,
+  AlertTriangle,
+  History,
 } from 'lucide-react';
 import api from '../../services/api';
 import Button from '../../components/ui/Button';
 import { CustomerAvatar, StatusPill, customerName } from './OrdersPage';
 import OrderJourney from './OrderJourney';
+import OrderEditModal from './OrderEditModal';
 
 const money = (v) =>
   v == null
@@ -56,6 +59,35 @@ function DetailField({ label, value }) {
   );
 }
 
+// The page's own `money()` is hard-wired to USD. Edit and settlement amounts
+// carry their OWN currency, and Intl throws a RangeError on an unknown code —
+// so this variant takes the currency and degrades to plain text rather than
+// crashing an order page on a malformed one.
+const moneyIn = (v, cur = 'USD') => {
+  if (v == null) return '—';
+  try {
+    return Number(v).toLocaleString('en-US', { style: 'currency', currency: cur || 'USD' });
+  } catch {
+    return `${cur || ''} ${Number(v).toFixed(2)}`.trim();
+  }
+};
+
+// One line describing what an edit did, from the stored delta. Falls back to a
+// plain count rather than claiming nothing happened — a version row always
+// represents a real change.
+function editSummary(h) {
+  const changes = Array.isArray(h.delta?.changes) ? h.delta.changes : [];
+  const parts = [];
+  const added = changes.filter((c) => c.kind === 'added').length;
+  const removed = changes.filter((c) => c.kind === 'removed').length;
+  const requantified = changes.filter((c) => c.kind === 'quantity').length;
+  if (added) parts.push(`${added} line${added === 1 ? '' : 's'} added`);
+  if (removed) parts.push(`${removed} removed`);
+  if (requantified) parts.push(`${requantified} quantity change${requantified === 1 ? '' : 's'}`);
+  if (h.address_changed) parts.push('address updated');
+  return parts.length ? parts.join(', ') : `${changes.length} change${changes.length === 1 ? '' : 's'}`;
+}
+
 function addressLines(addr) {
   if (!addr) return null;
   const parts = [
@@ -82,6 +114,12 @@ export default function OrderDetailPage() {
   // answer different questions, so they are tabs rather than one merged list:
   // interleaving a staff note with 40 pixel sends buries the note.
   const [timelineTab, setTimelineTab] = useState('staff');
+  const [editOpen, setEditOpen] = useState(false);
+  // The post-purchase edit state (version history + open money seam). Loaded
+  // separately from the order because it can legitimately be "not linked" — an
+  // order imported straight from Shopify has no checkout session behind it —
+  // and that must not read as a failure of the order load.
+  const [editState, setEditState] = useState(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -96,9 +134,21 @@ export default function OrderDetailPage() {
     }
   }, [id]);
 
+  const loadEditState = useCallback(async () => {
+    try {
+      const res = await api.get(`/order-edit/by-order/${id}`);
+      setEditState(res.data?.data || null);
+    } catch {
+      // Fail-open: the edit panel is additive. Its absence must never blank an
+      // order page an operator opened to read something else.
+      setEditState(null);
+    }
+  }, [id]);
+
   useEffect(() => {
     load();
-  }, [load]);
+    loadEditState();
+  }, [load, loadEditState]);
 
   if (loading) {
     return <div className="py-24 text-center text-text-muted text-sm">Loading order...</div>;
@@ -213,7 +263,17 @@ export default function OrderDetailPage() {
           <Button variant="secondary" size="md" title="Refunds arrive with the checkout phase">
             Refund
           </Button>
-          <Button variant="secondary" size="md" title="Order editing arrives with the checkout phase">
+          <Button
+            variant="secondary"
+            size="md"
+            onClick={() => setEditOpen(true)}
+            disabled={editState !== null && editState.linked === false}
+            title={
+              editState?.linked === false
+                ? 'This order has no checkout session behind it — edit it in Shopify'
+                : 'Edit line items and shipping address'
+            }
+          >
             <Pencil className="w-3.5 h-3.5" /> Edit
           </Button>
           <Button variant="secondary" size="md" onClick={doArchive}>
@@ -376,6 +436,95 @@ export default function OrderDetailPage() {
               )}
             </div>
           </SectionCard>
+
+          {/* ── Post-purchase edits + the money seam ──────────────────────────
+              Rendered only when this order actually has an edit history or an
+              open settlement. An empty card on every untouched order would
+              train operators to ignore the one place a real unsettled amount
+              appears. */}
+          {editState?.linked && (editState.history?.length > 0 || editState.open_settlement_count > 0) && (
+            <SectionCard
+              title="Post-purchase edits"
+              action={
+                <span className="text-xs text-text-muted">
+                  {editState.history_total} edit{editState.history_total === 1 ? '' : 's'}
+                </span>
+              }
+            >
+              {editState.open_settlement_count > 0 && (
+                <div className="mb-3 px-3 py-2.5 rounded-lg bg-amber-500/10 border border-amber-500/25 text-amber-200 text-sm">
+                  <div className="flex items-start gap-2">
+                    <AlertTriangle className="w-4 h-4 mt-0.5 shrink-0" />
+                    <div>
+                      <p className="font-medium">
+                        {editState.open_settlement_count} unsettled difference
+                        {editState.open_settlement_count === 1 ? '' : 's'} —{' '}
+                        {editState.session.cumulative_delta > 0
+                          ? `the buyer owes ${moneyIn(editState.session.cumulative_delta, editState.session.currency)}`
+                          : `we owe the buyer ${moneyIn(Math.abs(editState.session.cumulative_delta), editState.session.currency)}`}
+                      </p>
+                      {/* The sentence that stops an operator assuming this is done. */}
+                      <p className="mt-0.5 text-xs opacity-90">
+                        Editing an order never moves money. Nothing has been charged or refunded
+                        for these edits.
+                      </p>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              <div className="flex justify-between text-sm mb-3">
+                <span className="text-text-muted">Captured at purchase</span>
+                <span className="text-text-primary font-medium">
+                  {moneyIn(editState.session.captured_total, editState.session.currency)}
+                </span>
+              </div>
+              <div className="flex justify-between text-sm mb-3">
+                <span className="text-text-muted">Order value after edits</span>
+                <span className="text-text-primary font-medium">
+                  {moneyIn(editState.session.owed_now, editState.session.currency)}
+                </span>
+              </div>
+
+              <div className="border-t border-border-subtle pt-3 space-y-2">
+                {editState.history.map((h) => {
+                  const s = editState.settlements.find((x) => x.edit_row_id === h.id);
+                  const push = editState.pushes.find((x) => x.edit_row_id === h.id);
+                  return (
+                    <div key={h.id} className="flex items-start gap-2.5">
+                      <History className="w-3.5 h-3.5 mt-1 shrink-0 text-text-faint" />
+                      <div className="flex-1 min-w-0">
+                        <div className="text-sm text-text-primary">
+                          v{h.version} · {editSummary(h)}
+                        </div>
+                        <div className="text-[11px] text-text-faint">
+                          {h.created_by || 'staff'} · {fmtDate(h.created_at)}
+                          {push && push.status !== 'pushed' ? ` · Shopify: ${push.status}` : ''}
+                        </div>
+                      </div>
+                      {s && (
+                        <span
+                          className={`text-xs whitespace-nowrap px-1.5 py-0.5 rounded border ${
+                            s.status === 'needs_settlement'
+                              ? 'bg-amber-500/10 border-amber-500/25 text-amber-300'
+                              : 'bg-bg-elevated border-border-default text-text-muted'
+                          }`}
+                        >
+                          {s.direction === 'refund' ? '−' : '+'}
+                          {moneyIn(s.amount, s.currency)} · {s.status.replace(/_/g, ' ')}
+                        </span>
+                      )}
+                    </div>
+                  );
+                })}
+                {editState.history_capped && (
+                  <p className="text-[11px] text-text-faint">
+                    Showing the {editState.history.length} most recent of {editState.history_total}.
+                  </p>
+                )}
+              </div>
+            </SectionCard>
+          )}
 
           {/* Cost breakdown */}
           <SectionCard title="Cost breakdown">
@@ -688,6 +837,19 @@ export default function OrderDetailPage() {
           </SectionCard>
         </div>
       </div>
+
+      <OrderEditModal
+        open={editOpen}
+        orderId={id}
+        onClose={() => setEditOpen(false)}
+        onSaved={() => {
+          // Reload BOTH: the edit changed the checkout snapshot (edit state)
+          // and, when the Shopify push is armed, eventually the mirrored order
+          // itself. Refreshing only one leaves the page contradicting itself.
+          load();
+          loadEditState();
+        }}
+      />
     </div>
   );
 }

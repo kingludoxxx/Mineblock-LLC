@@ -36,6 +36,7 @@ import {
   Store,
   Waypoints,
   Plug,
+  CreditCard,
 } from 'lucide-react';
 import { useAuth } from '../../hooks/useAuth';
 import { usePermissions } from '../../hooks/usePermissions';
@@ -48,6 +49,8 @@ const navGroups = [
       { to: '/app/orders', icon: ShoppingCart, label: 'Orders', permission: 'orders:access', end: true },
       { to: '/app/customers', icon: UsersRound, label: 'Customers', permission: 'customers:access' },
       { to: '/app/abandoned', icon: ShoppingCart, label: 'Abandoned checkouts', permission: 'orders:access' },
+      // DUNNING LANE — one additive sidebar line
+      { to: '/app/failed-payments', icon: CreditCard, label: 'Failed payments', permission: 'orders:access' },
     ],
   },
   {

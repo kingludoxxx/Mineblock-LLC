@@ -4010,3 +4010,93 @@ POST_PURCHASE_TYPES is imported — to keep the change inside the route file the
 coordinator named (DECISION MADE).
 STATUS: COMPLETE
 ---
+
+---
+TIMESTAMP: 2026-08-10 03:55
+TASK: Audit gap #2 — post-purchase ORDER EDIT + DUNNING (branch feat/order-edit-dunning)
+BUILT: Two additive lanes, neither of which moves money.
+(A) ORDER EDIT. services/orderEditService.js owns three new tables:
+co_order_edits (APPEND-ONLY version ledger — one immutable row per edit carrying
+the delta AND both whole snapshots; UNIQUE(session_id,version) is the optimistic
+-concurrency arbiter, UNIQUE(session_id,edit_id) turns a client retry into a
+replay), co_order_edit_pushes (mutable Shopify mirror state, co_orders'
+skipped/claimed/pushed/needs_review vocabulary), co_order_edit_settlements (the
+MONEY SEAM: direction charge|refund, amount always a positive magnitude,
+status needs_settlement|settled|waived|failed). Added lines are re-priced
+server-side through checkoutPricing.js READ-ONLY, preserving its two distinct
+failure classes (503 pricing_unavailable vs 422 invalid_variant).
+co_sessions.total is NEVER written — it is the captured amount and the refund
+ceiling. services/shopifyOrderEdit.js mirrors the edit via the Admin API
+(address REST PUT first, then orderEditBegin/AddVariant/SetQuantity/Commit),
+OPT-IN behind SHOPIFY_ORDER_EDIT_ENABLED=1 because orderEditCommit is additive
+and non-idempotent; failure is non-fatal and never auto-retried. routes/
+orderEdit.js exposes GET /:sessionId, POST /:sessionId/preview, POST
+/:sessionId/commit, GET /by-order/:orderId, GET /settlements, POST
+/settlements/:editRowId/resolve. Client: OrderEditModal.jsx (with the delta
+summary the reference lacks entirely) + a post-purchase-edits panel and a live
+Edit button on OrderDetailPage.
+(B) DUNNING. services/dunningService.js owns co_dunning_queue (projected
+READ-ONLY out of co_upsell_charges + co_sessions.last_failed_payment_id; fixed
+1h/24h/72h ladder materialised into next_retry_at; explicit states scheduled/
+exhausted/not_retryable/stale/recovered/closed) and co_dunning_retry_requests
+(APPEND-ONLY intent, UNIQUE(queue_id,attempt_no)). One 22-marker hard-decline
+denylist and one 10-bucket reporting taxonomy. A retry RECORDS INTENT — no
+gateway call — via an atomic conditional UPDATE that mints the attempt number,
+enforces the cap and enforces a 60s spacing floor. One exactly-once Klaviyo
+'Payment Failed' event per queued failure (lb_integration_sends claim
+kdf_<queue_id>, claim-before-send, release-on-failure and release-on-throw).
+routes/dunning.js: GET /config, GET|POST /failed-payments, POST /scan, GET
+/failed-payments/:id, POST /failed-payments/:id/retry, POST
+/failed-payments/:id/close. Client: FailedPaymentsPage.jsx + sidebar/route line.
+TESTED: Three new in-process harnesses against embedded PG 5433 on their own
+databases (puure_orderedit, puure_dunning), driving the REAL routers through the
+real auth chain, with Shopify mocked at the fetch boundary and Klaviyo swapped
+at the service _deps seam.
+OUTPUT: order-edit.mjs 77/77 · dunning.mjs 74/74 · post-purchase-ui.mjs 27/27 ·
+regression orders-extras.mjs 150/150 · money-path set 322/325 (the 3 failures in
+upsell-page.mjs are PRE-EXISTING — reproduced identically on a stashed clean
+tree at 6eb46e0; they need live Shopify creds. review-regression.mjs needs a
+live server on :4003 — ECONNREFUSED, also environmental). vite build exit 0;
+eslint 0 on all five changed/new client files (Sidebar's unused-useAuth error is
+pre-existing on main); node --check OK on all six server files.
+Edge cases driven, not assumed: Shopify transport failure vs unknown variant vs
+DRAFT product; a NULL line price refused as unpriced_line rather than summed as
+0; a genuine 0 price accepted; stale base_version; replayed edit_id; refunded
+session; fulfilled order; blank address1; non-array/array-typed bodies; over-long
+ids; an out-of-range window clamped; a Shopify commit failure leaving the edit
+standing; an address failure aborting BEFORE the additive commit; a Klaviyo send
+that fails and one that throws, both releasing the claim; a double-clicked retry.
+DECISIONS:
+(1) TWO BUGS FOUND BY THE HARNESS AND FIXED, both real. First: the per-edit
+delta was originally measured against captured_total, so the SECOND edit and
+every one after it re-booked the first edit's still-open divergence a second
+time. It now measures owed_after − owed_before, which makes the open settlement
+rows SUM EXACTLY to owed_now − captured_total — an identity the harness asserts.
+Second: a double-clicked Retry burned two of three ladder rungs in under a
+second (each click is a genuinely separate request, so the atomic claim alone
+could not refuse it). Added RETRY_MIN_SPACING_SECONDS=60, published in /config.
+(2) co_sessions.total is never written by an edit (DECISION MADE). The
+reference lets `total` rise by what its gateway collected inline; we do not
+charge inline, so any movement would be a claim about money that never moved
+and would silently shift the refund ceiling.
+(3) Shopify write-back is BUILT but OFF by default (DECISION MADE). The Order
+Editing API is additive and non-idempotent with no idempotency key; the only
+protection is the caller never issuing a second push, which the immutable
+co_order_edits row provides. Opt-in per deployment, mirroring
+shopifyOrderCreateEnabled(), so a shared-codebase deploy cannot edit another
+store's orders.
+(4) Address fields use OUR stored shape (address1/address2/city/state/zip/
+country) rather than the reference's province_code/country_code, which nothing
+else in this codebase reads; reference-shaped keys are mapped on input.
+(5) Shipping/tax/discount are held CONSTANT across an edit (DECISION MADE) —
+re-quoting freight and re-running a discount belong to lanes that are read-only
+to this one.
+(6) checkoutSchema.js was NOT modified and co_upsell_charges was NOT altered
+(DECISION MADE) — the dunning queue owns its own tables and only READS the
+money ledger, so it can never become a second source of truth about money.
+(7) The retry-intent ledger is append-only and carries no status; mutable
+schedule state lives on the queue row, so the intent table stays trustworthy
+history.
+STATUS: COMPLETE — the two money-seam contracts are documented in the headers of
+routes/orderEdit.js and routes/dunning.js for the integrator.
+---
