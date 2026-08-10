@@ -45,6 +45,7 @@ import funnelCostsRoutes from './funnelCosts.js';
 import cogsAssistantRoutes from './cogsAssistant.js';
 import funnelCostGroupsRoutes from './funnelCostGroups.js';
 import healthAlertsRoutes from './healthAlerts.js';
+import crmSsoRoutes from './crmSso.js';
 import funnelMetricsRoutes from './funnelMetrics.js';
 import funnelInsightsRoutes from './funnelInsights.js';
 import funnelAttributionRoutes from './funnelAttribution.js';
@@ -135,6 +136,7 @@ const mountRoutes = (app) => {
   // rates are written through /funnel-costs/rates with scope='item'.
   app.use('/api/v1/funnel-cost-groups', funnelCostGroupsRoutes);
   app.use('/api/v1/health-alerts', healthAlertsRoutes); // PLATFORM: operational alert feed + ack (authed, audit:read; 5-min sweep starts on load, HEALTH_ALERTS_SWEEP_DISABLED=1 off)
+  app.use('/api/v1/crm-sso', crmSsoRoutes); // CRM SWITCH-OVER: mints the SSO ticket for the embedded Funnel OS CRM (authed; 503 unless SSO_SHARED_SECRET is set)
   // METRICS ENGINE — the one query API + presets + dashboard composite (authed,
   // funnels permission; read-only, isolated analytics pool, REPORT_TZ buckets).
   app.use('/api/v1/funnel-metrics', funnelMetricsRoutes);

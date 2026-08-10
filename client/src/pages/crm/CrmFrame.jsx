@@ -19,6 +19,7 @@
  */
 import { useEffect, useRef, useState } from 'react';
 import { ExternalLink, AlertTriangle } from 'lucide-react';
+import api from '../../services/api';
 
 const CRM_ORIGIN =
   import.meta.env.VITE_CRM_ORIGIN || 'https://puure-crm.onrender.com';
@@ -29,9 +30,35 @@ const CRM_ORIGIN =
 const LOAD_TIMEOUT_MS = 25000;
 
 export default function CrmFrame({ path = '/app', title = 'CRM' }) {
-  const src = `${CRM_ORIGIN}${path}`;
+  // SSO: swap the plain CRM URL for a one-time ticket exchange so the operator
+  // never sees the CRM's own login. `ssoSrc` stays null until the ticket is in
+  // hand; if minting fails we fall back to the plain URL, which still works —
+  // it just shows the CRM login. A broken SSO must degrade to "log in twice",
+  // never to "no CRM at all".
+  const plainSrc = `${CRM_ORIGIN}${path}`;
+  const [ssoSrc, setSsoSrc] = useState(null);
+  const src = ssoSrc || plainSrc;
   const [state, setState] = useState('loading'); // loading | ok | blocked
   const timer = useRef(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const r = await api.get('/crm-sso/ticket');
+        const ticket = r?.data?.data?.ticket || r?.data?.ticket;
+        if (!cancelled && ticket) {
+          setSsoSrc(
+            `${CRM_ORIGIN}/api/sso?t=${encodeURIComponent(ticket)}&next=${encodeURIComponent(path)}`,
+          );
+        }
+      } catch {
+        // Not configured, or the CRM has no matching user — the plain URL
+        // already renders, so there is nothing to recover from here.
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [path]);
 
   // Reset on navigation between CRM pages. Adjusting state during render is the
   // sanctioned React pattern for "derive from props" — doing it in an effect
