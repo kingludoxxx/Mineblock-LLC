@@ -558,46 +558,74 @@ export async function getAdTierCounts(brandId) {
 // on a larger one it still took ~31 s, past Render's 30 s gateway timeout.
 // Grouping in Postgres keeps process memory flat regardless of corpus size.
 //
-// `key` yields the group key, `keep` is the qualifying predicate. `a` is the
-// alias of brand_spy.ads in the surrounding query.
+// Each type is expressed as a cheap `pre` projection plus `key`/`keep` derived
+// FROM that projection, so the expensive regexes run once per row instead of
+// once for the predicate and again for the key. `a` is the alias of
+// brand_spy.ads in the surrounding query; `key`/`keep` take the pre-computed
+// column name.
+//
+// Landing: host+path, lowercased host, www./query/fragment/trailing slash
+// stripped. Schemeless values fall back to the raw first 160 chars, since
+// `new URL()` would have thrown for them.
+function landingKeySql(u) {
+  return `CASE WHEN ${u} ~ '^[A-Za-z][A-Za-z0-9+.-]*://'
+            THEN lower(regexp_replace(split_part(regexp_replace(split_part(split_part(${u}, '#', 1), '?', 1), '^[A-Za-z][A-Za-z0-9+.-]*://', ''), '/', 1), '^www\\.', ''))
+                 || regexp_replace(COALESCE(substring(regexp_replace(split_part(split_part(${u}, '#', 1), '?', 1), '^[A-Za-z][A-Za-z0-9+.-]*://', '') from '/.*'), ''), '/+$', '')
+            ELSE left(${u}, 160) END`;
+}
+
 const AGG_KEY_SQL = {
   // First line of body_text (falling back to headline), whitespace-collapsed,
   // capped at 100 chars — mirrors src.split(/\r?\n/)[0].trim().replace().slice().
   hooks: {
-    key: `left(regexp_replace(btrim(split_part(replace(COALESCE(NULLIF(a.body_text, ''), a.headline, ''), E'\\r\\n', E'\\n'), E'\\n', 1)), '\\s+', ' ', 'g'), 100)`,
-    keep: `length(left(regexp_replace(btrim(split_part(replace(COALESCE(NULLIF(a.body_text, ''), a.headline, ''), E'\\r\\n', E'\\n'), E'\\n', 1)), '\\s+', ' ', 'g'), 100)) >= 8`,
+    pre:  `left(regexp_replace(btrim(split_part(replace(COALESCE(NULLIF(a.body_text, ''), a.headline, ''), E'\\r\\n', E'\\n'), E'\\n', 1)), '\\s+', ' ', 'g'), 100)`,
+    key:  (p) => p,
+    keep: (p) => `length(${p}) >= 8`,
   },
   headlines: {
-    key: `btrim(COALESCE(a.headline, ''))`,
-    keep: `length(btrim(COALESCE(a.headline, ''))) >= 3`,
+    pre:  `btrim(COALESCE(a.headline, ''))`,
+    key:  (p) => p,
+    keep: (p) => `length(${p}) >= 3`,
   },
-  // Length is checked BEFORE collapsing, exactly as the JS did.
+  // Length is checked on the pre-collapse value, exactly as the JS did.
   adcopy: {
-    key: `regexp_replace(btrim(COALESCE(a.body_text, '')), '\\s+', ' ', 'g')`,
-    keep: `length(btrim(COALESCE(a.body_text, ''))) >= 30`,
+    pre:  `btrim(COALESCE(a.body_text, ''))`,
+    key:  (p) => `regexp_replace(${p}, '\\s+', ' ', 'g')`,
+    keep: (p) => `length(${p}) >= 30`,
   },
-  // host+path, lowercased host, www. and query/fragment/trailing slash stripped.
-  // Schemeless values fall back to the raw first 160 chars, as `new URL()`
-  // would have thrown for them.
   landing: {
-    key: `CASE WHEN btrim(COALESCE(a.link_url, '')) ~ '^[A-Za-z][A-Za-z0-9+.-]*://'
-            THEN lower(regexp_replace(split_part(regexp_replace(split_part(split_part(btrim(a.link_url), '#', 1), '?', 1), '^[A-Za-z][A-Za-z0-9+.-]*://', ''), '/', 1), '^www\\.', ''))
-                 || regexp_replace(COALESCE(substring(regexp_replace(split_part(split_part(btrim(a.link_url), '#', 1), '?', 1), '^[A-Za-z][A-Za-z0-9+.-]*://', '') from '/.*'), ''), '/+$', '')
-            ELSE left(btrim(COALESCE(a.link_url, '')), 160) END`,
-    keep: `btrim(COALESCE(a.link_url, '')) <> ''`,
+    pre:  `btrim(COALESCE(a.link_url, ''))`,
+    key:  (p) => landingKeySql(p),
+    keep: (p) => `${p} <> ''`,
   },
 };
 
 export async function getBrandAggregationCounts(brandId) {
-  const K = AGG_KEY_SQL;
+  // Derive each key ONCE per row in the inner select, then count distinct over
+  // md5() of it. Two deliberate choices, both measured:
+  //   * the first version evaluated every regex twice per row (once for the
+  //     qualifying predicate, once for the key) — 8 heavy expressions per row.
+  //   * count(DISTINCT <long text>) sorts multi-KB ad bodies; hashing to a
+  //     fixed 32-byte digest keeps the sort key small. Digest collisions are
+  //     negligible at these cardinalities and this is a display counter.
   const { rows } = await query(
     `SELECT
-       count(DISTINCT CASE WHEN ${K.hooks.keep}     THEN ${K.hooks.key}     END)::int AS hooks,
-       count(DISTINCT CASE WHEN ${K.adcopy.keep}    THEN ${K.adcopy.key}    END)::int AS adcopy,
-       count(DISTINCT CASE WHEN ${K.headlines.keep} THEN ${K.headlines.key} END)::int AS headlines,
-       count(DISTINCT CASE WHEN ${K.landing.keep}   THEN ${K.landing.key}   END)::int AS landing
-     FROM brand_spy.ads a
-     WHERE a.brand_id = $1`,
+       count(DISTINCT md5(CASE WHEN ${AGG_KEY_SQL.hooks.keep('hook_v')}
+                               THEN ${AGG_KEY_SQL.hooks.key('hook_v')} END))::int AS hooks,
+       count(DISTINCT md5(CASE WHEN ${AGG_KEY_SQL.adcopy.keep('bt')}
+                               THEN ${AGG_KEY_SQL.adcopy.key('bt')} END))::int AS adcopy,
+       count(DISTINCT md5(CASE WHEN ${AGG_KEY_SQL.headlines.keep('hd')}
+                               THEN ${AGG_KEY_SQL.headlines.key('hd')} END))::int AS headlines,
+       count(DISTINCT md5(CASE WHEN ${AGG_KEY_SQL.landing.keep('lu')}
+                               THEN ${AGG_KEY_SQL.landing.key('lu')} END))::int AS landing
+     FROM (
+       SELECT ${AGG_KEY_SQL.hooks.pre}     AS hook_v,
+              ${AGG_KEY_SQL.adcopy.pre}    AS bt,
+              ${AGG_KEY_SQL.headlines.pre} AS hd,
+              ${AGG_KEY_SQL.landing.pre}   AS lu
+         FROM brand_spy.ads a
+        WHERE a.brand_id = $1
+     ) s`,
     [brandId],
   );
 
@@ -620,10 +648,6 @@ export async function getBrandAggregations(brandId, type, { limit = 50, activeOn
   if (activeOnly) where.push('a.is_active = TRUE');
   const whereSql = where.join(' AND ');
 
-  // Same SQL-side JSON extraction listAds / getAdDetail use. Dropping
-  // raw_snapshot from the SELECT cuts the wire payload from ~12 MB to ~2 MB
-  // on big brands like Norse Organics (2,400 ads × ~5 KB JSON each) and
-  // moves the thumbnail computation from JS to Postgres where it's free.
   const K = AGG_KEY_SQL[type];
   if (!K) throw new Error(`Unknown aggregation type: ${type}`);
 
@@ -631,23 +655,25 @@ export async function getBrandAggregations(brandId, type, { limit = 50, activeOn
   // the brand's ad count is ever held in this process — see AGG_KEY_SQL above
   // for why that matters. `total` comes back as a window count over the full
   // group set, so it still reflects every group, not just the returned page.
+  //
+  // `base` deliberately carries only the columns needed to derive the key and
+  // the per-group aggregates. The thumbnail lives in raw_snapshot, and
+  // extracting it here would force Postgres to detoast that JSONB for every ad
+  // in the brand; instead the sample columns are joined back at the very end,
+  // against the <= `limit` representative ads that actually get returned.
   const { rows } = await query(
-    `WITH f AS (
-       SELECT a.id, a.headline, a.body_text, a.link_url, a.cta_text,
-              a.tier, a.is_active, a.current_rank,
+    `WITH base AS (
+       SELECT a.id, a.tier, a.is_active, a.current_rank,
               GREATEST(COALESCE(a.active_days, 0),
                        floor(COALESCE(a.total_active_time, 0) / 86400.0))::int AS days,
-              COALESCE(
-                a.raw_snapshot->'videos'->0->>'video_preview_image_url',
-                a.raw_snapshot->'images'->0->>'resized_image_url',
-                a.raw_snapshot->'images'->0->>'original_image_url',
-                a.raw_snapshot->'cards'->0->>'resized_image_url',
-                a.raw_snapshot->'cards'->0->>'original_image_url',
-                a.raw_snapshot->>'page_profile_picture_url'
-              ) AS thumbnail_url,
-              ${K.key} AS k
+              ${K.pre} AS pre
          FROM brand_spy.ads a
-        WHERE ${whereSql} AND ${K.keep}
+        WHERE ${whereSql}
+     ),
+     f AS (
+       SELECT id, tier, is_active, current_rank, days, ${K.key('pre')} AS k
+         FROM base
+        WHERE ${K.keep('pre')}
      ),
      g AS (
        SELECT k,
@@ -666,18 +692,29 @@ export async function getBrandAggregations(brandId, type, { limit = 50, activeOn
          FROM f GROUP BY k
      ),
      t AS (
-       SELECT DISTINCT ON (k) k, id AS top_ad_id, current_rank AS best_rank,
-              headline, body_text, link_url, cta_text, thumbnail_url
+       SELECT DISTINCT ON (k) k, id AS top_ad_id, current_rank AS best_rank
          FROM f
         ORDER BY k, (is_active AND current_rank IS NOT NULL) DESC,
                  current_rank ASC NULLS LAST, id
+     ),
+     lim AS (
+       SELECT g.*, t.top_ad_id, t.best_rank,
+              (count(*) OVER ())::int AS total_groups
+         FROM g JOIN t USING (k)
+        ORDER BY g.active_count DESC, g.max_active_days DESC, g.count DESC
+        LIMIT $${params.length + 1}
      )
-     SELECT g.*, t.top_ad_id, t.best_rank, t.headline, t.body_text, t.link_url,
-            t.cta_text, t.thumbnail_url,
-            (count(*) OVER ())::int AS total_groups
-       FROM g JOIN t USING (k)
-      ORDER BY g.active_count DESC, g.max_active_days DESC, g.count DESC
-      LIMIT $${params.length + 1}`,
+     SELECT lim.*, s.headline, s.body_text, s.link_url, s.cta_text,
+            COALESCE(
+              s.raw_snapshot->'videos'->0->>'video_preview_image_url',
+              s.raw_snapshot->'images'->0->>'resized_image_url',
+              s.raw_snapshot->'images'->0->>'original_image_url',
+              s.raw_snapshot->'cards'->0->>'resized_image_url',
+              s.raw_snapshot->'cards'->0->>'original_image_url',
+              s.raw_snapshot->>'page_profile_picture_url'
+            ) AS thumbnail_url
+       FROM lim JOIN brand_spy.ads s ON s.id = lim.top_ad_id
+      ORDER BY lim.active_count DESC, lim.max_active_days DESC, lim.count DESC`,
     [...params, limit],
   );
 
