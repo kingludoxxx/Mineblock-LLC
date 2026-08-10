@@ -1043,6 +1043,12 @@ let pairBatch = '';
 
 // ═══ B2: the item-scope ship-only path carries too ═════════════════════════
 {
+  // The cost-groups merge added item-existence validation at the rate door
+  // (M1: item_not_found/item_archived) — the item must be REAL before a rate
+  // can name it. This fixture predates that guard; the guard is correct.
+  await sql`INSERT INTO lb_cost_items (cost_item_id, name, archived)
+            VALUES ('ci_group1', 'Assistant Harness Group', FALSE)
+            ON CONFLICT (cost_item_id) DO NOTHING`;
   const seed = await req('POST', '/funnel-costs/rates', {
     scope: 'item', cost_item_id: 'ci_group1', unit_cogs: 3.3,
   });
