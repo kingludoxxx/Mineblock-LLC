@@ -4,6 +4,7 @@
  */
 
 import { Router } from 'express';
+import { authenticate } from '../middleware/auth.js';
 import {
   listBrands,
   getBrandExpanded,
@@ -24,6 +25,14 @@ import { extractFreshVideoUrl, adLibraryUrl } from '../services/freshVideoUrl.js
 import { startMediaMirrorWorker } from '../services/brandSpyMediaMirror.js';
 
 const router = Router();
+
+// Every other feature router authenticates; this one never did, so the whole
+// Brand Spy surface — including POST /brands, POST /brands/:id/scrape and
+// DELETE /brands/:id — was readable and writable with no session at all.
+// `authenticate` accepts the httpOnly accessToken cookie the login sets, and
+// the client calls this API same-origin (apiBaseUrl = '/api/v1/brand-spy'),
+// so the browser attaches it automatically — no client change needed.
+router.use(authenticate);
 
 // RFC4122 UUID v1-v5. Used to reject malformed :id params before they hit
 // Postgres (where they'd otherwise throw a raw `invalid input syntax for
