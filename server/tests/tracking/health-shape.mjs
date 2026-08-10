@@ -27,9 +27,15 @@ const metaPixel = (over = {}) => ({
   enabled: true, config: { capi_token: 'enc:tok' }, ...over,
 });
 
-const counts = (platform, h24, d7 = h24) => ([
-  { platform, window: 'h24', ...{ sent: 0, failed: 0, skipped: 0, deduped: 0, queued: 0, ...h24 } },
-  { platform, window: 'd7', ...{ sent: 0, failed: 0, skipped: 0, deduped: 0, queued: 0, ...d7 } },
+// Seam audit M7: the shaper keys counters on the LEDGER KEY
+// (lb_tracking_events.pixel_id), not on `platform`. platform is a CLASS, not an
+// identity — every custom S2S network writes 'custom', so platform keying gave
+// N custom networks the SAME numbers. These helpers now speak the new contract.
+const META_ID = '123456789';
+const GA4_ID = 'G-ABCD1234';
+const counts = (pixelId, h24, d7 = h24) => ([
+  { pixel_id: pixelId, window: 'h24', ...{ sent: 0, failed: 0, skipped: 0, deduped: 0, queued: 0, ...h24 } },
+  { pixel_id: pixelId, window: 'd7', ...{ sent: 0, failed: 0, skipped: 0, deduped: 0, queued: 0, ...d7 } },
 ]);
 
 const shape = (args) => shapeTrackingHealth({ funnelId: FID, specs: SPECS, now: NOW, ...args });
@@ -37,7 +43,7 @@ const only = (args) => shape(args).pixels[0];
 
 // ── T1 healthy: sends landed, nothing failed ────────────────────────────────
 {
-  const p = only({ pixels: [metaPixel()], counts: counts('meta', { sent: 42 }) });
+  const p = only({ pixels: [metaPixel()], counts: counts(META_ID, { sent: 42 }) });
   eq(p.status, 'healthy', 'T1 healthy: sends with no failures');
   eq(p.tone, 'success', 'T1 healthy: success tone');
   eq(p.windows.h24.sent, 42, 'T1 healthy: 24h sent count carried through');
@@ -46,7 +52,7 @@ const only = (args) => shape(args).pixels[0];
 
 // ── T2 failing: activity, every attempt failed ──────────────────────────────
 {
-  const p = only({ pixels: [metaPixel()], counts: counts('meta', { failed: 7 }) });
+  const p = only({ pixels: [metaPixel()], counts: counts(META_ID, { failed: 7 }) });
   eq(p.status, 'failing', 'T2 failing: failed>0 and sent=0');
   eq(p.tone, 'danger', 'T2 failing: danger tone');
 }
@@ -65,8 +71,8 @@ const only = (args) => shape(args).pixels[0];
   // with the 7d counters carrying the nuance. Must not read as healthy.
   const p = only({
     pixels: [metaPixel()],
-    counts: counts('meta', {}, { sent: 900 }),
-    lasts: [{ platform: 'meta', last_sent_at: '2026-08-06T09:00:00.000Z' }],
+    counts: counts(META_ID, {}, { sent: 900 }),
+    lasts: [{ pixel_id: META_ID, last_sent_at: '2026-08-06T09:00:00.000Z' }],
   });
   eq(p.status, 'no_traffic', 'T3b quiet 24h but busy 7d → no_traffic, not healthy');
   eq(p.windows.d7.sent, 900, 'T3b 7d counters still reported');
@@ -77,7 +83,7 @@ const only = (args) => shape(args).pixels[0];
 {
   const p = only({
     pixels: [metaPixel()],
-    counts: counts('meta', { sent: 3, failed: 12 }),
+    counts: counts(META_ID, { sent: 3, failed: 12 }),
     breakers: [{ scope_id: `${FID}:px_meta1`, fails: 5, open_until: '2026-08-09T12:10:00.000Z' }],
   });
   eq(p.status, 'outage', 'T4 breaker open → outage (outranks the counters)');
@@ -88,7 +94,7 @@ const only = (args) => shape(args).pixels[0];
   // An EXPIRED breaker window must not keep reading as an outage.
   const p = only({
     pixels: [metaPixel()],
-    counts: counts('meta', { sent: 10 }),
+    counts: counts(META_ID, { sent: 10 }),
     breakers: [{ scope_id: `${FID}:px_meta1`, fails: 5, open_until: '2026-08-09T11:00:00.000Z' }],
   });
   eq(p.status, 'healthy', 'T4b expired breaker → not an outage');
@@ -98,7 +104,7 @@ const only = (args) => shape(args).pixels[0];
   // Breaker keyed to a DIFFERENT pixel row must not bleed across pixels.
   const p = only({
     pixels: [metaPixel()],
-    counts: counts('meta', { sent: 5 }),
+    counts: counts(META_ID, { sent: 5 }),
     breakers: [{ scope_id: `${FID}:px_other`, fails: 5, open_until: '2026-08-09T12:10:00.000Z' }],
   });
   eq(p.status, 'healthy', 'T4c another pixel\'s breaker does not leak into this one');
@@ -116,7 +122,7 @@ const only = (args) => shape(args).pixels[0];
 
 // ── T6 disabled / T7 dormant / T8 misconfigured ─────────────────────────────
 {
-  const p = only({ pixels: [metaPixel({ enabled: false })], counts: counts('meta', { sent: 5 }) });
+  const p = only({ pixels: [metaPixel({ enabled: false })], counts: counts(META_ID, { sent: 5 }) });
   eq(p.status, 'disabled', 'T6 disabled pixel reads disabled, not healthy');
 }
 {
@@ -142,7 +148,7 @@ const only = (args) => shape(args).pixels[0];
 
 // ── T9 degraded / T10 queue-backlog outage ──────────────────────────────────
 {
-  const p = only({ pixels: [metaPixel()], counts: counts('meta', { sent: 20, failed: 3 }) });
+  const p = only({ pixels: [metaPixel()], counts: counts(META_ID, { sent: 20, failed: 3 }) });
   eq(p.status, 'degraded', 'T9 partial failures → degraded');
 }
 {
@@ -153,8 +159,8 @@ const only = (args) => shape(args).pixels[0];
   // for failures with NO backlog (T2).
   const p = only({
     pixels: [metaPixel()],
-    counts: counts('meta', { failed: 2 }),
-    queueDepth: [{ kind: 'meta_pixel', n: 14 }],
+    counts: counts(META_ID, { failed: 2 }),
+    queueDepth: [{ pixel_row_id: 'px_meta1', n: 14 }],
   });
   eq(p.status, 'outage', 'T10a failures + live backlog + zero sends → outage');
   eq(p.queued_now, 14, 'T10a live queue depth carried');
@@ -164,8 +170,8 @@ const only = (args) => shape(args).pixels[0];
   // yet, but nothing is getting through. That is an outage.
   const p = only({
     pixels: [metaPixel()],
-    counts: counts('meta', { queued: 9 }),
-    queueDepth: [{ kind: 'meta_pixel', n: 9 }],
+    counts: counts(META_ID, { queued: 9 }),
+    queueDepth: [{ pixel_row_id: 'px_meta1', n: 9 }],
   });
   eq(p.status, 'outage', 'T10b retry backlog with zero deliveries → outage');
 }
@@ -180,7 +186,7 @@ const only = (args) => shape(args).pixels[0];
   const p = only({
     pixels: [metaPixel()],
     counts: [],
-    queueDepth: [{ kind: 'meta_pixel', n: 2 }],
+    queueDepth: [{ pixel_row_id: 'px_meta1', n: 2 }],
   });
   eq(p.status, 'outage', 'T10c EMPTY ledger window + live queue backlog → outage, NOT no_traffic');
   eq(p.queued_now, 2, 'T10c live queue depth carried with an empty window');
@@ -194,7 +200,7 @@ const only = (args) => shape(args).pixels[0];
 
 // ── T11 A SKIP IS NOT A FAILURE (and not a delivery either) ─────────────────
 {
-  const p = only({ pixels: [metaPixel()], counts: counts('meta', { skipped: 30 }) });
+  const p = only({ pixels: [metaPixel()], counts: counts(META_ID, { skipped: 30 }) });
   ok(p.status !== 'failing', 'T11 skipped-only window never reads as failing');
   ok(p.status !== 'healthy', 'T11 skipped-only window never reads as healthy (nothing was sent)');
   eq(p.status, 'no_deliveries', 'T11 skipped-only window → no_deliveries');
@@ -202,7 +208,7 @@ const only = (args) => shape(args).pixels[0];
   eq(p.windows.h24.failed, 0, 'T11 skips do NOT increment the failed counter');
 }
 {
-  const p = only({ pixels: [metaPixel()], counts: counts('meta', { sent: 12, skipped: 40 }) });
+  const p = only({ pixels: [metaPixel()], counts: counts(META_ID, { sent: 12, skipped: 40 }) });
   eq(p.status, 'healthy', 'T11b skips alongside real sends do not degrade the verdict');
 }
 
@@ -210,7 +216,7 @@ const only = (args) => shape(args).pixels[0];
 {
   const d = shape({
     pixels: [metaPixel(), { id: 'px_ga', kind: 'ga4', pixel_id: 'G-ABCD1234', mode: 's2s', enabled: true, config: { api_secret: 'enc:s' } }],
-    counts: [...counts('meta', { sent: 100 }), ...counts('ga4', { failed: 5 })],
+    counts: [...counts(META_ID, { sent: 100 }), ...counts(GA4_ID, { failed: 5 })],
   });
   eq(d.overall, 'failing', 'T12 roll-up takes the WORST pixel, not the average');
   eq(d.pixels[0].kind, 'ga4', 'T12 worst pixel sorts first');
@@ -223,7 +229,7 @@ const only = (args) => shape(args).pixels[0];
 // ── T13 degraded inputs must not crash (jsonb both shapes, junk rows) ───────
 {
   // config arriving as a double-encoded STRING (the jsonb trap) must still be read.
-  const p = only({ pixels: [metaPixel({ config: '{"capi_token":"enc:tok"}' })], counts: counts('meta', { sent: 1 }) });
+  const p = only({ pixels: [metaPixel({ config: '{"capi_token":"enc:tok"}' })], counts: counts(META_ID, { sent: 1 }) });
   eq(p.status, 'healthy', 'T13a config as a JSON STRING is parsed, not treated as missing');
 }
 {
@@ -237,7 +243,7 @@ eq(JSON.stringify(asObject({ a: 1 })), '{"a":1}', 'T13e asObject passes objects 
   // Null/garbage counters and a null breaker timestamp must not produce NaN.
   const p = only({
     pixels: [metaPixel()],
-    counts: [{ platform: 'meta', window: 'h24', sent: null, failed: undefined, skipped: 'x', deduped: 3, queued: null }],
+    counts: [{ pixel_id: META_ID, window: 'h24', sent: null, failed: undefined, skipped: 'x', deduped: 3, queued: null }],
     breakers: [{ scope_id: `${FID}:px_meta1`, fails: null, open_until: null }],
   });
   ok(!Number.isNaN(p.windows.h24.sent), 'T13f null counters coerce to 0, never NaN');
@@ -249,7 +255,7 @@ eq(JSON.stringify(asObject({ a: 1 })), '{"a":1}', 'T13e asObject passes objects 
 {
   const p = only({
     pixels: [metaPixel()],
-    counts: counts('meta', { sent: 1 }),
+    counts: counts(META_ID, { sent: 1 }),
     breakers: [{ scope_id: `${FID}:px_meta1`, fails: 2, open_until: 'not-a-date' }],
   });
   eq(p.breaker.state, 'closed', 'T13k unparseable open_until does not fake an outage');
@@ -277,8 +283,8 @@ eq(serverChannelReady(metaPixel({ pixel_id: '' }), SPECS.meta_pixel), false, 'T1
   // T16a: misconfigured (no token) AND 500 conversions stranded in the queue.
   const p = only({
     pixels: [metaPixel({ config: {} })],
-    counts: counts('meta', {}),
-    queueDepth: [{ kind: 'meta_pixel', n: 500 }],
+    counts: counts(META_ID, {}),
+    queueDepth: [{ pixel_row_id: 'px_meta1', n: 500 }],
   });
   eq(p.status, 'outage', 'T16a misconfigured + stuck queue → outage (red), NOT misconfigured');
   eq(p.tone, 'danger', 'T16a renders red, not amber');
@@ -288,7 +294,7 @@ eq(serverChannelReady(metaPixel({ pixel_id: '' }), SPECS.meta_pixel), false, 'T1
   // T16b: misconfigured (no token) AND 400 failed sends.
   const p = only({
     pixels: [metaPixel({ config: {} })],
-    counts: counts('meta', { failed: 400 }),
+    counts: counts(META_ID, { failed: 400 }),
   });
   eq(p.status, 'failing', 'T16b misconfigured + failed sends → failing (red), NOT misconfigured');
   eq(p.tone, 'danger', 'T16b renders red, not amber');
@@ -303,8 +309,8 @@ eq(serverChannelReady(metaPixel({ pixel_id: '' }), SPECS.meta_pixel), false, 'T1
   // because the events are preserved for retry and that is the actionable read.
   const p = only({
     pixels: [metaPixel()],
-    counts: counts('meta', { failed: 9 }),
-    queueDepth: [{ kind: 'meta_pixel', n: 4 }],
+    counts: counts(META_ID, { failed: 9 }),
+    queueDepth: [{ pixel_row_id: 'px_meta1', n: 4 }],
   });
   eq(p.status, 'outage', 'T16d failed + backlog + zero sends → outage, not failing');
 }
@@ -312,8 +318,8 @@ eq(serverChannelReady(metaPixel({ pixel_id: '' }), SPECS.meta_pixel), false, 'T1
   // T16e: an open breaker still outranks everything below it.
   const p = only({
     pixels: [metaPixel({ config: {} })],
-    counts: counts('meta', { failed: 50 }),
-    queueDepth: [{ kind: 'meta_pixel', n: 50 }],
+    counts: counts(META_ID, { failed: 50 }),
+    queueDepth: [{ pixel_row_id: 'px_meta1', n: 50 }],
     breakers: [{ scope_id: `${FID}:px_meta1`, fails: 5, open_until: '2026-08-09T12:10:00.000Z' }],
   });
   eq(p.status, 'outage', 'T16e open breaker still wins');
@@ -334,7 +340,7 @@ eq(serverChannelReady(metaPixel({ pixel_id: '' }), SPECS.meta_pixel), false, 'T1
   // Open: note states the open state and the fail count.
   const p = only({
     pixels: [metaPixel()],
-    counts: counts('meta', { sent: 1 }),
+    counts: counts(META_ID, { sent: 1 }),
     breakers: [{ scope_id: `${FID}:px_meta1`, fails: 6, open_until: '2026-08-09T12:10:00.000Z' }],
   });
   eq(p.breaker.cooldown_lapsed, false, 'T17a an OPEN breaker is not "cooldown lapsed"');
@@ -348,7 +354,7 @@ eq(serverChannelReady(metaPixel({ pixel_id: '' }), SPECS.meta_pixel), false, 'T1
   // 'closed' state.
   const p = only({
     pixels: [metaPixel()],
-    counts: counts('meta', { sent: 3 }),
+    counts: counts(META_ID, { sent: 3 }),
     breakers: [{ scope_id: `${FID}:px_meta1`, fails: 7, open_until: '2026-08-09T11:00:00.000Z' }],
   });
   eq(p.breaker.state, 'closed', 'T17b lapsed cooldown reads closed');
@@ -360,7 +366,7 @@ eq(serverChannelReady(metaPixel({ pixel_id: '' }), SPECS.meta_pixel), false, 'T1
   // Below the threshold, never opened: the "opens at N" copy is correct here.
   const p = only({
     pixels: [metaPixel()],
-    counts: counts('meta', { sent: 3 }),
+    counts: counts(META_ID, { sent: 3 }),
     breakers: [{ scope_id: `${FID}:px_meta1`, fails: 2, open_until: null }],
   });
   eq(p.breaker.cooldown_lapsed, false, 'T17c below threshold is not lapsed');
@@ -369,13 +375,13 @@ eq(serverChannelReady(metaPixel({ pixel_id: '' }), SPECS.meta_pixel), false, 'T1
 {
   const p = only({
     pixels: [metaPixel()],
-    counts: counts('meta', { sent: 3 }),
+    counts: counts(META_ID, { sent: 3 }),
     breakers: [{ scope_id: `${FID}:px_meta1`, fails: 1, open_until: null }],
   });
   eq(p.breaker.note, '1 consecutive failure recorded — the breaker opens at 5.', 'T17d singular grammar');
 }
 {
-  const p = only({ pixels: [metaPixel()], counts: counts('meta', { sent: 3 }) });
+  const p = only({ pixels: [metaPixel()], counts: counts(META_ID, { sent: 3 }) });
   eq(p.breaker.note, null, 'T17e a clean breaker emits NO note (nothing to explain)');
   eq(p.breaker.cooldown_lapsed, false, 'T17e clean breaker not lapsed');
 }
@@ -386,7 +392,7 @@ eq(serverChannelReady(metaPixel({ pixel_id: '' }), SPECS.meta_pixel), false, 'T1
   // NOT depend on open_until, or this row resurrects the m6 contradiction.
   const p = only({
     pixels: [metaPixel()],
-    counts: counts('meta', { sent: 3 }),
+    counts: counts(META_ID, { sent: 3 }),
     breakers: [{ scope_id: `${FID}:px_meta1`, fails: 7, open_until: null }],
   });
   eq(p.breaker.state, 'closed', 'T17f torn-write row reads closed');
@@ -397,12 +403,12 @@ eq(serverChannelReady(metaPixel({ pixel_id: '' }), SPECS.meta_pixel), false, 'T1
 {
   // Boundary: exactly AT the threshold is lapsed; one below is not.
   const at = only({
-    pixels: [metaPixel()], counts: counts('meta', { sent: 1 }),
+    pixels: [metaPixel()], counts: counts(META_ID, { sent: 1 }),
     breakers: [{ scope_id: `${FID}:px_meta1`, fails: 5, open_until: null }],
   });
   eq(at.breaker.cooldown_lapsed, true, 'T17g fails === threshold → lapsed');
   const below = only({
-    pixels: [metaPixel()], counts: counts('meta', { sent: 1 }),
+    pixels: [metaPixel()], counts: counts(META_ID, { sent: 1 }),
     breakers: [{ scope_id: `${FID}:px_meta1`, fails: 4, open_until: null }],
   });
   eq(below.breaker.cooldown_lapsed, false, 'T17h fails === threshold-1 → not lapsed');
@@ -413,8 +419,8 @@ eq(serverChannelReady(metaPixel({ pixel_id: '' }), SPECS.meta_pixel), false, 'T1
 {
   const d = shape({
     pixels: [metaPixel(), { id: 'px_ga', kind: 'ga4', pixel_id: 'G-ABCD1234', mode: 's2s', enabled: true, config: { api_secret: 'enc:s' } }],
-    counts: [...counts('meta', { sent: 10, queued: 4 }), ...counts('ga4', { sent: 5, queued: 1 })],
-    queueDepth: [{ kind: 'meta_pixel', n: 7 }, { kind: 'ga4', n: 2 }],
+    counts: [...counts(META_ID, { sent: 10, queued: 4 }), ...counts(GA4_ID, { sent: 5, queued: 1 })],
+    queueDepth: [{ pixel_row_id: 'px_meta1', n: 7 }, { pixel_row_id: 'px_ga', n: 2 }],
   });
   eq(d.totals_24h.queued, 5, 'T18a totals_24h.queued is the LEDGER sum (4+1)');
   eq(d.queued_now, 9, 'T18b queued_now is the LIVE depth (7+2), reported separately');

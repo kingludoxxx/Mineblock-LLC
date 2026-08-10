@@ -46,11 +46,34 @@ import { encryptSecret, decryptSecret } from './gatewayConfigs.js';
 // BROWSER BEACON may relay): a custom network also serves server-owned money
 // events (Purchase) and the inbound-only Refund, neither of which a beacon can
 // ever mint.
+// PageView is DELIBERATELY ABSENT (seam audit M8). Every delivery takes a
+// permanent lb_tracking_sent claim row, and a pageview postback would mint one
+// per visitor per page — orders of magnitude more rows than conversions, in a
+// table that exists to make conversions exactly-once. A network that genuinely
+// wants pageview pings needs a separate, non-claiming path; offering the toggle
+// here would have been a promise this delivery layer cannot keep cheaply.
+// Rows that already carry it read it out (readEventNames filters to this set).
 export const CUSTOM_EVENT_NAMES = [
   'Purchase', 'Lead', 'InitiateCheckout', 'AddPaymentInfo', 'AddToCart',
-  'ViewContent', 'CompleteRegistration', 'UpsellView', 'PageView', 'Refund',
+  'ViewContent', 'CompleteRegistration', 'UpsellView', 'Refund',
 ];
 const CUSTOM_EVENT_SET = new Set(CUSTOM_EVENT_NAMES);
+
+// Money events are SERVER-OWNED. trackingService.ALLOWED_CLIENT_EVENTS already
+// refuses to relay these from a browser beacon, but that list governs the RELAY
+// as a whole; this one is the custom lane's own belt-and-braces, checked at
+// selection so a relayed money event can never even reach a custom sender —
+// and therefore can never burn a claim (seam audit B2).
+export const SERVER_OWNED_EVENTS = new Set(['Purchase', 'Refund']);
+
+// GENERAL event flags → the event they gate. Un-ticked means NOT SELECTED
+// (seam audit M8): before this, the two checkboxes were dead everywhere EXCEPT
+// custom networks, which fired the events regardless — so the panel's copy was
+// false in the one place it mattered.
+export const EVENT_FLAG_GATE = {
+  AddToCart: 'fire_addtocart_checkout',
+  ViewContent: 'fire_viewcontent_lead',
+};
 
 export const CUSTOM_METHODS = ['GET', 'POST'];
 
@@ -210,6 +233,9 @@ export function networkView(row, { reveal = false } = {}) {
     method: row.method || 'GET',
     event_names: readEventNames(row.event_names),
     enabled: Boolean(row.enabled),
+    // Which directory preset minted this row, or '' for a hand-made one. The
+    // client matches preset cards on THIS, never on a re-derived slug.
+    preset_key: row.preset_key || '',
     ...templateSummary(plain),
     // Encrypted at rest, and the operator is told so — a stored secret they
     // do not know is stored is a secret they cannot reason about.
@@ -223,7 +249,7 @@ export function networkView(row, { reveal = false } = {}) {
 }
 
 const SELECT_COLS = `id, funnel_id, key, label, click_id_param, url_template,
-                     method, event_names, enabled, created_at, updated_at`;
+                     method, event_names, enabled, preset_key, created_at, updated_at`;
 
 export async function listNetworks(funnelId) {
   await ensureIntegrationsTables();
@@ -250,13 +276,13 @@ export async function createNetwork(funnelId, fields) {
   // every later jsonb operator throws on it.
   const rows = await pgQuery(
     `INSERT INTO lb_custom_networks
-       (id, funnel_id, key, label, click_id_param, url_template, method, event_names, enabled)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9)
+       (id, funnel_id, key, label, click_id_param, url_template, method, event_names, enabled, preset_key)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9,$10)
      ON CONFLICT (funnel_id, key) DO NOTHING
      RETURNING ${SELECT_COLS}`,
     [id, String(funnelId), fields.key, fields.label, fields.click_id_param || '',
       writeTemplate(fields.url_template), fields.method || 'GET', fields.event_names || [],
-      fields.enabled !== false]
+      fields.enabled !== false, fields.preset_key || null]
   );
   return rows.length ? rows[0] : null; // null = the (funnel, key) already exists
 }
@@ -342,13 +368,60 @@ export function asPixel(row) {
 // event back on), and it must not write a 'skipped' ledger row for an event it
 // was never asked to send — that would drown the real skips. An untoggled
 // event is a NON-EVENT for that network, not a refusal.
-export async function customNetworksFor(funnelId, eventName) {
-  const rows = await listNetworks(funnelId);
+export async function customNetworksFor(funnelId, eventName, { source = '', flags = {} } = {}) {
   const name = String(eventName || '');
+  // B2: a client-relayed money event selects NOTHING. Purchase and Refund are
+  // owned by the settlement path; a beacon that somehow reached this call has
+  // no business driving a partner postback, and refusing at SELECTION means no
+  // claim row is burned either (a burned claim would suppress the REAL
+  // server-side conversion for that event id, permanently).
+  if (String(source) === 'relay' && SERVER_OWNED_EVENTS.has(name)) return [];
+  // M8: the GENERAL panel's fire-flags actually gate now. Un-ticked = the
+  // event is not sent to custom networks at all.
+  const gate = EVENT_FLAG_GATE[name];
+  if (gate && (flags || {})[gate] !== true) return [];
+  const rows = await listNetworks(funnelId);
   return rows
     .filter((r) => r.enabled && readEventNames(r.event_names).includes(name))
     .map(asPixel);
 }
+
+// The enabled custom networks' click-id parameters for one funnel — the list
+// the click-vault parser needs so a visitor arriving on a custom network's own
+// parameter is actually recorded (seam audit MINOR).
+//
+// CACHED, because unlike every other read in this module the caller is the
+// PUBLIC /track/click beacon: one landing = one call, on a surface with no
+// authentication and no natural rate ceiling beyond the per-IP limiter. A
+// 60-second TTL means an operator's new click parameter is live within a
+// minute, which is well inside how long it takes them to go paste it into a
+// campaign URL, and the steady-state cost is zero queries.
+const CLICK_PARAM_TTL_MS = 60_000;
+const clickParamCache = new Map(); // funnelId → { at, params }
+
+export async function customClickParams(funnelId) {
+  const key = String(funnelId || '');
+  const hit = clickParamCache.get(key);
+  if (hit && Date.now() - hit.at < CLICK_PARAM_TTL_MS) return hit.params;
+  await ensureIntegrationsTables();
+  const rows = await pgQuery(
+    `SELECT click_id_param FROM lb_custom_networks
+     WHERE funnel_id = $1 AND enabled = TRUE AND click_id_param <> ''`,
+    [key]
+  );
+  const params = rows.map((r) => String(r.click_id_param || '').toLowerCase()).filter(Boolean);
+  clickParamCache.set(key, { at: Date.now(), params });
+  // Bounded: a dashboard with thousands of funnels must not grow this map
+  // without limit. Oldest-out is fine — a miss is one cheap query.
+  if (clickParamCache.size > 500) {
+    const oldest = [...clickParamCache.entries()].sort((a, b) => a[1].at - b[1].at)[0];
+    if (oldest) clickParamCache.delete(oldest[0]);
+  }
+  return params;
+}
+
+// Test seam: the 60s TTL would otherwise make a harness assert stale data.
+export const _clearClickParamCache = () => clickParamCache.clear();
 
 // Re-read one custom network AS A PIXEL by its row id — the drain's resolver
 // (a queued row re-reads its target at send time so a fixed template heals the
@@ -364,7 +437,8 @@ export async function customNetworkPixelById(rowId) {
 
 export default {
   CUSTOM_EVENT_NAMES, CUSTOM_METHODS, slugOf, parseJsonColumn, readEventNames,
+  SERVER_OWNED_EVENTS, EVENT_FLAG_GATE,
   validateNetworkBody, networkView, listNetworks, getNetwork, createNetwork,
   updateNetwork, deleteNetwork, asPixel, customNetworksFor, customNetworkPixelById,
-  readTemplate, templateSummary,
+  readTemplate, templateSummary, customClickParams,
 };

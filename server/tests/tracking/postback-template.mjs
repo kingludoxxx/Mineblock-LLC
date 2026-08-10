@@ -366,5 +366,151 @@ const ok = (name, cond, extra = '') => {
     rt.includes('https://x/y') && !rt.includes('RF_AAA') && rt.includes('z=1'), rt);
 }
 
+// ── T10. B1 — EACH NETWORK GETS ITS OWN CLICK ID ────────────────────────────
+// The seam audit's blocker. The envelope used to carry ONE click id chosen by
+// `Object.values(vault)[0]` — ALPHABETICAL — so a visitor who arrived with both
+// an fbclid and a tblci sent Taboola a postback labelled `click-id=` carrying
+// the META token, because 'fbclid' sorts before 'ttclid'. Accepted, matched
+// nothing, invisible.
+{
+  const { selectClickId, customPostbackContext } =
+    await import('../../src/services/trackingDelivery.js');
+
+  // The exact vault from the audit: two networks' tokens on one visitor.
+  const vault = { fbclid: 'FBCLID_AAA', tblci: 'TBLCI_BBB', gclid: 'GCLID_CCC' };
+  const env = { event_name: 'Purchase', event_id: 'pur_1', click_ids: vault, custom_data: { value: 10, currency: 'USD' } };
+
+  const taboola = { click_id_param: 'tblci', label: 'Taboola S2S', url_template: '' };
+  const meta = { click_id_param: 'fbclid', label: 'Meta-ish', url_template: '' };
+  const unknown = { click_id_param: 'zzclid', label: 'Not In Vault', url_template: '' };
+  const noParam = { click_id_param: '', label: 'No Param', url_template: '' };
+
+  ok('T10 Taboola gets the TABOOLA id', selectClickId(taboola, env) === 'TBLCI_BBB', selectClickId(taboola, env));
+  ok('T10 the Meta-param network gets the META id', selectClickId(meta, env) === 'FBCLID_AAA', selectClickId(meta, env));
+  // THE BUG, pinned: alphabetical selection would hand this one FBCLID_AAA.
+  ok('T10 a network whose param is ABSENT gets EMPTY, never another network’s id',
+    selectClickId(unknown, env) === '', selectClickId(unknown, env));
+  ok('T10 …and specifically NOT the alphabetically-first token',
+    selectClickId(unknown, env) !== 'FBCLID_AAA', selectClickId(unknown, env));
+  ok('T10 a network with NO configured param gets EMPTY, not a platform token',
+    selectClickId(noParam, env) === '', selectClickId(noParam, env));
+  // …unless the vault carries an explicitly GENERIC click_id, which is the one
+  // key that belongs to nobody in particular.
+  ok('T10 a NO-param network does take an explicitly generic click_id',
+    selectClickId(noParam, { click_ids: { click_id: 'GEN_1' } }) === 'GEN_1', '');
+  // With NO vault at all there is nothing to choose wrongly, so the legacy
+  // single-value path survives (this is what test-fire uses).
+  ok('T10 with no vault the single user_data click_id is still used',
+    selectClickId(taboola, { user_data: { click_id: 'LEGACY' } }) === 'LEGACY', '');
+
+  // Assert on the RENDERED URL, which is what actually goes on the wire.
+  const tmpl = 'https://trc.taboola.com/pb?click-id={click_id}&key={click_key}&amt={payout}';
+  const rendered = renderPostback(tmpl, customPostbackContext({ config: taboola, funnel_id: 'f1' }, env));
+  ok('T10 the RENDERED Taboola URL carries the Taboola id',
+    rendered.includes('click-id=TBLCI_BBB'), rendered);
+  ok('T10 the RENDERED Taboola URL does NOT carry the Meta id',
+    !rendered.includes('FBCLID_AAA'), rendered);
+  ok('T10 {click_key} and {click_id} agree with each other',
+    rendered.includes('key=tblci') && rendered.includes('click-id=TBLCI_BBB'), rendered);
+  const renderedUnknown = renderPostback(tmpl, customPostbackContext({ config: unknown, funnel_id: 'f1' }, env));
+  ok('T10 an unmatched network renders an EMPTY click id, not a foreign one',
+    renderedUnknown.includes('click-id=&') && !renderedUnknown.includes('FBCLID_AAA'), renderedUnknown);
+}
+
+// ── T11. B2 — RELAYED custom_data is attacker-supplied ──────────────────────
+// A forged /track/collect beacon reaches the custom sender with whatever
+// custom_data it likes. sendGa4 has always validated this precisely; the custom
+// sender validated NOTHING.
+{
+  const { sanitizeCustomData, customPostbackContext } =
+    await import('../../src/services/trackingDelivery.js');
+
+  const forged = {
+    value: 999999999,            // absurd
+    currency: 'not-a-currency',
+    order_id: 'co_REAL_BUYERS_ORDER',
+    status: 'approved',
+    subs: { sub1: 'x', sub99: 'y', evil: { a: 1 } },
+    extra_field: 'passthrough?',
+  };
+  const relayed = sanitizeCustomData(forged, { relayed: true });
+  ok('T11 an absurd value is DROPPED, not clamped to a wrong number', relayed.value === undefined, JSON.stringify(relayed));
+  ok('T11 a malformed currency is dropped', relayed.currency === undefined, JSON.stringify(relayed));
+  ok('T11 order_id is dropped on a RELAYED event (no grafting onto a real order)',
+    relayed.order_id === undefined, JSON.stringify(relayed));
+  ok('T11 unknown fields do not pass through', relayed.extra_field === undefined, JSON.stringify(relayed));
+  ok('T11 out-of-range sub keys are dropped', relayed.subs && relayed.subs.sub99 === undefined, JSON.stringify(relayed.subs));
+  ok('T11 object-valued subs are dropped', relayed.subs && relayed.subs.evil === undefined, JSON.stringify(relayed.subs));
+  ok('T11 a legitimate sub survives', relayed.subs && relayed.subs.sub1 === 'x', JSON.stringify(relayed.subs));
+
+  // A SERVER-side event keeps its order id — the restriction is about trust,
+  // not about the field being dangerous in itself.
+  const server = sanitizeCustomData({ value: 49.5, currency: 'usd', order_id: 'co_1' }, { relayed: false });
+  ok('T11 a SERVER event keeps its order_id', server.order_id === 'co_1', JSON.stringify(server));
+  ok('T11 a server value in range survives', server.value === 49.5, JSON.stringify(server));
+  ok('T11 currency is upper-cased and kept', server.currency === 'USD', JSON.stringify(server));
+
+  // Negative + non-finite money never reaches the wire, whatever the path.
+  for (const bad of [-1, -0.01, Infinity, NaN, 'abc', 1e12]) {
+    const s = sanitizeCustomData({ value: bad });
+    const url = renderPostback('https://x.example/pb?v={payout}',
+      customPostbackContext({ config: {} , funnel_id: 'f' }, { custom_data: { value: bad } }));
+    ok(`T11 value ${String(bad)} is refused end-to-end`, s.value === undefined && url === 'https://x.example/pb?v=', `${JSON.stringify(s)} ${url}`);
+  }
+  // …and an explicit 0 is still legitimate.
+  ok('T11 an explicit 0 survives', sanitizeCustomData({ value: 0 }).value === 0);
+
+  // A forged status cannot invent a vocabulary.
+  ok('T11 an unknown status is dropped (falls back to approved)',
+    sanitizeCustomData({ status: 'PAID_IN_FULL' }).status === undefined, '');
+  ok('T11 a known status survives', sanitizeCustomData({ status: 'refund' }).status === 'refund', '');
+}
+
+// ── T12. the {funnel} macro, and live sub-ids ───────────────────────────────
+{
+  const { customPostbackContext } = await import('../../src/services/trackingDelivery.js');
+  const ctx = customPostbackContext(
+    { config: { label: 'Taboola S2S', click_id_param: 'tblci' }, funnel_id: 'f_42' },
+    {
+      event_name: 'Purchase', event_id: 'e1', funnel_name: 'Summer Sale Funnel',
+      click_ids: { tblci: 'T1' }, subs: { sub1: 'ad_9', sub2: 'set_3' },
+    }
+  );
+  // MINOR: {funnel} used to render the NETWORK's label, making {funnel} and
+  // {network} the same string on every postback.
+  ok('T12 {funnel} is the FUNNEL name', ctx.funnel === 'Summer Sale Funnel', ctx.funnel);
+  ok('T12 {network} is the NETWORK label', ctx.network === 'Taboola S2S', ctx.network);
+  ok('T12 they are no longer the same string', ctx.funnel !== ctx.network, '');
+  ok('T12 {funnel_id} is still the id', ctx.funnel_id === 'f_42', ctx.funnel_id);
+  // MINOR: sub-ids now arrive from the click vault, not only from the
+  // test-fire fixture.
+  ok('T12 {sub1}/{sub2} render from the envelope subs', ctx.sub1 === 'ad_9' && ctx.sub2 === 'set_3', `${ctx.sub1}/${ctx.sub2}`);
+  ok('T12 an unset sub is still empty', ctx.sub7 === '', JSON.stringify(ctx.sub7));
+  // custom_data.subs (server-built) beats the envelope's when both exist.
+  const both = customPostbackContext({ config: {}, funnel_id: 'f' },
+    { custom_data: { subs: { sub1: 'FROM_CD' } }, subs: { sub1: 'FROM_ENV' } });
+  ok('T12 custom_data.subs wins over envelope.subs when both are present',
+    both.sub1 === 'FROM_CD', both.sub1);
+}
+
+// ── T13. M8 — the event vocabulary and its gates ────────────────────────────
+{
+  const { CUSTOM_EVENT_NAMES, SERVER_OWNED_EVENTS, EVENT_FLAG_GATE, readEventNames } =
+    await import('../../src/services/trackingCustomNetworks.js');
+  ok('T13 PageView is NOT selectable for a custom network',
+    !CUSTOM_EVENT_NAMES.includes('PageView'), CUSTOM_EVENT_NAMES.join());
+  ok('T13 a stored PageView toggle is read back out (never fires)',
+    readEventNames(['Purchase', 'PageView']).join() === 'Purchase', readEventNames(['Purchase', 'PageView']).join());
+  ok('T13 Purchase and Refund are server-owned',
+    SERVER_OWNED_EVENTS.has('Purchase') && SERVER_OWNED_EVENTS.has('Refund'), '');
+  ok('T13 a non-money event is NOT server-owned', !SERVER_OWNED_EVENTS.has('Lead'), '');
+  ok('T13 AddToCart is gated by fire_addtocart_checkout',
+    EVENT_FLAG_GATE.AddToCart === 'fire_addtocart_checkout', '');
+  ok('T13 ViewContent is gated by fire_viewcontent_lead',
+    EVENT_FLAG_GATE.ViewContent === 'fire_viewcontent_lead', '');
+  ok('T13 Purchase is NOT flag-gated (money is not optional)',
+    EVENT_FLAG_GATE.Purchase === undefined, '');
+}
+
 console.log(`\nRESULT: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

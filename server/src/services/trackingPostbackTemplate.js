@@ -53,13 +53,26 @@ export function renderPostback(template, ctx) {
   });
 }
 
+// The largest payout a postback may carry. Matches trackingInbound.MAX_PAYOUT
+// — the same number bounding the same quantity arriving from the other
+// direction. A value above this is a malformed feed or a forged beacon, not a
+// sale, and a network that books it corrupts the operator's ROAS.
+export const MAX_POSTBACK_VALUE = 1_000_000;
+
 // Round a money value to 2dp, or '' when there is nothing honest to send.
 // NaN / Infinity / null / '' all render EMPTY rather than 'NaN' — a tracker
 // that receives `payout=NaN` books a garbage conversion.
+//
+// NEGATIVE and ABSURD values render EMPTY too (seam audit B2). This is the
+// last line rather than the first: the custom sender allow-lists and bounds
+// custom_data before it ever gets here, but a beacon-supplied value reaches
+// this function through more than one path and an omitted parameter is always
+// safer than a wrong number on the wire.
 function money(v) {
   if (v == null || v === '') return '';
   const n = Number(v);
   if (!Number.isFinite(n)) return '';
+  if (n < 0 || n > MAX_POSTBACK_VALUE) return '';
   return (Math.round(n * 100) / 100).toFixed(2);
 }
 

@@ -64,6 +64,13 @@ async function createTables() {
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )
   `);
+  // preset_key — WHICH directory card created this row (seam audit MINOR).
+  // The client used to match a preset card to its network by re-deriving
+  // slugOf(preset.label) in JSX, which broke the moment a label changed and put
+  // the slug rule in two places. This column is the binding, stamped once at
+  // create time and never recomputed. NULL = hand-made, not from a preset.
+  // Additive via the same ALTER-after-CREATE pattern the checkout spine uses.
+  await pgQuery(`ALTER TABLE lb_custom_networks ADD COLUMN IF NOT EXISTS preset_key TEXT`);
   await pgQuery(`CREATE INDEX IF NOT EXISTS idx_lb_custom_networks_funnel ON lb_custom_networks (funnel_id, enabled)`);
   // One row per (funnel, key). The key is the label slug — two networks named
   // the same on one funnel would render two identical cards and two

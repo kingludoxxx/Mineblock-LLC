@@ -27,6 +27,9 @@ import { requirePermission } from '../middleware/rbac.js';
 import { ensureTrackingTables } from '../services/trackingSchema.js';
 import { ensureTables as ensureFunnelTables } from './funnels.js';
 import { TRACKING_NETWORKS } from './trackingAdmin.js';
+import {
+  listNetworks as listCustomNetworks, asPixel as asCustomPixel,
+} from '../services/trackingCustomNetworks.js';
 import { shapeTrackingHealth } from '../services/trackingHealth.js';
 import {
   validateCustomCode,
@@ -198,7 +201,7 @@ router.get('/:id/tracking/health', authed, async (req, res) => {
       // Both windows in ONE 7-day scan: 24h is a FILTER subset of it, so the
       // narrower window never costs a second pass over the same index range.
       pgQuery(
-        `SELECT platform,
+        `SELECT pixel_id,
                 COUNT(*) FILTER (WHERE status = 'sent'    AND ts >= NOW() - INTERVAL '24 hours')::int AS h24_sent,
                 COUNT(*) FILTER (WHERE status = 'error'   AND ts >= NOW() - INTERVAL '24 hours')::int AS h24_failed,
                 COUNT(*) FILTER (WHERE status = 'skipped' AND ts >= NOW() - INTERVAL '24 hours')::int AS h24_skipped,
@@ -211,19 +214,19 @@ router.get('/:id/tracking/health', authed, async (req, res) => {
                 COUNT(*) FILTER (WHERE status = 'queued')::int  AS d7_queued
          FROM lb_tracking_events
          WHERE funnel_id = $1 AND ts >= NOW() - INTERVAL '7 days'
-         GROUP BY platform`,
+         GROUP BY pixel_id`,
         [funnelId]
       ),
       // "Last fired" reaches further back than the counters so a pixel that is
       // quiet TODAY can still show when it last delivered — bounded at 30d so
       // this stays a windowed, index-friendly scan and never a full history read.
       pgQuery(
-        `SELECT platform,
+        `SELECT pixel_id,
                 MAX(ts) FILTER (WHERE status = 'sent')  AS last_sent_at,
                 MAX(ts) FILTER (WHERE status = 'error') AS last_failed_at
          FROM lb_tracking_events
          WHERE funnel_id = $1 AND ts >= NOW() - INTERVAL '30 days'
-         GROUP BY platform`,
+         GROUP BY pixel_id`,
         [funnelId]
       ),
     ]);
@@ -233,11 +236,11 @@ router.get('/:id/tracking/health', authed, async (req, res) => {
       // can show WHY without conflating the two (a skip is a decline, not a
       // failure). error text was already token-redacted by trackingDelivery.
       pgQuery(
-        `SELECT DISTINCT ON (platform, status) platform, status, error, ts
+        `SELECT DISTINCT ON (pixel_id, status) pixel_id, status, error, ts
          FROM lb_tracking_events
          WHERE funnel_id = $1 AND status IN ('error', 'skipped')
            AND ts >= NOW() - INTERVAL '7 days'
-         ORDER BY platform, status, ts DESC`,
+         ORDER BY pixel_id, status, ts DESC`,
         [funnelId]
       ),
       pgQuery(
@@ -247,10 +250,16 @@ router.get('/:id/tracking/health', authed, async (req, res) => {
       // LIVE queue depth, not a ledger count — drained rows must not keep
       // reading as queued forever (same rule as trackingAdmin's queued_now).
       pgQuery(
-        `SELECT p.kind, COUNT(*)::int AS n
-         FROM lb_postback_queue q JOIN lb_pixels p ON p.id = q.pixel_row_id
-         WHERE q.funnel_id = $1 AND q.status IN ('queued', 'sending')
-         GROUP BY p.kind`,
+        // M6: NO JOIN. The inner join to lb_pixels dropped every CUSTOM
+        // network's backlog on the floor (custom rows are not in lb_pixels), so
+        // a funnel with a 502-deep partner backlog reported 2. Grouping on the
+        // queue's OWN pixel_row_id needs no join, cannot drop a row, and — the
+        // second half of the bug — stops two networks of the same kind sharing
+        // one number.
+        `SELECT pixel_row_id, COUNT(*)::int AS n
+         FROM lb_postback_queue
+         WHERE funnel_id = $1 AND status IN ('queued', 'sending')
+         GROUP BY pixel_row_id`,
         [funnelId]
       ),
     ]);
@@ -259,7 +268,7 @@ router.get('/:id/tracking/health', authed, async (req, res) => {
     const counts = [];
     for (const r of countRows) {
       counts.push({
-        platform: r.platform,
+        pixel_id: r.pixel_id,
         window: 'h24',
         sent: r.h24_sent,
         failed: r.h24_failed,
@@ -268,7 +277,7 @@ router.get('/:id/tracking/health', authed, async (req, res) => {
         queued: r.h24_queued,
       });
       counts.push({
-        platform: r.platform,
+        pixel_id: r.pixel_id,
         window: 'd7',
         sent: r.d7_sent,
         failed: r.d7_failed,
@@ -278,29 +287,70 @@ router.get('/:id/tracking/health', authed, async (req, res) => {
       });
     }
 
-    const msgByPlatform = new Map();
+    const msgByPixel = new Map();
     for (const r of lastMsgRows) {
-      const slot = msgByPlatform.get(r.platform) || {};
+      const slot = msgByPixel.get(r.pixel_id) || {};
       if (r.status === 'error') slot.last_error = r.error || null;
       else slot.last_skip_reason = r.error || null;
-      msgByPlatform.set(r.platform, slot);
+      msgByPixel.set(r.pixel_id, slot);
     }
     const lasts = lastRows.map((r) => ({
-      platform: r.platform,
+      pixel_id: r.pixel_id,
       last_sent_at: r.last_sent_at,
       last_failed_at: r.last_failed_at,
-      ...(msgByPlatform.get(r.platform) || {}),
+      ...(msgByPixel.get(r.pixel_id) || {}),
     }));
-    // A platform can have an error/skip message but no sent/failed aggregate row
+    // A pixel can have an error/skip message but no sent/failed aggregate row
     // only if it fell outside the 30d window — keep the message anyway.
-    for (const [platform, slot] of msgByPlatform) {
-      if (!lasts.some((l) => l.platform === platform)) lasts.push({ platform, ...slot });
+    for (const [pixelId, slot] of msgByPixel) {
+      if (!lasts.some((l) => l.pixel_id === pixelId)) lasts.push({ pixel_id: pixelId, ...slot });
     }
 
+    // ── M5: custom S2S networks belong in Tracking Health ─────────────────
+    // They deliver through the same rails, take the same claims, open the same
+    // breakers and fill the same queue — but the health list was built from
+    // lb_pixels ALONE, so a funnel whose only server channel was a custom
+    // network reported 'no_pixels': a green-ish "nothing configured" over a
+    // channel that was actively delivering (or actively failing).
+    //
+    // Projected into the SAME pixel shape the shaper already consumes, with
+    // per-row labels so N networks do not render as N identical rows. Fail-open:
+    // a read failure degrades to the named pixels rather than 500ing a panel.
+    let customPixels = [];
+    try {
+      const rows = await listCustomNetworks(funnelId);
+      customPixels = rows.map((r) => {
+        const px = asCustomPixel(r);
+        return {
+          id: px.id,
+          kind: 'custom',
+          pixel_id: px.pixel_id,       // the lbcn_ row id — the ledger key
+          mode: px.mode,
+          enabled: px.enabled,
+          config: px.config,
+          label: r.label || 'Custom S2S network',
+          custom_network_id: px.id,
+        };
+      });
+    } catch (err) {
+      console.warn('[funnelTrackingExtras] custom networks omitted from health (non-fatal):', err.message);
+    }
+    const allPixels = pixels.concat(customPixels);
+
     const specs = specsFromRegistry();
+    // The 'custom' kind is not in the named registry (it has no credentials and
+    // no id field of its own) — give the shaper just enough to classify it.
+    specs.custom = {
+      label: 'Custom S2S network',
+      notActive: false,
+      readySecret: null,
+      idOptional: true,
+      idField: 'network',
+      deliveryNote: null,
+    };
     const data = shapeTrackingHealth({
       funnelId,
-      pixels,
+      pixels: allPixels,
       specs,
       counts,
       lasts,
@@ -314,6 +364,10 @@ router.get('/:id/tracking/health', authed, async (req, res) => {
     // same posture as trackingAdmin's unknown_kinds: we can honestly say a row
     // exists and that nothing delivers for it, and nothing more.
     const unknownKinds = pixels
+      // NB reads `pixels` (lb_pixels only), never allPixels: a custom row's
+      // kind is 'custom', which the NAMED registry deliberately does not carry,
+      // so including them here would report every custom network as an unknown
+      // orphan kind.
       .filter((r) => !TRACKING_NETWORKS[r.kind])
       .reduce((acc, r) => {
         const hit = acc.find((x) => x.kind === r.kind);

@@ -285,6 +285,12 @@ router.post('/:funnelId/custom-networks/preset/:key', authed, async (req, res) =
     const guard = await guardTemplateHost(check.fields.url_template);
     if (guard.refuse) return bad(res, guard.code);
     await ensureIntegrationsTables();
+    // Seam audit MINOR: STAMP which card minted this row. The client used to
+    // match a preset card to its network by re-deriving slugOf(preset.label) in
+    // JSX — a second copy of the slug rule that silently stopped matching the
+    // moment a preset label was edited, leaving a connected card reading NOT
+    // CONNECTED forever. The binding is now stored, not recomputed.
+    check.fields.preset_key = String(req.params.key);
     const row = await createNetwork(funnelId, check.fields);
     if (!row) return bad(res, 'duplicate_label', 409);
     const net = networkByKey(req.params.key);
