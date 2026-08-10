@@ -4099,6 +4099,70 @@ schedule state lives on the queue row, so the intent table stays trustworthy
 history.
 STATUS: COMPLETE — the two money-seam contracts are documented in the headers of
 routes/orderEdit.js and routes/dunning.js for the integrator.
+TIMESTAMP: 2026-08-10 03:30
+TASK: Theme system (audit #7) — feat/theme-system
+BUILT: Named design-token themes for funnels, ported from funnel-os's
+listicle_themes_service.py + /themes* endpoints. Backend: funnelThemesSchema.js
+(lb_funnel_themes, soft-delete, ensureTables promise-memo), funnelThemes.js
+(11-key token schema, 7 seeded presets ported verbatim, the apply macro, the
+import extractor), routes/funnelThemes.js mounted at /api/v1/funnel-themes
+(GET /presets, GET /, POST /, PATCH /:id, DELETE /:id, POST /apply-plan,
+POST /import-url). Frontend: ThemesSection.jsx (preset gallery, saved themes,
+import-from-URL flow with a per-token support badge, and an apply confirm that
+names every settings key being overwritten with its old and new value) wired
+into FunnelSettingsModal's General group. funnelRender.js, funnels.js,
+checkoutPublic.js and app.js were NOT touched.
+TESTED: New harness server/tests/funnel-settings/themes.mjs — 118 checks
+against embedded PG through the real router (real authenticate + rbac).
+Regression: render-settings 30/30, patch-settings 22/22, tracking-tab 19/19,
+commerce 312/312, domains-tab 58/58 — all identical to the pre-change baseline
+taken before the first edit. vite build succeeded (680ms). eslint: 159 problems
+(143 errors) both WITH and WITHOUT the change — measured by stashing the lane —
+so 0 added; ThemesSection.jsx itself lints clean. Mount verified live through
+the full routes/index.js graph (unauthed GET /api/v1/funnel-themes/presets →
+401). Edge cases: empty/null/non-string/array token bags, empty and binary HTML,
+malformed URLs, over-long and non-string tokens, double-delete, unknown ids,
+and a 16-target SSRF corpus.
+OUTPUT: 118 passed, 0 failed (themes) — 441 passed, 0 failed across the five
+regression suites.
+DECISIONS: (1) THE APPLY IS AN INTERSECTION, AND IT IS PUBLISHED. The renderer
+reads exactly 3 design keys (brand_colors.primary, brand_colors.secondary,
+fonts.family); the reference's bag is 11 wide. 8 tokens are stored but never
+applied, and TOKEN_SUPPORT — served from the server so it cannot drift — makes
+the UI say so per token (DECISION MADE). (2) --brand-primary/--brand-secondary
+are EMITTED but consumed by nothing in the block library or the 8 templates
+(zero hits for var(--brand). They are marked 'variable', not 'applied', and the
+UI states they repaint a page only where that page's CSS reads them — claiming
+otherwise would sell a visual change the operator will not see (DECISION MADE).
+(3) NO SERVER-SIDE APPLY WRITE. apply-plan returns a plan and writes nothing;
+the client commits it through saveFunnelPatch/enqueueSettingsSave, so a theme
+apply is serialized against every other settings save. A second server door
+would be a second read-modify-write racing the first (DECISION MADE).
+(4) SECURITY FIX FOUND BY EXECUTION. Reusing endpointAllowed verbatim inherited
+its dev-mode loopback hatch (NODE_ENV!=='production' allows http://127.0.0.1),
+which made http://127.0.0.1:5433/ a working request against local Postgres. The
+SSRF block caught it; import-url now pre-checks https-only before delegating.
+The reference has no guard at all and returns str(exc) — we return one fixed
+code (DECISION MADE). (5) Fonts resolve to an allowlist key by walking the CSS
+stack; an unresolvable font writes NOTHING rather than falling back to the
+heading font, which would have applied Georgia to the whole page for Editorial
+Light. 5 of 7 presets resolve; 2 honestly do not (DECISION MADE).
+(6) The reference's dark muted/border branch is UNREACHABLE (bg is always
+near-white — both the palette filter and the fallback are). Ported faithfully
+and asserted as dead by execution rather than "fixed", since both tokens are
+unsupported and no rendered output could distinguish the two (DECISION MADE).
+(7) THEME A/B DEFERRED, NOT STUBBED. This install already has a split-test lane
+with its own assignment and results ledger; a second cookie-based path could
+not be scored against it, and the reference's version has no results endpoint
+at all. The UI names it as not built (DECISION MADE). (8) extra_css dropped —
+the only funnel-level CSS door is the operator's custom_head_code and letting a
+theme overwrite it would destroy hand-written code for a field the renderer
+would ignore (DECISION MADE). (9) Single-tenant, so workspace_id exists and is
+scoped in every query but carries one constant value (DECISION MADE).
+STATUS: COMPLETE
+---
+
+---
 TIMESTAMP: 2026-08-10 03:25 (Europe/Madrid)
 TASK: Night release 2 — split test + tracking + COGS + wave-2 builder features
 BUILT: 10 review-cleared branches merged (split-statistics, split-ui-parity, s2s-networks,
@@ -4321,5 +4385,66 @@ shipping; billing is a distinct field this lane has no mandate to touch (DECISIO
 (4) list retry_possible deliberately excludes the 60s spacing floor — a row inside its cooldown
 is "retryable, just not this second", and the button answers "possible at all?", not "right
 now?" (DECISION MADE).
+TIMESTAMP: 2026-08-10 04:30
+TASK: Theme system (audit #7) — FIX-FIRST review round 1 (B1/M1/M2/M4 + ride-alongs)
+BUILT: Addressed the coordinator's 4 blockers and 6 ride-alongs on feat/theme-system,
+after merging current main (1dd2af2; progress.md union-resolved).
+ B1+M5 (SSRF TOCTOU/rebinding + IPv6 tunnels): NEW self-contained guard
+   server/src/services/themeImportGuard.js — resolves the host ONCE, validates every
+   answer, and connects to the PINNED literal via https.request's `lookup` hook so fetch
+   cannot re-resolve to a private IP. classifyAddress decodes IPv4-mapped, NAT64
+   (64:ff9b::/96) and 6to4 (2002::/16) and gates the embedded v4, plus full IPv4/IPv6
+   reserved ranges. import-url now calls safeFetchHtml (https-only, redirects refused,
+   body capped) instead of the tracking lane's endpointAllowed — the shared guard was
+   left untouched so the tracking/money lane is unperturbed.
+ M1 (stale apply plan): NEW client/src/components/funnels/settings/themePlan.js
+   (framework-free: recomputeDiff/overwriteSignature/applyWrites). ThemesSection.doApply
+   re-derives the destructive diff against the FRESH row INSIDE saveFunnelPatch, before
+   the PATCH; a changed overwrite set aborts the commit and re-renders the confirm with
+   the true diff (stale banner) for a second confirm. Atomic — the fresh row checked is
+   the row being written.
+ M2 (quadratic FONT_RE DoS): replaced the backtracking regex with a linear scanner
+   (per-declaration 200-char cap) + added checkRateLimit to import-url (20/60s/operator,
+   the lane's only outbound-fetch route).
+ M4 (token over-claim): server now returns per-theme plan_preview on GET /presets and
+   GET / (and import-url); cards/counts/badges render from that honest per-VALUE answer.
+   SUPPORT_BADGE no longer maps 'variable' to green "Applied" — colors show "CSS var"
+   (amber, page CSS must read it); only a resolved font shows "Applied".
+ Ride-alongs: M3 font extraction no longer needs a trailing ; (minified + inline CSS
+   now yield fonts; stops at } / < / cap — m5 rule boundary); m1 non-http schemes refused
+   by scheme, not rewritten to bogus https; m2 GET / returns truncated flag; m3
+   non-string PATCH/POST name -> 422; m4 delete now behind a confirm modal; NIT /presets
+   registered ahead of the DB-ensure middleware (DB-free); NIT preset prose fixed to
+   "5 of 7 pinned, 4 of 7 differ from primary".
+TESTED: themes.mjs extended to 162 assertions (was 118): SSRF corpus grown to 20 hostile
+targets incl. NAT64/6to4/CGNAT/ULA, plus a dedicated guard section run under
+NODE_ENV=production (classify all reserved ranges both families; rebinding probe proves
+one resolution + pin; mixed public/private set refused whole; safeFetchHtml refuses
+scheme + pinned-loopback with no socket); rate-limit 429 via injected hook; 2MB
+semicolon-free font input completes in <1ms (budget 200ms) + parse of a ~2MB body <500ms;
+M3 minified/inline extraction; M4 editorial resolves 2 not 3; m3 422s; m2 truncation
+flag; M1 stale-plan recompute reproduces the reviewer's #00FF00 and #123456->#654321
+cases and confirms idempotent re-apply is not flagged. Full result 162/162.
+Regressions all green and unchanged: render-settings 30/30, patch-settings 22/22,
+tracking-tab 19/19, commerce 312/312, domains-tab 58/58, money-path/ssrf-guard 15/15
+(tracking lane unperturbed). vite build clean (685ms). eslint 159 problems (143 errors)
+WITH and WITHOUT the lane — 0 added; new client files lint clean. Live mount reconfirmed
+through routes/index.js (GET /presets unauthed -> 401, DB-free).
+OUTPUT: themes 162/162; regressions 456/456 across six suites.
+DECISIONS: (1) SSRF guard kept LANE-LOCAL rather than editing the shared endpointAllowed
+in trackingDelivery.js — the fix requires resolve-once-and-pin (endpointAllowed cannot
+pin, and its fetch re-resolves), and touching the money/tracking guard would put that
+lane's 15-test SSRF regression and live postbacks at risk for no benefit (DECISION MADE).
+(2) The pin uses https.request's built-in `lookup` option (one resolution, used for the
+socket) rather than an undici custom dispatcher — undici is not a direct dep here and the
+lookup hook is dependency-free and gives correct TLS SNI/cert validation against the
+original hostname (DECISION MADE). (3) STRICT resolution: a hostname that resolves to a
+mixed public+private answer set is refused whole (it is a rebinding setup), matching the
+existing endpointAllowed posture (DECISION MADE). (4) M1 stale-detection lives client-side
+inside saveFunnelPatch's build callback because that is the only point where the row being
+validated IS the row being written; a server pre-check would reopen the TOCTOU. The pure
+helper is in its own JS file so the harness executes it (DECISION MADE). (5) The 2MB
+font bomb yields ZERO families (a 200-char capped read exceeds the 50-char name limit) —
+this is the honest result, asserted as "no giant family ever emitted" (DECISION MADE).
 STATUS: COMPLETE
 ---

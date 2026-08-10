@@ -51,6 +51,7 @@ import funnelTrackingExtrasRoutes from './funnelTrackingExtras.js';
 import funnelCommerceRoutes from './funnelCommerce.js';
 import orderEditRoutes from './orderEdit.js';
 import dunningRoutes from './dunning.js';
+import funnelThemesRoutes from './funnelThemes.js';
 
 const mountRoutes = (app) => {
   app.use('/api/v1/users', userRoutes);
@@ -153,6 +154,12 @@ const mountRoutes = (app) => {
   // (contract in the route header). Sends one exactly-once Klaviyo
   // 'Payment Failed' event per queued failure.
   app.use('/api/v1/dunning', dunningRoutes);
+  // THEME SYSTEM — named token bags + the 7-preset library (authed, funnels
+  // permission). Owns lb_funnel_themes and writes NOTHING else: applying a
+  // theme is a PLAN this lane computes and the client commits through the one
+  // serialized funnels.settings PATCH, so the renderer is untouched and there
+  // is no second read-modify-write against the settings blob.
+  app.use('/api/v1/funnel-themes', funnelThemesRoutes);
   // MEDIA LIBRARY routes are mounted in app.js, AHEAD of the global body
   // parser, so the router's own 7mb cap is real (see app.js media mount).
 };
