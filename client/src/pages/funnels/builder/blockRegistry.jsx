@@ -499,6 +499,10 @@ export const BLOCK_DEFS = {
       description: 'Special one-time deal, only available right now.',
       quantity: 1,
     }),
+    // Has NO editor field, but funnelRender DOES read it (headline fallback,
+    // funnelRender.js order_bump). Declared so the inspector's
+    // "unrecognised props" notice does not claim the page ignores it.
+    legacyProps: ['label'],
     // Field ORDER and COPY are operator-spec'd (reference-tool screenshots).
     // Block name is field 1 but lives in the SHARED inspector header, so it is
     // not repeated here.
@@ -575,6 +579,9 @@ export const BLOCK_DEFS = {
       href: '#fos-next',
       image: '',
     }),
+    // funnelRender reads `p.name || p.title` — `title` is a legacy fallback
+    // with no editor, so it is not an unrecognised prop.
+    legacyProps: ['title'],
     fields: [
       { key: 'image', label: 'Image URL', kind: 'url', media: 'image' },
       { key: 'name', label: 'Name', kind: 'text' },

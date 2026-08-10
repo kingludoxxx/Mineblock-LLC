@@ -591,14 +591,25 @@ function ReadinessPanel({ lifetime }) {
           </p>
         ) : null}
 
-        {/* THE TWO "VISITORS" ARE DIFFERENT NUMBERS, SAID ONCE, HERE. The table
-            below counts delivered page renders; this panel counts attributable
-            checkout sessions. They differ by a large factor in normal
-            operation, and an operator who is not told reads the gap as a bug. */}
+        {/* THE OLD SENTENCE HERE WAS FALSE, AND IT WAS THE CONFIDENT KIND.
+            It claimed the experiment table counted "delivered page renders, a
+            larger number and a different population". It does not: the windowed
+            table's `visitors` is a COUNT OF THE SAME lb_split_credits EXPOSURE
+            ROWS this panel counts (funnelAnalytics' readArmSessions is
+            `COUNT(*) … WHERE kind = 'exposure'`), which is why the audit
+            measured them byte-identical at 440/440. The real delivered-renders
+            number — lb_split_views, the 500 — was rendered NOWHERE, so the
+            sentence explained a discrepancy that did not exist and hid the one
+            that did.
+            Now: the copy states the true relationship (same population,
+            different window), and the real renders number is a labelled row of
+            its own in the all-time table below. */}
         <p className="mt-1.5 text-[11px] text-text-faint leading-relaxed">
-          Exposures are attributable checkout sessions from the credits ledger — the denominator every
-          figure here is measured over. The experiment table below counts delivered page renders, which
-          is a larger number and a different population.
+          Exposures are attributable checkout sessions from the credits ledger. The experiment table
+          above counts the <strong className="text-text-muted">same population</strong>, windowed to the
+          dates you picked and clamped to the delivery epoch; this panel is the test&rsquo;s whole
+          lifetime, so its numbers are the same or larger. Delivered page renders are a different,
+          larger number and have their own row in the all-time table below.
         </p>
 
         <div className="mt-3 space-y-1.5">
@@ -871,7 +882,29 @@ function AllTimeTable({ lifetime }) {
   if (!lifetime?.available) return null;
 
   const ROWS_ALL = [
-    { label: 'Exposures', fmt: (a) => fmtInt(a.exposures) },
+    {
+      // THE REAL DELIVERED-RENDERS NUMBER, rendered at last. It has been in this
+      // payload all along (lb_split_views, one row per test+visitor on the
+      // delivered render) and appeared on NO surface — while a help line
+      // elsewhere claimed the experiment table was showing it. It is the
+      // reconciliation number: renders → exposures is the drop-off between
+      // seeing the page and reaching checkout.
+      //
+      // Zero is a REAL answer here for an offer-scope test (the view ledger is
+      // page-scope only) and for any test created before delivery was wired, so
+      // it renders as a dash with the reason rather than a bare 0 that would
+      // read as "nobody saw it".
+      label: 'Delivered renders',
+      fmt: (a) => (num(a.visitors) ? fmtInt(a.visitors) : DASH),
+      sub: (a) => (num(a.visitors)
+        ? 'page renders (lb_split_views) — not the money denominator'
+        : 'not recorded for this test — offer-scope or pre-delivery'),
+    },
+    {
+      label: 'Exposures',
+      fmt: (a) => fmtInt(a.exposures),
+      sub: () => 'attributable checkout sessions — the denominator below',
+    },
     {
       label: 'Opt-in submits',
       // REAL per-arm counts or an em-dash with the reason. Never a zero standing
@@ -881,11 +914,25 @@ function AllTimeTable({ lifetime }) {
         ? 'attributed by arm page'
         : `not attributable — ${String(submits?.reason || 'unknown').replace(/_/g, ' ')}`),
     },
-    { label: 'Orders', fmt: (a) => fmtInt(a.conversions) },
     {
-      label: 'Conv. rate',
+      // M9 — "Orders" HERE AND "Orders" IN THE WINDOWED TABLE ARE NOT THE SAME
+      // COUNT, and the two sat one above the other with the same label. The
+      // windowed row counts checkout sessions whose money MOVED (mint-based);
+      // this one counts sessions the split ledger actually CREDITED. They
+      // diverge by the parked-credit population — legs whose exposure row had
+      // not landed when the settle fired, which retrySplitPendingCredits may
+      // still be working through. Relabelled rather than reconciled: the two
+      // numbers are both correct and answer different questions.
+      label: 'Credited orders',
+      fmt: (a) => fmtInt(a.conversions),
+      sub: () => 'credited to this arm by the ledger',
+    },
+    {
+      // Named for its numerator (M9): credited orders ÷ exposures, which is not
+      // the windowed table's mint-based conversion rate.
+      label: 'Credited conv. rate',
       fmt: (a) => (a.stats?.cvr_pct === undefined ? DASH : fmtPct(a.stats.cvr_pct)),
-      sub: (a) => (a.stats?.cvr_withheld ? 'withheld — under sample floor' : null),
+      sub: (a) => (a.stats?.cvr_withheld ? 'withheld — under sample floor' : 'credited orders ÷ exposures'),
     },
     { label: 'Revenue', fmt: (a) => fmtMoney(a.gross_revenue) },
     {
@@ -911,7 +958,9 @@ function AllTimeTable({ lifetime }) {
           Page &mdash; all time
         </span>
         <p className="mt-0.5 text-[11px] text-text-faint normal-case tracking-normal">
-          Every exposure these pages ever recorded &middot; not a verdict.
+          Every exposure these pages ever recorded &middot; not a verdict. &ldquo;Credited orders&rdquo; counts
+          what the split ledger attributed to the arm; the experiment table&rsquo;s &ldquo;Orders&rdquo; counts
+          checkout sessions whose money moved. They differ by legs still waiting on their exposure row.
         </p>
       </div>
       <div className="overflow-x-auto">
@@ -998,6 +1047,17 @@ const ROWS = [
     // The service is explicit that this is a checkout-mint count, not page
     // traffic. Saying so once, here, stops the number being read as sessions.
     sub: () => 'reached checkout',
+  },
+  {
+    key: 'distinct_visitors',
+    label: 'Distinct visitors',
+    // COMPUTED AND SHIPPED SINCE THIS ENDPOINT WAS WRITTEN, RENDERED NOWHERE.
+    // It is the reconciliation number for the row above: `visitors` counts
+    // SESSIONS, this counts the distinct browsers behind them, so the gap is
+    // how many people came back. Without it an operator reads 440 sessions as
+    // 440 people.
+    fmt: (m) => fmtInt(m.distinct_visitors),
+    sub: (m) => (m.distinct_visitors === undefined ? null : 'distinct browsers, not sessions'),
   },
   {
     key: 'submits',
@@ -1113,7 +1173,10 @@ const ROWS = [
       if (!s.known) return 'floors not reported';
       if (s.ready) return null;
       const bits = [];
-      if (s.needVisitors > 0) bits.push(`${fmtInt(s.needVisitors)} more visitors`);
+      // ONE NOUN. Both surfaces apply this floor to exposure rows, so the
+      // windowed cell says "exposures" too — it used to say "visitors" directly
+      // above a panel saying "exposures" about the identical rule.
+      if (s.needVisitors > 0) bits.push(`${fmtInt(s.needVisitors)} more exposures`);
       if (s.needOrders > 0) bits.push(`${fmtInt(s.needOrders)} more orders`);
       return `needs ${bits.join(' · ')}`;
     },

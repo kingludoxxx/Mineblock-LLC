@@ -254,6 +254,34 @@ function verifyJobToken(jobId, userId, provided) {
 // (WIRING_KEYS / mergeReplaceProps). Both lists must move together: this one
 // keeps the ops the model is told it applied honest, the client one keeps the
 // draft on the operator's screen honest.
+//
+// ---------------------------------------------------------------------------
+// THE SECOND WAVE (seam audit B3). The original nine covered the checkout
+// blocks that existed when the floor was written. Every block type added since
+// carries load-bearing props that were NOT covered, and a routine "reword this"
+// batch blanked all of them — reproduced through the real applyOps +
+// renderBlock, with the canvas still looking correct:
+//
+//   sticky_cta.href      → safeHref(p.href || '#')      the money link becomes '#'
+//   product_grid.items   → (Array.isArray(p.items)…)    the grid renders empty
+//   countdown.deadline   → data-deadline=''             the clock never starts
+//   embed/custom_html.html → p.html || ''               the widget is erased
+//   table.rows           → <tbody></tbody>              the table empties
+//   order_bump.checked   → p.checked === true           a pre-ticked bump unticks
+//   hero.cta_href        → safeHref(p.cta_href || '#')  the hero CTA goes nowhere
+//
+// DECISION — items/rows/html ARE content the model legitimately rewrites, and
+// they belong here anyway. The floor's contract is not "these keys are
+// read-only"; it is "silence does not delete". An op that ACTUALLY emits
+// `items` still wins (including an explicit null, which is an intentional
+// clear). So "rewrite the product cards" works exactly as before, while
+// "reword the heading" can no longer take the cards with it. Both directions
+// are asserted per key in server/tests/builder/ai-ops-wiring.mjs.
+//
+// `url` is included defensively: no renderer reads a prop named `url` today
+// (it is a field KIND in blockRegistry, not a prop key), so unlike the others
+// it fixes no currently-reachable break — it is here so the next link-bearing
+// block does not have to rediscover this bug.
 export const WIRING_KEYS = Object.freeze([
   'variant_id',
   'line_items',
@@ -264,6 +292,15 @@ export const WIRING_KEYS = Object.freeze([
   'style',
   'mobile_styles',
   'block_name',
+  // seam audit B3 — the second wave
+  'href',
+  'cta_href',
+  'url',
+  'deadline',
+  'html',
+  'items',
+  'rows',
+  'checked',
 ]);
 
 export function mergeReplaceProps(prev, next) {
@@ -277,8 +314,110 @@ export function mergeReplaceProps(prev, next) {
   return out;
 }
 
-// Returns { error } or { blocks, ops } where ops is the normalized list and
-// blocks is the state after applying them. Pure — never mutates input.
+// ---------------------------------------------------------------------------
+// Link-host change flagging (seam audit M15)
+// ---------------------------------------------------------------------------
+// applyOps will happily re-point a money link at any host. That is a legal edit
+// — an operator CAN ask for it — but it must never pass unremarked, because it
+// is indistinguishable on the canvas from a copy tweak: the button still says
+// "Buy Now" and still looks right, it just now pays someone else.
+//
+// This does NOT block the op (per M15: flag, do not refuse). It produces an
+// advisory the operator review surface renders as an amber row naming old → new
+// host, so the change is a decision they make rather than one they miss.
+//
+// DECISION — flagged on ANY block that carries a link prop, not on an allowlist
+// of block types. An allowlist is precisely the shape that produced B3: it was
+// correct when written and silently wrong for every block type added after.
+// Over-flagging costs an amber row the operator can read and dismiss;
+// under-flagging costs a redirected checkout.
+export const LINK_PROP_KEYS = Object.freeze(['href', 'cta_href', 'url']);
+
+/**
+ * The host a link prop points at, or null when it has none (in-page anchors,
+ * root-relative paths, query-only links, mailto:, unparseable junk). Total —
+ * never throws on operator- or model-supplied text.
+ */
+export function linkHost(value) {
+  if (typeof value !== 'string') return null;
+  const s = value.trim();
+  if (!s) return null;
+  // Relative and in-page targets stay on the current host by definition.
+  if (s.startsWith('#') || s.startsWith('/') || s.startsWith('?')) return null;
+  try {
+    const host = new URL(s).host.toLowerCase();
+    return host || null; // mailto:/tel:/javascript: parse but carry no host
+  } catch {
+    return null;
+  }
+}
+
+// One advisory. `from`/`to` are hosts (null = same-site/relative).
+const linkWarning = (block, key, fromVal, toVal) => ({
+  block_id: block.id,
+  block_type: typeof block.type === 'string' ? block.type : '',
+  key,
+  from: linkHost(fromVal),
+  to: linkHost(toVal),
+  from_url: typeof fromVal === 'string' ? fromVal.slice(0, 300) : null,
+  to_url: typeof toVal === 'string' ? toVal.slice(0, 300) : null,
+});
+
+/**
+ * Compare a block's CURRENT props against the props an op would leave behind
+ * and report every link whose HOST moves. Covers both top-level link props and
+ * the per-item links inside a product_grid / storefront_grid (`items[i].href`),
+ * which is where a product grid's money links actually live.
+ *
+ * A host change to OR from null is reported too: an absolute checkout URL
+ * replaced by '#' is the money link dying, which is exactly what the operator
+ * needs to see.
+ *
+ * @returns {Array<object>} possibly empty, never null
+ */
+export function detectLinkHostChanges(prevProps, nextProps, block) {
+  const out = [];
+  const p = isPlainObject(prevProps) ? prevProps : {};
+  const n = isPlainObject(nextProps) ? nextProps : {};
+
+  for (const key of LINK_PROP_KEYS) {
+    const before = p[key];
+    const after = n[key];
+    if (before === after) continue;
+    const fromHost = linkHost(before);
+    const toHost = linkHost(after);
+    // Only a HOST move is interesting. Editing a path or a query string on the
+    // same host is a normal copy edit and must not cry wolf.
+    if (fromHost === toHost) continue;
+    if (fromHost === null && toHost === null) continue;
+    out.push(linkWarning(block, key, before, after));
+  }
+
+  // Per-item links (product_grid, storefront_grid, and anything else that
+  // stores an array of cards). Compared BY INDEX, which is how the renderer
+  // reads them.
+  if (Array.isArray(p.items) && Array.isArray(n.items)) {
+    const len = Math.max(p.items.length, n.items.length);
+    for (let i = 0; i < len; i++) {
+      const bi = p.items[i];
+      const ai = n.items[i];
+      if (!isPlainObject(bi) || !isPlainObject(ai)) continue;
+      for (const key of LINK_PROP_KEYS) {
+        const fromHost = linkHost(bi[key]);
+        const toHost = linkHost(ai[key]);
+        if (fromHost === toHost) continue;
+        if (fromHost === null && toHost === null) continue;
+        out.push(linkWarning(block, `items[${i}].${key}`, bi[key], ai[key]));
+      }
+    }
+  }
+
+  return out;
+}
+
+// Returns { error } or { blocks, ops, warnings } where ops is the normalized
+// list, blocks is the state after applying them, and warnings is the (possibly
+// empty) list of link-host advisories. Pure — never mutates input.
 export function applyOps(currentBlocks, rawOps) {
   if (!Array.isArray(rawOps)) return { error: 'ops must be an array' };
   if (!rawOps.length) return { error: 'ops is empty — propose at least one operation' };
@@ -286,6 +425,7 @@ export function applyOps(currentBlocks, rawOps) {
 
   let blocks = currentBlocks.map((b) => ({ ...b }));
   const ops = [];
+  const warnings = [];
 
   for (let i = 0; i < rawOps.length; i++) {
     const op = rawOps[i];
@@ -303,6 +443,10 @@ export function applyOps(currentBlocks, rawOps) {
       // client as well as to the simulated result — the editor must apply the
       // same props this validator approved, not the model's raw object.
       const merged = mergeReplaceProps(blocks[idx].props, op.props);
+      // Compared against the MERGED result, not the model's raw props — the
+      // floor runs first, so a link the op was silent about has already been
+      // carried forward and must not be reported as a change.
+      warnings.push(...detectLinkHostChanges(blocks[idx].props, merged, blocks[idx]));
       blocks[idx] = { ...blocks[idx], props: merged };
       ops.push({ op: 'replace_props', block_id: op.block_id, props: merged });
     } else if (op.op === 'remove_block') {
@@ -345,7 +489,7 @@ export function applyOps(currentBlocks, rawOps) {
   // an op set that would be rejected at save time is rejected here.
   const validationError = validateBlocks(blocks);
   if (validationError) return { error: `resulting blocks are invalid: ${validationError}` };
-  return { blocks, ops };
+  return { blocks, ops, warnings };
 }
 
 // ---------------------------------------------------------------------------
@@ -355,7 +499,11 @@ const TOOLS = [
   {
     name: 'propose_block_edits',
     description:
-      'Propose edits to the current page draft. Ops apply IN ORDER to the editor\'s in-memory blocks — they are a DRAFT the operator reviews on the canvas; nothing is published. block_id values MUST come from the block JSON in the system prompt (or from ids returned by earlier insert_block ops this conversation). replace_props REPLACES the whole props object, so copy unchanged keys over — except wiring keys (variant_id, line_items, offer_id, quantity, product_id, price_id, style, mobile_styles, block_name), which are carried over from the block\'s current props when omitted.',
+      // The floor is INTERPOLATED, never spelled out. This description used to
+      // carry its own hardcoded copy of the nine original keys, which is
+      // exactly how the model ends up being told a floor that no longer matches
+      // the one the validator applies.
+      `Propose edits to the current page draft. Ops apply IN ORDER to the editor's in-memory blocks — they are a DRAFT the operator reviews on the canvas; nothing is published. block_id values MUST come from the block JSON in the system prompt (or from ids returned by earlier insert_block ops this conversation). replace_props REPLACES the whole props object, so copy unchanged keys over — except wiring keys (${WIRING_KEYS.join(', ')}), which are carried over from the block's current props when omitted. That carry-forward is a SAFETY NET, not permission to be sloppy: if you are rewriting a block's items/rows/html, emit them.`,
     input_schema: {
       type: 'object',
       properties: {
@@ -448,7 +596,9 @@ ${JSON.stringify(blocks)}
 
 OUTPUT CONTRACT (strict):
 - Edits ONLY via propose_block_edits. Never print ops or block JSON as text.
-- replace_props sends the FULL new props object (it replaces, not merges). One exception, applied for you: wiring keys (${WIRING_KEYS.join(', ')}) are carried over from the block's current props when you omit them, so you cannot delete a block's checkout wiring or its style bags by leaving them out. To CHANGE one, set it explicitly.
+- replace_props sends the FULL new props object (it replaces, not merges). One exception, applied for you: wiring keys (${WIRING_KEYS.join(', ')}) are carried over from the block's current props when you omit them, so you cannot delete a block's checkout wiring, its links, its countdown deadline, its embedded HTML, its grid/table contents or its style bags by leaving them out. To CHANGE one, set it explicitly — an explicit value always wins, including null, which clears it on purpose.
+- The carry-forward is a SAFETY NET for props you were not thinking about. It is NOT a reason to omit content you ARE rewriting: if the operator asks you to change the product cards, the table rows or the embedded HTML, emit items/rows/html in full.
+- CHANGING A LINK IS A MONEY DECISION. href, cta_href and url on CTA, button, product-grid and checkout-adjacent blocks point at a paid destination. Only change one when the operator explicitly asked you to, and say so plainly in your reply — a link edit to a different domain is surfaced to the operator for review.
 - Respect the block schema you see: keep the same prop keys/shapes the block already uses; text-bearing props are plain strings; html props are raw HTML.
 - Blocks are capped at 500 per page and 2MB total; keep edits lean.
 - If the request is ambiguous about which block, say which one you picked in LOCATE and why.
@@ -816,6 +966,7 @@ router.post('/chat', async (req, res) => {
 
     let workingBlocks = contextBlocks;
     const allOps = [];
+    const allWarnings = [];
     const jobs = [];
     let replyParts = [];
     let stopReason = null;
@@ -850,8 +1001,19 @@ router.post('/chat', async (req, res) => {
           } else {
             workingBlocks = applied.blocks;
             allOps.push(...applied.ops);
-            sseSend(res, 'ops', { count: applied.ops.length });
+            const warns = applied.warnings || [];
+            allWarnings.push(...warns);
+            sseSend(res, 'ops', { count: applied.ops.length, warnings: warns });
             resultText = `Applied ${applied.ops.length} op(s) to the draft. The canvas now reflects them. Current block count: ${workingBlocks.length}.`;
+            if (warns.length) {
+              // Tell the MODEL too. If it re-pointed a link it did not mean to,
+              // this is its chance to correct itself in the same turn — and if
+              // it did mean to, it should say so plainly in its reply.
+              const list = warns
+                .map((w) => `${w.block_id}.${w.key}: ${w.from || '(same-site)'} → ${w.to || '(same-site)'}`)
+                .join('; ');
+              resultText += ` NOTE — ${warns.length} link destination(s) changed host and are flagged for the operator to review: ${list}. If that was not intended, correct it now; if it was, say so explicitly in your reply.`;
+            }
           }
         } else if (tu.name === 'generate_image' || tu.name === 'generate_video') {
           const fn = tu.name === 'generate_image' ? createImageJob : createVideoJob;
@@ -919,6 +1081,9 @@ router.post('/chat', async (req, res) => {
 
     sseSend(res, 'done', {
       reply, ops: allOps, jobs, stop_reason: stopReason, attachment: resolvedAttachment,
+      // Link-host advisories (seam audit M15) — the panel renders one amber row
+      // per entry. Advisory only: the ops are already applied.
+      warnings: allWarnings,
     });
     res.end();
   } catch (err) {

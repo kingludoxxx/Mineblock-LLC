@@ -57,6 +57,8 @@ const sql = postgres(DB, { ssl: false, onnotice: () => {} });
 // ═══════════════════════════════════════════════════════════════════════════
 const qv = await import('../../src/services/quoteVerify.js');
 const ca = await import('../../src/services/cogsAssistant.js');
+// The four shipping legs, named once — several blocks below iterate them.
+const CONTEXTS_T = ['main', 'upsell', 'addon', 'bump'];
 
 const hdr = (over = {}) => ({ supplier: 'Acme', quote_ref: 'Q1', quote_date: '2026-08-01', currency: 'USD', incoterm: 'FOB', subtotal: null, shipping_total: null, grand_total: null, ...over });
 const row = (over = {}) => ({
@@ -234,16 +236,76 @@ console.log('\n── A. verify rules (pass + fail each) ──');
     unit_cogs: null, ship: { default: null, main: 1.5, upsell: null, addon: null, bump: null },
     effective_from: null, only_from_today: false, currency: 'USD', note: '', reason: '',
   };
-  const variantSourced = { unit_cogs: 3.9, cogs_source: 'variant', ship: { default: 2, main: null, upsell: null, addon: null, bump: null } };
+  const allVariant = { main: 'variant', upsell: 'variant', addon: 'variant', bump: 'variant' };
+  const variantSourced = {
+    unit_cogs: 3.9, cogs_source: 'variant', ship_source: { ...allVariant },
+    ship: { default: 2, main: null, upsell: null, addon: null, bump: null },
+  };
   const c1 = ca.carryForward(base, variantSourced);
   ok(c1.unit_cogs === 3.9 && c1.carried_cogs === true,
     'A13 a ship-only proposal carries the variant-sourced COGS forward (it would otherwise be erased)');
   ok(c1.ship.upsell === 2, 'A13 contexts the proposal did not mention are carried from the resolved value');
   ok(c1.ship.main === 1.5, 'A13 a context the proposal DID set is not overwritten');
-  const groupSourced = { unit_cogs: 3.9, cogs_source: 'item', ship: { default: null, main: null, upsell: null, addon: null, bump: null } };
+  const groupSourced = {
+    unit_cogs: 3.9, cogs_source: 'item', ship_source: { ...allVariant },
+    ship: { default: null, main: null, upsell: null, addon: null, bump: null },
+  };
   const c2 = ca.carryForward(base, groupSourced);
   ok(c2.unit_cogs === null && c2.carried_cogs === false,
     'A13 a GROUP-sourced cost is NOT carried — that would freeze the variant out of its cost group');
+}
+
+// A13b carryForward — the SHIP half of the same guard (seam audit M3)
+{
+  const shipNull = { default: null, main: null, upsell: null, addon: null, bump: null };
+  // A proposal that names only a COST. Shipping is left for carry-forward.
+  const costOnly = {
+    index: 0, scope: 'variant', variant_id: '111111111111', cost_item_id: null,
+    unit_cogs: 4.5, ship: { ...shipNull }, effective_from: null, only_from_today: false,
+    currency: 'USD', note: '', reason: '', explicit_clear: [],
+  };
+  const groupShip = {
+    unit_cogs: null, cogs_source: null,
+    ship: { ...shipNull, default: 3 },
+    ship_source: { main: 'item', upsell: 'item', addon: 'item', bump: 'item' },
+  };
+  const g = ca.carryForward(costOnly, groupShip);
+  ok(g.carried_ship.length === 0,
+    `A13b GROUP-sourced shipping is NOT carried onto a variant rate (${JSON.stringify(g.carried_ship)})`);
+  ok(CONTEXTS_T.every((c) => g.ship[c] === null),
+    `A13b all four legs stay blank — the variant keeps resolving through its group (${JSON.stringify(g.ship)})`);
+
+  const variantShip = {
+    unit_cogs: null, cogs_source: null,
+    ship: { ...shipNull, default: 3 },
+    ship_source: { main: 'variant', upsell: 'variant', addon: 'variant', bump: 'variant' },
+  };
+  const v = ca.carryForward(costOnly, variantShip);
+  ok(v.carried_ship.length === 4 && CONTEXTS_T.every((c) => v.ship[c] === 3),
+    `A13b VARIANT-sourced shipping is still carried, on all four legs (${JSON.stringify(v.ship)})`);
+
+  // Mixed provenance: a variant rate that sets main only, the group answering
+  // the other three. Only the variant-sourced leg may be carried.
+  const mixed = {
+    unit_cogs: null, cogs_source: null,
+    ship: { ...shipNull, main: 1.25, upsell: 3, addon: 3, bump: 3 },
+    ship_source: { main: 'variant', upsell: 'item', addon: 'item', bump: 'item' },
+  };
+  const m = ca.carryForward(costOnly, mixed);
+  ok(m.ship.main === 1.25 && m.ship.upsell === null && m.ship.addon === null && m.ship.bump === null,
+    `A13b provenance is PER CONTEXT — the variant-sourced leg carries, the group-sourced ones do not (${JSON.stringify(m.ship)})`);
+
+  // An ITEM-scoped proposal is exempt: the rate it carries from IS the group's.
+  const itemProposal = { ...costOnly, scope: 'item', variant_id: null, cost_item_id: 'ci_group1' };
+  const i = ca.carryForward(itemProposal, groupShip);
+  ok(i.carried_ship.length === 4,
+    `A13b an ITEM-scoped proposal carries the group's own shipping (${i.carried_ship.length})`);
+
+  // No provenance recorded → withhold. A carry that should not have happened
+  // is a silent detachment; a carry that did not happen is a visible blank.
+  const noSource = { unit_cogs: null, cogs_source: null, ship: { ...shipNull, default: 3 } };
+  ok(ca.carryForward(costOnly, noSource).carried_ship.length === 0,
+    'A13b a state with no recorded ship source fails CLOSED');
 }
 
 // A14 confidence clamping
@@ -1203,6 +1265,217 @@ let pairBatch = '';
     'NIT the chat service, the extractor and the core share ONE frozen allowlist object');
   ok(chatSvc.DEFAULT_MODEL === ca.DEFAULT_MODEL && extractSvc.DEFAULT_MODEL === ca.DEFAULT_MODEL,
     'NIT and one default model');
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// CROSS-AREA SEAM AUDIT
+// ═══════════════════════════════════════════════════════════════════════════
+console.log('\n── D. seam audit ──');
+
+const fc = await import('../../src/services/funnelCosts.js');
+const fg = await import('../../src/services/funnelCostGroups.js');
+
+// ═══ M2: the index must be BOTH halves ═════════════════════════════════════
+// A variant whose membership MOVES on a future day, with the current-view
+// column already pointing at the future group. Resolving today through a
+// rates-only index falls back to that column (memberOf's pre-ledger path) and
+// prices the variant off a group it does not belong to yet.
+{
+  const V = '141414141414';
+  await mkVariant(V, 'Seam Product', 'Membership Mover', { revenue: 1400 });
+  await sql`INSERT INTO lb_cost_items (cost_item_id, name) VALUES
+    ('ci_seam_now', 'Seam Now Group'), ('ci_seam_future', 'Seam Future Group')`;
+  // The column is the CURRENT VIEW and already names the future group.
+  await sql`UPDATE lb_variant_costs SET cost_item_id = 'ci_seam_future' WHERE variant_id = ${V}`;
+  // The ledger says: in ci_seam_now since 30 days ago, ci_seam_future from +10.
+  await sql`INSERT INTO lb_cost_item_members (variant_id, cost_item_id, units_per, effective_from)
+            VALUES (${V}, 'ci_seam_now', 1, ${reportDaysAgo(30)}),
+                   (${V}, 'ci_seam_future', 1, ${reportDaysAgo(-10)})`;
+  const rNow = await req('POST', '/funnel-costs/rates', { scope: 'item', cost_item_id: 'ci_seam_now', unit_cogs: 1 });
+  const rFut = await req('POST', '/funnel-costs/rates', { scope: 'item', cost_item_id: 'ci_seam_future', unit_cogs: 99 });
+  ok(rNow.status === 200 && rFut.status === 200, `M2 both group rates seeded (${rNow.status}/${rFut.status})`);
+
+  const [vc] = await sql`SELECT * FROM lb_variant_costs WHERE variant_id = ${V}`;
+  const today = fc.dayKey();
+
+  // The RIGHT index — rates AND memberships.
+  const full = await fc.loadCostIndex();
+  const [expected, expectedSrc] = fc.resolveUnitCogs(vc, full, today);
+  ok(expected === 1 && expectedSrc === 'item',
+    `M2 loadCostIndex prices today through the group in force TODAY (${expected} via ${expectedSrc})`);
+
+  // The HALF index the assistant used to build — proves the probe has teeth.
+  const half = fc.buildRateIndex(await fc.loadRates());
+  const [wrong] = fc.resolveUnitCogs(vc, half, today);
+  ok(wrong === 99,
+    `M2 a rates-only index falls back to the column and prices the FUTURE group (${wrong}) — the bug this probe exists for`);
+
+  // And the thing under test: membershipFor must agree with loadCostIndex.
+  const live = await ca.membershipFor([{ scope: 'variant', ref: V }]);
+  const state = live.byId.get(V);
+  ok(state.unit_cogs === expected,
+    `M2 membershipFor AGREES with loadCostIndex (${state.unit_cogs} vs ${expected})`);
+  ok(state.cost_item_id === 'ci_seam_now',
+    `M2 and reports the membership in force today, not the column (${state.cost_item_id})`);
+
+  // The apply door reads the same state, so the cost it carries is the right one.
+  const applied = await req('POST', '/cogs-assistant/apply', {
+    kind: 'chat', proposals: [{ scope: 'variant', variant_id: V, ship: { default: 1.5 } }],
+  });
+  ok(applied.status === 200 && applied.j.data.applied_count === 1, `M2 a ship-only apply lands (${applied.status})`);
+  const [rate] = await sql`SELECT unit_cogs FROM lb_cost_rates WHERE variant_id = ${V} ORDER BY id DESC LIMIT 1`;
+  ok(rate.unit_cogs === null,
+    `M2 and carries NOTHING — the cost is group-sourced, so it stays with the group (${rate.unit_cogs})`);
+}
+
+// ═══ M3: the ship carry respects group provenance, end to end ══════════════
+{
+  const GS = '151515151515';   // shipping comes from its GROUP
+  const VS = '161616161616';   // shipping is its OWN
+  await mkVariant(GS, 'Seam Ship', 'Group Shipped', { revenue: 1300 });
+  await mkVariant(VS, 'Seam Ship', 'Variant Shipped', { revenue: 1200 });
+  await sql`INSERT INTO lb_cost_items (cost_item_id, name) VALUES ('ci_seam_ship', 'Seam Ship Group')`;
+  await sql`UPDATE lb_variant_costs SET cost_item_id = 'ci_seam_ship' WHERE variant_id = ${GS}`;
+  await sql`INSERT INTO lb_cost_item_members (variant_id, cost_item_id, units_per, effective_from)
+            VALUES (${GS}, 'ci_seam_ship', 1, ${reportDaysAgo(30)})`;
+  const gr = await req('POST', '/funnel-costs/rates', {
+    scope: 'item', cost_item_id: 'ci_seam_ship', ship: { default: 3 },
+  });
+  ok(gr.status === 200, `M3 group ships at $3/unit (${gr.status})`);
+  const vr = await req('POST', '/funnel-costs/rates', { variant_id: VS, ship: { default: 3 } });
+  ok(vr.status === 200, `M3 the other variant ships at $3/unit on its OWN rate (${vr.status})`);
+
+  // Both variants resolve to $3 on every leg — identical on screen.
+  const live = await ca.membershipFor([{ scope: 'variant', ref: GS }, { scope: 'variant', ref: VS }]);
+  const gState = live.byId.get(GS);
+  const vState = live.byId.get(VS);
+  ok(CONTEXTS_T.every((c) => ca.resolveShipFor(gState.ship, c) === 3)
+    && CONTEXTS_T.every((c) => ca.resolveShipFor(vState.ship, c) === 3),
+  'M3 both variants resolve to $3 shipping on all four legs — indistinguishable by value');
+  ok(CONTEXTS_T.every((c) => gState.ship_source[c] === 'item'),
+    `M3 but the group-shipped one is sourced 'item' (${JSON.stringify(gState.ship_source)})`);
+  ok(CONTEXTS_T.every((c) => vState.ship_source[c] === 'variant'),
+    `M3 and the other 'variant' (${JSON.stringify(vState.ship_source)})`);
+
+  // A COST-ONLY proposal on each. Only the variant-sourced shipping may ride along.
+  const aG = await req('POST', '/cogs-assistant/apply', {
+    kind: 'chat', proposals: [{ scope: 'variant', variant_id: GS, unit_cogs: 5 }],
+  });
+  ok(aG.status === 200 && aG.j.data.applied_count === 1, `M3 group-shipped apply lands (${aG.status})`);
+  const [gRate] = await sql`SELECT ship FROM lb_cost_rates WHERE variant_id = ${GS} ORDER BY id DESC LIMIT 1`;
+  ok(CONTEXTS_T.every((c) => gRate.ship[c] === null),
+    `M3 the GROUP's $3 was NOT frozen into the variant rate (${JSON.stringify(gRate.ship)})`);
+
+  const aV = await req('POST', '/cogs-assistant/apply', {
+    kind: 'chat', proposals: [{ scope: 'variant', variant_id: VS, unit_cogs: 5 }],
+  });
+  ok(aV.status === 200 && aV.j.data.applied_count === 1, `M3 variant-shipped apply lands (${aV.status})`);
+  const [vRate] = await sql`SELECT ship FROM lb_cost_rates WHERE variant_id = ${VS} ORDER BY id DESC LIMIT 1`;
+  ok(CONTEXTS_T.every((c) => Number(vRate.ship[c]) === 3),
+    `M3 while the variant's OWN $3 is still carried, on all four legs (${JSON.stringify(vRate.ship)})`);
+
+  // The group-shipped variant still resolves to $3 — through its group, where
+  // a later group change will still reach it.
+  const after = await req('GET', '/funnel-costs/variants?q=Group Shipped');
+  const row = after.j.data.items.find((x) => x.variant_id === GS);
+  ok(row.ship.main === 3 && row.unit_cogs === 5,
+    `M3 it still SHIPS at $3 (via the group) and now costs $5 (${row.ship.main}/${row.unit_cogs})`);
+  const move = await req('POST', '/funnel-costs/rates', {
+    scope: 'item', cost_item_id: 'ci_seam_ship', ship: { default: 7 },
+  });
+  ok(move.status === 200, 'M3 the group re-prices its freight');
+  const after2 = await req('GET', '/funnel-costs/variants?q=Group Shipped');
+  const row2 = after2.j.data.items.find((x) => x.variant_id === GS);
+  ok(row2.ship.main === 7,
+    `M3 AND THE CHANGE STILL REACHES IT (${row2.ship.main}) — which is what freezing the $3 would have broken`);
+}
+
+// ═══ M4: an EMPTY cost group is a real, priceable group ════════════════════
+// Unbinding every member is explicitly allowed (funnelCostGroups: "the
+// operator is dismantling it deliberately"). The assistant resolved existence
+// from the lb_variant_costs COLUMN, so it went blind to exactly that state.
+{
+  const E1 = '171717171717';
+  const E2 = '181818181818';
+  await mkVariant(E1, 'Empty Group', 'One', { revenue: 1100 });
+  await mkVariant(E2, 'Empty Group', 'Two', { revenue: 1000 });
+  const created = await fg.createGroup({
+    name: 'Seam Empty Group', members: [{ variant_id: E1 }, { variant_id: E2 }], createdBy: 'asst@local.test',
+  });
+  const gid = created.cost_item_id || created.group.cost_item_id;
+  await fg.removeMembers(gid, [E1, E2], { actor: 'asst@local.test' });
+
+  const [{ n }] = await sql`SELECT COUNT(*)::int AS n FROM lb_variant_costs WHERE cost_item_id = ${gid}`;
+  ok(n === 0, `M4 the group now has NO members in the column (${n})`);
+  const [item] = await sql`SELECT archived FROM lb_cost_items WHERE cost_item_id = ${gid}`;
+  ok(item && item.archived === false, 'M4 while the group itself is still live');
+
+  // The manual door prices it happily — this is the behaviour the assistant
+  // has to match, not the other way round.
+  const manual = await req('POST', '/funnel-costs/rates', { scope: 'item', cost_item_id: gid, unit_cogs: 2.5 });
+  ok(manual.status === 200, `M4 the MANUAL rate door prices the empty group (${manual.status})`);
+
+  const applied = await req('POST', '/cogs-assistant/apply', {
+    kind: 'chat', proposals: [{ scope: 'item', cost_item_id: gid, unit_cogs: 2.75 }],
+  });
+  ok(applied.status === 200 && applied.j.data.applied_count === 1,
+    `M4 and so does the ASSISTANT — no more unknown_cost_item (${applied.status} ${applied.text.slice(0, 140)})`);
+  const [rate] = await sql`SELECT unit_cogs FROM lb_cost_rates WHERE cost_item_id = ${gid} ORDER BY id DESC LIMIT 1`;
+  ok(Number(rate.unit_cogs) === 2.75, `M4 the rate landed (${rate.unit_cogs})`);
+
+  // An ARCHIVED group is still refused, on both doors.
+  await fg.deleteGroup(gid, 'asst@local.test');
+  const gone = await req('POST', '/cogs-assistant/apply', {
+    kind: 'chat', proposals: [{ scope: 'item', cost_item_id: gid, unit_cogs: 3 }],
+  });
+  ok(gone.status === 422 && gone.j.data.dropped[0].reason === 'unknown_cost_item',
+    `M4 an ARCHIVED group is still refused (${gone.j?.data?.dropped?.[0]?.reason})`);
+}
+
+// ═══ MINOR: appendRate's item guard must ride the caller's transaction ═════
+// Create a group and price it in ONE transaction. The guard used pgQuery, so
+// it looked for the group on a pooled connection that cannot see the caller's
+// uncommitted INSERT — item_not_found for a group three statements old.
+{
+  const C1 = '191919191919';
+  const C2 = '202020202020';
+  await mkVariant(C1, 'Compose Product', 'One', { revenue: 900 });
+  await mkVariant(C2, 'Compose Product', 'Two', { revenue: 800 });
+
+  let composed = null;
+  let threw = '';
+  try {
+    composed = await fg.withTx(async (q) => {
+      const g = await fg.createGroupInTx(q, {
+        name: 'Seam Compose Group',
+        members: [{ variant_id: C1 }, { variant_id: C2 }],
+        createdBy: 'asst@local.test',
+      });
+      await fc.appendRate({
+        scope: 'item', refId: g.cost_item_id, unitCogs: 8.25,
+        source: 'manual', createdBy: 'asst@local.test', exec: q,
+      });
+      return g.cost_item_id;
+    });
+  } catch (err) {
+    threw = err?.code || err?.message || String(err);
+  }
+  ok(!threw, `MINOR create-group-then-price in ONE transaction succeeds (${threw || 'no throw'})`);
+  ok(Boolean(composed), 'MINOR and returns the new group id');
+  const [rate] = await sql`SELECT unit_cogs FROM lb_cost_rates WHERE cost_item_id = ${composed}`;
+  ok(rate && Number(rate.unit_cogs) === 8.25, `MINOR the composed rate committed (${rate?.unit_cogs})`);
+  const [grp] = await sql`SELECT cost_item_id FROM lb_cost_items WHERE cost_item_id = ${composed}`;
+  ok(Boolean(grp), 'MINOR alongside the group it was composed with');
+
+  // The guard still BITES — a typo'd id inside a transaction is still refused.
+  let ghostCode = '';
+  try {
+    await fg.withTx(async (q) => {
+      await fc.appendRate({ scope: 'item', refId: 'ci_never_existed', unitCogs: 1, exec: q });
+    });
+  } catch (err) { ghostCode = err?.code || ''; }
+  ok(ghostCode === 'item_not_found',
+    `MINOR while a group that genuinely does not exist is still refused (${ghostCode})`);
 }
 
 server.close();

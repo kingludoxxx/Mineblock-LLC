@@ -166,6 +166,26 @@ const publishConfidence = (c) => (c === null || c === undefined
  *
  * A genuine zero still survives — when BOTH spellings are absent or zero the
  * answer is 0, which is the truth for an arm that converted nothing.
+ *
+ * ⚠️ THE TWO SPELLINGS ARE NOT ALWAYS THE SAME NUMBER, and this function cannot
+ * tell them apart — it only resolves which FIELD to read, never reconciles them:
+ *
+ *   `orders`      (funnelAnalytics rows) — checkout sessions whose money MOVED,
+ *                 counted from co_sessions. Mint-based.
+ *   `conversions` (this ledger)          — sessions the split ledger actually
+ *                 CREDITED to the arm.
+ *
+ * They diverge by the PARKED-CREDIT population: a leg whose exposure row had not
+ * landed when the settle fired is real money with no ledger credit yet
+ * (`recordPendingCredit`; `retrySplitPendingCredits` may still resolve it). So
+ * `orders >= conversions` is the normal relationship, and a gap is a timing
+ * artefact rather than a fault.
+ *
+ * Whichever spelling a caller passes, the statistics are computed over ONE of
+ * them — never a mix — because the denominator is that caller's too. The UI
+ * labels the ledger-side figures "Credited orders" / "Credited conv. rate" for
+ * exactly this reason: two rows called "Orders" sat one above the other on the
+ * results modal meaning different things.
  */
 function conversionNumerator(row) {
   const candidates = [row?.conversions, row?.orders];
@@ -838,7 +858,7 @@ export const SPLIT_STATS_METHOD = Object.freeze({
   sample_size: 'observed-effect sizing at α=0.05 two-sided, power 0.80, floored at the readiness bar',
   multiplicity: 'Bonferroni over (qualifying arms − 1) comparisons against the control',
   ranking: 'net revenue per exposure',
-  denominator: 'exposures = attributable checkout sessions (the credits ledger), NOT delivered page renders',
+  denominator: 'exposures = attributable checkout sessions (lb_split_credits). The windowed endpoint counts the SAME rows over its own window; delivered page renders (lb_split_views) are a separate, larger figure reported alongside, never used as a denominator here',
   withheld: `arms below ${MIN_STATS_SAMPLE} exposures are excluded from the comparison and reported as pending; `
     + 'the whole test is withheld with fewer than 2 qualifying arms, a sub-floor control, or zero variance',
   display_floor: `p-values are published no lower than ${P_DISPLAY_FLOOR} and confidence no higher than `

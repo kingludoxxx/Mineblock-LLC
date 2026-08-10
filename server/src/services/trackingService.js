@@ -59,15 +59,43 @@ async function serverPixels(funnelId) {
 // not yet ensured on a cold replica, a pool blip), the named pixels must still
 // fire — so the failure is logged and the list degrades to the named ones
 // rather than taking the whole conversion down with it.
-async function serverTargets(funnelId, eventName) {
+async function serverTargets(funnelId, eventName, { source = '', flags = null } = {}) {
   const pixels = await serverPixels(funnelId);
   let customs = [];
   try {
-    customs = await customNetworksFor(funnelId, eventName);
+    // The GENERAL flags gate which events reach a custom network (M8), and the
+    // source decides whether a money event may (B2). Both are read here rather
+    // than inside the sender so a refused event never takes a claim.
+    const f = flags || await trackingFlags(funnelId);
+    customs = await customNetworksFor(funnelId, eventName, { source, flags: f });
   } catch (err) {
     console.error('[tracking] custom network read failed (fail-open, named pixels still fire):', err.message);
   }
   return pixels.concat(customs);
+}
+
+// The sub-ids the attributed click carried (lb_clicks.subs), so {sub1..10}
+// render on a live postback. Seam audit MINOR: before this the sub macros only
+// ever had values in the test-fire fixture, which meant the test-fire proved
+// something production could not do.
+//
+// Read AFTER stampConversion, keyed on the session it just stamped, so this is
+// the click the money is actually attributed to — not "some click by this
+// visitor". Fail-open to {}: a missing sub-id costs a reporting dimension, and
+// nothing about the conversion itself.
+async function attributedSubs(sessionId) {
+  try {
+    const rows = await pgQuery(
+      `SELECT subs FROM lb_clicks WHERE session_id = $1 ORDER BY converted_at DESC NULLS LAST LIMIT 1`,
+      [String(sessionId || '')]
+    );
+    const raw = rows.length ? rows[0].subs : null;
+    const obj = typeof raw === 'string' ? (() => { try { return JSON.parse(raw); } catch { return null; } })() : raw;
+    return (obj && typeof obj === 'object' && !Array.isArray(obj)) ? obj : {};
+  } catch (err) {
+    console.error('[tracking] sub-id read failed (fail-open):', err.message);
+    return {};
+  }
 }
 
 // The funnel's GENERAL event options (funnels.settings.tracking — the panel in
@@ -84,12 +112,20 @@ async function serverTargets(funnelId, eventName) {
 // degrade match quality.
 export async function trackingFlags(funnelId) {
   try {
-    const rows = await pgQuery(`SELECT settings FROM funnels WHERE id = $1`, [String(funnelId || '')]);
+    // `name` rides the SAME read the flags already needed — the {funnel} macro
+    // wants the funnel's name (it used to render the network's own label, which
+    // made {funnel} and {network} the same string), and adding a column to a
+    // query that is already happening costs nothing.
+    const rows = await pgQuery(`SELECT settings, name FROM funnels WHERE id = $1`, [String(funnelId || '')]);
+    const name = rows.length ? String(rows[0].name || '') : '';
     let s = rows.length ? rows[0].settings : null;
-    if (typeof s === 'string') { try { s = JSON.parse(s); } catch { return {}; } }
-    if (!s || typeof s !== 'object' || Array.isArray(s)) return {};
+    if (typeof s === 'string') { try { s = JSON.parse(s); } catch { return { __funnel_name: name }; } }
+    if (!s || typeof s !== 'object' || Array.isArray(s)) return { __funnel_name: name };
     const tr = s.tracking;
-    return (tr && typeof tr === 'object' && !Array.isArray(tr)) ? tr : {};
+    const flags = (tr && typeof tr === 'object' && !Array.isArray(tr)) ? { ...tr } : {};
+    // Namespaced so it can never collide with an operator-set flag key.
+    flags.__funnel_name = name;
+    return flags;
   } catch (err) {
     console.error('[tracking] settings read failed (fail-open to defaults):', err.message);
     return {};
@@ -136,6 +172,10 @@ export async function firePurchaseConversion(sessionId, { source = 'webhook' } =
 
     // Build the hashed identity + PII-free idk once; reuse per pixel.
     const flags = await trackingFlags(s.funnel_id);
+    // ONE representative id for the CAPI identity blob (Meta accepts a single
+    // click_id there). This is NOT what a custom network's {click_id} renders:
+    // the whole vault travels in the envelope and each network selects its own
+    // token by its configured parameter (seam audit B1, trackingDelivery.selectClickId).
     const clickId = Object.values(clickIds)[0] || '';
     const { user_data, idk } = buildUserData({
       email: cust.email, phone: cust.phone,
@@ -148,7 +188,8 @@ export async function firePurchaseConversion(sessionId, { source = 'webhook' } =
     });
     const customData = { value: Number(s.total), currency: s.currency, order_id: s.id };
 
-    const pixels = await serverTargets(s.funnel_id, 'Purchase');
+    const subs = await attributedSubs(s.id);
+    const pixels = await serverTargets(s.funnel_id, 'Purchase', { source, flags });
     if (!pixels.length) {
       // No server pixel configured — nothing to relay. The stamp above still
       // ran; report so callers/tests can see the (expected) no-op.
@@ -159,6 +200,7 @@ export async function firePurchaseConversion(sessionId, { source = 'webhook' } =
       const r = await deliverToPixel({
         funnelId: s.funnel_id, pixel: px, eventName: 'Purchase', eventId,
         userData: user_data, idk, customData, source, eventSourceUrl: net.url || '',
+        clickIds, subs, funnelName: flags.__funnel_name || '',
       });
       results.push({ pixel: px.pixel_id, result: r });
     }
@@ -216,6 +258,10 @@ export async function fireUpsellPurchaseConversion(sessionId, chargeRowId, value
       if (fbclid) clickIds.fbclid = fbclid;
     }
     const flags = await trackingFlags(s.funnel_id);
+    // ONE representative id for the CAPI identity blob (Meta accepts a single
+    // click_id there). This is NOT what a custom network's {click_id} renders:
+    // the whole vault travels in the envelope and each network selects its own
+    // token by its configured parameter (seam audit B1, trackingDelivery.selectClickId).
     const clickId = Object.values(clickIds)[0] || '';
     const { user_data, idk } = buildUserData({
       email: cust.email, phone: cust.phone,
@@ -230,7 +276,8 @@ export async function fireUpsellPurchaseConversion(sessionId, chargeRowId, value
     // the second conversion from the main order without sharing an event_id.
     const customData = { value: amount, currency: s.currency, order_id: `${s.id}_u_${chargeId}` };
 
-    const pixels = await serverTargets(s.funnel_id, 'Purchase');
+    const subs = await attributedSubs(s.id);
+    const pixels = await serverTargets(s.funnel_id, 'Purchase', { source, flags });
     if (!pixels.length) {
       return { ok: true, fired: 0, event_id: eventId, reason: 'no_server_pixel' };
     }
@@ -239,6 +286,7 @@ export async function fireUpsellPurchaseConversion(sessionId, chargeRowId, value
       const r = await deliverToPixel({
         funnelId: s.funnel_id, pixel: px, eventName: 'Purchase', eventId,
         userData: user_data, idk, customData, source, eventSourceUrl: net.url || '',
+        clickIds, subs, funnelName: flags.__funnel_name || '',
       });
       results.push({ pixel: px.pixel_id, result: r });
     }
@@ -270,7 +318,10 @@ export async function relayBrowserEvent({ funnelId, eventName, eventId, identity
       ? rawId
       : `${CLIENT_EVENT_ID_PREFIX}${rawId}`;
     const { user_data, idk } = buildUserData(identity);
-    const pixels = await serverTargets(funnelId, eventName);
+    // source:'relay' is threaded so serverTargets can refuse custom networks for
+    // server-owned money events, and the flags gate AddToCart/ViewContent (B2 + M8).
+    const flags = await trackingFlags(funnelId);
+    const pixels = await serverTargets(funnelId, eventName, { source: 'relay', flags });
     if (!pixels.length) return { ok: true, fired: 0, reason: 'no_server_pixel', idk };
     const results = [];
     for (const px of pixels) {
@@ -278,6 +329,9 @@ export async function relayBrowserEvent({ funnelId, eventName, eventId, identity
         funnelId, pixel: px, eventName, eventId: namespacedId,
         userData: user_data, idk, customData,
         source: 'relay', eventSourceUrl,
+        // A beacon carries no server-side click vault; the custom sender falls
+        // back to nothing rather than to another network's token.
+        funnelName: flags.__funnel_name || '',
         // Visitor-scoped GA4 client id (server-read cookie, never client-named)
         vid,
       });

@@ -179,23 +179,34 @@ export function parsePayout(raw) {
   return Math.round(n * 10000) / 10000;
 }
 
-// Find the click id the caller sent, and name its network. Order:
-//   1. a KNOWN platform click-id param (fbclid, gclid, …) — CLICK_ID_NETWORK
+// Find the click id the caller sent, and name its network.
+//
+// THIS FUNNEL'S CUSTOM PARAMS ARE CHECKED FIRST (seam audit MINOR). The order
+// used to be built-ins first, which quietly mislabelled the common case: a
+// custom network is perfectly entitled to ride a BUILT-IN parameter — an
+// affiliate network that passes the advertiser's own `gclid` through, an
+// aggregator reusing `fbclid` — and the endpoint the postback arrived on
+// already tells us which network it is. Reading CLICK_ID_NETWORK first threw
+// that binding away and stamped the row 'google', so the operator's own
+// network vanished from every attribution readout.
+//
+// The endpoint binding is the stronger signal, so it wins. Order:
+//   1. one of THIS funnel's custom-network click-id params (the binding);
+//   2. a KNOWN platform click-id param (fbclid, gclid, …) — CLICK_ID_NETWORK
 //      is the single source of truth, same as the touch parser;
-//   2. one of THIS funnel's custom-network click-id params;
 //   3. the generic `click_id`, kept under a generic key so it is never
 //      dropped (the reference lost attribution for built-in-network funnels
 //      here — its review finding #9).
 export function extractClick(params, customParams = []) {
-  for (const [param, network] of CLICK_ID_NETWORK) {
-    const v = str(params[param], 200);
-    if (v) return { click_id: v, click_key: param, network };
-  }
   for (const raw of customParams || []) {
     const param = String(raw || '').toLowerCase();
     if (!param) continue;
     const v = str(params[param], 200);
     if (v) return { click_id: v, click_key: param, network: `custom:${param}` };
+  }
+  for (const [param, network] of CLICK_ID_NETWORK) {
+    const v = str(params[param], 200);
+    if (v) return { click_id: v, click_key: param, network };
   }
   const generic = str(params.click_id, 200);
   if (generic) return { click_id: generic, click_key: 'click_id', network: '' };

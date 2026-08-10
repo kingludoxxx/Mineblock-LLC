@@ -817,7 +817,12 @@ export async function appendRate({
   // variant. An archived group is refused for the same reason: its members
   // have been unbound, so the rate would price nothing.
   if (scope === 'item') {
-    const [item] = await pgQuery(
+    // `exec`, not pgQuery: every other statement in this function runs on the
+    // caller's executor, and this one escaping to the pool meant a caller that
+    // CREATED the group and priced it inside one transaction got item_not_found
+    // — the group is real, just not visible outside its own uncommitted
+    // transaction (seam audit MINOR, reproduced).
+    const [item] = await exec(
       `SELECT cost_item_id, archived FROM lb_cost_items WHERE cost_item_id = $1`, [ref]);
     if (!item) throw new CostError('item_not_found', 'no such cost group');
     if (item.archived) throw new CostError('item_archived', 'that cost group is archived');

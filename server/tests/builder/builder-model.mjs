@@ -23,6 +23,8 @@ import {
   listRows, addListRow, removeListRow, moveListRow, setListCell,
   comparisonColumns, addComparisonColumn, renameComparisonColumn,
   removeComparisonColumn, comparisonDefaultRow, moveWouldChangeColumns,
+  removeWouldChangeColumns, hiddenColumnKeys, rowsWithHiddenKeys, legacyRowCount,
+  unrecognisedProps, SYSTEM_PROP_KEYS,
   isoFromLocalInput, localInputFromIso, localInputAnomaly, countdownPreview,
 } from '../../../client/src/pages/funnels/builder/builderModel.js';
 
@@ -781,6 +783,130 @@ ok(Object.isFrozen(WIRING_KEYS), 'F4: the floor is frozen — a caller cannot wi
 }
 
 // ===========================================================================
+// SEAM AUDIT — heterogeneous and legacy tables.
+//
+// Every fixture below is a table this editor did NOT author: a hand-edited
+// paste, an import, an AI batch. The published table takes its headers from
+// row 0 alone, so rows further down can carry real data the page never prints
+// and the editor never drew — which is exactly where silent destruction lives.
+// ===========================================================================
+
+{
+  // M11. RENAME COLLISION ON A NON-FIRST ROW.
+  //
+  // The duplicate test looked at row 0's keys only. Renaming Us→Them here is
+  // not a duplicate by that test — `Them` is not a printed column — but the
+  // rebuild walks row 1 key by key and writes `Them` twice, so one of the two
+  // values is destroyed. Reproduced before the fix: row 1's `Us` value ('2')
+  // vanished. Which of the pair dies depends on key ORDER, which makes it
+  // worse, not better.
+  const het = [{ feature: 'a', Us: '1' }, { feature: 'b', Us: '2', Them: 'REAL' }];
+  ok(renameComparisonColumn(het, 'Us', 'Them') === het,
+    'M11: renaming onto a key that exists on a NON-FIRST row is refused (same array)');
+  eq(het[1], { feature: 'b', Us: '2', Them: 'REAL' }, 'M11: ...and the hidden cell is untouched');
+  // The mirror case — target hidden on row 1 in the other key order.
+  const het2 = [{ feature: 'a', Us: '1' }, { feature: 'b', Them: 'REAL', Us: '2' }];
+  ok(renameComparisonColumn(het2, 'Us', 'Them') === het2,
+    'M11: refused regardless of the order the keys sit in');
+  // A name free on EVERY row still renames.
+  const renamed = renameComparisonColumn(het, 'Us', 'Ours');
+  ok(renamed !== het, 'M11: a name free on every row still renames');
+  eq(renamed[1], { feature: 'b', Ours: '2', Them: 'REAL' }, 'M11: ...carrying both values across');
+  // The printed-duplicate refusal from the earlier round still holds.
+  const homo = [{ feature: 'a', Us: '1', Them: '2' }];
+  ok(renameComparisonColumn(homo, 'Us', 'Them') === homo, 'M11: a printed duplicate is still refused');
+}
+
+{
+  // M12. DELETE WAS NOT COLUMN-GUARDED WHILE MOVE WAS — two doors to one
+  // hazard, guarded unequally. One trash click on row 0 rewrote every header.
+  const het = [{ feature: 'a', Us: '1' }, { feature: 'b', Them: '2' }];
+  eq(comparisonColumns(het), ['Us'], 'M12: (setup) the table publishes Us');
+  eq(comparisonColumns(removeListRow(het, 0)), ['Them'], 'M12: (setup) deleting row 0 WOULD republish it as Them');
+  ok(moveWouldChangeColumns(het, 0, 1), 'M12: the move guard already caught this row');
+  ok(removeWouldChangeColumns(het, 0), 'M12: the DELETE guard now catches the same row');
+  ok(!removeWouldChangeColumns(het, 1), 'M12: deleting a non-header row is not blocked');
+  // A homogeneous table — what this editor authors — deletes freely.
+  const homo = [{ feature: 'a', Us: '1' }, { feature: 'b', Us: '2' }];
+  ok(!removeWouldChangeColumns(homo, 0), 'M12: a matching-column table deletes freely');
+  // Emptying the table is a DIFFERENT act, already explained by the empty
+  // state — not reported as a column change.
+  ok(!removeWouldChangeColumns([{ feature: 'a', Us: '1' }], 0),
+    'M12: deleting the LAST row is not treated as a column change');
+  ok(!removeWouldChangeColumns(het, 9), 'M12: an out-of-range delete is not flagged');
+  ok(!removeWouldChangeColumns([], 0), 'M12: an empty table is not flagged and does not throw');
+}
+
+{
+  // M13. HETEROGENEOUS LEGACY TABLE: the editor drew ZERO columns while row 1
+  // held real content, and Add column then blanked it with an unconditional
+  // `[n]: ''` — destroying exactly the data the click was trying to surface.
+  const legacy = [{ feature: 'a' }, { feature: 'b', Us: 'HIDDEN', Them: 'ALSO' }];
+  eq(comparisonColumns(legacy), [], 'M13: (setup) row 0 has no columns, so the page prints none');
+  eq(hiddenColumnKeys(legacy), ['Them', 'Us'], 'M13: the hidden keys are surfaced, sorted');
+  eq(rowsWithHiddenKeys(legacy), 1, 'M13: ...and the count of rows carrying them');
+  // Adding a column by that name PROMOTES the stored value instead of wiping it.
+  const promoted = addComparisonColumn(legacy, 'Us');
+  eq(promoted[1].Us, 'HIDDEN', 'M13: Add column PRESERVES an existing value (was blanked)');
+  eq(promoted[0].Us, '', 'M13: ...and seeds only genuinely absent cells');
+  eq(comparisonColumns(promoted), ['Us'], 'M13: ...and the column is now published');
+  eq(hiddenColumnKeys(promoted), ['Them'], 'M13: ...leaving the still-hidden key reported');
+  // `??` not `||`: a stored '' or 0 is a value and survives as itself.
+  const falsy = [{ feature: 'a' }, { feature: 'b', Us: 0 }];
+  eq(addComparisonColumn(falsy, 'Us')[1].Us, 0, 'M13: a stored 0 survives promotion (?? not ||)');
+  const emptyStr = [{ feature: 'a' }, { feature: 'b', Us: '' }];
+  eq(addComparisonColumn(emptyStr, 'Us')[1].Us, '', 'M13: a stored empty string survives promotion');
+  // A homogeneous table has nothing hidden.
+  eq(hiddenColumnKeys([{ feature: 'a', Us: '1' }, { feature: 'b', Us: '2' }]), [],
+    'M13: a well-formed table reports no hidden keys');
+  eq(hiddenColumnKeys([]), [], 'M13: an empty table reports no hidden keys');
+  eq(hiddenColumnKeys(null), [], 'M13: a non-array prop reports no hidden keys, does not throw');
+  eq(rowsWithHiddenKeys(null), 0, 'M13: ...and counts zero rows');
+  // `feature` is never a hidden key — it is the row label, not a column.
+  eq(hiddenColumnKeys([{ Us: '1' }, { feature: 'b' }]), [], 'M13: `feature` is never reported as hidden');
+}
+
+{
+  // M14. Non-object legacy entries were discarded from STORED data by the
+  // first keystroke, with no warning. The RENDERER already drops them, so the
+  // page loses nothing — the fault was the silence.
+  eq(legacyRowCount(['a string', { feature: 'x' }, ['tuple'], null]), 3,
+    'M14: every entry this editor cannot represent is counted');
+  eq(legacyRowCount([{ a: 1 }, { b: 2 }]), 0, 'M14: a clean list counts zero');
+  eq(legacyRowCount([]), 0, 'M14: an empty list counts zero');
+  eq(legacyRowCount(null), 0, 'M14: a non-array prop counts zero');
+  eq(legacyRowCount('nope'), 0, 'M14: a string prop counts zero');
+  eq(legacyRowCount([null, null]), 2, 'M14: nulls are counted');
+  // The count and what survives must add up — the notice quantifies exactly
+  // what listRows is about to drop.
+  const mixed = ['s', { a: 1 }, ['t'], null, { b: 2 }];
+  eq(legacyRowCount(mixed) + listRows(mixed).length, mixed.length,
+    'M14: dropped + kept === stored, so the number the panel prints is the number lost');
+}
+
+{
+  // MINOR. Legacy KEY NAMES from an older builder: the renderer reads none of
+  // them, so the block renders empty and every editor box opens blank.
+  eq(unrecognisedProps({ q: 'a', question: 'old', answer: 'old' }, ['q', 'a']), ['answer', 'question'],
+    'legacy: unowned keys are listed, sorted');
+  eq(unrecognisedProps({ q: 'a' }, ['q', 'a']), [], 'legacy: a clean block lists nothing');
+  // The shared inspector keys are never "unrecognised".
+  eq(unrecognisedProps({ block_name: 'x', style: {}, mobile_styles: {} }, []), [],
+    'legacy: block_name / style / mobile_styles are system keys, never listed');
+  eq(SYSTEM_PROP_KEYS.includes('block_name') && SYSTEM_PROP_KEYS.includes('style')
+    && SYSTEM_PROP_KEYS.includes('mobile_styles'), true, 'legacy: the system key set is complete');
+  ok(Object.isFrozen(SYSTEM_PROP_KEYS), 'legacy: the system key set is frozen');
+  // Totality — props are whatever was in the JSON.
+  eq(unrecognisedProps(null, ['a']), [], 'legacy: null props list nothing');
+  eq(unrecognisedProps('str', ['a']), [], 'legacy: a string props bag lists nothing');
+  eq(unrecognisedProps([1, 2], ['a']), [], 'legacy: an array props bag lists nothing');
+  eq(unrecognisedProps({ a: 1 }, null), ['a'], 'legacy: absent knownKeys still lists honestly');
+  // The embed case the audit called out: code/src render nowhere at all.
+  eq(unrecognisedProps({ code: '<b>x</b>', src: 'u' }, ['html']), ['code', 'src'],
+    'legacy: an embed carrying code/src is reported — those render nowhere today');
+}
+
+// ===========================================================================
 // Countdown deadline — the picker is LOCAL, the stored prop is a UTC instant,
 // and funnelRender's emitted runtime parses it with Date.parse.
 // ===========================================================================
@@ -864,7 +990,9 @@ ok(Object.isFrozen(WIRING_KEYS), 'F4: the floor is frozen — a caller cannot wi
 
   // A faithful model of the shipped pipeline: emission, then the runtime's own
   // two guards. countdownPreview must agree with this for every input.
-  const emit = (p) => String(p == null ? '' : p).trim();           // funnelRender block
+  // VERBATIM from funnelRender.js: String(p.deadline || '').trim().
+  // `|| ''`, not `== null` — the difference is the whole MINOR finding below.
+  const emit = (p) => String(p || '').trim();                      // funnelRender block
   const runtimeIsDead = (attr) => !attr || !Number.isFinite(Date.parse(attr)); // if(!raw)return; Date.parse
   const good = '2026-01-01T00:00:00Z';
   const t0 = Date.parse(good);
@@ -894,11 +1022,36 @@ ok(Object.isFrozen(WIRING_KEYS), 'F4: the floor is frozen — a caller cannot wi
   eq(countdownPreview('  next tuesday  ', 0).state, 'invalid', 'F3 countdown: trimming does not rescue an unparseable deadline');
   eq(runtimeIsDead(emit('  next tuesday  ')), true, 'F3 countdown: ...and the modelled pipeline agrees it is dead');
 
+  // MINOR (seam audit). THE FALSY EXPRESSION MUST MATCH THE RENDERER'S.
+  //
+  // funnelRender writes `String(p.deadline || '').trim()`. The preview used
+  // `deadline == null ? '' : String(deadline)`, which agrees on null and
+  // undefined and DIVERGES on every other falsy value. Reproduced: a stored
+  // `0` emitted an empty attribute (dead page) while the preview kept '0',
+  // and Date.parse('0') answers a real year-2000 instant — so the canvas drew
+  // a ticking clock for a block the page leaves blank.
+  ok(Number.isFinite(Date.parse('0')),
+    'MINOR countdown: NEGATIVE CONTROL — Date.parse("0") IS a valid instant, which is what made 0 look live');
+  for (const [falsy, label] of [[0, '0'], [false, 'false'], [NaN, 'NaN'], ['', 'empty string'], [null, 'null'], [undefined, 'undefined']]) {
+    eq(emit(falsy), '', `MINOR countdown: the renderer emits an EMPTY attribute for ${label}`);
+    eq(countdownPreview(falsy, 0).state, 'unset', `MINOR countdown: ...and the preview agrees it is unset (${label})`);
+  }
+  // A NON-falsy value is still read normally — the fix must not swallow real data.
+  eq(countdownPreview(good, t0 - 60000).state, 'live', 'MINOR countdown: a real instant is unaffected by the falsy fix');
+  eq(countdownPreview('0000', 0).state, countdownPreview('0000', 0).state,
+    'MINOR countdown: a truthy numeric-looking string is still parsed, not discarded');
+
   // FULL AGREEMENT TABLE — preview vs the modelled emission+runtime pipeline.
-  const cases = ['', '   ', good, ` ${good} `, `\t${good}\n`, 'next tuesday', '  next tuesday  ', '2026-01-01', null, undefined];
+  const cases = ['', '   ', good, ` ${good} `, `\t${good}\n`, 'next tuesday', '  next tuesday  ', '2026-01-01', null, undefined,
+    0, false, NaN, '0', 1, {}, []];
+  // "Dead" means THE CLOCK NEVER RENDERS — the runtime returns early and the
+  // static em-dash stays. `expired` is NOT dead: the runtime reaches its
+  // `ms<=0` branch and writes 'Offer expired', which is the block working as
+  // designed. Conflating the two made `'0'` and `1` read as disagreements when
+  // the preview was in fact correct.
   const disagreements = cases.filter((v) => {
-    const previewDead = countdownPreview(v, t0 - 60000).state !== 'live';
-    return previewDead !== runtimeIsDead(emit(v));
+    const previewBlank = ['unset', 'invalid'].includes(countdownPreview(v, t0 - 60000).state);
+    return previewBlank !== runtimeIsDead(emit(v));
   });
   eq(disagreements, [], 'F3 countdown: the preview agrees with the modelled emission+runtime pipeline on EVERY case');
 

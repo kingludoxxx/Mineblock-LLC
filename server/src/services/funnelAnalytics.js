@@ -903,14 +903,23 @@ export async function getPageMetrics({ funnelId, pageId, from, to }, { query = a
 // (checkoutPublic.recordSplitExposure), not at page serve. There is no
 // page-serve exposure hook wired today. So an arm's "visitors" is really
 // "sessions minted while assigned to this arm" — it counts people who reached
-// the checkout, not people who saw the page. Every arm is understated by the
-// same mechanism, so the COMPARISON between arms stays valid (which is what a
-// split test is for), but the ABSOLUTE figure is not page traffic and the
-// response says so via `visitors_understated: true`.
+// the checkout, not people who saw the page. Every arm is measured by the same
+// mechanism, so the COMPARISON between arms stays valid (which is what a split
+// test is for), but the ABSOLUTE figure is not page traffic.
 //
-// funnel-os counts a split arm's visitors as delivered page renders
-// (human_impressions). Wiring an exposure call into the page-serve path would
-// make Puure match; that call belongs to the funnel-render lane, not this one.
+// THIS COMMENT DESCRIBED A WORLD THAT NO LONGER EXISTS. It used to say the
+// response flags `visitors_understated: true` and that recording page renders
+// "belongs to the funnel-render lane, not this one" — as if no render count
+// existed. Both are stale: delivery IS wired, the serve path writes one
+// `lb_split_views` row per delivered render, and the field below has been
+// `false` for as long as that has been true. There is nothing missing to
+// disclose; there are simply TWO denominators, and `visitors_basis` names both.
+//
+// Renders are reported on the LEDGER half of this payload
+// (`ledger.arms[].visitors`) and rendered as their own labelled row in the
+// results modal's all-time table. They are deliberately NOT substituted for the
+// table's `visitors`: lb_split_views is page-scope only, so an offer-scope test
+// would silently drop to zero traffic.
 
 async function readArmSessions(query, testId, w) {
   // Sessions carrying an exposure for this test, windowed on the EXPOSURE

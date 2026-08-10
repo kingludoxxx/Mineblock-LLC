@@ -323,34 +323,60 @@ export function shapeTrackingHealth({
 } = {}) {
   const nowMs = typeof now === 'number' ? now : msOf(now) || Date.now();
 
-  // counts rows: { platform, window: 'h24' | 'd7', sent, failed, skipped, deduped, queued }
+  // ── seam audit M7: EVERY index below keys on the PIXEL, not the platform ──
+  // `platform` is lb_pixels.kind minus '_pixel', and it is not an identity: it
+  // is a CLASS. Every custom S2S network writes platform 'custom', so keying
+  // counters on it meant a funnel with three custom networks showed all three
+  // the SAME numbers — the sum of all of them, attributed to each. The ledger
+  // already carries the exact identity (lb_tracking_events.pixel_id), and the
+  // routes now group on it.
+  //
+  // The one thing this gives up is resilience to an operator EDITING a named
+  // network's pixel id: rows written under the old id stop counting toward the
+  // new one. That is the honest reading — a different pixel id is a different
+  // pixel, and the alternative was permanently wrong numbers for every custom
+  // network. Custom networks are immune either way: their ledger pixel_id is
+  // the immutable lbcn_ row id.
+  //
+  // counts rows: { pixel_id, window: 'h24' | 'd7', sent, failed, skipped, deduped, queued }
   const countIdx = new Map();
   for (const r of counts) {
-    countIdx.set(`${r.window}:${r.platform}`, windowFrom(r));
+    countIdx.set(`${r.window}:${r.pixel_id}`, windowFrom(r));
   }
-  // lasts rows: { platform, last_sent_at, last_failed_at, last_error, last_any_at }
-  const lastIdx = new Map(lasts.map((r) => [r.platform, r]));
+  // lasts rows: { pixel_id, last_sent_at, last_failed_at, last_error, last_any_at }
+  const lastIdx = new Map(lasts.map((r) => [r.pixel_id, r]));
   const breakerIdx = new Map(breakers.map((r) => [r.scope_id, r]));
-  // queueDepth rows: { kind, n } — the LIVE depth (queued/sending), not a ledger.
-  const queueIdx = new Map(queueDepth.map((r) => [r.kind, int(r.n)]));
+  // queueDepth rows: { pixel_row_id, n } — the LIVE depth (queued/sending), not
+  // a ledger. M6: keyed by ROW id, so it no longer needs a join to lb_pixels
+  // (which dropped every custom network's backlog on the floor) and two
+  // networks of the same kind can no longer share one number.
+  const queueIdx = new Map(queueDepth.map((r) => [r.pixel_row_id, int(r.n)]));
 
   const out = pixels.map((pixel) => {
     const kind = pixel.kind;
     const spec = specs[kind] || {};
-    const platform = platformOfKind(kind);
-    const h24 = countIdx.get(`h24:${platform}`) || { ...ZERO_WINDOW };
-    const d7 = countIdx.get(`d7:${platform}`) || { ...ZERO_WINDOW };
-    const last = lastIdx.get(platform) || {};
+    // The ledger key for THIS row. Named networks write their pixel_id;
+    // custom networks write their lbcn_ row id (trackingCustomNetworks.asPixel).
+    const ledgerKey = pixel.pixel_id || '';
+    const h24 = countIdx.get(`h24:${ledgerKey}`) || { ...ZERO_WINDOW };
+    const d7 = countIdx.get(`d7:${ledgerKey}`) || { ...ZERO_WINDOW };
+    const last = lastIdx.get(ledgerKey) || {};
     const br = breakerIdx.get(breakerScopeId(funnelId, pixel.id)) || null;
     const openUntilMs = msOf(br && br.open_until);
     const breakerIsOpen = Boolean(openUntilMs && openUntilMs > nowMs);
-    const queuedNow = queueIdx.get(kind) || 0;
+    const queuedNow = queueIdx.get(pixel.id) || 0;
 
     const verdict = classifyPixel({ pixel, spec, h24, breakerOpen: breakerIsOpen, queuedNow });
 
     return {
       kind,
-      label: spec.label || kind,
+      // M5: custom S2S networks all share kind 'custom', so a spec-level label
+      // would render N identical rows called "Custom S2S network". A row may
+      // carry its OWN label (the operator's network name) and it wins.
+      label: pixel.label || spec.label || kind,
+      // Present only for custom networks — the lbcn_ row id, so the UI can
+      // deep-link a health row straight to the network's editor.
+      ...(pixel.custom_network_id ? { custom_network_id: pixel.custom_network_id } : {}),
       // The kind's own name for its identity column (GA4 calls it
       // measurement_id, Google Ads customer_id) — so the UI never mislabels.
       id_field: spec.idField || 'pixel_id',

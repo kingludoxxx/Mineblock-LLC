@@ -753,12 +753,18 @@ async function readDailySeries(testId, query) {
  *
  * ── KNOWN RESIDUAL, DEFERRED DELIBERATELY: TWO DENOMINATORS ON ONE SCREEN ──
  *
- * The results modal shows the WINDOWED table (denominator: `visitors` =
- * delivered page renders, from lb_split_views, via funnelAnalytics) directly
- * above the LIFETIME readiness panel (denominator: `exposures` = attributable
- * checkout sessions, from this ledger). Both are correct and they are different
- * populations, so the same test legitimately reads e.g. 910 in one and 400 in
- * the other.
+ * The results modal shows the WINDOWED table directly above the LIFETIME
+ * readiness panel. THE EARLIER VERSION OF THIS NOTE WAS WRONG about what the
+ * windowed table counts: it is NOT delivered page renders. funnelAnalytics'
+ * `readArmSessions` is `COUNT(*) … WHERE kind = 'exposure'` over THIS ledger, so
+ * both surfaces count the SAME rows — audited byte-identical at 440/440. The
+ * difference between them is the WINDOW (the picker's dates, clamped to the
+ * delivery epoch) and nothing else.
+ *
+ * The genuinely different number — delivered page renders, from lb_split_views —
+ * is the `visitors` column THIS function returns, and until the seam audit it
+ * was rendered on no surface at all while the help text claimed the windowed
+ * table was showing it. It now has its own labelled row in the all-time table.
  *
  * MITIGATED, NOT ELIMINATED. Each surface is labelled with its own denominator
  * and the panel carries a one-sentence reconciliation

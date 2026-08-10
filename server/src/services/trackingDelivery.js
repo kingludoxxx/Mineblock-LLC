@@ -14,7 +14,7 @@ import { pgQuery } from '../db/pg.js';
 import { ensureTrackingTables } from './trackingSchema.js';
 import { emqScore, idkFrom } from './trackingAttribution.js';
 import { decryptSecret } from './gatewayConfigs.js';
-import { renderPostback, postbackContext } from './trackingPostbackTemplate.js';
+import { renderPostback, postbackContext, MAX_POSTBACK_VALUE } from './trackingPostbackTemplate.js';
 import { customNetworkPixelById } from './trackingCustomNetworks.js';
 
 // Retry schedule AFTER the failed inline attempt: 1m, 5m, 15m, 1h, 3h, 6h,
@@ -705,31 +705,115 @@ async function sendGa4(pixel, envelope) {
 // macro anywhere in the authority, so the host cannot be steered by an inbound
 // click id) — this is the second of the two checks, and it is the one that
 // resolves DNS.
+// ── B1: WHICH click id does THIS network get? ───────────────────────────────
+// The bug the seam audit found: the envelope used to carry ONE click id,
+// picked by `Object.values(vault)[0]` upstream — alphabetical order. A funnel
+// whose visitor arrived with both an fbclid and a tblci sent Taboola a postback
+// labelled `click-id=` … carrying the META fbclid, because 'fbclid' sorts
+// before 'ttclid'. The postback is accepted, matches nothing, and the operator
+// sees a network that "works" and never converts.
+//
+// A click id is NETWORK-SCOPED. It is only meaningful to the network that
+// issued it, so the ONLY correct source is this network's own configured
+// parameter. When the vault has no id under that parameter, the honest answer
+// is EMPTY — never another network's token. An empty `{click_id}` produces a
+// postback the network ignores; a WRONG one produces a postback it silently
+// mis-attributes, which is strictly worse and invisible.
+//
+// The single-value fallback survives only where there is NO vault at all
+// (test-fire, and any caller that has not threaded one): with nothing to
+// choose between, there is nothing to choose wrongly.
+export function selectClickId(cfg, envelope) {
+  const env = envelope || {};
+  const vault = (env.click_ids && typeof env.click_ids === 'object' && !Array.isArray(env.click_ids))
+    ? env.click_ids : null;
+  const param = String((cfg || {}).click_id_param || '').toLowerCase();
+  if (vault && Object.keys(vault).length) {
+    // A configured parameter selects exactly its own id. No parameter means the
+    // operator never told us which token this network speaks, so only the
+    // explicitly-generic `click_id` key is eligible — never a platform token.
+    const picked = param ? vault[param] : vault.click_id;
+    return picked == null ? '' : String(picked);
+  }
+  const ud = (env.user_data && typeof env.user_data === 'object') ? env.user_data : {};
+  const cd = (env.custom_data && typeof env.custom_data === 'object') ? env.custom_data : {};
+  return String(ud.click_id || cd.click_id || '');
+}
+
+// ── B2: custom_data on a CLIENT-RELAYED event is attacker-supplied ──────────
+// sendGa4 validates every custom_data field for exactly this reason and the
+// custom sender validated NOTHING — so a forged /track/collect beacon could
+// drive an operator's partner postback with a payout of its choosing.
+//
+// ALLOW-LIST, not deny-list, and every field bounded:
+//   value      finite, 0 … MAX_POSTBACK_VALUE (postbackContext.money re-checks)
+//   currency   ISO-4217 shape only
+//   order_id   bounded — and DROPPED ENTIRELY on a relayed event, because a
+//              beacon naming a real buyer's order id would graft a forged
+//              conversion onto that buyer's order in the partner's reporting
+//              (the same rule sendGa4 applies to its client_id seed)
+//   status     bounded, from a fixed vocabulary
+//   subs       string values only, sub1…sub10, bounded
+// Anything else a caller invents is discarded rather than passed through.
+const CUSTOM_STATUS = new Set(['approved', 'pending', 'refund', 'rejected', 'trial']);
+export function sanitizeCustomData(raw, { relayed = false } = {}) {
+  const cd = (raw && typeof raw === 'object' && !Array.isArray(raw)) ? raw : {};
+  const out = {};
+  const n = Number(cd.value);
+  if (Number.isFinite(n) && n >= 0 && n <= MAX_POSTBACK_VALUE) out.value = n;
+  const cur = String(cd.currency || '').toUpperCase();
+  if (/^[A-Z]{3}$/.test(cur)) out.currency = cur;
+  if (!relayed) out.order_id = String(cd.order_id == null ? '' : cd.order_id).slice(0, 120);
+  const st = String(cd.status || '').toLowerCase();
+  if (CUSTOM_STATUS.has(st)) out.status = st;
+  const subs = (cd.subs && typeof cd.subs === 'object' && !Array.isArray(cd.subs)) ? cd.subs : null;
+  if (subs) {
+    const clean = {};
+    for (let i = 1; i <= 10; i += 1) {
+      const k = `sub${i}`;
+      const v = subs[k];
+      if (v == null || typeof v === 'object' || typeof v === 'function') continue;
+      clean[k] = String(v).slice(0, 200);
+    }
+    if (Object.keys(clean).length) out.subs = clean;
+  }
+  return out;
+}
+
 export function customPostbackContext(pixel, envelope) {
   const cfg = (pixel || {}).config || {};
   const env = envelope || {};
-  const ud = (env.user_data && typeof env.user_data === 'object') ? env.user_data : {};
-  const cd = (env.custom_data && typeof env.custom_data === 'object') ? env.custom_data : {};
   const eventName = String(env.event_name || '');
+  const relayed = env.source === 'relay';
+  const cd = sanitizeCustomData(env.custom_data, { relayed });
   return postbackContext({
     eventName,
     eventId: env.event_id,
-    // buildUserData carries click_id UNHASHED (it is a platform token, not
-    // PII) — that is the value a postback tracker matches on.
-    clickId: ud.click_id || cd.click_id || '',
+    // Network-scoped — see selectClickId. buildUserData carries click_id
+    // UNHASHED (it is a platform token, not PII), but the VAULT is the
+    // authority whenever one is present.
+    clickId: selectClickId(cfg, env),
     clickKey: cfg.click_id_param || '',
     network: cfg.label || pixel.pixel_id || '',
     value: cd.value,
     currency: cd.currency,
     orderId: cd.order_id,
-    // Refund is the one event whose status is not 'approved'; anything else an
-    // upstream sets is passed through, bounded by postbackContext's String().
+    // Refund is the one event whose status is not 'approved'. An upstream may
+    // override it, but only from the fixed vocabulary sanitizeCustomData
+    // allows.
     status: cd.status || (eventName === 'Refund' ? 'refund' : 'approved'),
     vid: env.vid,
-    funnel: cfg.label || '',
+    // MINOR: this rendered the NETWORK's label, which made `{funnel}` and
+    // `{network}` the same string on every postback. It is the funnel's name,
+    // threaded from the caller; empty when the caller has none rather than
+    // silently substituting something else.
+    funnel: env.funnel_name || '',
     funnelId: pixel.funnel_id,
     pageUrl: env.event_source_url,
-    subs: cd.subs,
+    // MINOR: sub-ids come from the CLICK VAULT (lb_clicks.subs), threaded by
+    // the caller. Before this they only ever existed in the test-fire fixture,
+    // so {sub1..10} proved something production could not do.
+    subs: cd.subs || env.subs,
   });
 }
 
@@ -839,7 +923,7 @@ async function enqueue(funnelId, scopeId, envelope, pixelRowId, lastError) {
 
 // Deliver ONE event to ONE pixel, with the idempotency claim + breaker + queue
 // rules. Fire-and-forget: returns a status string, never throws.
-export async function deliverToPixel({ funnelId, pixel, eventName, eventId, userData, idk, customData, source, eventSourceUrl }) {
+export async function deliverToPixel({ funnelId, pixel, eventName, eventId, userData, idk, customData, source, eventSourceUrl, clickIds, subs, funnelName }) {
   const scopeId = `${funnelId || ''}:${pixel.id}`;
   const platform = (pixel.kind || '').replace(/_pixel$/, '');
   const value = (customData || {}).value;
@@ -856,6 +940,25 @@ export async function deliverToPixel({ funnelId, pixel, eventName, eventId, user
       event_name: eventName, event_id: eventId,
       user_data: userData || {}, custom_data: customData || {},
       event_source_url: eventSourceUrl || '', idk,
+      // Seam audit B1 + minors. The envelope now carries the WHOLE click
+      // vault, not one alphabetically-chosen id, so each custom network can
+      // select its OWN token (selectClickId); the sub-ids from lb_clicks so
+      // {sub1..10} render live rather than only in the test-fire fixture; the
+      // funnel's NAME so {funnel} is the funnel and not the network's label;
+      // and the SOURCE, because a client-relayed envelope is attacker-supplied
+      // and the custom sender has to know that (B2).
+      //
+      // This object is persisted verbatim into lb_postback_queue.envelope, so
+      // a queued retry renders exactly what the inline attempt would have.
+      click_ids: (clickIds && typeof clickIds === 'object' && !Array.isArray(clickIds)) ? clickIds : {},
+      subs: (subs && typeof subs === 'object' && !Array.isArray(subs)) ? subs : {},
+      funnel_name: funnelName || '',
+      source: source || '',
+      // NB deliberately NOT threading `vid`: it is rung 1 of sendGa4's
+      // client_id seed precedence, so populating it here would silently change
+      // GA4 identities for every relayed event. That is a GA4 decision, not a
+      // seam fix, and it is not in this change's remit. {vid} therefore still
+      // renders empty for custom postbacks.
     };
 
     // Review HIGH #2a: THE DISPATCH CHECK MUST PRECEDE THE CLAIM. The claim key

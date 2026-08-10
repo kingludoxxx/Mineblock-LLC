@@ -53,6 +53,10 @@
 //     },
 //     disclosure: { test_created_at, tracking_started_at,
 //                   tracking_started_after_test, note, window_only,
+//                   // ALWAYS false since delivery was wired — renders ARE
+//                   // recorded (lb_split_views). Kept for shape stability;
+//                   // `visitors_basis` is the field that explains the two
+//                   // denominators.
 //                   visitors_understated, visitors_basis }
 //   }
 //
@@ -163,17 +167,25 @@ export async function fetchLifetimeResults(testId) {
 //
 //   200 { data: {
 //     testId,
-//     arms: [{ ...the raw counts, unchanged..., stats: {
-//       arm_key, is_control, is_winner, visitors, conversions,
-//       cvr, cvr_withheld, rev_per_visitor, net_revenue_variance,
-//       readiness: { ready, visitors, conversions, needs_visitors,
-//                    needs_conversions, min_visitors, min_conversions,
+//     arms: [{ ...the raw counts, unchanged...,
+//       // `visitors` here is DELIVERED PAGE RENDERS (lb_split_views) and
+//       // `exposures` is attributable checkout sessions. They are different
+//       // populations; the windowed endpoint's `visitors` is the SECOND one.
+//       visitors, exposures, conversions, ...,
+//       stats: {
+//       arm_key, is_control, is_winner, stats_status, in_comparison,
+//       exposures, conversions,
+//       cvr, cvr_withheld, rev_per_exposure, rev_per_exposure_withheld,
+//       net_revenue_variance,
+//       readiness: { ready, exposures, conversions, needs_exposures,
+//                    needs_conversions, min_exposures, min_conversions,
 //                    blockers: [] },
-//       conversion: { p_value, confidence, significant, statistic,
-//                     required_sample_per_arm, reason, normal_approx_weak },
-//       revenue:    { p_value, confidence, significant, statistic,
-//                     degrees_of_freedom, required_sample_per_arm, reason,
-//                     sample_small },
+//       conversion: { p_value, p_value_floored, confidence, significant,
+//                     statistic, required_sample_per_arm, reason,
+//                     normal_approx_weak },
+//       revenue:    { p_value, p_value_floored, confidence, significant,
+//                     statistic, degrees_of_freedom, required_sample_per_arm,
+//                     reason, sample_small },
 //       lift: { control_rpv, challenger_rpv, rpv_delta, rpv_lift_pct,
 //               per_1000_visitors, earned_so_far, cvr_delta, cvr_lift_pct },
 //       money_sessions, net_revenue_sum, net_revenue_sum_squares
@@ -181,11 +193,16 @@ export async function fetchLifetimeResults(testId) {
 //     totals,
 //     verdict: { status: 'winner'|'no_winner'|'not_ready'|'insufficient_data',
 //                reason, headline, body, winner, leader, control, ready,
-//                thin_arms: [], comparisons, alpha_adjusted,
+//                thin_arms: [], pending_arms: [], qualifying_arms: [],
+//                comparisons, alpha_adjusted,
 //                required_sample_per_arm, time_to_decision_days, ranked: [] },
-//     floors: { min_visitors_per_arm, min_conversions_per_arm,
+//     floors: { min_exposures_per_arm, min_conversions_per_arm,
 //               min_stats_sample, alpha },
-//     method: { ... }
+//     method: { ... },
+//     exposures_per_day,
+//     daily: [{ day, arms: { [k]: { exposures, orders, net_revenue,
+//                                   rev_per_exposure } } }],
+//     submits: { available, reason, since, by_arm: { [k]: n } }
 //   } }
 //
 // ⚠️ SAME 100× TRAP AS THE ANALYTICS ENDPOINT, AND IT IS A DIFFERENT ENDPOINT
@@ -298,7 +315,7 @@ export function shouldShowSignificance(stats, verdict) {
  * far THIS arm is from the bar, which is the only form an operator can act on.
  *
  * Derived here rather than on the server because the inputs are already in the
- * payload and the RULE is the server's own: `sample.minVisitorsPerArm` and
+ * payload and the RULE is the server's own: `sample.minExposuresPerArm` and
  * `sample.minConversionsPerArm` come from the service, so this cannot drift
  * from the floors the verdict was actually judged against. Nothing is invented —
  * if the service did not send the floors, the cell reads as unknown.
@@ -307,7 +324,9 @@ export function shouldShowSignificance(stats, verdict) {
  *            needOrders:number}}
  */
 export function windowSampleState(armMetrics, sample) {
-  const minV = num(sample?.minVisitorsPerArm);
+  // Prefer the exposures-named key; fall back to the older `minVisitorsPerArm`
+  // so this keeps working against a deploy that ships only the old name.
+  const minV = num(sample?.minExposuresPerArm) ?? num(sample?.minVisitorsPerArm);
   const minO = num(sample?.minConversionsPerArm);
   const visitors = num(armMetrics?.visitors);
   const orders = num(armMetrics?.orders);
