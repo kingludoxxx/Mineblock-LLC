@@ -4744,3 +4744,46 @@ DECISIONS:
     There is no delete endpoint for winners; needs a one-line SQL cleanup.
 STATUS: COMPLETE
 ---
+
+---
+TIMESTAMP: 2026-08-11 22:50
+TASK: Puure Brief Pipeline — full power (plan upgrade + transcription cap raised)
+BUILT: No code change. Root cause of the remaining limit was hardware, not logic:
+  puure-dashboard ran on Render `starter` (512 MB) while mineblock-dashboard runs
+  `standard` (2 GB) on the same code. The 25 MB transcription cap I added to stop
+  the OOM was therefore refusing a third of real League videos.
+  - Upgraded puure-dashboard `starter` -> `standard` via Render REST API
+    (PATCH /v1/services/{id}, plan confirmed `standard` on read-back).
+  - Raised TRANSCRIBE_MAX_BYTES on Puure 25 MB -> 100 MB (parity with Mineblock).
+  - Also earlier this session: wired Puure's R2 (canary OK, bs-mirror running).
+TESTED:
+  - SIZE CENSUS, 310 League BANGER/CHAMP videos across all 18 brands, by HEAD
+    content-length: median 14.3 MB, p90 34.2 MB, max 810.8 MB.
+    over 25 MB = 24.2% (refused before) -> over 100 MB = 0.6% (refused now).
+  - 111.8 MB video: refused CLEANLY with the operator message, health 200 x3
+    immediately after — the guard still works and still does not kill the box.
+  - 33.4 MB video (a size that FAILED before the upgrade): HTTP 200, 4298-char
+    transcript via the Vertex GCS path ("GCS upload OK ... (33.4 MB)").
+    Uptime across the whole test 999s — no restart, so no OOM.
+  - Full chain on that same 33.4 MB ad: transcript -> reference
+    (status=transcribed) -> brief "PL - B0090 - NN - Menopause - TSS - Mashup -
+    Ludovico - NA - WK33_2026", score 8.4, verdict YES, 5 hooks, ClickUp prefill
+    returned. 80s end to end. Test brief + reference deleted; health 200.
+OUTPUT: League -> transcribe -> reference -> brief works on Puure for 99.4% of
+  the live League library. Operator can use the tool.
+DECISIONS:
+  - DECISION MADE: plan upgrade taken only after explicit operator approval
+    ("we need the full power") — it is a recurring cost, ~$7 -> ~$25/mo.
+  - Cap left at 100 MB rather than higher: parity with Mineblock, and the 0.6%
+    above it are 100-810 MB assets whose base64 expansion would threaten even a
+    2 GB box. Those degrade to a clear refusal, not a crash.
+  - KNOWN OPERATIONAL QUIRK, not a defect: Cloudflare's edge cuts the HTTP
+    request at ~100s, but the server finishes and CACHES the transcript. A large
+    video can appear to fail in the UI while succeeding; clicking Transcribe
+    again returns it instantly (observed: my client aborted, re-request returned
+    cached=true with the full 4298 chars).
+  - Residual: 3 MANUAL-* winner rows from testing sit in `detected` (no delete
+    endpoint); Redis degraded on BOTH services (pre-existing); Puure still lacks
+    ~50 env vars for other features; R2 ownership split still undecided.
+STATUS: COMPLETE
+---
