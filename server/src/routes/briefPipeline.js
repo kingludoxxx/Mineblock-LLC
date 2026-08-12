@@ -3185,7 +3185,7 @@ Decide how the machine rebuilds around OUR product (think through ALL of this; e
 A hook is the first line of the finished video, spoken by the SAME narrator as the body. THE BLEND TEST (this is the whole game): read the hook aloud, then the body's FIRST SENTENCE. They must read as two consecutive lines of ONE script — same narrator AND same thread. The body's first sentence must be the natural next thing this exact hook's speaker would say. If the hook opens a topic the body's first sentence does not continue (hook names a clinical mechanism but the body opens on an offer; hook promises a week-by-week result but the body opens on a mistake), that is a SEAM and the hook has FAILED, even when the voice matches. Blend is about the THREAD, not only the voice.
 - Exactly 5 hooks. Full sentences, sentence case, no emoji, no ALL-CAPS. Each ≤ 20 words; H5 is the shortest punch, under 12.
 - ALL FIVE must be speakable by the body's narrator. Third-person founder story → every hook is third-person founder framing. First-person testimonial → every hook is that person speaking. NEVER mix POVs across hooks or between hooks and body.
-- THE 5 HOOKS ARE 5 WAYS THROUGH THE SAME DOOR, NOT 5 DIFFERENT DOORS. FIRST read the body's actual FIRST SENTENCE. Then write 5 hooks that each hand off straight into that exact sentence with no bridge line — every hook's final beat sets up precisely what that first sentence delivers. Vary them by EMOTIONAL ANGLE and PHRASING on the SAME setup, NEVER by topic: the blunt version, the contrarian version, the pain/callout version, the curiosity version, and the short punch. Do NOT open a hook on a subject the body's first sentence does not immediately continue (a clinical stat, a deep-mechanism fact, a week-by-week results timeline) — that is the single most common cause of a seam. Concrete test: if the body opens on "these two mistakes", ALL five hooks funnel into "these two mistakes" and the body's first sentence reads as the natural next line after each; they simply say it five different ways. A hook that is technically true and on-brand but leaves the body's first sentence sounding like a topic change has failed, no matter how punchy it is.
+- THE 5 HOOKS ARE 5 DIFFERENT DOORS INTO THE SAME SCRIPT. Before writing them, name five mutually exclusive TERRITORIES to attack from, drawn from the SOURCE ad and the product brief. Use five different ones from: the enemy (what gets blamed), the mechanism (why it works), the humiliating moment, the proof or authority, the price or offer shock, the objection you kill first, the identity or life change. For a clone, H1's territory is FIXED: the source's single strongest scroll stopper, readapted to our product. Write exactly one hook per territory and emit that territory alongside the hook. Two hooks sharing a territory, or leading with the same subject or the same number, is a FAILURE. Continuity is still required, but it is a HANDOFF test, not a sameness test: after each hook, the body's OPENING BEAT (its first two sentences) must be able to follow in the same narrator's voice without a bridge line. A hook may open on a facet the body's very first sentence does not mention — that is the intended design, not a seam. What is banned is a change of narrator, tense, or world, and restating the body's opening line.
 - H1 IS THE SOURCE'S SIGNATURE HOOK, READAPTED — never a brand-new invention. Before writing the other four, find the source's single strongest scroll-stopper: the ONE line that made this ad worth cloning. It may live in the spoken hooks, in the body's opening line, OR in a burned-in ALL-CAPS overlay (e.g. "EVERYTHING YOU'VE BEEN TOLD ABOUT FIRMING ARM SKIN"). Rewrite THAT hook for our product in spoken, sentence-case form and make it H1 — product noun and category swapped, its exact contrarian/curiosity/myth-bust shape kept otherwise. Example: "Everything you've been told about firming arm skin..." → "Everything you've been told about lifting sagging breasts...". When the source hands you a proven hook, cloning it as H1 is the whole point; do NOT discard it in favor of a fresh angle. An ALL-CAPS overlay that is a full contrarian clause (not a sticker fragment) is a HOOK for this purpose — readapt it into H1 as a spoken sentence, even though its label copy may also appear in highlighted_text. H2 through H5 are then the fresh alternative doors described below.
 - Do not pre-spend the body's reveal, and do not reuse body sentences verbatim.
 - NO HOOK MAY RESTATE THE BODY'S OPENING LINE — with ONE deliberate exception: H1 when it carries the readapted signature hook per the rule above. If the body would otherwise open on that same signature line, the BODY instead resumes on the NEXT beat, so H1 then the body's first sentence read as two consecutive, NON-repeating lines. For H2 through H5 the ban is absolute. The hooks are 5 different ways IN that all lead to the body's first sentence — never a verbatim copy of that sentence. This overrides the keep-signature-device-verbatim rule for the HOOKS only: even when the body opens ON the signature device (e.g. body starts "We spent a year planning our Black Friday sale. Our intern launched it this morning by accident."), NONE of the 5 hooks may be that opening line reworded, re-punctuated, or sentence-joined. The BODY keeps the signature opening word-for-word; the HOOKS are 5 alternative ways IN that lead to it (the intern's panic, the deadline, the price reveal, a customer's reaction, a blunt one-liner) — so that hook-then-body reads as two consecutive lines, never the same line twice. If H1 is your body's first sentence with the period swapped for "and", you have failed this rule.
@@ -3235,6 +3235,7 @@ A LABEL is short, attention-grabbing, sticker-style. A HOOK is a full first-pers
 - **Hooks are NEVER overlay labels.** If you find yourself writing an ALL-CAPS fragment with an emoji as Hook 1, move it to highlighted_text and write a real sentence-form hook in its place.
 
 # ORDER OF OPERATIONS (the JSON field order below is deliberate — write the fields in this order)
+# 0. source_format — classify the SOURCE ad type (drives the brief's Creative Type).
 # 1. source_read — distilled source understanding (STEP 1, 2-3 sentences).
 # 2. adaptation_plan — distilled rebuild decision (STEP 2, 2-3 sentences).
 # 3. source_beats — enumerate the source with word counts.
@@ -3248,6 +3249,7 @@ A LABEL is short, attention-grabbing, sticker-style. A HOOK is a full first-pers
 # OUTPUT — return ONLY valid JSON, no markdown fences, no preamble, no trailing commentary.
 {
   "source_pov": "third-person-founder-narrative | first-person-testimonial | first-person-founder-confession | expert-explainer | speaker-direct-address | other",
+  "source_format": "classify the SOURCE ad as exactly one of: Mashup, ShortVid, UGC, VSL, Mini VSL, Long VSL, Cartoon. UGC = one person talking to camera as themselves. Mashup = cut together from multiple clips or scenes. VSL = a long structured sales argument; Mini VSL under ~90 seconds, Long VSL over ~3 minutes. ShortVid = a short scripted spot that is none of the above. Cartoon = animated. Return the label only, spelled exactly as listed",
   "source_read": "2-3 sentences: ad type, narrator + why the viewer believes them, the pivot moment, why this ad wins",
   "signature_device": "the ONE specific gimmick/framing this ad hangs on, stated exactly (e.g. 'Black Friday sale launched 4 months early by mistake, can't take it back'). You will carry this over word-for-word in the body, product swapped.",
   "adaptation_plan": "2-3 sentences: who the protagonist becomes and why that identity is most credible for our product; confirm the signature_device is kept verbatim; which source proof devices are mirrored and how",
@@ -3497,30 +3499,52 @@ async function buildBlendValidationPrompt(generatedBrief) {
   const flatBody = body.replace(/\s+/g, ' ').trim();
   const bodyFirstLine = (flatBody.match(/^.*?[.!?](\s|$)/)?.[0] || flatBody.slice(0, 160)).trim();
 
-  let system = `You are a continuity editor for direct response ad scripts. You judge ONE thing: does the body's FIRST SENTENCE read as the natural next line right after each hook — same narrator AND same thread. A matching voice is NOT enough. If the hook opens a topic the first sentence does not continue, that is a seam and scores low.`;
+  // Judge against the body's OPENING BEAT, not its single first sentence.
+  // Against one fixed sentence only one topic can ever be "continuous", so the
+  // old rubric mathematically guaranteed that five topically distinct hooks
+  // would fail — and the rewrite then collapsed them into five phrasings of the
+  // same idea. Measured across 41 briefs: the same 9 devices appear in a mean
+  // of 6.9 per script. See tasks/BRIEF-QUALITY-SCOPE.md (F2).
+  const sentences = flatBody.match(/[^.!?]+[.!?]+/g) || [flatBody.slice(0, 320)];
+  const bodyOpeningBeat = sentences.slice(0, 2).join(' ').trim() || bodyFirstLine;
 
-  let user = `For each hook, read the hook, then immediately read the body's first sentence. Would one person say these two lines back to back, on the same thread, with no bridge line needed?
+  let system = `You are a continuity editor for direct response ad scripts. You judge TWO things: (1) CONTINUITY — can the body's opening beat follow this hook without a bridge line, in the same narrator's voice; (2) DISTINCTNESS — are the five hooks five genuinely different doors into the script, or the same idea reworded. Both matter. Five well-blended hooks that all say the same thing is a FAILURE, not a pass.`;
 
-${hooks.map((h, i) => `HOOK ${i + 1}: "${h}"
-→ BODY FIRST SENTENCE: "${bodyFirstLine}"`).join('\n\n')}
+  let user = `Below are 5 hooks and the body's OPENING BEAT they must each hand off to.
 
-Score each hook on THREAD CONTINUITY, not voice:
-- blend_score (1-10): 10 = the first sentence is obviously the next thing this speaker says (same setup, same subject). 5 = same voice but the subject JUMPS (e.g. the hook is about a deep clinical mechanism or a week-by-week results timeline, but the first sentence is about "two mistakes" or an offer). 1 = jarring disconnect.
-- A hook that is punchy and on-brand but leaves the first sentence sounding like a topic change is a 4-5, NOT a 7.
-- issue: null if score >= 8, else name the THREAD break in one sentence (what the hook set up vs what the body actually continues).
-- fix_suggestion: null if score >= 8, else how to re-aim the HOOK so it funnels into the body's first sentence. NEVER suggest changing the body.
+BODY OPENING BEAT: "${bodyOpeningBeat}"
+
+${hooks.map((h, i) => `HOOK ${i + 1}: "${h}"`).join('\n')}
+
+STEP 1 — score each hook on CONTINUITY (1-10):
+- 10 = the opening beat is obviously the next thing this speaker says.
+- 7 = a different entry point, but the opening beat still follows naturally. THIS IS A PASS. A hook may open on a different facet (mechanism, proof, price, a moment, an objection) and still be continuous — the test is whether one person could say them back to back, NOT whether they share a subject.
+- 4 = the narrator or tense changes, or the opening beat needs a bridge line inserted to make sense.
+- 1 = jarring disconnect, different speaker or different world.
+Judge VOICE and HANDOFF. Do NOT penalise a hook merely for opening on a different topic than the opening beat — that is the intended design.
+
+STEP 2 — score the SET on DISTINCTNESS (1-10):
+- 10 = five genuinely different doors: different angle of attack, different emotional entry, different first noun.
+- 5 = three or four distinct ideas with some overlap.
+- 1 = the same claim reworded five times.
+Penalise: two hooks sharing the same angle; two hooks leading with the same subject or the same number/claim; five hooks that would all be answered by the same objection.
+
+- issue: null if that hook's continuity >= 7, else name the break in one sentence.
+- fix_suggestion: null if fine, else how to fix the HANDOFF while KEEPING that hook's angle. NEVER suggest changing the body, and NEVER suggest making a hook more similar to the others.
+- duplicate_of: null, or the id of the earlier hook this one substantially repeats.
 
 Return ONLY valid JSON:
 {
   "hooks": [
-    { "id": 1, "blend_score": 9, "issue": null, "fix_suggestion": null },
-    { "id": 2, "blend_score": 5, "issue": "Hook opens on an 8mm collagen-depth mechanism, but the body's first sentence starts listing the two mistakes — different subject, so it reads as a topic change.", "fix_suggestion": "Re-aim the hook to tee up the two mistakes instead of the mechanism." }
+    { "id": 1, "blend_score": 9, "issue": null, "fix_suggestion": null, "duplicate_of": null },
+    { "id": 2, "blend_score": 7, "issue": null, "fix_suggestion": null, "duplicate_of": 1 }
   ],
-  "overall_blend": 7.0,
+  "distinctness": 6.0,
+  "overall_blend": 8.0,
   "pass": false
 }
 
-A brief PASSES only if overall_blend >= 7.5 AND no single hook scores below 7.`;
+A brief PASSES only if overall_blend >= 7.0 AND no single hook scores below 6 AND distinctness >= 7.`;
 
 
   return { system, user };
@@ -4745,21 +4769,35 @@ async function executeGenerationJob({
             const blend = await callClaude(bvSys, bvUser, 1500);
             const blendScore = typeof blend?.overall_blend === 'number' ? blend.overall_blend : null;
             const perHook = Array.isArray(blend?.hooks) ? blend.hooks : [];
-            const lowHook = perHook.some(h => typeof h?.blend_score === 'number' && h.blend_score < 7);
+            const lowHook = perHook.some(h => typeof h?.blend_score === 'number' && h.blend_score < 6);
             const dupIdx = gen.hooks
               .map((h, i) => (hookDupesOpening(h.text || h, gen.body) ? i + 1 : null))
               .filter(Boolean);
-            // Pass bar: overall >= 7.5 AND every hook >= 7. Anything less rewrites.
-            const blendFail = (blendScore !== null && blendScore < 7.5) || lowHook;
-            if (blendScore === null && !lowHook && !dupIdx.length) return;
+            // Second axis. Continuity alone is a pure convergence pressure: it
+            // rewards hooks that resemble the body's opening, and nothing ever
+            // rewarded them for differing from EACH OTHER. That is why the
+            // corpus came out as five rephrasings of one idea. A set that is
+            // perfectly blended but repetitive now fails too.
+            const distinctness = typeof blend?.distinctness === 'number' ? blend.distinctness : null;
+            const dupeOfIdx = perHook
+              .filter(h => h?.duplicate_of != null)
+              .map(h => h.id)
+              .filter(Boolean);
+            const sameyFail = (distinctness !== null && distinctness < 7) || dupeOfIdx.length > 0;
+            // Continuity bar relaxed 7.5 -> 7.0 (and per-hook 7 -> 6) because a
+            // hook entering on a different facet is now explicitly a pass; the
+            // distinctness axis is what keeps quality up.
+            const blendFail = (blendScore !== null && blendScore < 7.0) || lowHook;
+            if (blendScore === null && !lowHook && !dupIdx.length && !sameyFail) return;
             let hooks = gen.hooks;
-            if (blendFail || dupIdx.length) {
+            if (blendFail || dupIdx.length || sameyFail) {
               const reasons = [];
-              if (blendFail) reasons.push(`blend below bar (overall ${blendScore ?? '?'}${lowHook ? ', a hook scored < 7' : ''}) — thread/topic seam vs the body`);
+              if (blendFail) reasons.push(`blend below bar (overall ${blendScore ?? '?'}${lowHook ? ', a hook scored < 6' : ''}) — handoff seam vs the body`);
               if (dupIdx.length) reasons.push(`hook(s) ${dupIdx.map(i => 'H' + i).join(', ')} restate the body's opening line verbatim`);
+              if (sameyFail) reasons.push(`hooks too alike (distinctness ${distinctness ?? '?'}${dupeOfIdx.length ? `, H${dupeOfIdx.join(', H')} repeat an earlier hook` : ''})`);
               console.warn(`[BriefPipeline] brief ${brief.id}: rewriting hooks — ${reasons.join('; ')}`);
               const rewriteSys = 'You are a direct response copywriter. You fix hooks so they blend seamlessly into an existing ad script body. You never change the body.';
-              const rewriteUser = `The 5 hooks below need fixing. Rewrite all 5 so each is speakable by the body's narrator, in the body's voice, and reads seamlessly into the body's first sentence. Keep them <= 20 words (H5 under 12), sentence case, no emoji, no dashes. The 5 hooks are 5 WAYS THROUGH THE SAME DOOR: every hook's final beat must set up the body's FIRST SENTENCE so it reads as the natural next line, no bridge. Vary them by EMOTIONAL ANGLE and PHRASING on that SAME setup (blunt, contrarian, pain callout, curiosity, short punch), NEVER by topic. Do not open a hook on a subject the body's first sentence does not continue (a clinical mechanism, a stat, a results timeline) — that is exactly the seam you are fixing.\n\nCRITICAL: NONE of the 5 hooks may restate the body's OPENING LINE. The hooks are 5 ways IN that all lead to the body's first sentence, never a verbatim copy of it. Even if the body opens on a signature gimmick, the hooks are alternative ways IN that lead to it — never the same sentence reworded, re-punctuated, or joined with "and".\n\nBODY:\n${gen.body}\n\nCURRENT HOOKS:\n${gen.hooks.map(h => `${h.id}: ${h.text || h}`).join('\n')}\n\nIssues:\n${blendFail ? `Blend issues: ${JSON.stringify(blend?.hooks || [])}\n` : ''}${dupIdx.length ? `Duplicate-of-opening: ${dupIdx.map(i => 'H' + i).join(', ')}\n` : ''}\nReturn ONLY valid JSON: { "hooks": [ { "id": "H1", "text": "..." }, ... 5 items ] }`;
+              const rewriteUser = `The 5 hooks below need fixing. Rewrite all 5 so each is speakable by the body's narrator, in the body's voice, and reads seamlessly into the body's first sentence. Keep them <= 20 words (H5 under 12), sentence case, no emoji, no dashes. The 5 hooks are 5 DIFFERENT DOORS into the same script. Each must keep its own angle of attack and its own first subject: fix the HANDOFF, never the angle. If a hook already enters on a distinct facet (a mechanism, a stat, a price, a moment, an objection), KEEP that facet and re-aim only its final beat so the body's opening beat can follow without a bridge. Making two hooks resemble each other is a FAILURE of this task, not a fix. If some hooks are near duplicates, replace the duplicates with genuinely different doors rather than rewording them.\n\nCRITICAL: NONE of the 5 hooks may restate the body's OPENING LINE. The hooks are 5 ways IN that all lead to the body's first sentence, never a verbatim copy of it. Even if the body opens on a signature gimmick, the hooks are alternative ways IN that lead to it — never the same sentence reworded, re-punctuated, or joined with "and".\n\nBODY:\n${gen.body}\n\nCURRENT HOOKS:\n${gen.hooks.map(h => `${h.id}: ${h.text || h}`).join('\n')}\n\nIssues:\n${blendFail ? `Blend issues: ${JSON.stringify(blend?.hooks || [])}\n` : ''}${dupIdx.length ? `Duplicate-of-opening: ${dupIdx.map(i => 'H' + i).join(', ')}\n` : ''}\nReturn ONLY valid JSON: { "hooks": [ { "id": "H1", "text": "..." }, ... 5 items ] }`;
               // Rewriting hooks is script generation → Opus, per operator directive.
               const fixed = await callClaude(rewriteSys, rewriteUser, 2000, { opus: true, timeoutMs: 180000 });
               if (Array.isArray(fixed?.hooks) && fixed.hooks.length === 5 && fixed.hooks.every(h => h?.text)) {
