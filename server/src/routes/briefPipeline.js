@@ -999,6 +999,28 @@ const CREATIVE_TYPE_OPTIONS = {
   Cartoon: '3edf3ba9-2518-4699-808d-364ed6831383',
 };
 
+/**
+ * Map a model-supplied creative-format label onto the ClickUp vocabulary.
+ *
+ * The generator is the only thing that has actually read the source, so it is
+ * the only available classifier — but its output is free text and reaches a
+ * ClickUp dropdown, so it is matched against CREATIVE_TYPE_OPTIONS rather than
+ * trusted. Anything unrecognised (or absent, which is the case until the prompt
+ * is taught to emit the field) falls back to the historical constant, so this
+ * is a no-op until the prompt changes. Matching is case- and space-insensitive
+ * so "mini vsl", "MiniVSL" and "Mini VSL" all land on the same option.
+ */
+function resolveCreativeFormat(raw, fallback = 'Mashup') {
+  if (!raw || typeof raw !== 'string') return fallback;
+  const norm = (s) => s.toLowerCase().replace(/[^a-z]/g, '');
+  const want = norm(raw);
+  if (!want) return fallback;
+  for (const option of Object.keys(CREATIVE_TYPE_OPTIONS)) {
+    if (norm(option) === want) return option;
+  }
+  return fallback;
+}
+
 const CREATIVE_TYPE_CODES = {
   Mashup: 'HX',
   ShortVid: 'VX',
@@ -4586,6 +4608,16 @@ async function executeGenerationJob({
       const briefType = isCloneMode ? 'NN' : 'IT';
       const nameAvatar = detectedAvatar || 'NA';
       const nameAngle  = effectiveAngle  || 'NA';
+      // Creative format was hardcoded to 'Mashup' here, so every brief carried
+      // that label whatever the reference actually was — measured at 41/41 of
+      // the generated corpus on 2026-08-11. There is no format signal in the
+      // data (brand_spy.display_format is only 'VIDEO'), so the classification
+      // has to come from the model, which has already read the whole source.
+      // Accept it when the prompt supplies it, validate it against the ClickUp
+      // vocabulary so a hallucinated label can never reach a card, and fall
+      // back to the old constant otherwise — this is inert until the prompt
+      // emits the field. See tasks/BRIEF-QUALITY-SCOPE.md (F1).
+      const nameFormat = resolveCreativeFormat(generated?.source_format);
       const namingConvention = buildNamingConvention({
         // Naming uses the brand short code (Puure -> 'PL'); the DB
         // product_code column below stays PUURE for context lookups.
@@ -4594,7 +4626,7 @@ async function executeGenerationJob({
         // Editor is deliberately omitted — buildNamingConvention filters null
         // slots, and the editor is assigned inside ClickUp after the brief is
         // pushed. Baking a name in here forces admins to rename in ClickUp.
-        format: 'Mashup', strategist: 'Ludovico', creator: 'NA', editor: null, week: weekLabel,
+        format: nameFormat, strategist: 'Ludovico', creator: 'NA', editor: null, week: weekLabel,
         brief_type: briefType,
       });
 
@@ -4636,7 +4668,10 @@ async function executeGenerationJob({
           // For clone mode we persist the auto-detected angle (falls back to
           // 'NA' when detection had nothing to work with).
           isIterateMode ? (direction.name || 'Iteration') : nameAngle,
-          isIterateMode ? 'Iteration' : 'Mashup',
+          // Same derived value as the naming convention above — these two must
+          // never disagree, or the card's title says one format and its Creative
+          // Type field says another.
+          isIterateMode ? 'Iteration' : nameFormat,
           // avatar, editor, strategist, creator — editor stays NULL here
           // (assigned in ClickUp), same reason as the naming-convention slot.
           nameAvatar, null, 'Ludovico', 'NA', namingConvention,
