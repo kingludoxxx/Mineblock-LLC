@@ -133,8 +133,16 @@ overlap between them must drop from today's ~100%.
 
 ## Status
 
-- [ ] F1 format hardcode
-- [ ] F2 hook territories (prompt + validator together)
+- [x] F1 format hardcode — SHIPPED + VERIFIED 2026-08-12: a real generation now
+      names `UGC` (`PL - B0093 - NN - Menopause - TSS - UGC - ...`) where the
+      corpus was Mashup on 41/41.
+- [x] F2 hook territories — SHIPPED + VERIFIED 2026-08-12. Two runs on the same
+      source each returned five DISTINCT territories (humiliating moment /
+      proof-authority / enemy / mechanism / price shock / identity flip). The
+      BEFORE run on the same ad had no territory field and used the ex-husband
+      angle twice (H1 and H5).
+      Live prompt after patch: md5 `4a2b070db9dc23f6f58d430b80859309`.
+      Rollback: `BACKUP-scriptClone.json`, md5 `8d81db11102143f946d87971a43e79bf`.
 - [ ] F3 angle-scoped proof sets — BLOCKED on the operator's call re: full vs
       scoped product context
 

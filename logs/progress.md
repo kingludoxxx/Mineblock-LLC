@@ -4787,3 +4787,57 @@ DECISIONS:
     ~50 env vars for other features; R2 ownership split still undecided.
 STATUS: COMPLETE
 ---
+
+---
+TIMESTAMP: 2026-08-12 00:45
+TASK: Brief Pipeline output quality — F1 format hardcode, F2 hook territories
+BUILT: Corpus analysis of all 41 generated briefs found three defects behind the
+  operator's report that "the generator always uses the same angle" and "the
+  hooks always say the same thing":
+  (a) format hardcoded 'Mashup' in TWO places (naming convention + INSERT);
+  (b) hook variety generated then destroyed by THREE separate instructions —
+      the prompt seed ("5 WAYS THROUGH THE SAME DOOR ... NEVER by topic"), the
+      blend validator (topic shift capped at 4-5 vs a pass bar of 7, judged
+      against the body's single first sentence), and the rewrite that fires on
+      failure ("NEVER by topic"). (b2) guaranteed (b3) ran, so the pipeline
+      reliably converted five doors into five rewordings. No diversity term
+      existed anywhere: `distinct`, `diversity`, `similar`, `overlap` all absent
+      from the 19k prompt;
+  (c) the angle field does not change output — every angle ships the same proof
+      stack (mean 6.9 of the same 9 devices per script, 34/41 use 6+). NOT
+      fixed; scoped as F3 and BLOCKED on an operator decision.
+  F1: resolveCreativeFormat() maps a model-supplied label onto
+  CREATIVE_TYPE_OPTIONS, falling back to 'Mashup' for absent/unrecognised, used
+  for BOTH the naming convention and the format column from one variable.
+  F2: seed rule replaced with a five-TERRITORY map (H1 fixed to the source's
+  readapted scroll stopper); validator gains a DISTINCTNESS axis with pairwise
+  duplicate detection and now judges continuity against the body's opening BEAT
+  with the topic-shift cap removed; rewrite preserves each hook's angle.
+  The DB prompt overrides the code seed, so the live prompt was patched too —
+  surgically, 2 lines removed / 4 added, everything else byte-identical.
+TESTED:
+  - resolveCreativeFormat: 16 cases incl. null/empty/whitespace/non-string/
+    object and a hallucinated "Documentary" — all fall back to Mashup; spacing
+    and case variants normalise. No value outside the vocabulary can escape.
+  - Pre-write guard on the prompt PUT: live md5 compared to backup md5 and the
+    write aborts if they differ (another session could have edited it).
+  - BEFORE/AFTER on the SAME source ad (smooche.com, 33.4 MB, 4298-char
+    transcript). BEFORE: no territory field, ex-husband angle used twice
+    (H1 + H5). AFTER, two independent runs: five distinct territories each.
+  - F1 live: naming_convention "PL - B0093 - NN - Menopause - TSS - UGC - ..."
+    and format column = UGC. Was Mashup on 41/41.
+  - All test briefs deleted after each run.
+OUTPUT: Hooks now vary by territory and the format label is real.
+DECISIONS:
+  - DECISION MADE: shipped the prompt and the validator TOGETHER. Either alone
+    is undone by the other — the validator would have rewritten the new prompt's
+    variety straight back out.
+  - HONEST LIMIT: hooks now differ in ANGLE but still draw on the same proof
+    stack (surgeon / $20,000 / $99 / 8mm / three wavelengths), because that is
+    F3 and F3 is not done. Expect better-differentiated hooks, not different
+    FACTS, until the angle owns its own proof set.
+  - F3 remains blocked: it contradicts the standing "give the model 100% of the
+    product context" instruction. Reconciliation is probably full brief + an
+    angle-scoped emphasis directive, but that is the operator's call.
+STATUS: COMPLETE for F1 + F2; F3 BLOCKED on operator decision
+---
