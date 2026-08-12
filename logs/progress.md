@@ -4841,3 +4841,43 @@ DECISIONS:
     angle-scoped emphasis directive, but that is the operator's call.
 STATUS: COMPLETE for F1 + F2; F3 BLOCKED on operator decision
 ---
+
+---
+TIMESTAMP: 2026-08-12 23:50
+TASK: Long source scripts failing with "body must be a non-empty string"
+BUILT: Operator hit the error on an 11,516-char source. The message named the
+  wrong step — nothing was wrong with the clone. The SCRIPT PARSER broke: its
+  JSON contract makes it echo the whole source back ("body": "the full body
+  script text"), so output scales with input, but it was called with a flat
+  max_tokens: 2000. Anything past ~7k chars was silently truncated.
+  The truncation was already survivable via a fallback to the raw spoken
+  script, but the guard required hooks AND body to both be missing. "hooks" is
+  emitted BEFORE "body", so a clipped response ALWAYS keeps hooks and ALWAYS
+  loses body — the one shape truncation produces is the one shape the guard let
+  through.
+  - parser budget now derived from input: ceil(chars/3)*2, floor 4000, cap 16000
+  - recovery is per-FIELD: keep what parsed, backfill body from the raw script
+  - explicit operator-legible throw if the body is still empty
+  Also raised TRANSCRIBE_MAX_BYTES 100MB -> 200MB now the service is on
+  `standard` (2 GB), covering ~99.8% of the measured League library.
+TESTED:
+  - 8 recovery cases by execution: the exact failure shape (hooks present, body
+    missing), body empty, body whitespace, parser null / string / array, happy
+    path passthrough, and the unrecoverable case throwing a named error.
+  - Budget maths checked across real sizes: 11,516 chars now gets 7,678 tokens
+    where it previously got 2,000.
+  - LIVE on Puure after deploy: 11,516-char source -> OK in 44s, 5 hooks
+    (PL - B0110, ShortVid); 20,000-char source -> OK in 43s, 5 hooks
+    (PL - B0111, Mini VSL). Both test briefs deleted.
+OUTPUT: Long VSL sources clone successfully. Formats now vary (ShortVid,
+  Mini VSL) rather than Mashup on everything — F1 confirmed working again.
+DECISIONS:
+  - NOT taken: removing the body echo from the parser contract entirely (the
+    raw script is already in hand, so the echo is redundant). That is the
+    structural fix and a bigger change; the budget + per-field recovery makes
+    the failure impossible without it.
+  - Transcription still cannot handle the true tail: the census found a 810 MB
+    video and buffering cannot reach that on any plan. That needs streaming to
+    disk, scoped but not built.
+STATUS: COMPLETE
+---
