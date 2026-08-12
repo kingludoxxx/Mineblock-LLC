@@ -4294,14 +4294,49 @@ async function executeGenerationJob({
       }
       return fetchProductProfile(productCode || 'MR');
     })();
+    // The parser must echo the ENTIRE source body back inside its JSON
+    // ("body": "the full body script text"), so its output size scales with the
+    // input. A flat 2000-token budget silently clipped any source past roughly
+    // 7k characters — an 11,516-char VSL died as
+    // "Clone validation failed: body must be a non-empty string", which names
+    // the wrong step entirely. Budget from the input, with a floor for short
+    // scripts and a ceiling so a pathological input cannot run away.
+    // ~3 chars per token, doubled: the JSON carries hooks, cta and notes on top
+    // of the body, and JSON escaping inflates it further.
+    const parseBudget = Math.min(16000, Math.max(4000, Math.ceil((spokenScript?.length || 0) / 3) * 2));
+    if (parseBudget > 4000) {
+      console.log(`[BriefPipeline] parser budget ${parseBudget} tokens for a ${spokenScript.length}-char script`);
+    }
     const [parsedScriptRaw, productProfile] = await Promise.all([
-      callClaude(parseSystem, parseUser, 2000, { fast: true }),
+      callClaude(parseSystem, parseUser, parseBudget, { fast: true }),
       profilePromise,
     ]);
     let parsedScript = parsedScriptRaw;
-    if (!parsedScript || (!parsedScript.hooks?.length && !parsedScript.body?.trim())) {
-      // Fallback body is the spoken script (on-screen text already stripped).
+    // Recover per FIELD, not all-or-nothing. The old guard required hooks AND
+    // body to both be missing before falling back — but "hooks" is emitted
+    // BEFORE "body" in the contract, so a clipped response keeps its hooks and
+    // loses its body. That is precisely the shape this guard failed to catch,
+    // and it is the only shape truncation can produce. Keep whatever parsed,
+    // and backfill the body from the raw script we already hold.
+    if (!parsedScript || typeof parsedScript !== 'object') {
       parsedScript = { hooks: [], body: spokenScript, cta: '', format_notes: '' };
+      console.warn('[BriefPipeline] parser returned nothing usable — falling back to the raw spoken script');
+    } else if (!parsedScript.body || !String(parsedScript.body).trim()) {
+      console.warn(`[BriefPipeline] parser returned no body (${(parsedScript.hooks || []).length} hooks parsed) — backfilling the body from the raw spoken script (${spokenScript?.length || 0} chars)`);
+      parsedScript = {
+        ...parsedScript,
+        hooks: Array.isArray(parsedScript.hooks) ? parsedScript.hooks : [],
+        body: spokenScript,
+      };
+    }
+    // Last line of defence: never hand an empty body downstream, whatever the
+    // parser did. Generation failing on an empty body is not recoverable by the
+    // operator and gives them no idea which step broke.
+    if (!String(parsedScript.body || '').trim()) {
+      throw new Error(
+        `Source script could not be parsed into a usable body (source ${spokenScript?.length || 0} chars). ` +
+        `Paste the script text directly, or retry.`
+      );
     }
     pgQuery(`UPDATE brief_pipeline_winners SET parsed_script = $1 WHERE id = $2`, [JSON.stringify(parsedScript), winner.id]).catch(() => {});
 
