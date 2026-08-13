@@ -1291,6 +1291,70 @@ router.post('/admin-reconcile-migrations', async (req, res) => {
   }
 });
 
+// ─── /admin-copy-league-usage — restore the "already briefed" history ────
+// The League feed labels an ad `alreadyImported` by matching its ad_archive_id
+// against brief_pipeline_references. The fork left that table empty on Puure
+// ("no functional impact" — wrong: this IS the impact), so every competitor ad
+// reads as unused and the operator risks re-briefing work already done. 27 ads
+// currently in the feed are already briefed.
+//
+// A wholesale copy cannot work: references.generated_brief_id -> generated,
+// generated.winner_id -> winners, winners.reference_id -> references, a cycle
+// pg_dump cannot order and Render Postgres will not let us defer (no superuser
+// for session_replication_role). generated_brief_id is nullable, so we break
+// the cycle there: copy the references with that one column nulled. The label
+// only needs ad_archive_id, so it lights up immediately; the brief-number
+// annotation needs winners+generated and is deliberately out of scope here.
+router.post('/admin-copy-league-usage', async (req, res) => {
+  const cronSecret = process.env.CRON_SECRET;
+  if (!cronSecret || req.headers['x-cron-secret'] !== cronSecret) {
+    return res.status(403).json({ success: false, error: { message: 'Forbidden' } });
+  }
+  const targetUrl = process.env.PUURE_DATABASE_URL;
+  if (!targetUrl) return res.status(400).json({ success: false, error: { message: 'PUURE_DATABASE_URL not set' } });
+  const { dry_run = true } = req.body || {};
+  let pool;
+  try {
+    const { default: pg } = await import('pg');
+    pool = new pg.Pool({ connectionString: targetUrl, ssl: { rejectUnauthorized: false }, max: 2 });
+
+    const cols = (await pgQuery(
+      `SELECT column_name FROM information_schema.columns
+        WHERE table_schema='public' AND table_name='brief_pipeline_references'
+        ORDER BY ordinal_position`
+    )).map(r => r.column_name);
+    const src = await pgQuery(`SELECT ${cols.map(c => `"${c}"`).join(', ')} FROM brief_pipeline_references`);
+    const before = (await pool.query('SELECT count(*)::int AS n FROM brief_pipeline_references')).rows[0].n;
+
+    if (dry_run) {
+      return res.json({ success: true, dry_run: true, sourceRows: src.length, targetBefore: before, columns: cols.length });
+    }
+
+    const gIdx = cols.indexOf('generated_brief_id');
+    let inserted = 0;
+    for (const row of src) {
+      const vals = cols.map((c, i) => (i === gIdx ? null : row[c]));
+      // JSONB comes back from pg pre-parsed; re-serialise or the driver sends
+      // "[object Object]". Same coercion forkMigration.js does.
+      const coerced = vals.map(v => (v !== null && typeof v === 'object' && !(v instanceof Date) ? JSON.stringify(v) : v));
+      const ph = cols.map((_, i) => `$${i + 1}`).join(', ');
+      const r2 = await pool.query(
+        `INSERT INTO brief_pipeline_references (${cols.map(c => `"${c}"`).join(', ')})
+         VALUES (${ph}) ON CONFLICT DO NOTHING`, coerced
+      );
+      inserted += r2.rowCount;
+    }
+    const after = (await pool.query('SELECT count(*)::int AS n FROM brief_pipeline_references')).rows[0].n;
+    console.log(`[admin-copy-league-usage] inserted ${inserted}; target ${before} -> ${after}`);
+    return res.json({ success: true, dry_run: false, sourceRows: src.length, inserted, targetBefore: before, targetAfter: after });
+  } catch (err) {
+    console.error('[admin-copy-league-usage] error:', err);
+    return res.status(500).json({ success: false, error: { message: err.message } });
+  } finally {
+    if (pool) await pool.end().catch(() => {});
+  }
+});
+
 // ─── /admin-pgdump-data-copy — async pg_dump for wholesale tables ────────
 // Fires pg_dump/psql in background, returns job_id immediately (Cloudflare
 // caps sync requests at ~100s). Poll /admin-pgdump-data-status?job_id=X.
