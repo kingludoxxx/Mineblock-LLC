@@ -4692,10 +4692,28 @@ router.patch('/creatives/:id/status', authenticate, async (req, res) => {
         error: { message: 'approved is deprecated; use ready' },
       });
     }
-    const validStatuses = ['generating', 'review', 'ready', 'queued', 'launching', 'launched', 'rejected', 'archived'];
+    const validStatuses = ['generating', 'composer', 'review', 'ready', 'queued', 'launching', 'launched', 'rejected', 'archived'];
     if (!validStatuses.includes(status)) {
       return res.status(400).json({ success: false, error: { message: `Invalid status. Must be one of: ${validStatuses.join(', ')}` } });
     }
+
+    // ANGLE GATE — a static cannot reach Ready to Launch without an angle.
+    // Enforced server-side (not just in the UI) because bulk paths, drag-drop
+    // and any future caller all funnel through here, and an angle-less card
+    // downstream means an ad set nobody can attribute.
+    if (status === 'ready') {
+      const current = await pgQuery('SELECT angle FROM spy_creatives WHERE id = $1', [req.params.id]);
+      if (current.length === 0) {
+        return res.status(404).json({ success: false, error: { message: 'Creative not found' } });
+      }
+      if (!String(current[0].angle || '').trim()) {
+        return res.status(409).json({
+          success: false,
+          error: { code: 'ANGLE_REQUIRED', message: 'Pick an angle before moving this static to Ready to Launch' },
+        });
+      }
+    }
+
     const rows = await pgQuery(
       'UPDATE spy_creatives SET status = $1, updated_at = NOW() WHERE id = $2 RETURNING *',
       [status, req.params.id]
@@ -6460,9 +6478,32 @@ router.patch('/creatives/bulk-status', authenticate, async (req, res) => {
     if (status === 'approved') {
       return res.status(400).json({ success: false, error: { message: "'approved' is deprecated; use 'ready'" } });
     }
-    const validStatuses = ['review', 'ready', 'rejected', 'archived'];
+    const validStatuses = ['composer', 'review', 'ready', 'rejected', 'archived'];
     if (!validStatuses.includes(status)) {
       return res.status(400).json({ success: false, error: { message: `Invalid status: ${status}` } });
+    }
+
+    // ANGLE GATE (bulk) — same rule as the single-creative PATCH. Refuse the
+    // WHOLE batch rather than promoting the valid subset: a partial bulk move
+    // leaves the operator guessing which cards actually advanced.
+    if (status === 'ready') {
+      const missingPlaceholders = ids.map((_, i) => `$${i + 1}`).join(', ');
+      const missing = await pgQuery(
+        `SELECT id FROM spy_creatives
+          WHERE id IN (${missingPlaceholders})
+            AND (angle IS NULL OR btrim(angle) = '')`,
+        ids,
+      );
+      if (missing.length > 0) {
+        return res.status(409).json({
+          success: false,
+          error: {
+            code: 'ANGLE_REQUIRED',
+            message: `${missing.length} of ${ids.length} statics have no angle — pick an angle for each before moving them to Ready to Launch`,
+            ids: missing.map(r => r.id),
+          },
+        });
+      }
     }
 
     const placeholders = ids.map((_, i) => `$${i + 2}`).join(', ');
