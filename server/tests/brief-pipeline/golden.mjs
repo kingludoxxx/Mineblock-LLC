@@ -24,6 +24,7 @@
  */
 
 import { FIXTURES, SPEC_HOOK_RX } from './golden.fixtures.mjs';
+import { ungroundedHookClaims } from '../../src/services/briefScore.js';
 
 const BASE = process.env.BASE || 'https://puure-dashboard.onrender.com';
 const EMAIL = process.env.EMAIL || process.env.PUURE_EMAIL;
@@ -84,6 +85,14 @@ function assertions(fx, brief, sourceScript) {
 
   const spec = hooks.filter(t => SPEC_HOOK_RX.test(t));
   push('no spec hooks', spec.length === 0, spec.join(' | ').slice(0, 90));
+
+  // every number, price and proper noun in a hook must appear in the body —
+  // the defect class that flagged 4 of 5 briefs on 2026-08-13
+  const ungrounded = hooks
+    .map((t, i) => ({ h: `H${i + 1}`, claims: ungroundedHookClaims(t, body) }))
+    .filter(x => x.claims.length);
+  push('hooks grounded in the body', ungrounded.length === 0,
+       ungrounded.map(x => `${x.h}: ${x.claims.join('/')}`).join('; ').slice(0, 100));
 
   const [lo, hi] = fx.hookCount || [1, 5];
   push(`hook count in [${lo},${hi}]`, hooks.length >= lo && hooks.length <= hi, `${hooks.length} hooks`);

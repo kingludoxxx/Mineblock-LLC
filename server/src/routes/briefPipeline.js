@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { authenticate } from '../middleware/auth.js';
-import { scoreBrief } from '../services/briefScore.js';
+import { scoreBrief, ungroundedHookClaims } from '../services/briefScore.js';
 import {
   getAutopilotConfig, saveAutopilotConfig, runAutopilotBatch, reportToSlack,
 } from '../services/autopilot.js';
@@ -4857,7 +4857,16 @@ async function executeGenerationJob({
               .filter(h => h?.unsupported === true)
               .map(h => h.id)
               .filter(Boolean);
-            const contentFail = specIdx.length > 0 || unsupportedIdx.length > 0;
+            // DETERMINISTIC groundedness: numbers, prices, spelled-out figures
+            // and proper nouns in a hook must literally appear in the body. The
+            // model-judged `unsupported` flag stays as a trigger, but the
+            // deterministic list is what the retry loop and the score obey —
+            // it cannot be argued with and cannot drift.
+            const ungroundedOf = hs => hs
+              .map((h, i) => ({ id: h.id || `H${i + 1}`, claims: ungroundedHookClaims(h.text || h, gen.body) }))
+              .filter(x => x.claims.length);
+            let detUngrounded = ungroundedOf(gen.hooks);
+            const contentFail = specIdx.length > 0 || unsupportedIdx.length > 0 || detUngrounded.length > 0;
             let residualSpec = null;   // spec hooks surviving the rewrite, if any
             // Continuity bar relaxed 7.5 -> 7.0 (and per-hook 7 -> 6) because a
             // hook entering on a different facet is now explicitly a pass; the
@@ -4872,6 +4881,7 @@ async function executeGenerationJob({
               if (sameyFail) reasons.push(`hooks too alike (distinctness ${distinctness ?? '?'}${dupeOfIdx.length ? `, H${dupeOfIdx.join(', H')} repeat an earlier hook` : ''})`);
               if (specIdx.length) reasons.push(`hook(s) ${specIdx.map(i => 'H' + i).join(', ')} lead on the device's specs — banned`);
               if (unsupportedIdx.length) reasons.push(`hook(s) ${unsupportedIdx.map(i => 'H' + i).join(', ')} claim something the body never says`);
+              if (detUngrounded.length) reasons.push(`ungrounded claim(s): ${detUngrounded.map(x => `${x.id}: ${x.claims.join('/')}`).join('; ')}`);
               console.warn(`[BriefPipeline] brief ${brief.id}: rewriting hooks — ${reasons.join('; ')}`);
               const rewriteSys = 'You are a direct response copywriter. You fix hooks so they blend seamlessly into an existing ad script body. You never change the body, and you never alter the signature wording of a hook that carries the ad\'s frame — the negative, the dare or the reversal in it IS the creative.';
               const rewriteUser = `The ${gen.hooks.length} hooks below need fixing. Rewrite all of them so each is speakable by the body's narrator, in the body's voice, and reads seamlessly into the body's first sentence. Keep them <= 20 words (H5 under 12), sentence case, no emoji, no dashes. FIRST decide what KIND of ad this is from the body. If the body's first line is the PAYLOAD OF A FRAME (a numbered list, a reversal) then there is only ONE door: every hook must carry that frame, as variations of the same shape, never different topics — a hook entering from the side produces a video that starts mid-list. Otherwise the hooks are different doors into one story, and each keeps its own angle of attack and its own first subject: fix the HANDOFF, never the angle. If a hook already enters on a distinct facet (a mechanism, a stat, a price, a moment, an objection), KEEP that facet and re-aim only its final beat so the body's opening beat can follow without a bridge. Making two hooks resemble each other is a FAILURE of this task, not a fix. NEVER write a hook that leads on the device's mechanism, component count, wavelengths or millimetre depth, and NEVER assert a person, price or event the BODY does not contain — those are the two failures you are most likely to reintroduce. If some hooks are near duplicates, replace the duplicates with genuinely different doors rather than rewording them.\n\nCRITICAL (STORY ADS ONLY — ignore where the body is a framed list or a reversal, in which every hook MUST carry the frame): none of the hooks may restate the body's OPENING LINE. The hooks are 5 ways IN that all lead to the body's first sentence, never a verbatim copy of it. Even if the body opens on a signature gimmick, the hooks are alternative ways IN that lead to it — never the same sentence reworded, re-punctuated, or joined with "and".\n\nBODY:\n${gen.body}\n\nCURRENT HOOKS:\n${gen.hooks.map(h => `${h.id}: ${h.text || h}`).join('\n')}\n\nIssues:\n${blendFail ? `Blend issues: ${JSON.stringify(blend?.hooks || [])}\n` : ''}${dupIdx.length ? `Duplicate-of-opening: ${dupIdx.map(i => 'H' + i).join(', ')}\n` : ''}\nReturn ONLY valid JSON with EXACTLY ${gen.hooks.length} items: { "hooks": [ { "id": "H1", "text": "..." } ] }`;
@@ -4886,12 +4896,21 @@ async function executeGenerationJob({
               let attempt = 0;
               let candidate = null;
               let stillSpec = [];
+              let stillUngrounded = [];
               while (attempt < 2) {
                 attempt += 1;
-                const extra = attempt === 1 ? '' :
-                  `\n\nYOUR PREVIOUS ATTEMPT STILL LED ON THE DEVICE'S SPECS (${stillSpec.join('; ')}). ` +
-                  `A depth in millimetres, a wavelength, or a count of lights is BANNED in a hook even though it appears in the body. ` +
-                  `Rewrite those hooks around the PROBLEM or the PERSON instead of the mechanism.`;
+                let extra = '';
+                if (attempt > 1) {
+                  if (stillSpec.length) extra +=
+                    `\n\nYOUR PREVIOUS ATTEMPT STILL LED ON THE DEVICE'S SPECS (${stillSpec.join('; ')}). ` +
+                    `A depth in millimetres, a wavelength, or a count of lights is BANNED in a hook even though it appears in the body. ` +
+                    `Rewrite those hooks around the PROBLEM or the PERSON instead of the mechanism.`;
+                  if (stillUngrounded.length) extra +=
+                    `\n\nYOUR PREVIOUS ATTEMPT INVENTED FACTS THE BODY NEVER STATES: ` +
+                    stillUngrounded.map(x => `${x.id} claims "${x.claims.join('", "')}"`).join('; ') + '. ' +
+                    `Every number, price, place and name in a hook must appear WORD FOR WORD in the body. ` +
+                    `Remove or replace those specifics with ones the body actually contains.`;
+                }
                 const fixed = await callClaude(rewriteSys, rewriteUser + extra, 2000, { opus: true, timeoutMs: 180000 });
                 // Hook COUNT is architecture-dependent: a framed listicle has ONE door
                 // so 3 same-frame hooks is correct, while a story has several. The old
@@ -4899,11 +4918,13 @@ async function executeGenerationJob({
                 if (!(Array.isArray(fixed?.hooks) && fixed.hooks.length === gen.hooks.length && fixed.hooks.every(h => h?.text))) break;
                 candidate = gen.hooks.map((h, i) => ({ ...h, text: removeDashes(fixed.hooks[i].text) }));
                 stillSpec = candidate.filter(h => SPEC_HOOK_RX.test(String(h.text))).map(h => h.id);
-                if (stillSpec.length === 0) break;
-                console.warn(`[BriefPipeline] brief ${brief.id}: rewrite attempt ${attempt} still had spec hook(s) ${stillSpec.join(', ')}`);
+                stillUngrounded = ungroundedOf(candidate);
+                if (stillSpec.length === 0 && stillUngrounded.length === 0) break;
+                console.warn(`[BriefPipeline] brief ${brief.id}: rewrite attempt ${attempt} — spec: ${stillSpec.join(',') || 'none'}; ungrounded: ${stillUngrounded.map(x => x.id).join(',') || 'none'}`);
               }
               if (candidate) {
                 hooks = candidate;
+                detUngrounded = stillUngrounded;
                 // If it STILL violates after two attempts, keep the result but
                 // record it, so the score reflects reality and the operator sees
                 // the flag rather than a silently-accepted bad hook.
@@ -4928,7 +4949,9 @@ async function executeGenerationJob({
                 // report what SURVIVED, not what we started with — the score
                 // must describe the hooks actually stored on the brief.
                 specHooks: residualSpec !== null ? residualSpec : specIdx.length,
-                unsupported: unsupportedIdx.length,
+                // deterministic count of hooks with claims the body never states;
+                // this — not the model's opinion — is what the score reports
+                unsupported: detUngrounded.length,
                 duplicates: dupeOfIdx.length + dupIdx.length,
               },
             });
@@ -6820,7 +6843,7 @@ router.post('/autopilot/run', authenticate, async (req, res) => {
     res.json({
       success: true, dryRun,
       considered: result.considered,
-      picked: result.picked.map(p => ({ id: p.id, brand: p.brand_domain, tier: p.tier, headline: p.headline })),
+      picked: result.picked.map(p => ({ id: p.id, brand: p.brand_domain, tier: p.tier, headline: p.headline, fit: p.fit ?? null, fitAngle: p.fitAngle ?? null, fitWhy: p.fitWhy ?? null })),
       queued: result.generated, failures: result.failures, skipped: result.skipped,
       report: result.report,
     });

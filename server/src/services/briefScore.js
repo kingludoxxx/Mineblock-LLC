@@ -55,6 +55,53 @@ const words = t => String(t || '').trim().split(/\s+/).filter(Boolean);
  * "fast results") is the failure this catches. Counted per 100 words so a long
  * script is not rewarded merely for length.
  */
+/**
+ * Deterministic groundedness: every NUMBER, PRICE, SPELLED-OUT NUMBER PHRASE
+ * and mid-sentence PROPER NOUN in a hook must literally appear in the body.
+ *
+ * String matching, not model judgement, on purpose. The model-judged
+ * "unsupported" flag fired on 4 of 5 briefs in the 2026-08-13 run, and the
+ * rewrite path could reintroduce inventions unchecked — a surgeon, a "$20,000
+ * quote", a timeframe the script never gives. A hook that opens something the
+ * video cannot pay off is a production defect; whether it does is checkable
+ * without asking anyone.
+ *
+ * Returns the list of ungrounded claims (empty = grounded). A false positive
+ * costs a harmless rewrite; a false negative costs the operator's trust, so
+ * matching is deliberately strict.
+ */
+export function ungroundedHookClaims(hookText, body) {
+  const H = String(hookText || '');
+  const B = ' ' + String(body || '').toLowerCase().replace(/\s+/g, ' ') + ' ';
+  const claims = [];
+
+  // digits, prices, percentages: $20,000 / 8 / 90 / 64%. Token-EXACT — a naive
+  // substring test lets "5" pass because "54" contains it.
+  const bodyNums = new Set([...B.matchAll(/\d[\d,]*(?:\.\d+)?/g)].map(m => m[0].replace(/,/g, '')));
+  for (const m of H.matchAll(/\$?\d[\d,]*(?:\.\d+)?%?/g)) {
+    const tok = m[0].replace(/[$%]/g, '').replace(/,/g, '').replace(/[.,]$/, '');
+    if (!bodyNums.has(tok)) claims.push(m[0].replace(/[.,]+$/, ''));
+  }
+
+  // spelled-out number phrases: "twenty thousand", "ninety nine"
+  const NUM = '(?:one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety|hundred|thousand|million)';
+  for (const m of H.matchAll(new RegExp('\\b' + NUM + '(?:[ -]' + NUM + ')*\\b', 'gi'))) {
+    const phrase = m[0].toLowerCase().replace(/-/g, ' ');
+    if (!B.includes(' ' + phrase + ' ')) claims.push(m[0]);
+  }
+
+  // proper nouns not at a sentence start: Scottsdale, Chicago, Netflix …
+  const words = H.split(/\s+/);
+  for (let i = 1; i < words.length; i++) {
+    const w = words[i].replace(/[^A-Za-z']/g, '');
+    if (!w || !/^[A-Z]/.test(w)) continue;
+    if (/[.!?"]$/.test(words[i - 1])) continue;              // new sentence
+    if (/^I($|'m|'d|'ve|'ll)/.test(w)) continue;             // the pronoun
+    if (!B.includes(w.toLowerCase())) claims.push(w);
+  }
+  return [...new Set(claims)];
+}
+
 export function specificityScore(body) {
   const w = words(body);
   if (w.length === 0) return null;

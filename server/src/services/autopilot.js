@@ -49,6 +49,14 @@ export const DEFAULT_CONFIG = {
   // 2026-08-13). Scraping still collects them — they are competitive intel —
   // but selection refuses them. Toggleable if a non-English funnel ever exists.
   englishOnly: true,
+  // Reference-fit triage: a cheap Haiku pass rates how well each candidate's
+  // PSYCHOLOGY maps onto our product before we spend an Opus generation on it.
+  // This is what turns selection from "filters + tier score" into judgement —
+  // tier score measures how well an ad works for ITS product, not for ours
+  // ("Today Only: Extra 20% Off" outranked story ads on tier alone).
+  fitTriage: true,
+  minFit: 6,          // below this: skipped, with the model's reason attached
+  triagePool: 30,     // top candidates triaged per run (one batched Haiku call)
   minTranscriptChars: 400,   // applies only when a transcript already exists
   slackChannel: null,       // null = the default ops webhook
   dryRun: false,
@@ -179,6 +187,84 @@ export async function selectCandidates(cfg) {
 }
 
 /**
+ * Rate candidates for CLONABILITY onto our product. One batched Haiku call for
+ * the whole pool — pennies — returning per-candidate {fit 0-10, angle, why}.
+ *
+ * Resilient by design: any failure (no key, malformed JSON, API down) returns
+ * null and the caller falls back to tier ordering. Triage must never be the
+ * reason a nightly run produced nothing.
+ */
+export async function triageFit(candidates, cfg) {
+  const key = process.env.ANTHROPIC_API_KEY;
+  if (!key || !candidates.length) return null;
+
+  let productLine = 'Puure: an at-home red light device for lifting and firming the female chest, women 40+.';
+  let angleNames = [];
+  try {
+    const rows = await pgQuery(`SELECT oneliner, angles FROM product_profiles WHERE id = $1 LIMIT 1`, [cfg.productId]);
+    if (rows.length) {
+      if (rows[0].oneliner) productLine = rows[0].oneliner;
+      let a = rows[0].angles; if (typeof a === 'string') { try { a = JSON.parse(a); } catch { a = []; } }
+      if (Array.isArray(a)) angleNames = a.map(x => x.name).filter(Boolean);
+    }
+  } catch { /* profile unavailable — generic product line is fine for triage */ }
+
+  const list = candidates.map((c, i) =>
+    `${i}. [${c.brand_domain} | ${c.tier}] headline: ${String(c.headline || '(none)').slice(0, 90)}\n   copy: ${String(c.body_text || '').replace(/\s+/g, ' ').slice(0, 260)}${c.transcript ? `\n   transcript: ${String(c.transcript).replace(/\s+/g, ' ').slice(0, 340)}` : ''}`
+  ).join('\n');
+
+  const body = {
+    model: 'claude-haiku-4-5-20251001',
+    max_tokens: 1800,
+    system: 'You are a senior direct response strategist choosing which competitor ads are worth cloning for a specific product. You judge transferability of the PSYCHOLOGY, not the quality of the ad for its own product. Return only JSON.',
+    messages: [{ role: 'user', content:
+`OUR PRODUCT: ${productLine}
+OUR ANGLES: ${angleNames.join(' | ') || '(none defined)'}
+
+For each candidate ad below, rate FIT 0-10: how well would this ad's structure and psychology clone onto OUR product?
+High fit: same audience (women 40+), an emotional or bodily problem analogous to sagging/firmness, a narrative or authority structure that survives a product swap.
+Low fit: bare discount/offer ads with no transferable structure, unrelated audiences or problems (pest control, supplements for stamina), pure brand spots.
+
+CANDIDATES:
+${list}
+
+Return ONLY a JSON array: [{"i":0,"fit":8,"angle":"which of our angles it serves, or null","why":"one short clause"}]` }],
+  };
+
+  try {
+    const res = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: { 'x-api-key': key, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(60_000),
+    });
+    if (!res.ok) { console.warn('[autopilot] triage call failed HTTP', res.status); return null; }
+    const j = await res.json();
+    return parseTriage(j.content?.[0]?.text || '', candidates.length);
+  } catch (e) {
+    console.warn('[autopilot] triage failed:', e.message);
+    return null;
+  }
+}
+
+/** Pure and separately testable: model text -> validated array or null. */
+export function parseTriage(text, poolSize) {
+  try {
+    const arr = JSON.parse(String(text).replace(/^```json\s*|\s*```$/g, '').trim());
+    if (!Array.isArray(arr)) return null;
+    const out = new Map();
+    for (const r of arr) {
+      const i = Number(r?.i);
+      if (!Number.isInteger(i) || i < 0 || i >= poolSize) continue;
+      const fit = Number(r?.fit);
+      if (!Number.isFinite(fit)) continue;
+      out.set(i, { fit: Math.max(0, Math.min(10, fit)), angle: r.angle || null, why: String(r.why || '').slice(0, 140) });
+    }
+    return out.size ? out : null;
+  } catch { return null; }
+}
+
+/**
  * Apply the diversity cap to an ordered candidate list.
  *
  * Returns { picked, skipped } — skipped carries a REASON per ad, because the
@@ -196,6 +282,10 @@ export function applyDiversityCap(candidates, cfg) {
   const target = Number(cfg.briefsPerRun) || DEFAULT_CONFIG.briefsPerRun;
 
   for (const c of candidates) {
+    if (typeof c.fit === 'number' && c.fit < (Number(cfg.minFit) || 0)) {
+      skipped.push({ ad: c.id, brand: c.brand_domain, headline: c.headline, reason: `low fit ${c.fit}/10 — ${c.fitWhy || 'psychology does not transfer'}` });
+      continue;
+    }
     if (cfg.englishOnly !== false) {
       const verdict = detectEnglish(`${c.headline || ''} ${c.body_text || ''}`);
       if (verdict !== 'en') {
@@ -232,11 +322,14 @@ export function applyDiversityCap(candidates, cfg) {
 }
 
 /** Human-readable run report, for Slack and for the API response. */
-export function formatReport({ picked, skipped, generated, failures, dryRun, startedAt }) {
+export function formatReport({ picked, skipped, generated, failures, dryRun, startedAt, triaged }) {
   const secs = ((Date.now() - startedAt) / 1000).toFixed(0);
   const lines = [];
   lines.push(`*Autopilot Mode*${dryRun ? ' _(dry run — nothing generated)_' : ''} — ${secs}s`);
   lines.push(`Selected *${picked.length}*, generated *${generated.length}*, failed *${failures.length}*, skipped *${skipped.length}*`);
+  if (triaged) lines.push(`_Candidates ranked by reference-fit (Haiku triage), not tier score._`);
+  const withFit = picked.filter(p => typeof p.fit === 'number');
+  if (withFit.length) lines.push('*Picked* ' + withFit.map(p => `${p.brand_domain} ${p.fit}/10`).join(' · '));
   if (generated.length) {
     lines.push('\n*Generated*');
     for (const g of generated) {
@@ -279,7 +372,20 @@ export async function runAutopilotBatch({ dryRun = true, overrides = {} } = {}) 
   const startedAt = Date.now();
   const cfg = { ...(await getAutopilotConfig()), ...overrides };
 
-  const candidates = await selectCandidates(cfg);
+  let candidates = await selectCandidates(cfg);
+  const considered = candidates.length;
+  let triaged = false;
+  if (cfg.fitTriage !== false && candidates.length) {
+    const pool = candidates.slice(0, Number(cfg.triagePool) || 30);
+    const fits = await triageFit(pool, cfg);
+    if (fits) {
+      triaged = true;
+      for (const [i, r] of fits) Object.assign(pool[i], { fit: r.fit, fitAngle: r.angle, fitWhy: r.why });
+      // judged order: fit first, tier as the tiebreak; unrated sink to the back
+      candidates = pool.slice().sort((a, b) => (b.fit ?? -1) - (a.fit ?? -1) || (b.tier_score ?? 0) - (a.tier_score ?? 0));
+    }
+    // fits === null -> tier ordering stands; the run must never die on triage
+  }
   const { picked, skipped } = applyDiversityCap(candidates, cfg);
   const generated = [];
   const failures = [];
@@ -312,8 +418,8 @@ export async function runAutopilotBatch({ dryRun = true, overrides = {} } = {}) 
     }
   }
 
-  const report = formatReport({ picked, skipped, generated, failures, dryRun, startedAt });
-  return { cfg, considered: candidates.length, picked, skipped, generated, failures, report, dryRun };
+  const report = formatReport({ picked, skipped, generated, failures, dryRun, startedAt, triaged });
+  return { cfg, considered, triaged, picked, skipped, generated, failures, report, dryRun };
 }
 
 /**
