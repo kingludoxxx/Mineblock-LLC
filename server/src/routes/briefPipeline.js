@@ -1,6 +1,10 @@
 import { Router } from 'express';
 import { authenticate } from '../middleware/auth.js';
 import { scoreBrief } from '../services/briefScore.js';
+import {
+  getAutopilotConfig, saveAutopilotConfig, selectCandidates,
+  applyDiversityCap, formatReport, reportToSlack,
+} from '../services/autopilot.js';
 import { requirePermission } from '../middleware/rbac.js';
 import { pgQuery } from '../db/pg.js';
 import { transcribeVideoUrl } from '../services/videoTranscribe.js';
@@ -6724,6 +6728,91 @@ async function ensureJobsTable() {
 // POST /queue — enqueue N League ads for auto transcribe → import → generate.
 // Dedup: an ad with an existing queued/transcribing/generating job for the
 // same ad_archive_id is skipped (double-click / re-open safety).
+// ─── Autopilot Mode ──────────────────────────────────────────────────────
+// Selects the best unbriefed League ads and ENQUEUES them into the existing
+// brief_generation_jobs queue, whose worker already does import -> transcribe ->
+// generate. Autopilot deliberately does not reimplement generation: its job is
+// deciding WHAT to work on, and reusing the tested path means a brief made by
+// Autopilot is byte-identical in process to one the operator queues by hand.
+//
+// It never pushes to ClickUp. Briefs land in the Kanban for review.
+router.get('/autopilot/settings', authenticate, async (_req, res) => {
+  try {
+    res.json({ success: true, config: await getAutopilotConfig() });
+  } catch (err) {
+    console.error('[Autopilot] GET settings error:', err.message);
+    res.status(500).json({ success: false, error: { message: err.message } });
+  }
+});
+
+router.put('/autopilot/settings', authenticate, async (req, res) => {
+  try {
+    res.json({ success: true, config: await saveAutopilotConfig(req.body?.config || req.body || {}) });
+  } catch (err) {
+    console.error('[Autopilot] PUT settings error:', err.message);
+    res.status(500).json({ success: false, error: { message: err.message } });
+  }
+});
+
+// POST /autopilot/run — one batch. dry_run (the DEFAULT) selects and reports
+// without enqueueing anything, so the operator can see exactly what tonight
+// would produce before letting it run unattended.
+router.post('/autopilot/run', authenticate, async (req, res) => {
+  const startedAt = Date.now();
+  try {
+    const cfg = { ...(await getAutopilotConfig()), ...(req.body?.overrides || {}) };
+    const dryRun = req.body?.dry_run !== false;
+
+    const candidates = await selectCandidates(cfg);
+    const { picked, skipped } = applyDiversityCap(candidates, cfg);
+
+    const generated = [];
+    const failures = [];
+    if (!dryRun) {
+      for (const c of picked) {
+        try {
+          // Same duplicate guard the manual queue uses — a run must never
+          // enqueue an ad that is already in flight.
+          const dupe = await pgQuery(
+            `SELECT id FROM brief_generation_jobs
+              WHERE ad_archive_id = $1 AND status IN ('queued','transcribing','generating') LIMIT 1`,
+            [String(c.ad_archive_id)]
+          );
+          if (dupe.length) {
+            skipped.push({ ad: c.id, brand: c.brand_domain, headline: c.headline, reason: 'already queued or running' });
+            continue;
+          }
+          const ins = await pgQuery(
+            `INSERT INTO brief_generation_jobs (
+               brand_spy_ad_id, ad_archive_id, brand_id, brand_name, tier, headline,
+               product_id, product_code, angle, model
+             ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+             RETURNING id, headline, status`,
+            [String(c.id), String(c.ad_archive_id), String(c.brand_id), c.brand_domain,
+             c.tier, c.headline, cfg.productId, cfg.productCode, null, 'claude']
+          );
+          generated.push({ jobId: ins[0].id, naming: `${c.brand_domain} — ${String(c.headline || '').slice(0, 44)}`, score: null, flags: [] });
+        } catch (e) {
+          failures.push({ brand: c.brand_domain, headline: c.headline, error: e.message });
+        }
+      }
+    }
+
+    const report = formatReport({ picked, skipped, generated, failures, dryRun, startedAt });
+    if (!dryRun && (generated.length || failures.length)) await reportToSlack(report);
+
+    res.json({
+      success: true, dryRun,
+      considered: candidates.length,
+      picked: picked.map(p => ({ id: p.id, brand: p.brand_domain, tier: p.tier, headline: p.headline })),
+      queued: generated, failures, skipped, report,
+    });
+  } catch (err) {
+    console.error('[Autopilot] run error:', err);
+    res.status(500).json({ success: false, error: { message: err.message } });
+  }
+});
+
 router.post('/queue', authenticate, async (req, res) => {
   try {
     await ensureJobsTable();
