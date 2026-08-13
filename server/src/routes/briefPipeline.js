@@ -6414,7 +6414,9 @@ router.get('/league/brands', authenticate, async (_req, res) => {
         COALESCE(tc.total_video_count, 0)::INTEGER AS total_video_count,
         COALESCE(tc.banger_count, 0)::INTEGER      AS banger_count,
         COALESCE(tc.champ_count, 0)::INTEGER       AS champ_count,
-        COALESCE(tc.a_count, 0)::INTEGER           AS a_count
+        COALESCE(tc.a_count, 0)::INTEGER           AS a_count,
+        COALESCE(tc.b_count, 0)::INTEGER           AS b_count,
+        COALESCE(tc.c_count, 0)::INTEGER           AS c_count
       FROM brand_spy.brands b
       LEFT JOIN tier_counts tc ON tc.brand_id = b.id
       WHERE b.status = 'ACTIVE'
