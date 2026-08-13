@@ -124,6 +124,19 @@ export async function selectCandidates(cfg) {
         SELECT 1 FROM brief_pipeline_references r
          WHERE r.ad_archive_id = a.ad_archive_id::text
       )
+      -- CONTENT-LEVEL dedup, not just ad-id. Brands run the same creative under
+      -- many ad ids: "Firm Body or Money Back!" had been briefed SEVEN times via
+      -- seven different archive ids before this guard existed. Ad-id dedup is
+      -- necessary but blind to that. Headline is the cheap, good-enough proxy
+      -- for "same creative family" — it can rarely exclude a genuinely new
+      -- video that reuses an old headline, and that trade is deliberate: a
+      -- missed candidate costs nothing, a duplicate brief costs review time and
+      -- an editor's day.
+      AND NOT EXISTS (
+        SELECT 1 FROM brief_pipeline_references r2
+         WHERE r2.headline IS NOT NULL AND a.headline IS NOT NULL
+           AND LOWER(TRIM(r2.headline)) = LOWER(TRIM(a.headline))
+      )
     ORDER BY a.tier_score DESC NULLS LAST, a.start_date DESC NULLS LAST
     LIMIT 200
   `, params);
@@ -142,6 +155,7 @@ export function applyDiversityCap(candidates, cfg) {
   const skipped = [];
   const perBrand = new Map();
   const seenAds = new Set();
+  const seenHeadlines = new Set();
   const maxPerBrand = Number(cfg.maxPerBrand) || Infinity;
   const target = Number(cfg.briefsPerRun) || DEFAULT_CONFIG.briefsPerRun;
 
@@ -154,6 +168,14 @@ export function applyDiversityCap(candidates, cfg) {
       skipped.push({ ad: c.id, brand: c.brand_domain, headline: c.headline, reason: 'duplicate of another ad in this batch' });
       continue;
     }
+    // Same rule within the batch: one run queued two "Use This On Wrinkles…"
+    // ads side by side — different ad ids, same creative. One per family.
+    const headKey = String(c.headline || '').trim().toLowerCase();
+    if (headKey && seenHeadlines.has(headKey)) {
+      skipped.push({ ad: c.id, brand: c.brand_domain, headline: c.headline, reason: 'same headline as another ad in this batch' });
+      continue;
+    }
+    if (headKey) seenHeadlines.add(headKey);
     const n = perBrand.get(c.brand_domain) || 0;
     if (n >= maxPerBrand) {
       skipped.push({ ad: c.id, brand: c.brand_domain, headline: c.headline, reason: `brand cap reached (${maxPerBrand} per run)` });
