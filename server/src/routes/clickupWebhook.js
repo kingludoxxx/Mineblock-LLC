@@ -781,52 +781,62 @@ async function getNextPlBriefNumber() {
   return Math.max(maxBrief + 1, 10);
 }
 
+// New Puure taxonomy fields (added 2026-08). Clean avatar/angle plus three new
+// dimensions (awareness/funnel/messenger). getFieldValue resolves each dropdown
+// to its option name, so these render as "Mechanism" / "Problem" / "TOF" etc.
+const PL_NEW_FIELD_IDS = {
+  avatar:    '7fca24a2-c294-4cca-8a41-5e6647a3bd4b', // "Puure Avatar"
+  angle:     'eb2f26c4-86db-489e-a901-1e6e886336ab', // "Puure Angle"
+  awareness: '29a24bf5-4a00-4a61-9239-f15cde794be3', // "Awareness"
+  funnel:    'b09818c8-5d19-4fcc-b9fc-9dc756c0266d', // "Funnel"
+  messenger: '2865b8fe-00e3-47f0-8ad7-e3545abc1ff6', // "Messenger"
+};
+
 function generatePlNamingConvention(task, briefNumber, weekLabel, existingName) {
   const briefId = `B${String(briefNumber).padStart(4, '0')}`;
 
-  // If the current name already conforms, keep its segments as fallbacks —
-  // some cards intentionally carry richer values in the name than in the
-  // fields (e.g. angle "Promo"/"TCS" where the dropdown has no such option).
-  // A field only overrides a name segment when it resolves to a real value.
-  const oldSegs = (existingName || '').split(' - ');
-  const conforms = oldSegs.length >= 9 && /^WK\d+_\d{4}$/i.test(oldSegs[oldSegs.length - 1]);
-  // Iteration names carry an extra parent-brief slot right after the brief
-  // type, so a conforming IT name is 10 segments (NN names are 9). Index the
-  // name fallbacks FROM THE END — every slot except the leading brief-type
-  // aligns whether or not the parent slot is present.
-  const hadParentSlot = conforms && oldSegs.length >= 10;
-  const oldAt = (idxFromEnd) => (conforms ? oldSegs[oldSegs.length - idxFromEnd] : null);
-
-  const pick = (fieldVal, oldSeg, fallback) => {
-    if (fieldVal && fieldVal !== 'NA') return fieldVal;
-    if (oldSeg && oldSeg !== 'NA') return oldSeg;
-    return fieldVal || fallback;
+  // Read a field, treating empty / "NA" as unset so fallbacks can apply.
+  const val = (id) => {
+    const v = getFieldValue(task, id);
+    return v && String(v).trim() && v !== 'NA' ? String(v).trim() : null;
   };
 
-  const briefType    = pick(getFieldValue(task, PL_FIELD_IDS.briefType), oldAt(hadParentSlot ? 8 : 7), 'NA');
-  const avatar       = pick(getFieldValue(task, PL_FIELD_IDS.avatar), oldAt(6), 'NA');
-  const angle        = pick(getFieldValue(task, PL_FIELD_IDS.angle), oldAt(5), 'NA');
-  const creativeType = pick(getFieldValue(task, PL_FIELD_IDS.creativeType), oldAt(4), 'NA');
-  const strategist   = pick(firstNameOf(getFieldValue(task, PL_FIELD_IDS.creativeStrategist)), oldAt(3), 'Ludovico');
-  const editor       = pick(firstNameOf(getFieldValue(task, PL_EDITOR_FIELD)), oldAt(2), 'NA');
+  // New canonical PL name (2026-08):
+  //   PL - B#### - Type - [parent] - Avatar - Awareness - Funnel - Angle - Messenger - Format - Strategist - Editor - Week
+  // New taxonomy fields lead; the legacy avatar/angle fields remain as fallbacks
+  // so a card is never left with a blank slot during migration.
+  // Brief type: field first, else preserve the NN/IT already in the name so an
+  // iteration is never silently downgraded to NN (which would drop its parent).
+  const nameSegs = (existingName || '').split(' - ');
+  const briefType    = val(PL_FIELD_IDS.briefType)
+    || (nameSegs[2] === 'IT' || nameSegs[2] === 'NN' ? nameSegs[2] : 'NN');
+  const avatar       = val(PL_NEW_FIELD_IDS.avatar)    || val(PL_FIELD_IDS.avatar) || 'NA';
+  const awareness    = val(PL_NEW_FIELD_IDS.awareness) || 'NA';
+  const funnel       = val(PL_NEW_FIELD_IDS.funnel)    || 'NA';
+  const angle        = val(PL_NEW_FIELD_IDS.angle)     || val(PL_FIELD_IDS.angle) || 'NA';
+  const messenger    = val(PL_NEW_FIELD_IDS.messenger) || 'NA';
+  const creativeType = val(PL_FIELD_IDS.creativeType)  || 'Mashup';
+  const strategist   = firstNameOf(getFieldValue(task, PL_FIELD_IDS.creativeStrategist)) || 'Ludovico';
+  const editor       = firstNameOf(getFieldValue(task, PL_EDITOR_FIELD)) || 'NA';
   const week = weekLabel || getWeekLabel();
 
   const slots = ['PL', briefId, briefType];
 
   // Iterations (Brief Type = IT) carry the parent brief id as a slot right
   // after the brief type — e.g. PL - B0069 - IT - B0007 - Menopause - ...
-  // NN (new-new) cards have no parent slot. Without this the parent id was
-  // silently dropped from every iteration name, and this webhook then reverted
-  // any manual correction on the next task update.
+  // Prefer the field; fall back to the parent already present in the name.
   if (briefType === 'IT') {
-    const parentRaw = pick(getFieldValue(task, FIELD_IDS.parentBriefId), hadParentSlot ? oldAt(7) : null, null);
-    if (parentRaw && parentRaw !== 'NA') {
-      const p = String(parentRaw).trim();
+    let parent = val(FIELD_IDS.parentBriefId);
+    if (!parent && nameSegs[2] === 'IT' && nameSegs[3] && /^B?\d+$/i.test(nameSegs[3].trim())) {
+      parent = nameSegs[3].trim();
+    }
+    if (parent) {
+      const p = String(parent).trim();
       slots.push(/^\d+$/.test(p) ? `B${p.padStart(4, '0')}` : p);
     }
   }
 
-  slots.push(avatar, angle, creativeType, strategist, editor, week);
+  slots.push(avatar, awareness, funnel, angle, messenger, creativeType, strategist, editor, week);
 
   return slots.map((p) => String(p).trim() || 'NA').join(' - ');
 }
