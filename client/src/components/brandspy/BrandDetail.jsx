@@ -1170,24 +1170,25 @@ export default function BrandDetail({ apiBaseUrl, brandId, onBack }) {
                 </div>
               </div>
 
-              {/* Stats row */}
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+              {/* Stats + tiers — ONE compact band, matching the reference
+                  layout. Four full-width stat cards plus a separate tier strip
+                  pushed the first creative most of a screen down the page;
+                  these are reference numbers, not the content, so they read
+                  inline at label size instead of as hero figures. */}
+              <div className="flex items-center gap-x-4 gap-y-1.5 flex-wrap text-[11px]">
                 {[
-                  { label: 'ACTIVE ADS', value: fmtCount(brand.activeAdsCount), accent: 'text-emerald-400' },
-                  { label: 'TOTAL ADS',  value: fmtCount(brand.totalAdsCount),  accent: null },
-                  { label: 'PAGES',      value: String(brand.pagesCount),       accent: null },
-                  { label: 'DOMAINS',    value: String(brand.domainsCount),     accent: null },
+                  { label: 'active',  value: fmtCount(brand.activeAdsCount), accent: 'text-emerald-400' },
+                  { label: 'total',   value: fmtCount(brand.totalAdsCount),  accent: 'text-text-primary' },
+                  { label: 'pages',   value: String(brand.pagesCount),       accent: 'text-text-primary' },
+                  { label: 'domains', value: String(brand.domainsCount),     accent: 'text-text-primary' },
                 ].map(({ label, value, accent }) => (
-                  <div key={label} className="bg-bg-card border border-border-subtle rounded-xl p-3">
-                    <p className="text-[10px] uppercase tracking-wider text-text-faint">{label}</p>
-                    <p className={`text-2xl font-bold mt-0.5 tabular-nums ${accent ?? 'text-white'}`}>{value}</p>
-                  </div>
+                  <span key={label} className="flex items-baseline gap-1">
+                    <span className={`font-semibold tabular-nums ${accent}`}>{value}</span>
+                    <span className="text-text-faint">{label}</span>
+                  </span>
                 ))}
-              </div>
+                <span className="w-px h-3 bg-border-default" />
 
-              {/* Tier strip */}
-              <div className="flex items-center gap-2 flex-wrap">
-                <span className="text-[10px] uppercase tracking-wider text-text-faint">Tiers:</span>
                 {t.banger > 0 && <span className="text-[10px] font-medium px-2 py-0.5 rounded border bg-rose-500/10 text-rose-400 border-rose-500/20">🔥 {t.banger}</span>}
                 {t.champ  > 0 && <span className="text-[10px] font-medium px-2 py-0.5 rounded border bg-amber-500/10 text-amber-400 border-amber-500/20">🏆 {t.champ}</span>}
                 {t.a      > 0 && <span className="text-[10px] font-medium px-2 py-0.5 rounded border bg-emerald-500/10 text-emerald-400 border-emerald-500/20">A {t.a}</span>}
@@ -1224,23 +1225,13 @@ export default function BrandDetail({ apiBaseUrl, brandId, onBack }) {
         {activeTab === 'overview' && (
           <div className="flex-1 flex flex-col min-h-0 px-5 pt-4 pb-6 space-y-4">
 
-            {/* Filter bar — time-window pills + Format + Status (Overview only) */}
-            <div className="flex items-center gap-3 flex-wrap">
-              {/* Time window pills */}
-              <div className="flex items-center gap-1">
-                {TIME_FILTERS.map((tf) => (
-                  <button key={tf.value} onClick={() => setTimeFilter(tf.value)}
-                    className={`px-3 py-1.5 text-xs rounded-lg font-medium transition-colors ${
-                      timeFilter === tf.value
-                        ? 'bg-white/10 text-white border border-white/20'
-                        : 'bg-bg-elevated text-text-faint border border-border-subtle hover:text-text-muted'
-                    }`}>
-                    {tf.label}
-                  </button>
-                ))}
-              </div>
-
-              {/* Format + Status filters */}
+            {/* Filter bar — every control on ONE row, sort pinned right, as in
+                the reference. The time window was a row of six pills competing
+                with the filter dropdowns for attention; it is the same kind of
+                choice as Format/Status, so it reads as the same kind of
+                control. Sort moves up here too — it used to sit below, next to
+                the ad count, which is why it was hard to find. */}
+            <div className="flex items-center gap-2 flex-wrap">
               <FilterDropdown
                 label="Format"
                 value={formatFilter}
@@ -1260,6 +1251,19 @@ export default function BrandDetail({ apiBaseUrl, brandId, onBack }) {
                   { value: 'INACTIVE', label: 'Inactive' },
                 ]}
               />
+              <FilterDropdown
+                label="Window"
+                value={timeFilter}
+                onChange={setTimeFilter}
+                options={TIME_FILTERS.filter((tf) => tf.value).map((tf) => ({
+                  value: tf.value,
+                  label: tf.label,
+                }))}
+              />
+
+              <div className="flex-1" />
+
+              <SortDropdown value={sort} onChange={setSort} options={SORT_OPTIONS} />
             </div>
 
             {/* Summary text — plain line above the cards (Atria layout). */}
