@@ -20,6 +20,86 @@ const DEFAULT_POLL_INTERVAL = 2000;
 
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
+// ── Prompt cap ─────────────────────────────────────────────────────────
+//
+// Kie.ai hard-rejects any prompt over 5,000 characters with
+// "Your prompt cannot exceed 5000 characters" — a total generation loss, and
+// before 2026-08-12 there was NO guard anywhere in the submit path. Four
+// consecutive assembled prompts measured in prod came out at 4,950 / 5,322 /
+// 10,952 / 11,033 chars: length tracks how verbose Claude's analysis happens
+// to be, so the failure is intermittent rather than rare.
+//
+// Length is not the operator's problem to manage, so we compact instead of
+// failing — but never silently, and never at the expense of the copy.
+const NB_MAX_PROMPT_CHARS = 5000;
+const NB_TRUNCATION_NOTE  = '\nRender all text EXACTLY as specified above. Do not invent or paraphrase any text.';
+
+// A TEXT_SWAPS line looks like:  - HEADLINE: "old" → "new"
+// and its array forms are indented children under `- BULLETS:` / `- BADGES:`.
+// These lines ARE the ad copy — losing them is the one failure mode worse than
+// a long prompt, so they are hoisted verbatim when we have to cut.
+const NB_SWAP_LINE = /^\s*(-\s+[A-Z]+:|-\s+(BULLETS|BADGES):|\s+")/;
+
+/**
+ * Fit a prompt inside NanoBanana's character cap.
+ *
+ * Stage 1 is lossless (collapse redundant blank lines / trailing spaces).
+ * Stage 2 truncates at a line boundary but re-appends any text-swap lines that
+ * the cut would have removed, so the copy to be rendered always survives.
+ *
+ * Exported for direct testing.
+ *
+ * @returns {{prompt: string, original: number, final: number, action: string}}
+ */
+export function fitNanoBananaPrompt(rawPrompt, cap = NB_MAX_PROMPT_CHARS) {
+  const original = rawPrompt.length;
+  if (original <= cap) return { prompt: rawPrompt, original, final: original, action: 'none' };
+
+  // Stage 1 — lossless whitespace compaction.
+  const squeezed = rawPrompt
+    .split('\n')
+    .map(l => l.replace(/[ \t]+$/, ''))
+    .join('\n')
+    .replace(/\n{3,}/g, '\n\n');
+  if (squeezed.length <= cap) {
+    return { prompt: squeezed, original, final: squeezed.length, action: 'whitespace' };
+  }
+
+  // Stage 2 — cut at a line boundary, then restore the copy lines we dropped.
+  const lines = squeezed.split('\n');
+  const kept = [];
+  let used = 0;
+  let cutAt = lines.length;
+  const budget = cap - NB_TRUNCATION_NOTE.length;
+  for (let i = 0; i < lines.length; i++) {
+    const cost = lines[i].length + 1;
+    if (used + cost > budget) { cutAt = i; break; }
+    kept.push(lines[i]);
+    used += cost;
+  }
+
+  const droppedSwaps = lines.slice(cutAt).filter(l => NB_SWAP_LINE.test(l));
+  let action = 'truncated';
+  if (droppedSwaps.length > 0) {
+    // Make room for the copy lines by dropping from the tail of what we kept.
+    const need = droppedSwaps.reduce((n, l) => n + l.length + 1, 0);
+    let freed = 0;
+    while (freed < need && kept.length > 0) {
+      const last = kept[kept.length - 1];
+      if (NB_SWAP_LINE.test(last)) break; // never evict copy to make room for copy
+      freed += last.length + 1;
+      kept.pop();
+    }
+    kept.push(...droppedSwaps);
+    action = 'truncated+copy-preserved';
+  }
+
+  const out = kept.join('\n') + NB_TRUNCATION_NOTE;
+  // Defensive: if hoisting overshot the cap, cut hard rather than 400 at Kie.
+  const finalPrompt = out.length > cap ? out.slice(0, cap) : out;
+  return { prompt: finalPrompt, original, final: finalPrompt.length, action };
+}
+
 // ── Helpers ────────────────────────────────────────────────────────────
 
 function detectMime(buf) {
@@ -84,6 +164,17 @@ export async function submitToNanoBanana(prompt, imageUrls, ratio = '4:5', resol
   if (imageSize !== ratio) {
     console.warn(`[NanoBanana] Unsupported image_size "${ratio}" — falling back to "1:1"`);
   }
+
+  // Enforce Kie.ai's 5,000-char cap BEFORE submitting. Never silently: every
+  // compaction logs the original length, the final length and what was done.
+  const fitted = fitNanoBananaPrompt(prompt);
+  if (fitted.action !== 'none') {
+    console.warn(
+      `[NanoBanana] prompt ${fitted.original} chars exceeds ${NB_MAX_PROMPT_CHARS} cap — ` +
+      `compacted to ${fitted.final} via "${fitted.action}" (dropped ${fitted.original - fitted.final})`,
+    );
+  }
+  prompt = fitted.prompt;
 
   const nbRes = await fetch(`${NB_BASE}/createTask`, {
     method: 'POST',

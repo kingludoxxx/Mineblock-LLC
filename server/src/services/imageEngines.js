@@ -48,6 +48,13 @@ const ENGINES = {
  * Resolve an engine by name. Falls back to NanoBanana for unknown names
  * (rather than throwing) so older callers / legacy DB rows without an
  * engine field keep working.
+ *
+ * NOTE — this fallback deliberately does NOT track DEFAULT_ENGINE, and that is
+ * not an oversight. A row with a null image_engine predates the engine column,
+ * which means it really was generated on NanoBanana; resolving it to today's
+ * default would mislabel history and cause cross-engine style drift when such a
+ * row is resized or adjusted. New work must pass `x || DEFAULT_ENGINE` at the
+ * call site instead of relying on this fallback.
  */
 export function getEngine(name) {
   const key = String(name || '').toLowerCase();
@@ -67,4 +74,16 @@ export function listEngines() {
   }));
 }
 
-export const DEFAULT_ENGINE = 'nanobanana';
+// DEFAULT_ENGINE — OpenAI, not NanoBanana.
+//
+// Changed 2026-08-12 after a controlled A/B on the live Puure instance: the
+// SAME reference, angle and product rendered through both engines. Claude's
+// copy was correct in both runs; NanoBanana corrupted it at render time
+// ("collagen scaffod", "an't reach", "waelenghts", "Nirrty-Ure Dollars"),
+// while gpt-image-2 rendered every word correctly. Text fidelity is the whole
+// point of a static ad, so the default has to be the engine that can spell.
+//
+// Tradeoff accepted by the operator: gpt-image-2 took 187s vs NanoBanana's 88s
+// and costs more per image. NanoBanana remains fully available per-request via
+// body.image_engine — it is a better choice for text-free product shots.
+export const DEFAULT_ENGINE = 'openai';

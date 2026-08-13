@@ -23,6 +23,34 @@ const OPENAI_API_KEY = process.env.OPENAI_API_KEY || '';
 const OPENAI_IMAGE_MODEL = process.env.OPENAI_IMAGE_MODEL || 'gpt-image-2';
 const OPENAI_BASE = 'https://api.openai.com/v1';
 
+/**
+ * Identify an image from its magic bytes.
+ *
+ * The multipart part's content-type and filename are what the API validates
+ * against, and a data-URI's declared type can be wrong (or absent) while a
+ * fetched URL has no type at all. Sniffing the bytes is the only reading that
+ * cannot disagree with the payload.
+ *
+ * Falls back to PNG — the previous hardcoded behaviour — for anything
+ * unrecognised, so an exotic-but-valid format is still attempted rather than
+ * rejected locally.
+ */
+export function sniffImageType(buf) {
+  if (buf.length >= 3 && buf[0] === 0xFF && buf[1] === 0xD8 && buf[2] === 0xFF) {
+    return { mime: 'image/jpeg', ext: 'jpg' };
+  }
+  if (buf.length >= 8 &&
+      buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4E && buf[3] === 0x47) {
+    return { mime: 'image/png', ext: 'png' };
+  }
+  if (buf.length >= 12 &&
+      buf[0] === 0x52 && buf[1] === 0x49 && buf[2] === 0x46 && buf[3] === 0x46 &&
+      buf[8] === 0x57 && buf[9] === 0x45 && buf[10] === 0x42 && buf[11] === 0x50) {
+    return { mime: 'image/webp', ext: 'webp' };
+  }
+  return { mime: 'image/png', ext: 'png' };
+}
+
 // In-process result cache keyed by synthetic taskId. Submit writes, Poll reads.
 // 10-min TTL bounded by the existing 8-min outer polling cap.
 const _resultStore = new Map();
@@ -161,9 +189,17 @@ export async function submitToOpenAI(prompt, imageUrls = [], ratio = '1:1', mask
       if (!r.ok) throw new Error(`Failed to fetch input image ${url}: ${r.status}`);
       buf = Buffer.from(await r.arrayBuffer());
     }
-    const blob = new Blob([buf], { type: 'image/png' });
+    // Label the part with the image's ACTUAL type, sniffed from magic bytes.
+    // This used to hardcode image/png + input-N.png for every input. Product
+    // images are stored per-product in two different shapes — Puure's are R2
+    // PNG URLs, MinerForge's are base64 JPEG data URIs — so hardcoding PNG
+    // mislabels every MinerForge input. It went unnoticed while NanoBanana was
+    // the default engine (it takes URLs and never saw these parts); making
+    // OpenAI the default puts every MinerForge generation through this path.
+    const { mime, ext } = sniffImageType(buf);
+    const blob = new Blob([buf], { type: mime });
     // Multiple-image edit uses the `image[]` field per OpenAI docs.
-    form.append('image[]', blob, `input-${i}.png`);
+    form.append('image[]', blob, `input-${i}.${ext}`);
   }
 
   // Optional mask — region-select editing. The mask is a PNG where

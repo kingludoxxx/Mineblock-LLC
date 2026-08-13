@@ -21,6 +21,7 @@
 import { pgQuery } from '../db/pg.js';
 import { signAccessToken } from '../utils/jwt.js';
 import env from '../config/env.js';
+import { DEFAULT_ENGINE } from '../services/imageEngines.js';
 
 // ---------------------------------------------------------------------------
 // Tunables (env-overridable)
@@ -219,7 +220,9 @@ async function runOneReference({ row, reference, freshToken }) {
     angle: row.angle,
     angle_data: row.angle_data,
     custom_angle: row.custom_angle,
-    image_engine: row.image_engine || 'nanobanana',
+    // Fall back to the current default engine, not a literal — a queued row
+    // with no engine must not be routed to the text-garbling engine.
+    image_engine: row.image_engine || DEFAULT_ENGINE,
     ratio: 'all',
     // Enqueue-time signal: worker path. Auto-save reads this via req.body
     // to stamp source_label; harmless if ignored.
@@ -393,10 +396,38 @@ async function runQueueItem(row) {
     if (hadFatal) break;
   }
 
-  const result = { creatives: perRef };
+  // Outcome accounting. Before 2026-08-12 the ONLY condition that marked a row
+  // 'error' was worker shutdown — every other failure was "tolerated", so a
+  // batch whose references ALL failed still finished as status='done',
+  // error=null, refs_done=refs_total. Verified in prod: a row completed in 19ms
+  // with zero creatives and a 400 buried in result.creatives[0].error, while
+  // the queue UI showed "done 1/1" and TO REVIEW stayed empty. That is
+  // indistinguishable from success to the operator, and it is exactly the
+  // "I queued them all and nothing generated" report from 2026-07-20.
+  //
+  // An outcome can carry BOTH a parent id and an error (e.g. 1:1 rendered but
+  // 9:16 failed), so success is counted by "did a creative actually land",
+  // never by absence of error.
+  const succeeded = perRef.filter(o => o && o.parent_creative_id).length;
+  const failed    = perRef.filter(o => o && o.error).length;
+  const result = { creatives: perRef, summary: { total: refs.length, succeeded, failed } };
+
   if (hadFatal) {
     await markError(row.id, 'Worker shutdown mid-item', result);
+  } else if (refs.length > 0 && succeeded === 0) {
+    // Nothing was produced — this is a failure, and it must read as one.
+    const firstErr = perRef.find(o => o && o.error)?.error || 'no creative was produced';
+    await markError(
+      row.id,
+      `All ${refs.length} reference(s) failed — ${firstErr}`,
+      result,
+    );
+    console.error(`[statics-queue] row ${row.id} produced ZERO creatives from ${refs.length} ref(s) — marked error`);
   } else {
+    // Partial failure still completes, but is surfaced rather than swallowed.
+    if (failed > 0) {
+      console.warn(`[statics-queue] row ${row.id} completed with ${failed}/${refs.length} reference(s) failed`);
+    }
     await markDone(row.id, result);
   }
 }

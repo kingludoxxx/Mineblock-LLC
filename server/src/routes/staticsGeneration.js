@@ -3790,7 +3790,10 @@ router.post('/generate-batch', authenticate, async (req, res) => {
           it.angle || null,
           it.angle_data ? JSON.stringify(it.angle_data) : null,
           it.custom_angle || null,
-          (it.image_engine || 'nanobanana').toLowerCase(),
+          // New work → the current default engine, not a hardcoded one. A
+          // literal 'nanobanana' here would silently route every queued item
+          // back to the engine that garbles rendered text.
+          (it.image_engine || DEFAULT_ENGINE).toLowerCase(),
           req.user?.id || null,
           refsTotal,
         ],
@@ -5122,7 +5125,9 @@ router.post('/creatives', authenticate, async (req, res) => {
         matchedCopySetId,
         quality_warning || null,
         parent_creative_id || null,
-        image_engine || 'nanobanana',
+        // Stamps a NEW row — follow the current default rather than a literal,
+        // or a row generated on OpenAI gets mislabelled as NanoBanana.
+        image_engine || DEFAULT_ENGINE,
         productImageIndex,
       ]
     );
