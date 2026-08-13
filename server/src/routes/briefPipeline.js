@@ -4841,6 +4841,7 @@ async function executeGenerationJob({
               .map(h => h.id)
               .filter(Boolean);
             const contentFail = specIdx.length > 0 || unsupportedIdx.length > 0;
+            let residualSpec = null;   // spec hooks surviving the rewrite, if any
             // Continuity bar relaxed 7.5 -> 7.0 (and per-hook 7 -> 6) because a
             // hook entering on a different facet is now explicitly a pass; the
             // distinctness axis is what keeps quality up.
@@ -4858,9 +4859,38 @@ async function executeGenerationJob({
               const rewriteSys = 'You are a direct response copywriter. You fix hooks so they blend seamlessly into an existing ad script body. You never change the body.';
               const rewriteUser = `The 5 hooks below need fixing. Rewrite all 5 so each is speakable by the body's narrator, in the body's voice, and reads seamlessly into the body's first sentence. Keep them <= 20 words (H5 under 12), sentence case, no emoji, no dashes. The 5 hooks are 5 DIFFERENT DOORS into the same script. Each must keep its own angle of attack and its own first subject: fix the HANDOFF, never the angle. If a hook already enters on a distinct facet (a mechanism, a stat, a price, a moment, an objection), KEEP that facet and re-aim only its final beat so the body's opening beat can follow without a bridge. Making two hooks resemble each other is a FAILURE of this task, not a fix. NEVER write a hook that leads on the device's mechanism, component count, wavelengths or millimetre depth, and NEVER assert a person, price or event the BODY does not contain — those are the two failures you are most likely to reintroduce. If some hooks are near duplicates, replace the duplicates with genuinely different doors rather than rewording them.\n\nCRITICAL: NONE of the 5 hooks may restate the body's OPENING LINE. The hooks are 5 ways IN that all lead to the body's first sentence, never a verbatim copy of it. Even if the body opens on a signature gimmick, the hooks are alternative ways IN that lead to it — never the same sentence reworded, re-punctuated, or joined with "and".\n\nBODY:\n${gen.body}\n\nCURRENT HOOKS:\n${gen.hooks.map(h => `${h.id}: ${h.text || h}`).join('\n')}\n\nIssues:\n${blendFail ? `Blend issues: ${JSON.stringify(blend?.hooks || [])}\n` : ''}${dupIdx.length ? `Duplicate-of-opening: ${dupIdx.map(i => 'H' + i).join(', ')}\n` : ''}\nReturn ONLY valid JSON: { "hooks": [ { "id": "H1", "text": "..." }, ... 5 items ] }`;
               // Rewriting hooks is script generation → Opus, per operator directive.
-              const fixed = await callClaude(rewriteSys, rewriteUser, 2000, { opus: true, timeoutMs: 180000 });
-              if (Array.isArray(fixed?.hooks) && fixed.hooks.length === 5 && fixed.hooks.every(h => h?.text)) {
-                hooks = gen.hooks.map((h, i) => ({ ...h, text: removeDashes(fixed.hooks[i].text) }));
+              // RE-CHECK THE REWRITE. Previously its output was accepted blind,
+              // so the gate fired exactly once and a rewrite that reintroduced a
+              // spec hook sailed through — which is why "the problem was 8mm too
+              // deep" kept reaching the operator. The pull toward it is strong:
+              // 8mm appears in 31 of 41 bodies, and the traceability rule REQUIRES
+              // hooks to be supported by the body, so a millimetre hook passes
+              // that test. The spec ban has to win, and it has to survive here.
+              let attempt = 0;
+              let candidate = null;
+              let stillSpec = [];
+              while (attempt < 2) {
+                attempt += 1;
+                const extra = attempt === 1 ? '' :
+                  `\n\nYOUR PREVIOUS ATTEMPT STILL LED ON THE DEVICE'S SPECS (${stillSpec.join('; ')}). ` +
+                  `A depth in millimetres, a wavelength, or a count of lights is BANNED in a hook even though it appears in the body. ` +
+                  `Rewrite those hooks around the PROBLEM or the PERSON instead of the mechanism.`;
+                const fixed = await callClaude(rewriteSys, rewriteUser + extra, 2000, { opus: true, timeoutMs: 180000 });
+                if (!(Array.isArray(fixed?.hooks) && fixed.hooks.length === 5 && fixed.hooks.every(h => h?.text))) break;
+                candidate = gen.hooks.map((h, i) => ({ ...h, text: removeDashes(fixed.hooks[i].text) }));
+                stillSpec = candidate.filter(h => SPEC_HOOK_RX.test(String(h.text))).map(h => h.id);
+                if (stillSpec.length === 0) break;
+                console.warn(`[BriefPipeline] brief ${brief.id}: rewrite attempt ${attempt} still had spec hook(s) ${stillSpec.join(', ')}`);
+              }
+              if (candidate) {
+                hooks = candidate;
+                // If it STILL violates after two attempts, keep the result but
+                // record it, so the score reflects reality and the operator sees
+                // the flag rather than a silently-accepted bad hook.
+                residualSpec = candidate.filter(h => SPEC_HOOK_RX.test(String(h.text))).length;
+                if (residualSpec) {
+                  console.warn(`[BriefPipeline] brief ${brief.id}: ${residualSpec} spec hook(s) survived both rewrites — flagged, not hidden`);
+                }
               }
             }
             // Compose the real score now that the validator has run. Its
@@ -4874,7 +4904,9 @@ async function executeGenerationJob({
                 hookCount: hooks.length,
                 blendScore: blendScore ?? undefined,
                 distinctness: distinctness ?? undefined,
-                specHooks: specIdx.length,
+                // report what SURVIVED, not what we started with — the score
+                // must describe the hooks actually stored on the brief.
+                specHooks: residualSpec !== null ? residualSpec : specIdx.length,
                 unsupported: unsupportedIdx.length,
                 duplicates: dupeOfIdx.length + dupIdx.length,
               },
