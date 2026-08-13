@@ -122,8 +122,34 @@ function assertions(fx, brief, sourceScript) {
   return out;
 }
 
+// Rules the live prompt must CONTAIN. Exists because a section rewrite once
+// silently deleted the spec-hook rule and nothing noticed for hours — the
+// harness asserted properties of OUTPUTS, which vary, but never that the
+// instructions were still present, which is checkable exactly.
+const PROMPT_INVARIANTS = [
+  ['architecture classification', 'hook_architecture'],
+  ['source-precedent mechanism rule', 'SOURCE PRECEDENT'],
+  ['traceability rule', 'TRACEABLE'],
+  ['channel/calendar swap', 'SWAP THE CHANNEL AND THE CALENDAR'],
+  ['signature H1 rule', "H1 IS ALWAYS THE SOURCE'S SIGNATURE OPENING"],
+  ['framed-list one-door rule', 'ONLY ONE DOOR'],
+];
+
 (async () => {
   const h = await login();
+
+  // prompt invariants first — cheap, and if an instruction is missing every
+  // generation below is testing a prompt we did not intend to ship
+  const lp = await (await fetch(`${BASE}/api/v1/brief-pipeline/settings/league-prompts`, { headers: h })).json();
+  const promptUser = JSON.parse(lp.prompts.scriptClone.json).user || '';
+  let promptFails = 0;
+  console.log('▶ prompt invariants');
+  for (const [name, needle] of PROMPT_INVARIANTS) {
+    const ok = promptUser.includes(needle);
+    if (!ok) promptFails++;
+    console.log(`    ${ok ? '  ok' : 'FAIL'}  ${name}`);
+  }
+  if (promptFails) { console.log(`\n${promptFails} prompt invariant(s) MISSING — fix the prompt before trusting any generation below`); }
   const storyScript = FIXTURES.find(f => f.id === 'story-vsl').script;
   // Real long source from the League — see the fixture note on why a repeated
   // script is not an acceptable substitute.
@@ -163,6 +189,7 @@ function assertions(fx, brief, sourceScript) {
   console.log('\n' + '='.repeat(64));
   for (const r of rows) console.log(`  ${r.fail === 0 ? 'PASS' : 'FAIL'}  ${r.id.padEnd(20)} ${r.pass}/${r.pass + r.fail}${r.notes ? `   ${r.notes}` : ''}`);
   console.log('='.repeat(64));
+  total += PROMPT_INVARIANTS.length; failed += promptFails;
   console.log(`${total - failed}/${total} assertions passed`);
   process.exit(failed ? 1 : 0);
 })().catch(e => { console.error('harness error:', e.message); process.exit(2); });
