@@ -35,6 +35,7 @@ import {
   ListPlus,
 } from 'lucide-react';
 import api from '../../services/api';
+import { resolveDefaultProduct, rememberProduct } from './statics/defaultProduct';
 import ProductSelector from '../../components/ProductSelector';
 import { PipelineView } from './statics/PipelineView';
 import { LibraryView } from './statics/LibraryView';
@@ -1165,6 +1166,7 @@ export default function StaticsGeneration() {
 
   const handleProductSelect = async (product) => {
     if (!product) {
+      rememberProduct(null);
       setSelectedProductId(null);
       setSelectedProductObj(null);
       selectedProductRef.current = null;
@@ -1184,6 +1186,9 @@ export default function StaticsGeneration() {
     }
 
     if (fullProduct) {
+      // Remember the choice so the next visit lands here rather than on the
+      // null state (see statics/defaultProduct.js).
+      rememberProduct(fullProduct.id);
       setSelectedProductId(fullProduct.id);
       setSelectedProductObj(fullProduct);
       selectedProductRef.current = fullProduct;
@@ -1217,6 +1222,7 @@ export default function StaticsGeneration() {
     } else {
       // Fallback to partial product — warn user
       console.error('❌ Could not fetch full product profile after 2 attempts — using partial data');
+      rememberProduct(product.id);
       setSelectedProductId(product.id);
       setSelectedProductObj(product);
       selectedProductRef.current = product;
@@ -2468,12 +2474,17 @@ export default function StaticsGeneration() {
                   generatingAll={generatingAll}
                   generationStep={generationStep}
                   onProductsLoaded={(list) => {
-                    // Auto-select Miner Forge Pro if no product is selected yet
+                    // Auto-select on landing so the operator never starts on an
+                    // empty selector (which also exposes the manual Product Info
+                    // panel and, worse, generates with product_id=null — no
+                    // master brief, no per-angle shot selection).
+                    //
+                    // This used to hardcode /miner forge pro/i. That product does
+                    // not exist in Puure's database, so on Puure NOTHING was ever
+                    // auto-selected. Resolved by precedence instead of by name:
                     if (!selectedProductRef.current && list.length > 0) {
-                      const miner = list.find(p => /miner\s*forge\s*pro/i.test(p.name));
-                      if (miner) {
-                        handleProductSelect(miner); // fetches full profile internally
-                      }
+                      const pick = resolveDefaultProduct(list);
+                      if (pick) handleProductSelect(pick); // fetches full profile internally
                     }
                   }}
                 />
