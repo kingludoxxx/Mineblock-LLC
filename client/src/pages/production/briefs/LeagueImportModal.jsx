@@ -14,6 +14,7 @@ import {
   Play,
   Check,
   Layers,
+  Clock,
 } from 'lucide-react';
 import api from '../../../services/api';
 
@@ -23,9 +24,21 @@ const TIER_META = {
   BANGER: { label: 'Banger', Icon: Flame,  color: 'text-zinc-300' },
   CHAMP:  { label: 'Champ',  Icon: Trophy, color: 'text-zinc-300' },
   A:      { label: 'A-Tier', Icon: Star,   color: 'text-zinc-300' },
+  B:      { label: 'B-Tier', Icon: Star,   color: 'text-zinc-500' },
+  C:      { label: 'C-Tier', Icon: Star,   color: 'text-zinc-500' },
 };
 
-const TIER_ORDER = ['BANGER', 'CHAMP', 'A'];
+const TIER_ORDER = ['BANGER', 'CHAMP', 'A', 'B', 'C'];
+// B and C are OFF by default: the top three are the proven winners and turning
+// everything on by default would change what every existing user sees.
+const DEFAULT_TIERS = ['BANGER', 'CHAMP', 'A'];
+// Recency windows offered next to the tier row. null = no date filter.
+const AGE_OPTIONS = [
+  { label: 'Any age', days: null },
+  { label: '7d',      days: 7 },
+  { label: '14d',     days: 14 },
+  { label: '30d',     days: 30 },
+];
 
 function TierBadge({ tier, size = 'sm' }) {
   const meta = TIER_META[tier];
@@ -53,7 +66,9 @@ export default function LeagueImportModal({ open, onClose, onImported, onQueued 
   const brandDropdownRef = useRef(null);
 
   // Tier filter — all three selected by default
-  const [selectedTiers, setSelectedTiers] = useState(new Set(TIER_ORDER));
+  const [selectedTiers, setSelectedTiers] = useState(new Set(DEFAULT_TIERS));
+  const [newestFirst, setNewestFirst] = useState(false);
+  const [maxAgeDays, setMaxAgeDays] = useState(null);
 
   // Ads list
   const [ads, setAds] = useState([]);
@@ -130,6 +145,8 @@ export default function LeagueImportModal({ open, onClose, onImported, onQueued 
           tiers: tiers.join(','),
           page,
           limit: PAGE_SIZE,
+          ...(newestFirst ? { sort: 'newest' } : {}),
+          ...(maxAgeDays ? { days: maxAgeDays } : {}),
         },
       });
       const newAds = data.ads || [];
@@ -143,7 +160,7 @@ export default function LeagueImportModal({ open, onClose, onImported, onQueued 
     } finally {
       setLoadingAds(false);
     }
-  }, []);
+  }, [newestFirst, maxAgeDays]);
 
   // ── Lifecycle ─────────────────────────────────────────────────────────
   useEffect(() => {
@@ -666,6 +683,42 @@ export default function LeagueImportModal({ open, onClose, onImported, onQueued 
                     >
                       <Icon className="w-3 h-3" />
                       {label}
+                    </button>
+                  );
+                })}
+              </div>
+
+              {/* Recency — the list is ordered longest-running first by default,
+                  which buries new ads. These two expose the API's sort/days. */}
+              <div className="flex items-center gap-1.5">
+                <button
+                  type="button"
+                  onClick={() => setNewestFirst(v => !v)}
+                  title="Order by the date the ad started running, newest first"
+                  className={`flex items-center justify-center gap-1.5 px-2 py-1.5 rounded-md text-[11px] font-mono font-semibold uppercase tracking-wide border transition-all cursor-pointer ${
+                    newestFirst
+                      ? 'bg-white/[0.06] border-white/[0.15] text-white shadow-[inset_0_1px_0_0_rgba(255,255,255,0.04)]'
+                      : 'bg-white/[0.01] border-white/[0.04] text-zinc-500 hover:text-zinc-300 hover:bg-white/[0.03] hover:border-white/[0.08]'
+                  }`}
+                >
+                  <Clock className="w-3 h-3" />
+                  Newest
+                </button>
+                {AGE_OPTIONS.map(opt => {
+                  const active = maxAgeDays === opt.days;
+                  return (
+                    <button
+                      key={opt.label}
+                      type="button"
+                      onClick={() => setMaxAgeDays(opt.days)}
+                      title={opt.days ? `Only ads that started in the last ${opt.days} days` : 'No date filter'}
+                      className={`flex-1 px-2 py-1.5 rounded-md text-[11px] font-mono font-semibold uppercase tracking-wide border transition-all cursor-pointer ${
+                        active
+                          ? 'bg-white/[0.06] border-white/[0.15] text-white shadow-[inset_0_1px_0_0_rgba(255,255,255,0.04)]'
+                          : 'bg-white/[0.01] border-white/[0.04] text-zinc-500 hover:text-zinc-300 hover:bg-white/[0.03] hover:border-white/[0.08]'
+                      }`}
+                    >
+                      {opt.label}
                     </button>
                   );
                 })}

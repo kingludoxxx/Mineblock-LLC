@@ -6396,10 +6396,12 @@ router.get('/league/brands', authenticate, async (_req, res) => {
           COUNT(*)                                          AS total_video_count,
           COUNT(*) FILTER (WHERE a.tier = 'BANGER')         AS banger_count,
           COUNT(*) FILTER (WHERE a.tier = 'CHAMP')          AS champ_count,
-          COUNT(*) FILTER (WHERE a.tier = 'A')              AS a_count
+          COUNT(*) FILTER (WHERE a.tier = 'A')              AS a_count,
+          COUNT(*) FILTER (WHERE a.tier = 'B')              AS b_count,
+          COUNT(*) FILTER (WHERE a.tier = 'C')              AS c_count
         FROM brand_spy.ads a
         WHERE a.is_active = TRUE
-          AND a.tier IN ('BANGER','CHAMP','A')
+          AND a.tier IN ('BANGER','CHAMP','A','B','C')
           AND (a.display_format ILIKE 'video%'
                OR (a.raw_snapshot->'videos'->0->>'video_hd_url') IS NOT NULL
                OR (a.raw_snapshot->'videos'->0->>'video_sd_url') IS NOT NULL)
@@ -6427,6 +6429,8 @@ router.get('/league/brands', authenticate, async (_req, res) => {
         BANGER: Number(r.banger_count) || 0,
         CHAMP:  Number(r.champ_count)  || 0,
         A:      Number(r.a_count)      || 0,
+        B:      Number(r.b_count)      || 0,
+        C:      Number(r.c_count)      || 0,
       },
     }));
     res.json({ success: true, brands });
@@ -6449,7 +6453,7 @@ router.get('/league/ads', authenticate, async (req, res) => {
     const tiers = tiersCsv
       .split(',')
       .map(t => t.trim().toUpperCase())
-      .filter(t => ['BANGER','CHAMP','A'].includes(t));
+      .filter(t => ['BANGER','CHAMP','A','B','C'].includes(t));
     if (tiers.length === 0) {
       return res.json({ success: true, ads: [], total: 0, page: 1, limit: 20 });
     }
