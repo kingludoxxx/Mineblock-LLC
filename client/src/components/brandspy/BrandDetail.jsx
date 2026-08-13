@@ -10,6 +10,7 @@ import {
   Video as VideoIcon, Image as ImageIcon, Columns as CarouselIcon,
 } from 'lucide-react';
 import AggregationsTab from './AggregationsTab';
+import IntelDrawer from './IntelDrawer';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -926,13 +927,17 @@ export default function BrandDetail({ apiBaseUrl, brandId, onBack }) {
   // Overview-dashboard side data (brand-wide media mix + aggregation totals)
   const [formatCounts, setFormatCounts] = useState(null);
   const [aggCounts, setAggCounts]       = useState(null);
-  // Ad detail navigation — replaces the old IntelDrawer modal with a full
-  // page route. openAd(ad) navigates to /app/brand-spy/:brandId/ads/:adId.
+  // Ad detail opens as a centered modal over the grid — clicking a creative
+  // should never navigate away and lose your scroll position, filters and
+  // sort. IntelDrawer already renders exactly that overlay when pageMode is
+  // false; the full-page route at /app/brand-spy/:brandId/ads/:adId stays for
+  // deep links and renders the same component with pageMode.
   const navigate = useNavigate();
+  const [modalAd, setModalAd] = useState(null);
   const openAd = useCallback((ad) => {
     if (!ad?.id) return;
-    navigate(`/app/brand-spy/${brandId}/ads/${ad.id}`);
-  }, [navigate, brandId]);
+    setModalAd(ad);
+  }, []);
 
   const intPagesDropdown  = useDropdown(); // Intelligence tab pages
   const intColsDropdown   = useDropdown(); // Intelligence tab columns
@@ -1024,12 +1029,22 @@ export default function BrandDetail({ apiBaseUrl, brandId, onBack }) {
     return () => { cancelled = true; };
   }, [apiBaseUrl, brandId, activeTab]);
 
-  // ---- Open ad detail page by ID (used by aggregation tabs) ----
-  // Aggregation rows pass an adId; we now route directly to the page.
-  const openAdById = useCallback((adId) => {
+  // ---- Open ad detail modal by ID (used by aggregation tabs) ----
+  // Aggregation rows only carry an adId, so fetch the ad before opening the
+  // overlay. Failures are surfaced rather than swallowed — a dead click with
+  // no feedback reads as the tool being broken.
+  const openAdById = useCallback(async (adId) => {
     if (!adId) return;
-    navigate(`/app/brand-spy/${brandId}/ads/${adId}`);
-  }, [navigate, brandId]);
+    try {
+      const res = await authFetch(`${apiBaseUrl}/ads/${adId}`);
+      if (!res.ok) throw new Error(`Ad load failed (HTTP ${res.status})`);
+      const body = await res.json();
+      if (body?.ad) setModalAd(body.ad);
+      else throw new Error('Ad not found');
+    } catch (err) {
+      setRefreshError(err.message || 'Could not open that ad');
+    }
+  }, [apiBaseUrl]);
 
   // ---- Refresh (re-scrape) ----
   // The scrape endpoint returns 202 immediately — poll brand status until the
@@ -1516,10 +1531,18 @@ export default function BrandDetail({ apiBaseUrl, brandId, onBack }) {
 
       </div>
 
-      {/* Ad detail now lives at /app/brand-spy/:brandId/ads/:adId — see
-          BrandSpyAdDetailPage. The drawer modal is no longer mounted from
-          here; AdCard's onOpenIntel + DetailAdRow's onSelect call openAd(ad)
-          which routes to the page. */}
+      {/* Ad detail — centered modal over the grid. IntelDrawer renders its own
+          backdrop + centered container when pageMode is false, so clicking a
+          creative keeps your scroll position, filters and sort intact. The
+          full-page route at /app/brand-spy/:brandId/ads/:adId still exists for
+          deep links and renders this same component with pageMode. */}
+      {modalAd && (
+        <IntelDrawer
+          ad={modalAd}
+          brand={brand}
+          onClose={() => setModalAd(null)}
+        />
+      )}
     </div>
   );
 }
