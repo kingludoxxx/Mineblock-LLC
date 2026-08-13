@@ -44,6 +44,11 @@ export const DEFAULT_CONFIG = {
   // excluded ~96% of the pool and a run considered 3 candidates. Select on
   // having a usable VIDEO instead, and let the worker do the transcription.
   requireVideo: true,
+  // Non-English sources produce briefs the operator cannot use (the Spanish
+  // "¡Cuerpo firme!" twin of an already-briefed English ad got through on
+  // 2026-08-13). Scraping still collects them — they are competitive intel —
+  // but selection refuses them. Toggleable if a non-English funnel ever exists.
+  englishOnly: true,
   minTranscriptChars: 400,   // applies only when a transcript already exists
   slackChannel: null,       // null = the default ops webhook
   dryRun: false,
@@ -67,6 +72,37 @@ export async function saveAutopilotConfig(patch) {
     [AUTOPILOT_SETTINGS_KEY, JSON.stringify(merged)]
   );
   return merged;
+}
+
+/**
+ * Cheap language heuristic — no API call, deterministic, testable.
+ *
+ * Scores English vs Romance/Germanic stopwords and hard non-English characters
+ * over headline + body text. Ads are short marketing copy, so stopwords are a
+ * strong signal. Returns 'en', 'non-en', or 'unknown' when there is not enough
+ * text to judge — and under englishOnly, UNKNOWN IS SKIPPED TOO: the empty-
+ * headline path is precisely how unclassifiable ads sneak through a filter,
+ * and a missed candidate is cheaper than a foreign-language brief.
+ */
+export function detectEnglish(text) {
+  const t = ' ' + String(text || '').toLowerCase().replace(/\s+/g, ' ') + ' ';
+  if (t.trim().length < 12) return 'unknown';
+  // hard markers: inverted punctuation and n-tilde are effectively conclusive
+  if (/[¡¿ñ]/.test(t)) return 'non-en';
+  const count = words => words.reduce((n, w) => n + (t.split(` ${w} `).length - 1), 0);
+  const en = count(['the','your','you','and','for','with','this','that','are','not','was','have','from','get','now']);
+  const xx = count([
+    'el','la','los','las','que','para','por','con','una','este','esta','tu','más','pero','como','desde','casa','sin','tus','hasta', // es
+    'le','les','des','est','pour','avec','vous','votre','dans','pas',                             // fr
+    'der','die','das','und','für','mit','nicht','sie','ist',                                      // de
+    'il','di','che','per','con','del','della','questo','non',                                     // it
+    'o','os','uma','você','com','não','para','mais',                                              // pt
+  ]);
+  // accented latin chars add weight — common in es/fr/pt/it, rare in English ads
+  const accents = (t.match(/[àáâãäèéêëìíîïòóôõöùúûüç]/g) || []).length;
+  const score = xx * 2 + accents - en;
+  if (en === 0 && xx === 0 && accents === 0) return 'unknown';
+  return score > 0 ? 'non-en' : 'en';
 }
 
 /**
@@ -160,6 +196,13 @@ export function applyDiversityCap(candidates, cfg) {
   const target = Number(cfg.briefsPerRun) || DEFAULT_CONFIG.briefsPerRun;
 
   for (const c of candidates) {
+    if (cfg.englishOnly !== false) {
+      const verdict = detectEnglish(`${c.headline || ''} ${c.body_text || ''}`);
+      if (verdict !== 'en') {
+        skipped.push({ ad: c.id, brand: c.brand_domain, headline: c.headline, reason: verdict === 'non-en' ? 'non-English source' : 'language undeterminable (englishOnly)' });
+        continue;
+      }
+    }
     if (picked.length >= target) {
       skipped.push({ ad: c.id, brand: c.brand_domain, headline: c.headline, reason: 'batch full' });
       continue;
