@@ -4926,12 +4926,29 @@ async function executeGenerationJob({
               if (candidate) {
                 hooks = candidate;
                 detUngrounded = stillUngrounded;
-                // If it STILL violates after two attempts, keep the result but
-                // record it, so the score reflects reality and the operator sees
-                // the flag rather than a silently-accepted bad hook.
-                residualSpec = candidate.filter(h => SPEC_HOOK_RX.test(String(h.text))).length;
-                if (residualSpec) {
-                  console.warn(`[BriefPipeline] brief ${brief.id}: ${residualSpec} spec hook(s) survived both rewrites — flagged, not hidden`);
+              }
+              // LAST RESORT IS DELETION, NOT DELIVERY. Keep-but-flag still put
+              // "my problem was 8mm deep" in front of the operator after two
+              // failed rewrites (batch of 2026-08-13: 2 of 3 briefs). A rewrite
+              // can fail; removal cannot. Drop offending hooks whenever at
+              // least 3 clean ones remain — 3 is the floor every architecture
+              // already respects. Only when dropping would go below the floor
+              // do we fall back to keep-and-flag, and the score still says so.
+              const offending = new Set();
+              hooks.forEach((h, i) => {
+                if (SPEC_HOOK_RX.test(String(h.text)) || ungroundedHookClaims(h.text, gen.body).length) offending.add(i);
+              });
+              if (offending.size && hooks.length - offending.size >= 3) {
+                const droppedTexts = [...offending].map(i => `"${String(hooks[i].text).slice(0, 60)}"`);
+                hooks = hooks.filter((_, i) => !offending.has(i)).map((h, i) => ({ ...h, id: `H${i + 1}` }));
+                residualSpec = 0;
+                detUngrounded = [];
+                console.warn(`[BriefPipeline] brief ${brief.id}: dropped ${offending.size} unfixable hook(s) — ${droppedTexts.join('; ')} — ${hooks.length} clean hooks remain`);
+              } else {
+                residualSpec = hooks.filter(h => SPEC_HOOK_RX.test(String(h.text))).length;
+                detUngrounded = ungroundedOf(hooks);
+                if (residualSpec || detUngrounded.length) {
+                  console.warn(`[BriefPipeline] brief ${brief.id}: ${residualSpec} spec / ${detUngrounded.length} ungrounded survived and dropping would leave <3 hooks — kept and flagged`);
                 }
               }
             }
