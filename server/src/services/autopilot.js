@@ -39,8 +39,12 @@ export const DEFAULT_CONFIG = {
   maxPerBrand: 2,           // diversity: spread across brands
   productId: 37,            // Puure
   productCode: 'PUURE',
-  requireTranscript: true,  // refuse ad-copy-only references
-  minTranscriptChars: 400,
+  // The queue worker TRANSCRIBES as part of the job, so requiring a transcript
+  // at selection time was wrong: only ~21 of 511 League ads carry one, so it
+  // excluded ~96% of the pool and a run considered 3 candidates. Select on
+  // having a usable VIDEO instead, and let the worker do the transcription.
+  requireVideo: true,
+  minTranscriptChars: 400,   // applies only when a transcript already exists
   slackChannel: null,       // null = the default ops webhook
   dryRun: false,
 };
@@ -109,8 +113,13 @@ export async function selectCandidates(cfg) {
       AND a.tier = ANY($1::text[])
       ${brandClause}
       ${ageClause}
-      AND a.transcript IS NOT NULL
-      AND length(a.transcript) >= ${minChars}
+      AND (
+        a.raw_snapshot->'videos'->0->>'video_hd_url' IS NOT NULL
+        OR a.raw_snapshot->'videos'->0->>'video_sd_url' IS NOT NULL
+      )
+      -- when a transcript already exists it must be substantial; a stub
+      -- transcript is worse than none because the worker will not redo it
+      AND (a.transcript IS NULL OR length(a.transcript) >= ${minChars})
       AND NOT EXISTS (
         SELECT 1 FROM brief_pipeline_references r
          WHERE r.ad_archive_id = a.ad_archive_id::text
