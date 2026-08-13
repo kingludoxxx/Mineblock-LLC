@@ -4848,9 +4848,18 @@ async function executeGenerationJob({
             // single most common bad hook the operator reports. Deterministic
             // regex, not a judgement call — the model cannot argue with it.
             const SPEC_HOOK_RX = /\b(one|two|three|1|2|3)\s+(red\s+)?(light|lights|wavelength|wavelengths|led|leds)\b|\bwavelengths?\b|\b\d+\s?mm\b|\bothers?\s+use\b|\bmost\s+devices\b/i;
-            const specIdx = gen.hooks
+            // SOURCE PRECEDENT — the operator's rule, verbatim: "everything has
+            // a context, we're not working like robots." Mechanism in a hook is
+            // not banned; it is EARNED. If the winning ad we cloned itself
+            // leads with mechanism (its opening hook zone trips the same
+            // regex), then a mechanism hook is faithful cloning and allowed.
+            // If the source won with a story and the mechanism appears only in
+            // OUR hook, that is the spec sheet leaking in — enforced as before.
+            const mechPrecedent = SPEC_HOOK_RX.test(String(rawScript || '').slice(0, 400));
+            const specIdx = mechPrecedent ? [] : gen.hooks
               .map((h, i) => (SPEC_HOOK_RX.test(String(h.text || h)) ? i + 1 : null))
               .filter(Boolean);
+            if (mechPrecedent) console.log(`[BriefPipeline] brief ${brief.id}: source leads with mechanism — mechanism hooks permitted for this clone`);
             // UNSUPPORTED CLAIMS. Not a compliance check — a coherence one. A
             // hook naming a person or number the body never mentions hands the
             // editor an opening the video does not pay off.
@@ -4936,7 +4945,7 @@ async function executeGenerationJob({
               // do we fall back to keep-and-flag, and the score still says so.
               const offending = new Set();
               hooks.forEach((h, i) => {
-                if (SPEC_HOOK_RX.test(String(h.text)) || ungroundedHookClaims(h.text, gen.body).length) offending.add(i);
+                if ((!mechPrecedent && SPEC_HOOK_RX.test(String(h.text))) || ungroundedHookClaims(h.text, gen.body).length) offending.add(i);
               });
               if (offending.size && hooks.length - offending.size >= 3) {
                 const droppedTexts = [...offending].map(i => `"${String(hooks[i].text).slice(0, 60)}"`);
@@ -4945,7 +4954,7 @@ async function executeGenerationJob({
                 detUngrounded = [];
                 console.warn(`[BriefPipeline] brief ${brief.id}: dropped ${offending.size} unfixable hook(s) — ${droppedTexts.join('; ')} — ${hooks.length} clean hooks remain`);
               } else {
-                residualSpec = hooks.filter(h => SPEC_HOOK_RX.test(String(h.text))).length;
+                residualSpec = mechPrecedent ? 0 : hooks.filter(h => SPEC_HOOK_RX.test(String(h.text))).length;
                 detUngrounded = ungroundedOf(hooks);
                 if (residualSpec || detUngrounded.length) {
                   console.warn(`[BriefPipeline] brief ${brief.id}: ${residualSpec} spec / ${detUngrounded.length} ungrounded survived and dropping would leave <3 hooks — kept and flagged`);
