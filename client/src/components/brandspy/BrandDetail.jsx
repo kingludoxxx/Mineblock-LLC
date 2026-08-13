@@ -403,7 +403,10 @@ function AdCard({ ad, brand, onOpenIntel }) {
   return (
     <div
       onClick={() => onOpenIntel(ad)}
-      className="group flex flex-col bg-bg-elevated border border-border-subtle rounded-lg overflow-hidden cursor-pointer hover:border-white/20 transition-all hover:shadow-lg"
+      /* Fixed height so every tile in a row is identical. CSS grid sizes a row
+         to its tallest item, so a single 9:16 creative used to stretch the row
+         and leave a band of dead space under every other card. */
+      className="group flex flex-col h-[360px] bg-bg-elevated border border-border-subtle rounded-lg overflow-hidden cursor-pointer hover:border-white/20 transition-all hover:shadow-lg"
     >
       {/* ── Page header ── (clicks bubble up to open IntelDrawer; ••• menu
             and dropdown items stop propagation individually). */}
@@ -465,14 +468,14 @@ function AdCard({ ad, brand, onOpenIntel }) {
       )}
 
       {/* ── Thumbnail / Inline Video ── */}
-      <div className="relative bg-zinc-950 shrink-0" style={{ aspectRatio: '4/5' }}>
+      <div className="relative bg-zinc-950 flex-1 min-h-0">
 
         {playing && ad.videoUrl ? (
           <>
             <video
               ref={videoRef}
               src={ad.videoUrl}
-              className="w-full h-full object-contain bg-black cursor-pointer"
+              className="w-full h-full object-cover bg-black cursor-pointer"
               onClick={togglePlayPause}
               onTimeUpdate={() => setCurrentTime(videoRef.current?.currentTime ?? 0)}
               onLoadedMetadata={() => setDuration(videoRef.current?.duration ?? 0)}
