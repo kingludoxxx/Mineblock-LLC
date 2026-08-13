@@ -1,3 +1,4 @@
+import authFetch from '../../services/authFetch';
 import { useEffect, useRef, useState, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
@@ -426,7 +427,7 @@ export default function BrandLeague({ apiBaseUrl }) {
   useEffect(() => {
     setBrandsLoading(true);
     setBrandsError(null);
-    fetch(`${apiBaseUrl}/brands`)
+    authFetch(`${apiBaseUrl}/brands`)
       .then((r) => {
         if (!r.ok) throw new Error(`Failed to load brands (${r.status})`);
         return r.json();
@@ -445,7 +446,7 @@ export default function BrandLeague({ apiBaseUrl }) {
   // ---------------------------------------------------------------------------
   useEffect(() => {
     if (!selectedBrand) { setBrandDetail(null); return; }
-    fetch(`${apiBaseUrl}/brands/${selectedBrand.id}`)
+    authFetch(`${apiBaseUrl}/brands/${selectedBrand.id}`)
       .then((r) => {
         if (!r.ok) throw new Error(`Failed to load brand (${r.status})`);
         return r.json();
@@ -472,7 +473,7 @@ export default function BrandLeague({ apiBaseUrl }) {
         tier: tierFilter,
       });
       if (pageFilter) params.set('brandPageId', pageFilter);
-      const res = await fetch(`${apiBaseUrl}/brands/${selectedBrand.id}/ads?${params}`);
+      const res = await authFetch(`${apiBaseUrl}/brands/${selectedBrand.id}/ads?${params}`);
       if (!res.ok) throw new Error(`Failed to load ads (${res.status})`);
       const data = await res.json();
       setAds(data.ads ?? []);
@@ -508,7 +509,7 @@ export default function BrandLeague({ apiBaseUrl }) {
     setRefreshing(true);
     setRefreshError(null);
     try {
-      const scrapeRes = await fetch(`${apiBaseUrl}/brands/${selectedBrand.id}/scrape`, { method: 'POST' });
+      const scrapeRes = await authFetch(`${apiBaseUrl}/brands/${selectedBrand.id}/scrape`, { method: 'POST' });
       if (!scrapeRes.ok) {
         const body = await scrapeRes.json().catch(() => ({}));
         throw new Error(body.error || `Scrape trigger failed (${scrapeRes.status})`);
@@ -518,7 +519,7 @@ export default function BrandLeague({ apiBaseUrl }) {
       const deadline = Date.now() + 5 * 60 * 1000;
       while (Date.now() < deadline) {
         await new Promise((resolve) => setTimeout(resolve, 2000));
-        const r = await fetch(`${apiBaseUrl}/brands/${selectedBrand.id}`);
+        const r = await authFetch(`${apiBaseUrl}/brands/${selectedBrand.id}`);
         if (r.ok) {
           const d = await r.json();
           if (d.brand) {

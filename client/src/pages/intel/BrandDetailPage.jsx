@@ -1,3 +1,4 @@
+import authFetch from '../../services/authFetch';
 import { useEffect, useState, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 
@@ -19,7 +20,7 @@ export default function BrandDetailPage() {
   const [refreshing, setRefreshing] = useState(false);
 
   useEffect(() => {
-    fetch(`${API}/brands/${brandId}`)
+    authFetch(`${API}/brands/${brandId}`)
       .then((r) => r.json())
       .then((d) => setBrand(d.brand))
       .catch(console.error);
@@ -29,7 +30,7 @@ export default function BrandDetailPage() {
     setLoading(true);
     try {
       const params = new URLSearchParams({ page: String(page), pageSize: String(pageSize), sort, tier: tierFilter });
-      const res = await fetch(`${API}/brands/${brandId}/ads?${params}`);
+      const res = await authFetch(`${API}/brands/${brandId}/ads?${params}`);
       const data = await res.json();
       setAds(data.ads);
       setTotal(data.total);
@@ -43,8 +44,8 @@ export default function BrandDetailPage() {
   const handleRefresh = async () => {
     setRefreshing(true);
     try {
-      await fetch(`${API}/brands/${brandId}/scrape`, { method: 'POST' });
-      const res = await fetch(`${API}/brands/${brandId}`);
+      await authFetch(`${API}/brands/${brandId}/scrape`, { method: 'POST' });
+      const res = await authFetch(`${API}/brands/${brandId}`);
       const data = await res.json();
       setBrand(data.brand);
       await loadAds();

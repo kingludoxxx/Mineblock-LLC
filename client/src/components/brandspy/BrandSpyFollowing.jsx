@@ -1,3 +1,4 @@
+import authFetch from '../../services/authFetch';
 import { useEffect, useMemo, useState, useCallback } from 'react';
 import { Search, RefreshCw, Plus, X, ChevronRight } from 'lucide-react';
 
@@ -12,7 +13,7 @@ export default function BrandSpyFollowing({ apiBaseUrl, onBrandClick }) {
 
   const fetchBrands = useCallback(async () => {
     try {
-      const res = await fetch(`${apiBaseUrl}/brands`);
+      const res = await authFetch(`${apiBaseUrl}/brands`);
       if (!res.ok) throw new Error(`Failed (${res.status})`);
       const data = await res.json();
       setBrands(data.brands || []);
@@ -54,7 +55,7 @@ export default function BrandSpyFollowing({ apiBaseUrl, onBrandClick }) {
   const handleScrapeAll = async () => {
     setScrapingAll(true);
     try {
-      await fetch(`${apiBaseUrl}/brands/scrape-all`, { method: 'POST' });
+      await authFetch(`${apiBaseUrl}/brands/scrape-all`, { method: 'POST' });
       setTimeout(fetchBrands, 2000);
     } finally { setScrapingAll(false); }
   };
@@ -62,7 +63,7 @@ export default function BrandSpyFollowing({ apiBaseUrl, onBrandClick }) {
   const handleDelete = async (id) => {
     if (!confirm('Stop tracking this brand?')) return;
     try {
-      const res = await fetch(`${apiBaseUrl}/brands/${id}`, { method: 'DELETE' });
+      const res = await authFetch(`${apiBaseUrl}/brands/${id}`, { method: 'DELETE' });
       if (!res.ok && res.status !== 404) throw new Error(`Delete failed (${res.status})`);
     } catch (e) {
       setError(e.message);
@@ -71,7 +72,7 @@ export default function BrandSpyFollowing({ apiBaseUrl, onBrandClick }) {
   };
 
   const handleScrapeOne = async (id) => {
-    await fetch(`${apiBaseUrl}/brands/${id}/scrape`, { method: 'POST' });
+    await authFetch(`${apiBaseUrl}/brands/${id}/scrape`, { method: 'POST' });
     fetchBrands();
   };
 
@@ -403,7 +404,7 @@ function FollowPanel({ apiBaseUrl, onClose, onAdded }) {
       const body = mode === 'single'
         ? { domain: value.trim() }
         : { bulk: value.split(/[\n,]/).map(s => s.trim()).filter(Boolean).map(domain => ({ domain })) };
-      const res = await fetch(`${apiBaseUrl}/brands`, {
+      const res = await authFetch(`${apiBaseUrl}/brands`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),

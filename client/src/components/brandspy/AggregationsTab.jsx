@@ -1,3 +1,4 @@
+import authFetch from '../../services/authFetch';
 import { useEffect, useState, useCallback } from 'react';
 import { ExternalLink, Sparkles, AlertCircle, RotateCcw, Search, Image as ImageIcon } from 'lucide-react';
 
@@ -218,7 +219,7 @@ export default function AggregationsTab({ apiBaseUrl, brandId, type, onOpenAd })
     try {
       const params = new URLSearchParams({ type, limit: '100' });
       if (activeOnly) params.set('activeOnly', '1');
-      const res = await fetch(`${apiBaseUrl}/brands/${brandId}/aggregations?${params}`);
+      const res = await authFetch(`${apiBaseUrl}/brands/${brandId}/aggregations?${params}`);
       if (!res.ok) throw new Error(`Failed (${res.status})`);
       const data = await res.json();
       setItems(data.items ?? []);

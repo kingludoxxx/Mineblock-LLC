@@ -8,6 +8,7 @@
  *  Right ~45%  — SIGNAL panel (rank, tier, velocity, momentum, history)
  */
 
+import authFetch from '../../services/authFetch';
 import { useEffect, useRef, useState } from 'react';
 import {
   X, ExternalLink, Copy, Download, Play, FileText, Loader2,
@@ -284,7 +285,7 @@ export default function IntelDrawer({
     freshAttemptedRef.current = true;
     setRefreshingVideo(true);
     try {
-      const res = await fetch(`/api/v1/brand-spy/ads/${ad.id}/fresh-video-url`, {
+      const res = await authFetch(`/api/v1/brand-spy/ads/${ad.id}/fresh-video-url`, {
         method: 'POST',
         credentials: 'include',
       });
@@ -381,7 +382,7 @@ export default function IntelDrawer({
     setTranscribing(true);
     setTranscriptError(null);
     try {
-      const res = await fetch(`/api/v1/brand-spy/ads/${ad.id}/transcribe`, {
+      const res = await authFetch(`/api/v1/brand-spy/ads/${ad.id}/transcribe`, {
         method: 'POST',
         credentials: 'include',
       });

@@ -1,3 +1,4 @@
+import authFetch from '../../services/authFetch';
 import { useEffect, useMemo, useState, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 
@@ -15,7 +16,7 @@ export default function BrandsPage() {
 
   const fetchBrands = useCallback(async () => {
     try {
-      const res = await fetch(`${API}/brands`);
+      const res = await authFetch(`${API}/brands`);
       if (!res.ok) throw new Error(`Failed to load (${res.status})`);
       const data = await res.json();
       setBrands(data.brands);
@@ -61,7 +62,7 @@ export default function BrandsPage() {
   const handleScrapeAll = async () => {
     setScrapingAll(true);
     try {
-      await fetch(`${API}/brands/scrape-all`, { method: 'POST' });
+      await authFetch(`${API}/brands/scrape-all`, { method: 'POST' });
       setTimeout(fetchBrands, 1500);
     } finally {
       setScrapingAll(false);
@@ -69,13 +70,13 @@ export default function BrandsPage() {
   };
 
   const handleScrapeOne = async (brandId) => {
-    await fetch(`${API}/brands/${brandId}/scrape`, { method: 'POST' });
+    await authFetch(`${API}/brands/${brandId}/scrape`, { method: 'POST' });
     fetchBrands();
   };
 
   const handleDelete = async (brandId) => {
     if (!confirm('Stop tracking this brand?')) return;
-    await fetch(`${API}/brands/${brandId}`, { method: 'DELETE' });
+    await authFetch(`${API}/brands/${brandId}`, { method: 'DELETE' });
     fetchBrands();
   };
 
@@ -184,7 +185,7 @@ function BrandRow({ brand, onScrape, onDelete, onOpen }) {
     if (next && !details) {
       setLoadingDetails(true);
       try {
-        const res = await fetch(`${API}/brands/${brand.id}`);
+        const res = await authFetch(`${API}/brands/${brand.id}`);
         const data = await res.json();
         setDetails(data.brand);
       } finally {
@@ -367,7 +368,7 @@ function FollowPanel({ onClose, onAdded }) {
         ? { domain: value }
         : { bulk: value.split(/[\n,]/).map((s) => s.trim()).filter(Boolean).map((domain) => ({ domain })) };
 
-      const res = await fetch(`${API}/brands`, {
+      const res = await authFetch(`${API}/brands`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),

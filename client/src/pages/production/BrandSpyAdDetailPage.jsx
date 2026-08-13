@@ -13,6 +13,7 @@
  *     same state.
  */
 
+import authFetch from '../../services/authFetch';
 import { useCallback, useEffect, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { X } from 'lucide-react';
@@ -50,8 +51,8 @@ export default function BrandSpyAdDetailPage() {
     setTranscriptError(null);
     setTranscriptCached(false);
     Promise.all([
-      fetch(`${API_BASE}/ads/${adId}`,        { credentials: 'include' }),
-      fetch(`${API_BASE}/brands/${brandId}`,  { credentials: 'include' }),
+      authFetch(`${API_BASE}/ads/${adId}`,        { credentials: 'include' }),
+      authFetch(`${API_BASE}/brands/${brandId}`,  { credentials: 'include' }),
     ])
       .then(async ([adRes, brandRes]) => {
         if (!adRes.ok)    throw new Error(`Ad load failed (HTTP ${adRes.status})`);
@@ -106,7 +107,7 @@ export default function BrandSpyAdDetailPage() {
     setTranscribing(true);
     setTranscriptError(null);
     try {
-      const res = await fetch(`${API_BASE}/ads/${ad.id}/transcribe`, {
+      const res = await authFetch(`${API_BASE}/ads/${ad.id}/transcribe`, {
         method: 'POST',
         credentials: 'include',
       });

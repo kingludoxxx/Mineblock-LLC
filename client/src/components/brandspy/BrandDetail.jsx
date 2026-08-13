@@ -1,3 +1,4 @@
+import authFetch from '../../services/authFetch';
 import { useEffect, useRef, useState, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
@@ -936,7 +937,7 @@ export default function BrandDetail({ apiBaseUrl, brandId, onBack }) {
   // ---- Load brand ----
   useEffect(() => {
     setBrandError(null);
-    fetch(`${apiBaseUrl}/brands/${brandId}`)
+    authFetch(`${apiBaseUrl}/brands/${brandId}`)
       .then((r) => { if (!r.ok) throw new Error(`Brand not found (${r.status})`); return r.json(); })
       .then((d) => { if (!d.brand) throw new Error('Brand not found'); setBrand(d.brand); })
       .catch((e) => setBrandError(e.message));
@@ -958,7 +959,7 @@ export default function BrandDetail({ apiBaseUrl, brandId, onBack }) {
       // statusFilter the user might have set, since the Intelligence
       // toolbar doesn't expose it). Overview tab keeps the user's choice.
       if (activeTab === 'intelligence') params.set('status', 'ACTIVE');
-      const res  = await fetch(`${apiBaseUrl}/brands/${brandId}/ads?${params}`);
+      const res  = await authFetch(`${apiBaseUrl}/brands/${brandId}/ads?${params}`);
       if (!res.ok) throw new Error(`Failed (${res.status})`);
       const data = await res.json();
       setAds(data.ads ?? []);
@@ -978,7 +979,7 @@ export default function BrandDetail({ apiBaseUrl, brandId, onBack }) {
     setIntelLoading(true);
     setIntelError(null);
     try {
-      const res  = await fetch(`${apiBaseUrl}/brands/${brandId}/intel`);
+      const res  = await authFetch(`${apiBaseUrl}/brands/${brandId}/intel`);
       if (!res.ok) throw new Error(`Failed (${res.status})`);
       const data = await res.json();
       setIntel(data);
@@ -1000,7 +1001,7 @@ export default function BrandDetail({ apiBaseUrl, brandId, onBack }) {
   useEffect(() => {
     if (activeTab !== 'overview' || !brandId) return;
     let cancelled = false;
-    fetch(`${apiBaseUrl}/brands/${brandId}/format-counts`)
+    authFetch(`${apiBaseUrl}/brands/${brandId}/format-counts`)
       .then((r) => (r.ok ? r.json() : { counts: null }))
       .then((d) => { if (!cancelled) setFormatCounts(d.counts ?? null); })
       .catch(() => { if (!cancelled) setFormatCounts(null); });
@@ -1013,7 +1014,7 @@ export default function BrandDetail({ apiBaseUrl, brandId, onBack }) {
   useEffect(() => {
     if (activeTab !== 'overview' || !brandId) return;
     let cancelled = false;
-    fetch(`${apiBaseUrl}/brands/${brandId}/aggregation-counts`)
+    authFetch(`${apiBaseUrl}/brands/${brandId}/aggregation-counts`)
       .then((r) => (r.ok ? r.json() : { hooks: 0, adcopy: 0, headlines: 0, landing: 0 }))
       .then((d) => { if (!cancelled) setAggCounts(d); })
       .catch(() => { if (!cancelled) setAggCounts({ hooks: 0, adcopy: 0, headlines: 0, landing: 0 }); });
@@ -1036,7 +1037,7 @@ export default function BrandDetail({ apiBaseUrl, brandId, onBack }) {
     setRefreshing(true);
     setRefreshError(null);
     try {
-      const scrapeRes = await fetch(`${apiBaseUrl}/brands/${brandId}/scrape`, { method: 'POST' });
+      const scrapeRes = await authFetch(`${apiBaseUrl}/brands/${brandId}/scrape`, { method: 'POST' });
       if (!scrapeRes.ok) {
         const body = await scrapeRes.json().catch(() => ({}));
         throw new Error(body.error || `Scrape trigger failed (${scrapeRes.status})`);
@@ -1046,7 +1047,7 @@ export default function BrandDetail({ apiBaseUrl, brandId, onBack }) {
       const deadline = Date.now() + 5 * 60 * 1000;
       while (Date.now() < deadline) {
         await new Promise((resolve) => setTimeout(resolve, 2000));
-        const r = await fetch(`${apiBaseUrl}/brands/${brandId}`);
+        const r = await authFetch(`${apiBaseUrl}/brands/${brandId}`);
         if (r.ok) {
           const d = await r.json();
           if (d.brand) {
