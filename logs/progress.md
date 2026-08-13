@@ -4881,3 +4881,42 @@ DECISIONS:
     disk, scoped but not built.
 STATUS: COMPLETE
 ---
+
+---
+TIMESTAMP: 2026-08-14 03:30
+TASK: Learning loop (layer 1) + contextual mechanism rule + prompt invariants
+BUILT:
+  (1) Learning loop layer 1: briefOutcomes.computeTrackRecord() aggregates every
+  operator approve/reject by source brand, angle and architecture; injected into
+  the fit-triage prompt; fit_score/angle/why persisted on each queued job
+  (migration 094) so "does triage predict the operator?" stays one query.
+  GET /autopilot/learning surfaces it. MIN_SAMPLE=3; empty history renders
+  nothing. VERIFIED STEERING LIVE: with seranova at 80% / mydermadream at 33%
+  approval, the next batch picked seranova 2x / sculpiflex 2x / mydermadream 0.
+  (2) Source-precedent mechanism rule (operator: "everything has a context,
+  we're not working like robots"): mechanism hooks are EARNED — permitted when
+  the SOURCE's opening 400 chars lead with mechanism, enforced otherwise.
+  Wired through detection, drop rule, residuals, and the DB prompt.
+  (3) Unfixable hooks are DROPPED, not delivered, whenever >=3 clean remain.
+  (4) Prompt invariants in the harness: 6 load-bearing rules asserted PRESENT
+  in the live prompt before any generation. Exists because the architecture
+  rewrite had SILENTLY DELETED the spec-hook rule — the true root cause of the
+  recurring "8mm deep" hook; the harness only checked outputs, which vary.
+TESTED: unit suites for track-record block, precedent gate (both directions +
+  window boundary), drop logic (drops at >=3, keeps+flags below floor);
+  learning endpoint live after fixing a wrong-table join (brand_name is two
+  joins away); final 3-brief batch: ZERO spec hooks and ZERO ungrounded hooks
+  delivered for the first time — scores 5.6/7.1/8.0 with flags matching a
+  manual read (weakest brief was a 546-char overlay-ad source, honestly scored).
+  B0155 (8.0) is the contextual rule vindicated: mechanism-led source produced
+  a faithful mechanism explainer, best brief to date.
+OUTPUT: Tool at ~8.5 by dimension scoring (hooks 8.5, body 8, selection 7.5,
+  score honesty 9). Operator reviewing the batch.
+DECISIONS:
+  - DECISION MADE: last resort is deletion, not delivery — a flag on a bad hook
+    is a confession, not protection.
+  - OPEN: triage should weigh source SUBSTANCE (a <800-char source cannot merit
+    fit 9); near-duplicate hook pairs; layer 2 performance source (Meta API vs
+    winner button) — operator's call.
+STATUS: COMPLETE — awaiting operator review of B0154-B0156
+---
