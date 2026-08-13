@@ -32,14 +32,18 @@ const MIN_SAMPLE = 3;
  * than none.
  */
 export async function computeTrackRecord() {
+  // brand_name lives on the REFERENCE, two joins away — the API responses that
+  // show reference_brand_name are aliasing through this same chain.
   const rows = await pgQuery(`
     SELECT
-      COALESCE(NULLIF(TRIM(reference_brand_name), ''), '(unknown)') AS brand,
-      COALESCE(NULLIF(TRIM(angle), ''), '(none)')                    AS angle,
-      COALESCE(scores_json->>'architecture', '(unclassified)')       AS architecture,
-      status,
+      COALESCE(NULLIF(TRIM(r.brand_name), ''), '(unknown)')      AS brand,
+      COALESCE(NULLIF(TRIM(g.angle), ''), '(none)')              AS angle,
+      COALESCE(g.scores_json->>'architecture', '(unclassified)') AS architecture,
+      g.status,
       COUNT(*)::int AS n
-    FROM brief_pipeline_generated
+    FROM brief_pipeline_generated g
+    LEFT JOIN brief_pipeline_winners w     ON w.id = g.winner_id
+    LEFT JOIN brief_pipeline_references r  ON r.id = w.reference_id
     GROUP BY 1, 2, 3, 4
   `);
 
