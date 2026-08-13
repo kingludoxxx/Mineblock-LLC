@@ -860,15 +860,18 @@ function SortDropdown({ value, onChange, options }) {
   const current = options.find((o) => o.value === value);
   return (
     <div className="relative text-xs" ref={ref}>
+      {/* Same pill shape and weight as the filter dropdowns beside it. It used
+          to render as bare "Sort: X" text, which read as a caption rather than
+          a control — the ranking options (longest running, climbing fast) were
+          effectively hidden behind it. */}
       <button
         onClick={() => setOpen((o) => !o)}
-        className="flex items-center gap-1.5 text-text-muted hover:text-text-primary transition-colors">
-        <span className="text-text-faint">Sort:</span>
-        <span className="font-medium text-text-primary">{current?.label ?? value}</span>
+        className="flex items-center gap-2 px-3 py-1.5 rounded-lg border bg-bg-elevated text-text-primary border-border-default hover:bg-bg-hover transition-colors">
+        <span className="font-medium">{current?.label ?? value}</span>
         <ChevronDown className={`w-3 h-3 text-text-faint transition-transform ${open ? 'rotate-180' : ''}`} />
       </button>
       {open && (
-        <div className="absolute right-0 top-full mt-1.5 w-44 rounded-xl shadow-2xl z-50 overflow-hidden py-1"
+        <div className="absolute right-0 top-full mt-1.5 w-52 rounded-xl shadow-2xl z-50 overflow-hidden py-1"
           style={{ background: '#1e1e1e', border: '1px solid #303030' }}>
           {options.map((opt) => (
             <button
@@ -934,6 +937,10 @@ export default function BrandDetail({ apiBaseUrl, brandId, onBack }) {
   // deep links and renders the same component with pageMode.
   const navigate = useNavigate();
   const [modalAd, setModalAd] = useState(null);
+  // AI Brand Intel is reference material, not something you read on every
+  // visit — expanded it was the tallest thing on the page and pushed the
+  // creatives down a full band. Collapsed by default, one click to open.
+  const [intelOpen, setIntelOpen] = useState(false);
   const openAd = useCallback((ad) => {
     if (!ad?.id) return;
     setModalAd(ad);
@@ -1288,10 +1295,13 @@ export default function BrandDetail({ apiBaseUrl, brandId, onBack }) {
               );
             })()}
 
-            {/* Two-column dashboard. LEFT = stacked Media-mix card + 4-stat
-                card. RIGHT = AI Brand Intel card. */}
+            {/* Compact dashboard. Media mix and the aggregate counts sit side
+                by side on ONE short row; AI Brand Intel moves below into a
+                collapsed disclosure. Previously intel occupied a full-height
+                right column, so the band between the filters and the first
+                creative was as tall as the intel list — the single biggest
+                source of dead space on the page. */}
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
-              {/* LEFT column — two stacked cards */}
               <div className="space-y-3">
                 <MediaMixBar counts={formatCounts} />
 
@@ -1318,19 +1328,36 @@ export default function BrandDetail({ apiBaseUrl, brandId, onBack }) {
                 </div>
               </div>
 
-              {/* RIGHT column — AI Brand Intel card */}
-              <div className="rounded-xl border border-border-subtle bg-bg-card p-4">
-                <IntelPanel intel={intel} intelLoading={intelLoading} intelError={intelError} onRetry={loadIntel} />
-              </div>
             </div>
 
-            {/* Count + sort — "1421 Ads" header above grid */}
+            {/* AI Brand Intel — collapsed by default. */}
+            <div className="rounded-xl border border-border-subtle bg-bg-card">
+              <button
+                onClick={() => setIntelOpen((o) => !o)}
+                className="w-full flex items-center justify-between px-4 py-2.5 text-left hover:bg-white/[0.02] transition-colors rounded-xl">
+                <span className="flex items-center gap-2 text-[13px] font-semibold text-text-primary">
+                  <Sparkles className="w-3.5 h-3.5 text-text-faint" />
+                  AI Brand Intel
+                  <span className="text-[11px] font-normal text-text-faint">
+                    personas · angles · USPs · desires · emotions
+                  </span>
+                </span>
+                <ChevronDown className={`w-4 h-4 text-text-faint transition-transform ${intelOpen ? 'rotate-180' : ''}`} />
+              </button>
+              {intelOpen && (
+                <div className="px-4 pb-4">
+                  <IntelPanel intel={intel} intelLoading={intelLoading} intelError={intelError} onRetry={loadIntel} />
+                </div>
+              )}
+            </div>
+
+            {/* Count line. Sort lives in the filter bar above — it was here
+                too, which rendered the control twice on the same screen. */}
             {!adsLoading && total > 0 && (
-              <div className="flex items-center justify-between pt-2">
+              <div className="flex items-center pt-2">
                 <span className="text-base font-semibold text-text-primary tabular-nums">
                   {total.toLocaleString()} <span className="text-text-muted font-normal">Ads</span>
                 </span>
-                <SortDropdown value={sort} onChange={setSort} options={SORT_OPTIONS} />
               </div>
             )}
 
