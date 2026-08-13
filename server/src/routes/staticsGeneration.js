@@ -24,6 +24,8 @@
 
 import { Router } from 'express';
 import {
+  enforceTextShape,
+  describeShapeReport,
   buildClaudeAnalysisPrompt,
   buildNanoBananaImagePrompt,
   buildAdjustmentPrompt,
@@ -1678,7 +1680,15 @@ const MAX_TEMP_IMAGES = 200;
 // (e.g. adding {{PUURE_HOOKS}}), change the constant below to force a
 // one-shot refresh across all deployments.
 // ─────────────────────────────────────────────────────────────────────────
-const STATICS_CLAUDE_SIGNATURE = '{{MASTER_BRIEF}}';
+// Bumped 2026-08-13 for the TEXT RULES revision (swap-not-rewrite: adapted_text
+// must mirror original_text's shape, and a text-free reference must stay
+// text-free). Must be a literal that exists in the TEMPLATE itself — a string
+// that only appears in the template's RENDERED output would never match, and
+// the re-seed would fire on every single boot and overwrite operator edits
+// forever. Verified before bumping: all six stored templates on Puure were
+// byte-identical to the baked defaults, so this one-shot refresh discards no
+// operator work.
+const STATICS_CLAUDE_SIGNATURE = 'TEXT RULES — this is a SWAP';
 (async () => {
   try {
     await new Promise(r => setTimeout(r, 6000)); // let migrations settle
@@ -2500,10 +2510,25 @@ Compliance — never claim: {{COMPLIANCE}}
 Operator Notes: {{NOTES}}{{PRODUCT_IMAGE_NOTE}}
 {{MASTER_BRIEF}}
 
+TEXT RULES — this is a SWAP, not a rewrite. You are replacing the reference ad's
+words with ours; you are NOT authoring an ad from scratch.
+- Fill original_text with the text ACTUALLY VISIBLE in the reference image.
+- adapted_text must MIRROR THE SHAPE of original_text: a field the reference does
+  not have must stay empty, and arrays must have THE SAME NUMBER of entries as
+  the reference (2 bullets in the reference => exactly 2 adapted bullets).
+- Each adapted field must be close in LENGTH to the one it replaces. The layout
+  reserves fixed space; a much longer line breaks the composition that won.
+- If the reference image contains NO text at all, set reference_has_text to false
+  and leave EVERY adapted_text field empty. A text-free reference produces a
+  text-free ad. Do not invent a headline, bullets or badges to fill the space.
+- Set reference_has_text to true whenever you can see any text in the image, even
+  if you can only read part of it.
+
 Analyze the reference image and respond in valid JSON only:
 {
   "original_text": { "headline": "...", "subheadline": "...", "body": "...", "cta": "...", "badges": [], "bullets": [] },
   "adapted_text": { "headline": "...", "subheadline": "...", "body": "...", "cta": "...", "badges": [], "bullets": [] },
+  "reference_has_text": true,
   "people_count": 0,
   "character_adaptation": "...",
   "reference_has_product_visual": true,
@@ -3173,6 +3198,20 @@ router.post('/generate', authenticate, async (req, res) => {
         for (let i = 0; i < opens - closes; i++) fixable += '}';
         try { claudeResult = JSON.parse(fixable); }
         catch { throw new Error(`Failed to parse Claude JSON: ${parseErr.message}`); }
+      }
+
+      // Clamp adapted_text to the reference's own text shape before ANY
+      // downstream use — the image prompt, the persisted adapted_text and the
+      // stored claude_analysis all read from this object, so clamping here is
+      // the single point that keeps them consistent.
+      {
+        const shaped = enforceTextShape(claudeResult);
+        const summary = describeShapeReport(shaped.report);
+        if (summary) console.log(`[staticsGeneration] text shape — ${summary}`);
+        if (shaped.report.suspectExtractionFailure) {
+          console.warn('[staticsGeneration] ⚠️ Claude asserted the reference HAS text but returned none — copy was NOT stripped; treat this generation as suspect');
+        }
+        claudeResult = shaped.result;
       }
       console.log(`[staticsGeneration] ⏱ Claude finished in ${claudeMs}ms`);
 
@@ -4525,6 +4564,20 @@ router.post('/iterate/:creativeId', authenticate, async (req, res) => {
             const fixable = jsonMatch[0].replace(/,\s*([}\]])/g, '$1');
             claudeResult = JSON.parse(fixable);
           }
+          // Clamp adapted_text to the reference's own text shape before ANY
+          // downstream use — the image prompt, the persisted adapted_text and the
+          // stored claude_analysis all read from this object, so clamping here is
+          // the single point that keeps them consistent.
+          {
+            const shaped = enforceTextShape(claudeResult);
+            const summary = describeShapeReport(shaped.report);
+            if (summary) console.log(`[staticsGeneration] text shape — ${summary}`);
+            if (shaped.report.suspectExtractionFailure) {
+              console.warn('[staticsGeneration] ⚠️ Claude asserted the reference HAS text but returned none — copy was NOT stripped; treat this generation as suspect');
+            }
+            claudeResult = shaped.result;
+          }
+
 
           // Step B2: Image generation via the parent's engine (NB or OpenAI).
           // Honors per-creative engine persistence — no cross-engine drift.
@@ -7556,6 +7609,20 @@ async function _doRegenerateBrokenPreviews(req, res) {
           let claudeResult;
           try { claudeResult = JSON.parse(m[0]); }
           catch { claudeResult = JSON.parse(m[0].replace(/,\s*([}\]])/g, '$1')); }
+          // Clamp adapted_text to the reference's own text shape before ANY
+          // downstream use — the image prompt, the persisted adapted_text and the
+          // stored claude_analysis all read from this object, so clamping here is
+          // the single point that keeps them consistent.
+          {
+            const shaped = enforceTextShape(claudeResult);
+            const summary = describeShapeReport(shaped.report);
+            if (summary) console.log(`[staticsGeneration] text shape — ${summary}`);
+            if (shaped.report.suspectExtractionFailure) {
+              console.warn('[staticsGeneration] ⚠️ Claude asserted the reference HAS text but returned none — copy was NOT stripped; treat this generation as suspect');
+            }
+            claudeResult = shaped.result;
+          }
+
 
           // 4. Step 2: image gen via the row's original engine (NB or OpenAI).
           // Honors per-creative engine persistence — regenerating an OpenAI

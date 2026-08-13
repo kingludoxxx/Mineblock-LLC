@@ -210,6 +210,168 @@ export function mapProductRowToFlatProfile(row = {}) {
  * @param {string} template     — DB-stored prompt template with {{VARS}}
  * @returns {string} interpolated prompt text
  */
+// ─────────────────────────────────────────────────────────────────────────────
+// TEXT-SHAPE ENFORCEMENT
+//
+// This pipeline is a SWAP tool: read the winning ad's text, substitute ours.
+// Nothing enforced that. Observed in prod 2026-08-13 on a real reference whose
+// original_text came back with all six fields empty — the reference genuinely
+// had no text on it — and the pipeline still authored 661 characters: a 75-char
+// headline, a 107-char subheadline, a 213-char body, a CTA, five bullets and
+// three badges, then rendered them over a cloned photo of an empty dining room.
+//
+// The invariant: adapted_text may never exceed the SHAPE of original_text.
+//   - a field the reference does not have is dropped, not invented
+//   - arrays are truncated to the reference's own count (2 bullets => 2, not 5)
+//   - a reference with no text at all produces a text-free ad
+//
+// Enforced in code rather than asked for in the prompt, because a prompt
+// instruction is a request and this needs to be a guarantee. Every clamp is
+// logged, and nothing is dropped silently.
+//
+// SAFETY: "all fields empty" could also mean Claude failed to READ text that is
+// present, and stripping copy on that basis would be a regression. So the
+// caller is told which case it saw via `report.suspectExtractionFailure` (set
+// when the model asserted reference_has_text === true yet returned nothing) so
+// it can log loudly instead of quietly producing a blank ad.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const TEXT_SCALARS = ['headline', 'subheadline', 'body', 'cta'];
+const TEXT_ARRAYS  = ['bullets', 'badges'];
+
+// How much longer an adapted field may be than the one it replaces. A static's
+// layout reserves fixed space: swapping a 30-char headline for a 90-char one
+// does not "add value", it breaks the composition the reference won with.
+const LENGTH_TOLERANCE = 1.5;
+
+const asString = (v) => (typeof v === 'string' ? v.trim() : '');
+const asArray  = (v) => (Array.isArray(v) ? v.filter(x => asString(x)) : []);
+
+/**
+ * Clamp adapted_text to the shape of original_text.
+ *
+ * Returns a NEW claudeResult (input is not mutated) plus a report describing
+ * every change, so the caller can log exactly what was dropped and why.
+ *
+ * @param {Object} claudeResult
+ * @returns {{result: Object, report: Object}}
+ */
+export function enforceTextShape(claudeResult = {}) {
+  // GUARD: only clamp when the analysis actually carries an original_text
+  // object. `original_text: {}` means "Claude looked and found no text" — a
+  // real signal. A MISSING original_text means we never had the reading (e.g. a
+  // result rebuilt from stored adapted_text), and treating absence as "no text"
+  // would strip every field on copy we have no evidence about.
+  if (!claudeResult || typeof claudeResult.original_text !== 'object' || claudeResult.original_text === null) {
+    return {
+      result: claudeResult || {},
+      report: { skipped: 'analysis carries no original_text — nothing to compare against', droppedFields: [], truncatedArrays: [], shortenedFields: [], textFreeRender: false, suspectExtractionFailure: false },
+    };
+  }
+
+  const orig = claudeResult.original_text || {};
+  const adapted = claudeResult.adapted_text || {};
+
+  const origScalars = Object.fromEntries(TEXT_SCALARS.map(f => [f, asString(orig[f])]));
+  const origArrays  = Object.fromEntries(TEXT_ARRAYS.map(f => [f, asArray(orig[f])]));
+  const referenceHasAnyText =
+    TEXT_SCALARS.some(f => origScalars[f]) || TEXT_ARRAYS.some(f => origArrays[f].length > 0);
+
+  // An explicit assertion from the model, when the prompt supplies one. Absent
+  // on older DB-stored prompts, which is why it is only ever used to DETECT a
+  // contradiction, never as the thing that authorises a clamp.
+  const asserted = claudeResult.reference_has_text;
+
+  const report = {
+    referenceHasAnyText,
+    droppedFields: [],
+    truncatedArrays: [],
+    shortenedFields: [],
+    textFreeRender: false,
+    suspectExtractionFailure: asserted === true && !referenceHasAnyText,
+  };
+
+  const out = { ...claudeResult };
+  const next = {};
+
+  if (!referenceHasAnyText) {
+    // Nothing to swap ⇒ render text-free. This is the case that produced the
+    // dining-room ad with 661 invented characters.
+    for (const f of [...TEXT_SCALARS, ...TEXT_ARRAYS]) {
+      const had = TEXT_ARRAYS.includes(f) ? asArray(adapted[f]).length > 0 : Boolean(asString(adapted[f]));
+      if (had) report.droppedFields.push(f);
+    }
+    next.headline = ''; next.subheadline = ''; next.body = ''; next.cta = '';
+    next.bullets = []; next.badges = [];
+    report.textFreeRender = true;
+    out.adapted_text = next;
+    return { result: out, report };
+  }
+
+  // The reference does have text, so per-field shape is a trustworthy signal.
+  for (const f of TEXT_SCALARS) {
+    const o = origScalars[f];
+    const a = asString(adapted[f]);
+    if (!o) {
+      // Reference has no such field — do not add one.
+      if (a) report.droppedFields.push(f);
+      next[f] = '';
+      continue;
+    }
+    if (!a) { next[f] = ''; continue; }
+    const max = Math.ceil(o.length * LENGTH_TOLERANCE);
+    if (a.length > max) {
+      // Cut at a word boundary rather than mid-word.
+      let cut = a.slice(0, max);
+      const sp = cut.lastIndexOf(' ');
+      if (sp > max * 0.6) cut = cut.slice(0, sp);
+      next[f] = cut.trim();
+      report.shortenedFields.push({ field: f, from: a.length, to: next[f].length, referenceLength: o.length });
+    } else {
+      next[f] = a;
+    }
+  }
+
+  for (const f of TEXT_ARRAYS) {
+    const oCount = origArrays[f].length;
+    const a = asArray(adapted[f]);
+    if (oCount === 0) {
+      if (a.length > 0) report.droppedFields.push(f);
+      next[f] = [];
+      continue;
+    }
+    if (a.length > oCount) {
+      report.truncatedArrays.push({ field: f, from: a.length, to: oCount });
+      next[f] = a.slice(0, oCount);
+    } else {
+      next[f] = a;
+    }
+  }
+
+  out.adapted_text = next;
+  return { result: out, report };
+}
+
+/**
+ * One-line summary of a shape report, or null when nothing changed.
+ * Kept next to the enforcer so the log wording cannot drift from the logic.
+ */
+export function describeShapeReport(report) {
+  if (!report) return null;
+  const bits = [];
+  if (report.textFreeRender) {
+    bits.push(report.droppedFields.length
+      ? `reference has NO text — dropped ${report.droppedFields.join(', ')} (text-free render)`
+      : 'reference has no text — text-free render');
+  }
+  if (report.droppedFields.length && !report.textFreeRender) {
+    bits.push(`dropped fields absent from the reference: ${report.droppedFields.join(', ')}`);
+  }
+  for (const t of report.truncatedArrays) bits.push(`${t.field} ${t.from}→${t.to} (reference count)`);
+  for (const s of report.shortenedFields) bits.push(`${s.field} ${s.from}→${s.to} chars (reference ${s.referenceLength})`);
+  return bits.length ? bits.join(' · ') : null;
+}
+
 export function buildNanoBananaImagePrompt(claudeResult = {}, product = {}, template = '', iterationVars = {}) {
   const hasProduct = claudeResult.reference_has_product_visual !== false;
   const productVisual = (claudeResult.product_visual_for_generation || '').trim();
