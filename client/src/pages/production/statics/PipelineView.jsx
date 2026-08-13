@@ -22,8 +22,10 @@ import {
   Wrench,
 } from 'lucide-react';
 import api from '../../../services/api';
-import { ReferenceColumn } from './ReferenceColumn';
 import { FromLeagueColumn } from './FromLeagueColumn';
+import IterationsColumn from './IterationsColumn';
+import ComposerPanels from './ComposerPanels';
+import IterationsConfigModal from './IterationsConfigModal';
 import CreativeImage from './CreativeImage';
 
 // ---------------------------------------------------------------------------
@@ -113,7 +115,29 @@ function selfHealCreative(id) {
 // column (PipelineColumn merges queueItems with creatives). This matches
 // the operator's intent that "Generating" be an in-place visual state,
 // not its own kanban lane.
+// Pipeline column model (2026-08-12 restructure):
+//
+//   ITERATIONS → COMPOSER → TO GENERATE → TO REVIEW → READY TO LAUNCH → LAUNCHED
+//
+// ITERATIONS and TO GENERATE are sources (live winners / League references) and
+// render their own components. COMPOSER holds statics that already exist as
+// pixels. Only 'composer', 'review', 'ready' and 'launched' are real
+// spy_creatives.status values, so only those get drop zones.
 const COLUMNS = [
+  {
+    key: 'composer',
+    label: 'Composer',
+    icon: Package,
+    color: 'violet',
+    iconClass: 'text-violet-400 drop-shadow-[0_0_6px_rgba(167,139,250,0.4)]',
+    badgeBg: 'bg-violet-500/10',
+    badgeText: 'text-violet-300',
+    badgeBorder: 'border-violet-500/25',
+    placeholder: null,
+    // Pushes a finished design into TO REVIEW.
+    actionLabel: 'In To Review',
+    nextStatus: 'review',
+  },
   {
     key: 'review',
     label: 'To Review',
@@ -255,7 +279,12 @@ function RatioPill({ label, status }) {
   return null;
 }
 
-function CreativeCard({ creative, column, onStatusChange, onCardClick, onRegenerate, variantStatus, onEditClick }) {
+function CreativeCard({ creative, column, onStatusChange, onCardClick, onRegenerate, variantStatus, onEditClick, productAngles = [], onAngleChange }) {
+  // ANGLE GATE — a static cannot advance to Ready to Launch without an angle.
+  // Mirrored from the server (409 ANGLE_REQUIRED) so the operator is stopped by
+  // a disabled button with a reason, not by a failed request.
+  const hasAngle = Boolean(String(creative.angle || '').trim());
+  const gateBlocks = column.nextStatus === 'ready' && !hasAngle;
   const [wasDragged, setWasDragged] = useState(false);
   const isDraggable = !column.noDropZone;
 
@@ -388,19 +417,58 @@ function CreativeCard({ creative, column, onStatusChange, onCardClick, onRegener
             )}
           </div>
 
+          {/* Angle picker — required before a static can reach Ready to Launch.
+              Shown in Composer and To Review so the angle can be set as soon as
+              the card exists, not only at the moment of promotion. */}
+          {(column.key === 'review' || column.key === 'composer') && (
+            <div className="mb-2" onClick={(e) => e.stopPropagation()}>
+              <div className="relative">
+                <select
+                  value={creative.angle || ''}
+                  onChange={(e) => onAngleChange?.(creative.id, e.target.value || null)}
+                  className={`w-full appearance-none h-8 pl-2 pr-7 rounded-lg text-[11px] font-mono cursor-pointer transition-colors border ${
+                    hasAngle
+                      ? 'bg-white/[0.05] border-white/[0.08] text-zinc-200 hover:bg-white/[0.08]'
+                      : 'bg-amber-500/[0.08] border-amber-500/30 text-amber-300 hover:bg-amber-500/[0.12]'
+                  }`}
+                  title={hasAngle ? 'Angle' : 'Pick an angle to unlock Ready to Launch'}
+                >
+                  <option value="">— pick an angle —</option>
+                  {productAngles.map((a) => {
+                    const name = typeof a === 'string' ? a : (a?.name || '');
+                    return name ? <option key={name} value={name}>{name}</option> : null;
+                  })}
+                  {/* Preserve an angle that is no longer in the product's list,
+                      so opening the dropdown cannot silently clear it. */}
+                  {hasAngle && !productAngles.some(a => (typeof a === 'string' ? a : a?.name) === creative.angle) && (
+                    <option value={creative.angle}>{creative.angle}</option>
+                  )}
+                </select>
+                <ChevronDown className={`w-3.5 h-3.5 absolute right-2 top-1/2 -translate-y-1/2 pointer-events-none ${hasAngle ? 'text-zinc-500' : 'text-amber-400'}`} />
+              </div>
+            </div>
+          )}
+
           {/* Action buttons — Approve dominates, icons compact */}
           {column.actionLabel ? (
             <div className="flex items-center gap-1.5">
               <button
                 type="button"
+                disabled={gateBlocks}
                 onClick={(e) => {
                   e.stopPropagation();
+                  if (gateBlocks) return;
                   onStatusChange?.(creative.id, column.nextStatus);
                 }}
-                className="flex-1 min-w-0 inline-flex items-center justify-center gap-1.5 h-9 rounded-lg text-[12px] font-semibold border border-emerald-500/30 bg-emerald-500/[0.08] text-emerald-400 hover:bg-emerald-500/15 transition-colors cursor-pointer"
+                className={`flex-1 min-w-0 inline-flex items-center justify-center gap-1.5 h-9 rounded-lg text-[12px] font-semibold border transition-colors ${
+                  gateBlocks
+                    ? 'border-white/[0.08] bg-white/[0.03] text-zinc-600 cursor-not-allowed'
+                    : 'border-emerald-500/30 bg-emerald-500/[0.08] text-emerald-400 hover:bg-emerald-500/15 cursor-pointer'
+                }`}
+                title={gateBlocks ? 'Pick an angle before moving this static to Ready to Launch' : undefined}
               >
-                <CheckCircle2 className="w-4 h-4 shrink-0" />
-                {column.actionLabel}
+                {gateBlocks ? <Lock className="w-3.5 h-3.5 shrink-0" /> : <CheckCircle2 className="w-4 h-4 shrink-0" />}
+                {gateBlocks ? 'Angle needed' : column.actionLabel}
               </button>
               {column.key === 'review' && (
                 <button
@@ -844,7 +912,7 @@ function QueueCard({ item, onRemove }) {
 // Standard pipeline column (generating, review, approved)
 // ---------------------------------------------------------------------------
 
-function PipelineColumn({ column, items, onStatusChange, onCardClick, onRegenerate, allCreatives, queueItems, onRemoveFromQueue, onEditClick }) {
+function PipelineColumn({ column, items, onStatusChange, onCardClick, onRegenerate, allCreatives, queueItems, onRemoveFromQueue, onEditClick, productAngles = [], onAngleChange, onGateBlocked, topPanel = null }) {
   const Icon = column.icon;
   const [dragOver, setDragOver] = useState(false);
 
@@ -855,6 +923,16 @@ function PipelineColumn({ column, items, onStatusChange, onCardClick, onRegenera
     try {
       const data = JSON.parse(e.dataTransfer.getData('text/plain'));
       if (data.id && data.status !== column.key) {
+        // ANGLE GATE on the drag path too. The drag payload carries
+        // `angle: creative.angle || 'Uncategorized'`, so it can NEVER be used to
+        // test for a missing angle — resolve the real row instead.
+        if (column.key === 'ready') {
+          const row = allCreatives?.find(c => c.id === data.id);
+          if (row && !String(row.angle || '').trim()) {
+            onGateBlocked?.('Pick an angle before moving this static to Ready to Launch');
+            return;
+          }
+        }
         onStatusChange?.(data.id, column.key);
       }
     } catch { /* ignore */ }
@@ -883,8 +961,11 @@ function PipelineColumn({ column, items, onStatusChange, onCardClick, onRegenera
         </div>
       </div>
 
-      {/* Scrollable card list */}
+      {/* Scrollable card list. `topPanel` scrolls WITH the cards on purpose —
+          the Composer import controls are used once per batch, so pinning them
+          would permanently cost card space. */}
       <div className={`flex-1 overflow-y-auto pr-2 space-y-4 pb-4 custom-scrollbar transition-colors rounded-lg ${dragOver ? 'bg-white/[0.03] ring-1 ring-[#c9a84c]/30' : ''}`}>
+        {topPanel}
         {queueItems?.map((qItem) => (
           <QueueCard key={qItem.id} item={qItem} onRemove={onRemoveFromQueue} />
         ))}
@@ -917,6 +998,8 @@ function PipelineColumn({ column, items, onStatusChange, onCardClick, onRegenera
                 onRegenerate={onRegenerate}
                 variantStatus={vStatus}
                 onEditClick={onEditClick}
+                productAngles={productAngles}
+                onAngleChange={onAngleChange}
               />
             );
           })
@@ -1123,7 +1206,9 @@ export function PipelineView({ creatives = [], onStatusChange, onAngleChange, on
   // dedicated Generating column was removed). The CreativeCard already
   // renders status='generating' rows with a loader + dim reference thumb.
   const buckets = useMemo(() => {
-    const map = { review: [], ready: [], launched: [] };
+    // 'composer' holds statics that already exist as pixels (zip import or a
+    // "describe a new static" generation) and have not been pushed to review.
+    const map = { composer: [], review: [], ready: [], launched: [] };
     const STALE_GENERATING_MS = 7 * 60 * 1000; // 7 min
     const now = Date.now();
     for (const c of creatives) {
@@ -1154,6 +1239,12 @@ export function PipelineView({ creatives = [], onStatusChange, onAngleChange, on
   // Counter bumped whenever a league import lands so FromLeagueColumn
   // re-fetches without requiring a page refresh.
   const [leagueRefreshTick, setLeagueRefreshTick] = useState(0);
+
+  // Iterations Config modal + a tick so the column re-fetches after its
+  // per-account filters change (otherwise the operator saves a config and the
+  // column keeps showing the old result set).
+  const [iterConfigOpen, setIterConfigOpen] = useState(false);
+  const [iterRefreshTick, setIterRefreshTick] = useState(0);
 
   // "Repair Broken" button busy flag.
   const [repairing, setRepairing] = useState(false);
@@ -1274,7 +1365,11 @@ export function PipelineView({ creatives = [], onStatusChange, onAngleChange, on
 
   // Standard columns (generating, review). 'approved' is removed; Ready / Launched
   // are still rendered separately below.
-  const standardColumns = COLUMNS.filter(c => !['ready', 'launched'].includes(c.key));
+  // Columns are rendered explicitly rather than mapped: TO GENERATE sits between
+  // COMPOSER and TO REVIEW but is not a spy_creatives status, so no single array
+  // can express the order.
+  const composerColumn = COLUMNS.find(c => c.key === 'composer');
+  const reviewColumn = COLUMNS.find(c => c.key === 'review');
   const readyColumn = COLUMNS.find(c => c.key === 'ready');
   const launchedColumn = COLUMNS.find(c => c.key === 'launched');
 
@@ -1372,45 +1467,64 @@ export function PipelineView({ creatives = [], onStatusChange, onAngleChange, on
 
       {/* Columns */}
       <div className="flex gap-6 flex-1 min-h-0 overflow-x-auto">
-        {/* Reference column — reads spy_creatives WHERE is_reference, with League+Meta import modals. */}
-        <ReferenceColumn
+        {/* 1 · ITERATIONS — live winners from the connected ad accounts, filtered
+            by the per-account Iterations Config. Empty until Meta is connected,
+            and it says so rather than looking broken. */}
+        <IterationsColumn
           productId={productId}
-          onSelectReference={onSelectReference}
-          onAddSelectedToQueue={onAddSelectedToQueue}
-          productAngles={productAngles}
-          onQueueRefWithAngles={onQueueRefWithAngles}
-          onLeagueImported={() => setLeagueRefreshTick(n => n + 1)}
+          onSubmitted={onRefresh}
+          onUseAsReference={onSelectReference}
+          onOpenConfig={() => setIterConfigOpen(true)}
+          refreshTick={iterRefreshTick}
         />
 
-        {/* From League column — followed-brand static feed, multi-select filter.
-            "Use as Reference" promotes a league ad into the operator's Reference
-            column for generation (reuses onSelectReference channel).
-            refreshTick bumps when LeagueImportModal completes so the column
-            re-fetches /league/imported-refs without the operator having to
-            manually refresh the page. */}
+        {/* 2 · COMPOSER — statics that already exist as pixels: a .zip batch
+            designed elsewhere, or a "describe a new static" generation. */}
+        <PipelineColumn
+          column={composerColumn}
+          items={buckets.composer}
+          onStatusChange={handleStatusChange}
+          onCardClick={onCardClick}
+          onRegenerate={onRegenerate}
+          allCreatives={creatives}
+          onEditClick={onEditClick}
+          productAngles={productAngles}
+          onAngleChange={onAngleChange}
+          onGateBlocked={setLaunchError}
+          topPanel={(
+            <ComposerPanels
+              productId={productId}
+              productAngles={productAngles}
+              onImported={onRefresh}
+            />
+          )}
+        />
+
+        {/* 3 · TO GENERATE — League references to build statics from.
+            refreshTick bumps when an import lands so the column re-fetches
+            /league/imported-refs without a page refresh. */}
         <FromLeagueColumn
           onUseAsReference={onSelectReference}
           onQueueLeagueRef={onQueueLeagueRef}
           refreshTick={leagueRefreshTick}
         />
 
-        {/* Standard columns: review (generating was removed in Phase A — in-flight
-            queue items are merged into review's queueItems prop, rendered as
-            skeleton cards in the same slot they'll occupy when complete). */}
-        {standardColumns.map((col) => (
-          <PipelineColumn
-            key={col.key}
-            column={col}
-            items={buckets[col.key]}
-            onStatusChange={handleStatusChange}
-            onCardClick={onCardClick}
-            onRegenerate={onRegenerate}
-            allCreatives={creatives}
-            queueItems={col.key === 'review' ? queue.filter(q => q.status === 'queued' || q.status === 'generating') : undefined}
-            onRemoveFromQueue={onRemoveFromQueue}
-            onEditClick={onEditClick}
-          />
-        ))}
+        {/* 4 · TO REVIEW — generated cards. In-flight queue items are merged in
+            as skeletons occupying the slot they'll fill when complete. */}
+        <PipelineColumn
+          column={reviewColumn}
+          items={buckets.review}
+          onStatusChange={handleStatusChange}
+          onCardClick={onCardClick}
+          onRegenerate={onRegenerate}
+          allCreatives={creatives}
+          queueItems={queue.filter(q => q.status === 'queued' || q.status === 'generating')}
+          onRemoveFromQueue={onRemoveFromQueue}
+          onEditClick={onEditClick}
+          productAngles={productAngles}
+          onAngleChange={onAngleChange}
+          onGateBlocked={setLaunchError}
+        />
 
         {/* Ready to Launch column — grouped by angle */}
         <ReadyToLaunchColumn
@@ -1440,6 +1554,13 @@ export function PipelineView({ creatives = [], onStatusChange, onAngleChange, on
           onRefresh={onRefresh}
         />
       </div>
+
+      {/* Iterations Config — per-ad-account filters driving the ITERATIONS column */}
+      <IterationsConfigModal
+        open={iterConfigOpen}
+        onClose={() => setIterConfigOpen(false)}
+        onChanged={() => setIterRefreshTick(n => n + 1)}
+      />
 
       {/* Launch confirmation modal */}
       {launchModalOpen && pendingLaunch && (

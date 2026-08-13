@@ -1,7 +1,7 @@
 import React, { useEffect, useState, useCallback, useRef } from 'react';
 import {
   Repeat, Loader2, RefreshCw, Clock, X, Sparkles, SlidersHorizontal,
-  CheckCircle2, Trash2,
+  CheckCircle2, Trash2, Settings, AlertTriangle,
 } from 'lucide-react';
 import api from '../../../services/api';
 
@@ -308,7 +308,7 @@ function WinnerCard({ winner, productId, onUseAsReference, onSubmitted, onDismis
 // ---------------------------------------------------------------------------
 // Main column
 // ---------------------------------------------------------------------------
-export function IterationsColumn({ productId, onSubmitted, onUseAsReference }) {
+export function IterationsColumn({ productId, onSubmitted, onUseAsReference, onOpenConfig, refreshTick = 0 }) {
   const [winners, setWinners] = useState([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
@@ -316,16 +316,49 @@ export function IterationsColumn({ productId, onSubmitted, onUseAsReference }) {
   const [minSpend, setMinSpend] = useState(DEFAULT_MIN_SPEND);
   const [minRoas, setMinRoas] = useState(DEFAULT_MIN_ROAS);
   const [windowDays, setWindowDays] = useState(DEFAULT_WINDOW_DAYS);
+  // Per-account configs drive the column when any exist; the inline sliders
+  // remain as the no-config fallback so the column still works before an
+  // account has been added.
+  const [configs, setConfigs] = useState([]);
+  const [notes, setNotes] = useState(null);
 
   const load = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
-      const res = await api.get('/statics-generation/iterations', {
-        params: { minSpend, minRoas, windowDays },
-      });
+      // Read the configs first so the request reflects the operator's saved
+      // filters rather than the inline slider defaults.
+      let cfgs = [];
+      try {
+        const c = await api.get('/statics-generation/iterations/configs');
+        cfgs = c.data?.data || [];
+      } catch { /* fall back to the inline sliders below */ }
+      setConfigs(cfgs);
+
+      const enabled = cfgs.filter(c => c.enabled !== false);
+      const params = enabled.length > 0
+        ? {
+            // Union across configured accounts: the loosest spend floor and the
+            // widest window win, so no account's winners are hidden by another
+            // account's stricter setting. Per-account exactness needs the Meta
+            // sync to populate creative_analysis.account_id (migration 093).
+            minSpend: Math.min(...enabled.map(c => Number(c.min_spend ?? 0))),
+            minRoas,
+            dateRange: enabled.some(c => c.date_range_days == null)
+              ? 'all'
+              : Math.max(...enabled.map(c => c.date_range_days)),
+            adStatuses: [...new Set(enabled.flatMap(c => c.ad_statuses || []))].join(','),
+            maxCopyWords: enabled.every(c => c.max_copy_words != null)
+              ? Math.max(...enabled.map(c => c.max_copy_words))
+              : undefined,
+            accountIds: enabled.map(c => c.account_id).join(','),
+          }
+        : { minSpend, minRoas, windowDays };
+
+      const res = await api.get('/statics-generation/iterations', { params });
       const data = res.data?.data || res.data;
       setWinners(data.winners || []);
+      setNotes(data.notes || null);
     } catch (err) {
       setError(err.response?.data?.error || err.message);
     }
@@ -336,7 +369,7 @@ export function IterationsColumn({ productId, onSubmitted, onUseAsReference }) {
     load();
     const interval = setInterval(load, 10 * 60 * 1000);
     return () => clearInterval(interval);
-  }, [load]);
+  }, [load, refreshTick]);
 
   const handleSubmitted = (batchData) => {
     load();
@@ -366,10 +399,25 @@ export function IterationsColumn({ productId, onSubmitted, onUseAsReference }) {
           </span>
         </div>
         <div className="flex items-center gap-1.5">
+          {/* Per-account config (the reference UI's gear). Falls back to the
+              inline sliders when no account has been configured yet. */}
+          {onOpenConfig && (
+            <button
+              onClick={onOpenConfig}
+              className={`transition-colors cursor-pointer ${configs.length > 0 ? 'text-[#d4b55a]' : 'text-zinc-500 hover:text-zinc-200'}`}
+              title={configs.length > 0
+                ? `Iterations Config — ${configs.length} ad account${configs.length > 1 ? 's' : ''}`
+                : 'Iterations Config — add an ad account'}
+            >
+              <Settings className="w-3.5 h-3.5" />
+            </button>
+          )}
           <button
             onClick={() => setShowFilters((v) => !v)}
             className={`transition-colors cursor-pointer ${showFilters ? 'text-[#d4b55a]' : 'text-zinc-500 hover:text-zinc-200'}`}
-            title="Filters"
+            title={configs.length > 0
+              ? 'Inline filters (overridden by the per-account config above)'
+              : 'Filters'}
           >
             <SlidersHorizontal className="w-3.5 h-3.5" />
           </button>
@@ -442,11 +490,42 @@ export function IterationsColumn({ productId, onSubmitted, onUseAsReference }) {
           </div>
         )}
 
+        {/* Filter caveats. A filter that could only be applied to some rows must
+            say so — otherwise a partial result reads as a complete one. */}
+        {!loading && !error && notes?.copy_filter_partial && (
+          <div className="px-2.5 py-2 rounded-lg border border-amber-500/25 bg-amber-500/[0.06] flex items-start gap-2">
+            <AlertTriangle className="w-3.5 h-3.5 text-amber-400 shrink-0 mt-0.5" />
+            <p className="text-[10px] text-amber-200/90 leading-snug">
+              {notes.copy_unmeasured_rows} ad{notes.copy_unmeasured_rows === 1 ? '' : 's'} have no stored copy,
+              so the word limit could not be applied to them. They are shown rather than hidden.
+            </p>
+          </div>
+        )}
+
         {!loading && !error && winners.length === 0 && (
           <div className="px-3 py-6 text-xs text-zinc-500 text-center leading-relaxed">
-            No ads match the current filters.
-            <br /><br />
-            Try clicking <span className="text-[#d4b55a]">All</span> in the filters panel to widen the range.
+            {configs.length === 0 ? (
+              <>
+                No ad account configured yet.
+                <br /><br />
+                Open <span className="text-[#d4b55a]">Iterations Config</span> to add one — this column
+                then shows that account&apos;s live statics that clear your filters.
+              </>
+            ) : notes?.account_filter_partial ? (
+              <>
+                No ads match the current filters.
+                <br /><br />
+                Note: performance rows are not attributed to an ad account yet, so the account filter
+                cannot narrow by account until the Meta sync populates it.
+              </>
+            ) : (
+              <>
+                No ads match the current filters.
+                <br /><br />
+                Widen the date range or lower the spend floor in{' '}
+                <span className="text-[#d4b55a]">Iterations Config</span>.
+              </>
+            )}
           </div>
         )}
 

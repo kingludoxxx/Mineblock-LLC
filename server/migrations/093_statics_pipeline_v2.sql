@@ -140,3 +140,14 @@ CREATE INDEX IF NOT EXISTS idx_creative_analysis_account
 
 COMMENT ON COLUMN creative_analysis.account_id IS
   'Meta ad account this row belongs to. NULL = not yet attributed; Iterations treats NULL as unknown and does not filter it out.';
+
+-- The Iterations Config modal exposes a MAX COPY WORDS filter, but there was no
+-- ad-copy column on this table at all, so the control had nothing to filter.
+-- Added on the same terms as account_id: nullable, populated by the Meta sync
+-- when the Ads lane wires it up, and NULL means "not measured" — never
+-- "violates the limit". A filter that silently drops every unmeasured row would
+-- empty the column and read as "no winners".
+ALTER TABLE creative_analysis ADD COLUMN IF NOT EXISTS ad_copy TEXT;
+
+COMMENT ON COLUMN creative_analysis.ad_copy IS
+  'Primary ad copy as served on Meta. NULL = not captured by the sync yet; the MAX COPY WORDS filter skips (does not exclude) NULL rows and reports how many it could not measure.';

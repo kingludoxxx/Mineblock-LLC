@@ -3648,6 +3648,27 @@ router.get('/status/:taskId', authenticate, async (req, res) => {
 const WINNER_MIN_SPEND = 50;
 const WINNER_MIN_ROAS  = 1.5;
 
+/**
+ * Parse a numeric query param, falling back ONLY when it is genuinely absent or
+ * unparseable. `parseFloat(x) || fallback` cannot express 0 — a real value the
+ * MIN SPEND field allows — and silently substituted the default instead.
+ */
+function numOr(raw, fallback) {
+  if (raw === undefined || raw === null || raw === '') return fallback;
+  const n = Number(raw);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+/**
+ * Accept a repeatable or comma-separated query param as a clean string array.
+ * Handles `?a=1&a=2` (array), `?a=1,2` (csv) and `?a=` (empty) identically.
+ */
+function csvParam(raw) {
+  if (raw === undefined || raw === null) return [];
+  const parts = Array.isArray(raw) ? raw : String(raw).split(',');
+  return parts.map(s => String(s).trim()).filter(Boolean);
+}
+
 // Iteration strategies — one variable changes per variation; everything else
 // stays pixel-identical to the source winner. This is how $100M DTC brands
 // scale winning statics: isolate one element so you learn what specifically
@@ -3899,9 +3920,67 @@ router.delete('/queue/:id', authenticate, async (req, res) => {
 router.get('/iterations', authenticate, async (req, res) => {
   try {
     await ensureCreativesTable();
-    const minSpend   = parseFloat(req.query.minSpend)  || WINNER_MIN_SPEND;
-    const minRoas    = parseFloat(req.query.minRoas)   || WINNER_MIN_ROAS;
-    const windowDays = parseInt(req.query.windowDays)  || 30;
+    // NOTE on parsing: `parseFloat(x) || FALLBACK` treats a legitimate 0 as
+    // absent — sending minSpend=0 used to come back as 50, so "show me
+    // everything" was impossible to express. numOr() below only falls back when
+    // the value is genuinely missing or unparseable.
+    const minSpend   = numOr(req.query.minSpend, WINNER_MIN_SPEND);
+    const minRoas    = numOr(req.query.minRoas,  WINNER_MIN_ROAS);
+
+    // DATE RANGE — the reference UI offers All Time / 30 / 60 / 90 / 180 / 365.
+    // All Time is an explicit choice, so it must be representable: windowDays=0
+    // or dateRange=all means "no lower bound", NOT "fall back to 30 days".
+    const rawWindow  = req.query.dateRange ?? req.query.windowDays;
+    const allTime    = rawWindow === 'all' || rawWindow === 'alltime' || Number(rawWindow) === 0;
+    const windowDays = allTime ? null : Math.max(1, parseInt(rawWindow, 10) || 30);
+
+    // AD STATUS — multi-select. Empty/absent means "no status filter" rather
+    // than silently defaulting, so the caller decides.
+    const adStatuses = csvParam(req.query.adStatuses ?? req.query.adStatus)
+      .map(s => s.toLowerCase())
+      .filter(s => ['active', 'paused', 'archived'].includes(s));
+
+    // AD ACCOUNTS — creative_analysis.account_id is nullable until the Meta sync
+    // populates it (migration 093). A NULL is "not yet attributed", so it is
+    // NEVER excluded by an account filter: excluding unknowns would make the
+    // column look empty the moment anyone picks an account, which reads as
+    // "no winners" when it actually means "not attributed yet".
+    const accountIds = csvParam(req.query.accountIds);
+
+    // MAX COPY WORDS — word count, not characters (see migration 093's note on
+    // the legacy character-based league_brand_configs.max_copy_length).
+    const maxCopyWords = numOr(req.query.maxCopyWords, null);
+
+    // Build the row-level filters dynamically so an unset filter contributes no
+    // SQL at all (rather than a tautology that the planner still has to chew).
+    const p = [];
+    const rowWhere = [`ca.type = 'image'`];
+
+    if (windowDays !== null) {
+      p.push(String(windowDays));
+      rowWhere.push(`ca.synced_at >= NOW() - ($${p.length} || ' days')::INTERVAL`);
+    }
+    if (adStatuses.length > 0) {
+      p.push(adStatuses);
+      rowWhere.push(`LOWER(COALESCE(ca.ad_status, 'active')) = ANY($${p.length}::text[])`);
+    }
+    if (accountIds.length > 0) {
+      p.push(accountIds);
+      // NULL account_id = not yet attributed by the sync ⇒ kept, not excluded.
+      rowWhere.push(`(ca.account_id IS NULL OR ca.account_id = ANY($${p.length}::text[]))`);
+    }
+    if (maxCopyWords !== null) {
+      p.push(Math.max(1, Math.round(maxCopyWords)));
+      // NULL/blank copy = not measured ⇒ kept, not excluded.
+      rowWhere.push(`(
+        ca.ad_copy IS NULL OR btrim(ca.ad_copy) = '' OR
+        array_length(regexp_split_to_array(btrim(ca.ad_copy), '\\s+'), 1) <= $${p.length}
+      )`);
+    }
+
+    const rowWhereSql = rowWhere.join('\n          AND ');
+    p.push(minSpend); const pMinSpend = p.length;
+    p.push(minRoas);  const pMinRoas  = p.length;
 
     const rows = await pgQuery(`
       WITH agg AS (
@@ -3913,10 +3992,10 @@ router.get('/iterations', authenticate, async (req, res) => {
           SUM(ca.impressions) AS impressions,
           SUM(ca.clicks) AS clicks,
           MAX(ca.synced_at) AS latest_synced_at,
-          MAX(ca.iterated_at) AS iterated_at
+          MAX(ca.iterated_at) AS iterated_at,
+          COUNT(*) FILTER (WHERE ca.ad_copy IS NULL OR btrim(ca.ad_copy) = '') AS copy_unmeasured
         FROM creative_analysis ca
-        WHERE ca.type = 'image'
-          AND ca.synced_at >= NOW() - ($1 || ' days')::INTERVAL
+        WHERE ${rowWhereSql}
         GROUP BY ca.creative_id
       ),
       best_hook AS (
@@ -3935,32 +4014,241 @@ router.get('/iterations', authenticate, async (req, res) => {
         (CASE WHEN agg.spend > 0 THEN (agg.revenue / agg.spend)::FLOAT ELSE 0 END) AS roas,
         (CASE WHEN agg.purchases > 0 THEN (agg.spend / agg.purchases)::FLOAT ELSE 0 END) AS cpa,
         agg.purchases, agg.impressions::BIGINT AS impressions, agg.clicks::BIGINT AS clicks,
-        agg.latest_synced_at, agg.iterated_at,
+        agg.latest_synced_at, agg.iterated_at, agg.copy_unmeasured::INT AS copy_unmeasured,
         bh.ad_name, bh.hook_id, bh.avatar, bh.angle, bh.editor, bh.week,
         bh.thumbnail_url, bh.meta_ad_id, bh.hook_roas::FLOAT AS best_hook_roas,
         bh.hook_cpa::FLOAT AS best_hook_cpa, bh.hook_ctr::FLOAT AS best_hook_ctr,
         (SELECT COUNT(*) FROM spy_creatives WHERE parent_creative_id_ref = agg.creative_id) AS iteration_count
       FROM agg
       JOIN best_hook bh ON bh.creative_id = agg.creative_id
-      WHERE agg.spend >= $2
-        AND (CASE WHEN agg.spend > 0 THEN agg.revenue / agg.spend ELSE 0 END) >= $3
+      WHERE agg.spend >= $${pMinSpend}
+        AND (CASE WHEN agg.spend > 0 THEN agg.revenue / agg.spend ELSE 0 END) >= $${pMinRoas}
         AND NOT EXISTS (
           SELECT 1 FROM dismissed_iteration_winners
           WHERE creative_id = agg.creative_id
         )
       ORDER BY (CASE WHEN agg.spend > 0 THEN agg.revenue / agg.spend ELSE 0 END) DESC, agg.spend DESC
-    `, [String(windowDays), minSpend, minRoas]);
+    `, p);
 
+    // Report what was actually applied, and be explicit about what could not be
+    // measured. "0 winners" and "0 winners because nothing is attributed yet"
+    // look identical otherwise, and the second one is not a real empty state.
+    const unmeasured = rows.reduce((n, r) => n + (r.copy_unmeasured || 0), 0);
     res.json({
       success: true,
       data: {
         winners: rows,
-        filters: { minSpend, minRoas, windowDays },
+        filters: {
+          minSpend, minRoas,
+          windowDays,                       // null = All Time
+          dateRange: windowDays === null ? 'all' : windowDays,
+          adStatuses, accountIds, maxCopyWords,
+        },
+        // Honest caveats for the UI to surface rather than swallow.
+        notes: {
+          copy_unmeasured_rows: unmeasured,
+          copy_filter_partial: maxCopyWords !== null && unmeasured > 0,
+          account_filter_partial: accountIds.length > 0,
+        },
         count: rows.length,
       },
     });
   } catch (err) {
     console.error('[iterations] GET /iterations error:', err);
+    res.status(500).json({ success: false, error: { message: err.message } });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────
+// ITERATIONS CONFIG — per-ad-account filters for the Iterations column.
+//
+// Mirrors league_brand_configs (per-brand import prefs) so both config
+// surfaces behave identically. One row per Meta ad account the operator adds.
+//
+// Created lazily as well as in migration 093 because runMigrations() catches a
+// failing migration, logs a WARNING and boots anyway — so "the migration ran"
+// is not the same as "the table exists". Ensuring here means these routes work
+// on a database where 093 was skipped.
+// ─────────────────────────────────────────────────────────────────────────
+let _iterConfigsReady = false;
+async function ensureIterationConfigsTable() {
+  if (_iterConfigsReady) return;
+  await pgQuery(`
+    CREATE TABLE IF NOT EXISTS statics_iteration_configs (
+      account_id      TEXT PRIMARY KEY,
+      max_copy_words  INTEGER,
+      min_spend       NUMERIC NOT NULL DEFAULT 500,
+      date_range_days INTEGER,
+      ad_statuses     TEXT[] NOT NULL DEFAULT ARRAY['active','paused']::TEXT[],
+      enabled         BOOLEAN NOT NULL DEFAULT TRUE,
+      created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
+  _iterConfigsReady = true;
+}
+
+const ALLOWED_AD_STATUSES = ['active', 'paused', 'archived'];
+const ALLOWED_DATE_RANGES = [30, 60, 90, 180, 365]; // plus null = All Time
+
+function shapeIterationConfig(row) {
+  return {
+    account_id:      row.account_id,
+    account_name:    row.account_name || null,
+    business_name:   row.business_name || null,
+    max_copy_words:  row.max_copy_words ?? null,
+    min_spend:       row.min_spend === null ? null : Number(row.min_spend),
+    date_range_days: row.date_range_days ?? null,      // null = All Time
+    ad_statuses:     Array.isArray(row.ad_statuses) ? row.ad_statuses : [],
+    enabled:         row.enabled !== false,
+    updated_at:      row.updated_at || null,
+  };
+}
+
+// GET /iterations/configs — every configured account, newest first.
+router.get('/iterations/configs', authenticate, async (_req, res) => {
+  try {
+    await ensureIterationConfigsTable();
+    // LEFT JOIN: a config must still be listed even if the account is no longer
+    // in meta_account_audit, otherwise a config becomes invisible-but-active.
+    const rows = await pgQuery(`
+      SELECT c.*, a.account_name, a.business_name
+        FROM statics_iteration_configs c
+        LEFT JOIN meta_account_audit a ON a.account_id = c.account_id
+       ORDER BY c.created_at ASC
+    `);
+    res.json({ success: true, data: rows.map(shapeIterationConfig), count: rows.length });
+  } catch (err) {
+    console.error('[iterations] GET /iterations/configs error:', err);
+    res.status(500).json({ success: false, error: { message: err.message } });
+  }
+});
+
+// GET /iterations/ad-accounts — accounts available to add, flagged with whether
+// they are already configured (drives the "Already added" state in the modal).
+router.get('/iterations/ad-accounts', authenticate, async (_req, res) => {
+  try {
+    await ensureIterationConfigsTable();
+    let accounts = [];
+    try {
+      accounts = await pgQuery(`
+        SELECT a.account_id, a.account_name, a.business_name, a.account_status,
+               (c.account_id IS NOT NULL) AS already_added
+          FROM meta_account_audit a
+          LEFT JOIN statics_iteration_configs c ON c.account_id = a.account_id
+         ORDER BY a.account_name ASC NULLS LAST, a.account_id ASC
+      `);
+    } catch (err) {
+      // meta_account_audit is populated by the Meta account verifier. If it does
+      // not exist yet, say so plainly instead of returning [] — an empty list
+      // and "Meta was never connected" are different states.
+      if (!/relation .* does not exist/i.test(err.message)) throw err;
+      return res.json({
+        success: true,
+        data: [],
+        unavailable_reason: 'meta_account_audit is not present — connect a Meta ad account first',
+      });
+    }
+    res.json({ success: true, data: accounts, count: accounts.length });
+  } catch (err) {
+    console.error('[iterations] GET /iterations/ad-accounts error:', err);
+    res.status(500).json({ success: false, error: { message: err.message } });
+  }
+});
+
+// PUT /iterations/configs/:accountId — create or update one account's filters.
+router.put('/iterations/configs/:accountId', authenticate, async (req, res) => {
+  try {
+    await ensureIterationConfigsTable();
+    const accountId = String(req.params.accountId || '').trim();
+    if (!accountId) {
+      return res.status(400).json({ success: false, error: { message: 'accountId is required' } });
+    }
+    const b = req.body || {};
+
+    // max_copy_words: null/0 = no limit. Capped at 1000 to match the slider.
+    let maxCopyWords = null;
+    if (b.max_copy_words !== undefined && b.max_copy_words !== null && b.max_copy_words !== '') {
+      const n = parseInt(b.max_copy_words, 10);
+      if (!Number.isFinite(n) || n < 0) {
+        return res.status(400).json({ success: false, error: { message: 'max_copy_words must be a non-negative integer (0 or null = no limit)' } });
+      }
+      maxCopyWords = n === 0 ? null : Math.min(1000, n);
+    }
+
+    // min_spend: 0 is a legitimate value ("no floor"), so it must survive.
+    const minSpend = numOr(b.min_spend, 500);
+    if (minSpend < 0) {
+      return res.status(400).json({ success: false, error: { message: 'min_spend cannot be negative' } });
+    }
+
+    // date_range_days: null / 'all' / 0 = All Time.
+    let dateRangeDays = null;
+    const rawRange = b.date_range_days ?? b.dateRange;
+    if (rawRange !== undefined && rawRange !== null && rawRange !== '' && rawRange !== 'all' && Number(rawRange) !== 0) {
+      const n = parseInt(rawRange, 10);
+      if (!ALLOWED_DATE_RANGES.includes(n)) {
+        return res.status(400).json({
+          success: false,
+          error: { message: `date_range_days must be one of ${ALLOWED_DATE_RANGES.join(', ')}, or null/'all' for All Time` },
+        });
+      }
+      dateRangeDays = n;
+    }
+
+    // ad_statuses: validate every entry rather than dropping unknown ones —
+    // silently discarding a status the operator picked is worse than a 400.
+    let adStatuses = ['active', 'paused'];
+    if (b.ad_statuses !== undefined) {
+      const wanted = csvParam(b.ad_statuses).map(s => s.toLowerCase());
+      const bad = wanted.filter(s => !ALLOWED_AD_STATUSES.includes(s));
+      if (bad.length > 0) {
+        return res.status(400).json({
+          success: false,
+          error: { message: `Unknown ad status: ${bad.join(', ')}. Allowed: ${ALLOWED_AD_STATUSES.join(', ')}` },
+        });
+      }
+      if (wanted.length === 0) {
+        return res.status(400).json({ success: false, error: { message: 'ad_statuses cannot be empty — pick at least one' } });
+      }
+      adStatuses = [...new Set(wanted)];
+    }
+
+    const rows = await pgQuery(`
+      INSERT INTO statics_iteration_configs
+        (account_id, max_copy_words, min_spend, date_range_days, ad_statuses, enabled, updated_at)
+      VALUES ($1, $2, $3, $4, $5::text[], $6, NOW())
+      ON CONFLICT (account_id) DO UPDATE SET
+        max_copy_words  = EXCLUDED.max_copy_words,
+        min_spend       = EXCLUDED.min_spend,
+        date_range_days = EXCLUDED.date_range_days,
+        ad_statuses     = EXCLUDED.ad_statuses,
+        enabled         = EXCLUDED.enabled,
+        updated_at      = NOW()
+      RETURNING *
+    `, [accountId, maxCopyWords, minSpend, dateRangeDays, adStatuses, b.enabled !== false]);
+
+    res.json({ success: true, data: shapeIterationConfig(rows[0]) });
+  } catch (err) {
+    console.error('[iterations] PUT /iterations/configs error:', err);
+    res.status(500).json({ success: false, error: { message: err.message } });
+  }
+});
+
+// DELETE /iterations/configs/:accountId — stop sourcing Iterations from an account.
+router.delete('/iterations/configs/:accountId', authenticate, async (req, res) => {
+  try {
+    await ensureIterationConfigsTable();
+    const rows = await pgQuery(
+      'DELETE FROM statics_iteration_configs WHERE account_id = $1 RETURNING account_id',
+      [String(req.params.accountId || '').trim()],
+    );
+    if (rows.length === 0) {
+      return res.status(404).json({ success: false, error: { message: 'No config for that account' } });
+    }
+    res.json({ success: true, data: { removed: rows[0].account_id } });
+  } catch (err) {
+    console.error('[iterations] DELETE /iterations/configs error:', err);
     res.status(500).json({ success: false, error: { message: err.message } });
   }
 });
@@ -9733,6 +10021,439 @@ router.post('/reference-ads/upload', authenticate, async (req, res) => {
     console.error('[reference-ads] UPLOAD error:', err);
     res.status(500).json({ success: false, error: { message: err.message } });
   }
+});
+
+// ═════════════════════════════════════════════════════════════════════════
+// COMPOSER — statics that already exist as pixels.
+//
+// A Composer card is a finished design that came from somewhere else (a batch
+// exported from Claude Design, a one-off upload, or a "describe a new static"
+// generation) rather than an adaptation of a League reference. Cards sit in the
+// COMPOSER column until the operator pushes them into TO REVIEW.
+//
+// TRANSPORT: the browser unzips the archive and posts one file per request.
+// A 50-static export is ~80MB, which no single base64 JSON body can carry
+// (express.json is capped at 50mb and this repo deliberately has no multipart
+// parser — see the note at the top of routes/media.js). Per-file requests also
+// give honest per-file progress and let one bad file fail without losing the
+// other 49. The server-side zipReader remains for API/automation callers that
+// post a whole archive without a browser.
+// ═════════════════════════════════════════════════════════════════════════
+
+let _composerReady = false;
+async function ensureComposerImportsTable() {
+  if (_composerReady) return;
+  // Lazily created as well as in migration 093 — runMigrations() downgrades a
+  // failed migration to a warning and boots anyway, so the table's existence
+  // cannot be assumed from a successful deploy.
+  await pgQuery(`
+    CREATE TABLE IF NOT EXISTS statics_composer_imports (
+      id             UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      status         TEXT NOT NULL DEFAULT 'processing'
+                     CHECK (status IN ('processing','done','error')),
+      filename       TEXT,
+      bytes          BIGINT,
+      product_id     INTEGER,
+      user_id        UUID,
+      total_files    INTEGER NOT NULL DEFAULT 0,
+      imported_count INTEGER NOT NULL DEFAULT 0,
+      skipped_count  INTEGER NOT NULL DEFAULT 0,
+      report         JSONB,
+      error          TEXT,
+      created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      finished_at    TIMESTAMPTZ
+    )
+  `);
+  await pgQuery(`ALTER TABLE spy_creatives ADD COLUMN IF NOT EXISTS composer_source TEXT`);
+  await pgQuery(`ALTER TABLE spy_creatives ADD COLUMN IF NOT EXISTS composer_import_id UUID`);
+  await pgQuery(`ALTER TABLE spy_creatives ADD COLUMN IF NOT EXISTS composer_prompt TEXT`);
+  _composerReady = true;
+}
+
+// The three ratios the pipeline works in. "Format is read from the pixels" —
+// the operator never labels an upload, so the aspect ratio is measured and
+// snapped to the nearest supported format.
+const COMPOSER_RATIOS = [
+  { ratio: '1:1',  value: 1 / 1 },
+  { ratio: '4:5',  value: 4 / 5 },
+  { ratio: '9:16', value: 9 / 16 },
+];
+// Widest tolerated deviation before a file is reported rather than mis-filed.
+// 12% covers real exports (1080x1350 = exact 4:5, 1200x1500, 1024x1024) without
+// quietly labelling a 16:9 banner as 1:1.
+const COMPOSER_RATIO_TOLERANCE = 0.12;
+
+/**
+ * Classify an image's aspect ratio.
+ * @returns {{ratio: string|null, exact: boolean, deviation: number}}
+ */
+export function classifyAspectRatio(width, height) {
+  if (!width || !height) return { ratio: null, exact: false, deviation: Infinity };
+  const actual = width / height;
+  let best = null;
+  for (const cand of COMPOSER_RATIOS) {
+    const deviation = Math.abs(actual - cand.value) / cand.value;
+    if (!best || deviation < best.deviation) best = { ratio: cand.ratio, deviation };
+  }
+  if (best.deviation > COMPOSER_RATIO_TOLERANCE) {
+    return { ratio: null, exact: false, deviation: best.deviation };
+  }
+  return { ratio: best.ratio, exact: best.deviation < 0.005, deviation: best.deviation };
+}
+
+const COMPOSER_MAX_FILE_BYTES = 25 * 1024 * 1024;
+
+// POST /composer/import/start — open an import batch, return its id.
+router.post('/composer/import/start', authenticate, async (req, res) => {
+  try {
+    await ensureComposerImportsTable();
+    const b = req.body || {};
+    const totalFiles = Math.max(0, parseInt(b.total_files, 10) || 0);
+    const rows = await pgQuery(`
+      INSERT INTO statics_composer_imports (filename, bytes, product_id, user_id, total_files)
+      VALUES ($1, $2, $3, $4, $5)
+      RETURNING id, status, total_files, created_at
+    `, [
+      b.filename || null,
+      b.bytes != null ? Math.max(0, parseInt(b.bytes, 10) || 0) : null,
+      b.product_id != null ? parseInt(b.product_id, 10) : null,
+      req.user?.id || null,
+      totalFiles,
+    ]);
+    res.json({ success: true, data: rows[0] });
+  } catch (err) {
+    console.error('[composer] POST /composer/import/start error:', err);
+    res.status(500).json({ success: false, error: { message: err.message } });
+  }
+});
+
+// POST /composer/import/:id/file — ingest ONE image from the archive.
+//
+// Deliberately returns 200 with ok:false for a rejected file rather than a 4xx:
+// the client is walking 50 files and must record each outcome and continue. A
+// rejection is data about that file, not a failure of the request.
+router.post('/composer/import/:id/file', authenticate, async (req, res) => {
+  const importId = req.params.id;
+  const name = String((req.body || {}).name || 'unnamed');
+  try {
+    await ensureComposerImportsTable();
+    if (!isR2Configured()) {
+      return res.status(503).json({
+        success: false,
+        error: { message: 'Image storage (R2) is not configured — Composer imports are disabled' },
+      });
+    }
+    const b = req.body || {};
+    if (!b.data) {
+      return res.json({ success: true, data: { ok: false, name, reason: 'no image data in request' } });
+    }
+
+    // Accept either a bare base64 payload or a full data: URI.
+    const base64 = String(b.data).replace(/^data:[^;]+;base64,/, '');
+    let buf;
+    try {
+      buf = Buffer.from(base64, 'base64');
+    } catch {
+      return res.json({ success: true, data: { ok: false, name, reason: 'payload is not valid base64' } });
+    }
+    if (buf.length === 0) {
+      return res.json({ success: true, data: { ok: false, name, reason: 'decoded to 0 bytes' } });
+    }
+    if (buf.length > COMPOSER_MAX_FILE_BYTES) {
+      return res.json({
+        success: true,
+        data: { ok: false, name, reason: `${buf.length} bytes exceeds the ${COMPOSER_MAX_FILE_BYTES}-byte per-file limit` },
+      });
+    }
+
+    // Measure the pixels. sharp throws on anything that is not a real image,
+    // which is exactly the validation we want — a .txt renamed to .png is
+    // rejected here rather than becoming a broken card later.
+    let meta;
+    try {
+      meta = await sharp(buf).metadata();
+    } catch (err) {
+      return res.json({ success: true, data: { ok: false, name, reason: `not a readable image (${err.message})` } });
+    }
+    const { ratio, exact, deviation } = classifyAspectRatio(meta.width, meta.height);
+    if (!ratio) {
+      return res.json({
+        success: true,
+        data: {
+          ok: false, name,
+          reason: `${meta.width}x${meta.height} is not close to 1:1, 4:5 or 9:16 (off by ${(deviation * 100).toFixed(0)}%)`,
+        },
+      });
+    }
+
+    const contentType = meta.format === 'jpeg' ? 'image/jpeg'
+      : meta.format === 'webp' ? 'image/webp'
+      : 'image/png';
+    const ext = contentType.split('/')[1];
+    const key = `statics-composer/${ratio}/${crypto.randomUUID()}.${ext}`;
+    const imageUrl = await uploadBuffer(buf, key, contentType);
+
+    // product_id comes from the batch so every card in one import agrees.
+    const batch = await pgQuery('SELECT product_id FROM statics_composer_imports WHERE id = $1', [importId]);
+    if (batch.length === 0) {
+      return res.status(404).json({ success: false, error: { message: 'Unknown import id' } });
+    }
+    const productId = b.product_id != null ? parseInt(b.product_id, 10) : batch[0].product_id;
+
+    let productName = null;
+    if (productId) {
+      const pr = await pgQuery('SELECT name FROM product_profiles WHERE id = $1', [productId]);
+      productName = pr[0]?.name || null;
+    }
+
+    const inserted = await pgQuery(`
+      INSERT INTO spy_creatives
+        (product_id, product_name, image_url, aspect_ratio, status, pipeline,
+         angle, reference_name, source_label,
+         composer_source, composer_import_id, composer_prompt)
+      VALUES ($1, $2, $3, $4, 'composer', 'standard', $5, $6, 'composer-zip', 'zip', $7, $8)
+      RETURNING id, status, aspect_ratio, angle, image_url
+    `, [
+      productId || null,
+      productName,
+      imageUrl,
+      ratio,
+      // An angle may ride along in manifest.csv; otherwise NULL, and the angle
+      // gate will stop the card at TO REVIEW until the operator picks one.
+      b.angle ? String(b.angle).trim() : null,
+      name,
+      importId,
+      b.prompt ? String(b.prompt) : null,
+    ]);
+
+    await pgQuery(
+      'UPDATE statics_composer_imports SET imported_count = imported_count + 1 WHERE id = $1',
+      [importId],
+    );
+
+    res.json({
+      success: true,
+      data: {
+        ok: true, name, creative: inserted[0],
+        width: meta.width, height: meta.height, ratio, exact_ratio: exact,
+      },
+    });
+  } catch (err) {
+    console.error(`[composer] file ingest failed for "${name}":`, err);
+    // Count the skip so the batch report reconciles even on an unexpected error.
+    try {
+      await pgQuery('UPDATE statics_composer_imports SET skipped_count = skipped_count + 1 WHERE id = $1', [importId]);
+    } catch { /* the response below is what matters */ }
+    res.status(500).json({ success: false, error: { message: err.message }, data: { ok: false, name, reason: err.message } });
+  }
+});
+
+// POST /composer/import/:id/finish — close the batch and store its report.
+router.post('/composer/import/:id/finish', authenticate, async (req, res) => {
+  try {
+    await ensureComposerImportsTable();
+    const b = req.body || {};
+    const report = Array.isArray(b.report) ? b.report : [];
+    const skipped = report.filter(r => r && r.ok === false);
+    const rows = await pgQuery(`
+      UPDATE statics_composer_imports
+         SET status        = CASE WHEN imported_count = 0 AND $2 > 0 THEN 'error' ELSE 'done' END,
+             skipped_count = $2,
+             report        = $3::jsonb,
+             error         = CASE WHEN imported_count = 0 AND $2 > 0
+                                  THEN 'No files could be imported' ELSE NULL END,
+             finished_at   = NOW()
+       WHERE id = $1
+       RETURNING *
+    `, [req.params.id, skipped.length, JSON.stringify(report)]);
+    if (rows.length === 0) {
+      return res.status(404).json({ success: false, error: { message: 'Unknown import id' } });
+    }
+    const row = rows[0];
+    if (row.skipped_count > 0) {
+      // Never let a partial import read as a clean one.
+      console.warn(`[composer] import ${row.id} finished with ${row.skipped_count} skipped of ${row.total_files}`);
+    }
+    res.json({ success: true, data: row });
+  } catch (err) {
+    console.error('[composer] POST /composer/import/:id/finish error:', err);
+    res.status(500).json({ success: false, error: { message: err.message } });
+  }
+});
+
+// GET /composer/imports — recent batches (for the Composer header / history).
+router.get('/composer/imports', authenticate, async (req, res) => {
+  try {
+    await ensureComposerImportsTable();
+    const limit = Math.min(50, Math.max(1, parseInt(req.query.limit, 10) || 10));
+    const rows = await pgQuery(
+      `SELECT * FROM statics_composer_imports ORDER BY created_at DESC LIMIT $1`,
+      [limit],
+    );
+    res.json({ success: true, data: rows, count: rows.length });
+  } catch (err) {
+    console.error('[composer] GET /composer/imports error:', err);
+    res.status(500).json({ success: false, error: { message: err.message } });
+  }
+});
+
+// GET /composer/imports/:id — poll one batch.
+router.get('/composer/imports/:id', authenticate, async (req, res) => {
+  try {
+    await ensureComposerImportsTable();
+    const rows = await pgQuery('SELECT * FROM statics_composer_imports WHERE id = $1', [req.params.id]);
+    if (rows.length === 0) {
+      return res.status(404).json({ success: false, error: { message: 'Unknown import id' } });
+    }
+    res.json({ success: true, data: rows[0] });
+  } catch (err) {
+    console.error('[composer] GET /composer/imports/:id error:', err);
+    res.status(500).json({ success: false, error: { message: err.message } });
+  }
+});
+
+// DELETE /composer/imports/:id — undo a bad import as a unit.
+//
+// Only removes cards still sitting in COMPOSER: anything the operator already
+// pushed to TO REVIEW (or beyond) is their work now, and silently deleting it
+// because the batch it arrived in was wrong would destroy decisions.
+router.delete('/composer/imports/:id', authenticate, async (req, res) => {
+  try {
+    await ensureComposerImportsTable();
+    const removed = await pgQuery(
+      `DELETE FROM spy_creatives
+        WHERE composer_import_id = $1 AND status = 'composer'
+        RETURNING id`,
+      [req.params.id],
+    );
+    const kept = await pgQuery(
+      `SELECT COUNT(*)::INT AS n FROM spy_creatives
+        WHERE composer_import_id = $1 AND status <> 'composer'`,
+      [req.params.id],
+    );
+    await pgQuery('DELETE FROM statics_composer_imports WHERE id = $1', [req.params.id]);
+    res.json({
+      success: true,
+      data: {
+        deleted_cards: removed.length,
+        kept_advanced_cards: kept[0]?.n || 0,
+      },
+    });
+  } catch (err) {
+    console.error('[composer] DELETE /composer/imports/:id error:', err);
+    res.status(500).json({ success: false, error: { message: err.message } });
+  }
+});
+
+// POST /composer/describe — "Describe a new static".
+//
+// No League reference: the operator types what they want and the engine renders
+// it from the product image plus the product's own context. Backgrounded like
+// /generate (responds with a taskId; client polls /status/:taskId), then the
+// finished image is mirrored to R2 and lands as a COMPOSER card.
+router.post('/composer/describe', authenticate, async (req, res) => {
+  const b = req.body || {};
+  const brief = String(b.brief || '').trim();
+  if (!brief) {
+    return res.status(400).json({ success: false, error: { message: 'brief is required — describe the static you want' } });
+  }
+  if (!b.product_id) {
+    return res.status(400).json({ success: false, error: { message: 'product_id is required' } });
+  }
+  const ratio = COMPOSER_RATIOS.some(r => r.ratio === b.ratio) ? b.ratio : '4:5';
+  const engineName = String(b.image_engine || DEFAULT_ENGINE).toLowerCase();
+  const engine = getEngine(engineName);
+
+  const taskId = `cmp-${crypto.randomUUID()}`;
+  storeTaskResult(taskId, { status: 'processing', progress: 'Preparing product context...' });
+  res.json({ success: true, data: { taskId, status: 'processing', image_engine: engine.name, ratio } });
+
+  setImmediate(async () => {
+    try {
+      await ensureComposerImportsTable();
+      const prows = await pgQuery('SELECT * FROM product_profiles WHERE id = $1', [parseInt(b.product_id, 10)]);
+      if (prows.length === 0) throw new Error(`Product ${b.product_id} not found`);
+      const prod = prows[0];
+
+      const productImage = productImageAtIndex(prod, Number.isInteger(b.product_image_index) ? b.product_image_index : 0);
+      if (!productImage) {
+        throw new Error(`"${prod.name}" has no product images — upload one before describing a static`);
+      }
+
+      // The brief leads; product facts follow as grounding so the model renders
+      // OUR product and offer rather than a generic one. Kept compact on
+      // purpose: NanoBanana's 5,000-char cap applies here too (and is enforced
+      // again inside submitToNanoBanana).
+      const context = [
+        `PRODUCT: ${prod.name || ''}`.trim(),
+        prod.price ? `PRICE: ${prod.price}` : '',
+        prod.big_promise ? `PROMISE: ${prod.big_promise}` : '',
+        prod.mechanism ? `MECHANISM: ${prod.mechanism}` : '',
+        prod.guarantee ? `GUARANTEE: ${prod.guarantee}` : '',
+      ].filter(Boolean).join('\n');
+
+      const prompt =
+`Create a single ${ratio} static advertisement image.
+
+WHAT THE OPERATOR ASKED FOR:
+${brief}
+
+PRODUCT CONTEXT (render THIS product, exactly as it appears in the attached image):
+${context}
+
+RULES:
+- The attached image is the ONLY product reference. Match its shape, colour, label and branding exactly.
+- Render every piece of text crisply and spelled correctly. Do not invent claims that are not in the brief or context above.
+- No lorem ipsum, no placeholder text, no watermarks.`;
+
+      storeTaskResult(taskId, { status: 'processing', progress: `Generating ${ratio} via ${engine.name}...` });
+      const engineTaskId = await engine.submit(prompt, [productImage], ratio);
+      const resultUrl = await engine.poll(engineTaskId);
+
+      // Mirror to R2 immediately — engine output URLs are short-lived (the whole
+      // point of the STABLE URL contract at the top of this file).
+      storeTaskResult(taskId, { status: 'processing', progress: 'Storing image...' });
+      const stableUrl = resultUrl.startsWith('data:')
+        ? await uploadBuffer(
+            Buffer.from(resultUrl.split(',')[1], 'base64'),
+            `statics-composer/${ratio}/${crypto.randomUUID()}.png`,
+            'image/png',
+          )
+        : await persistAnyUrlToR2(resultUrl, 'statics-composer');
+
+      const inserted = await pgQuery(`
+        INSERT INTO spy_creatives
+          (product_id, product_name, image_url, aspect_ratio, status, pipeline,
+           angle, reference_name, source_label, image_engine,
+           composer_source, composer_prompt, generation_task_id)
+        VALUES ($1, $2, $3, $4, 'composer', 'standard', $5, 'Described', 'composer-describe',
+                $6, 'describe', $7, $8)
+        ON CONFLICT (generation_task_id) WHERE generation_task_id IS NOT NULL DO NOTHING
+        RETURNING id, status, aspect_ratio, angle, image_url
+      `, [
+        parseInt(b.product_id, 10),
+        prod.name || null,
+        stableUrl,
+        ratio,
+        b.angle ? String(b.angle).trim() : null,
+        engine.name,
+        brief,
+        taskId,
+      ]);
+
+      storeTaskResult(taskId, {
+        status: 'completed',
+        successFlag: true,
+        resultImageUrl: stableUrl,
+        creative: inserted[0] || null,
+        image_engine: engine.name,
+      });
+      console.log(`[composer] describe → COMPOSER card ${inserted[0]?.id || '(existing)'} via ${engine.name} ${ratio}`);
+    } catch (err) {
+      console.error('[composer] describe failed:', err);
+      storeTaskResult(taskId, { status: 'error', error: err.message });
+    }
+  });
 });
 
 export { getCustomStaticsPrompts, getDefaultStaticsPrompts };
