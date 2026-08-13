@@ -4809,9 +4809,14 @@ async function executeGenerationJob({
             const blendScore = typeof blend?.overall_blend === 'number' ? blend.overall_blend : null;
             const perHook = Array.isArray(blend?.hooks) ? blend.hooks : [];
             const lowHook = perHook.some(h => typeof h?.blend_score === 'number' && h.blend_score < 6);
-            const dupIdx = gen.hooks
-              .map((h, i) => (hookDupesOpening(h.text || h, gen.body) ? i + 1 : null))
-              .filter(Boolean);
+            // Same reasoning: in a single-door ad the frame IS the body's
+            // opening, so "restates the opening line" is correct behaviour.
+            const dupIdx = (String(gen.hook_architecture || '').toUpperCase() === 'FRAMED_LIST'
+                         || String(gen.hook_architecture || '').toUpperCase() === 'REVERSAL')
+              ? []
+              : gen.hooks
+                  .map((h, i) => (hookDupesOpening(h.text || h, gen.body) ? i + 1 : null))
+                  .filter(Boolean);
             // Second axis. Continuity alone is a pure convergence pressure: it
             // rewards hooks that resemble the body's opening, and nothing ever
             // rewarded them for differing from EACH OTHER. That is why the
@@ -4822,7 +4827,19 @@ async function executeGenerationJob({
               .filter(h => h?.duplicate_of != null)
               .map(h => h.id)
               .filter(Boolean);
-            const sameyFail = (distinctness !== null && distinctness < 7) || dupeOfIdx.length > 0;
+            // ARCHITECTURE DECIDES WHETHER SAMENESS IS A DEFECT.
+            // For a framed listicle or a reversal the hooks are SUPPOSED to be
+            // variations of one frame — that is the creative. The distinctness
+            // axis, added to stop five rewordings of one idea in a STORY ad, was
+            // firing on them, triggering a rewrite that drifted the frame: it is
+            // how "Three reasons why you SHOULDN'T put this on your turkey neck"
+            // came back as "Three reasons this is replacing surgery", losing the
+            // reverse psychology that IS the ad. Two fixes fighting each other.
+            const architecture = String(gen.hook_architecture || '').toUpperCase();
+            const singleDoor = architecture === 'FRAMED_LIST' || architecture === 'REVERSAL';
+            const sameyFail = singleDoor
+              ? false
+              : (distinctness !== null && distinctness < 7) || dupeOfIdx.length > 0;
             // SPEC HOOKS. Measured across four sources: the live pipeline
             // produced a hook leading on the device's component count on three
             // of them ("Others use one red light. Ours uses three."). It comes
@@ -4856,7 +4873,7 @@ async function executeGenerationJob({
               if (specIdx.length) reasons.push(`hook(s) ${specIdx.map(i => 'H' + i).join(', ')} lead on the device's specs — banned`);
               if (unsupportedIdx.length) reasons.push(`hook(s) ${unsupportedIdx.map(i => 'H' + i).join(', ')} claim something the body never says`);
               console.warn(`[BriefPipeline] brief ${brief.id}: rewriting hooks — ${reasons.join('; ')}`);
-              const rewriteSys = 'You are a direct response copywriter. You fix hooks so they blend seamlessly into an existing ad script body. You never change the body.';
+              const rewriteSys = 'You are a direct response copywriter. You fix hooks so they blend seamlessly into an existing ad script body. You never change the body, and you never alter the signature wording of a hook that carries the ad\'s frame — the negative, the dare or the reversal in it IS the creative.';
               const rewriteUser = `The ${gen.hooks.length} hooks below need fixing. Rewrite all of them so each is speakable by the body's narrator, in the body's voice, and reads seamlessly into the body's first sentence. Keep them <= 20 words (H5 under 12), sentence case, no emoji, no dashes. FIRST decide what KIND of ad this is from the body. If the body's first line is the PAYLOAD OF A FRAME (a numbered list, a reversal) then there is only ONE door: every hook must carry that frame, as variations of the same shape, never different topics — a hook entering from the side produces a video that starts mid-list. Otherwise the hooks are different doors into one story, and each keeps its own angle of attack and its own first subject: fix the HANDOFF, never the angle. If a hook already enters on a distinct facet (a mechanism, a stat, a price, a moment, an objection), KEEP that facet and re-aim only its final beat so the body's opening beat can follow without a bridge. Making two hooks resemble each other is a FAILURE of this task, not a fix. NEVER write a hook that leads on the device's mechanism, component count, wavelengths or millimetre depth, and NEVER assert a person, price or event the BODY does not contain — those are the two failures you are most likely to reintroduce. If some hooks are near duplicates, replace the duplicates with genuinely different doors rather than rewording them.\n\nCRITICAL (STORY ADS ONLY — ignore where the body is a framed list or a reversal, in which every hook MUST carry the frame): none of the hooks may restate the body's OPENING LINE. The hooks are 5 ways IN that all lead to the body's first sentence, never a verbatim copy of it. Even if the body opens on a signature gimmick, the hooks are alternative ways IN that lead to it — never the same sentence reworded, re-punctuated, or joined with "and".\n\nBODY:\n${gen.body}\n\nCURRENT HOOKS:\n${gen.hooks.map(h => `${h.id}: ${h.text || h}`).join('\n')}\n\nIssues:\n${blendFail ? `Blend issues: ${JSON.stringify(blend?.hooks || [])}\n` : ''}${dupIdx.length ? `Duplicate-of-opening: ${dupIdx.map(i => 'H' + i).join(', ')}\n` : ''}\nReturn ONLY valid JSON with EXACTLY ${gen.hooks.length} items: { "hooks": [ { "id": "H1", "text": "..." } ] }`;
               // Rewriting hooks is script generation → Opus, per operator directive.
               // RE-CHECK THE REWRITE. Previously its output was accepted blind,
@@ -4904,6 +4921,7 @@ async function executeGenerationJob({
               body: gen.body,
               sourceText: rawScript,
               validator: {
+                architecture: gen.hook_architecture || null,
                 hookCount: hooks.length,
                 blendScore: blendScore ?? undefined,
                 distinctness: distinctness ?? undefined,

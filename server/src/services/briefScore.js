@@ -113,9 +113,15 @@ export function scoreBrief({ body, sourceText, validator = {}, weights = DEFAULT
   }
 
   const hookCount = Number(validator.hookCount) || 0;
+  // A framed listicle or a reversal has ONE door by design: its hooks are
+  // variations of a single frame, so distinctness is not a quality signal for
+  // them and must not drag the score down for doing the right thing.
+  const singleDoor = ['FRAMED_LIST', 'REVERSAL'].includes(String(validator.architecture || '').toUpperCase());
   const components = {
     hookBlend: typeof validator.blendScore === 'number' ? clamp10(validator.blendScore) : null,
-    hookDistinctness: typeof validator.distinctness === 'number' ? clamp10(validator.distinctness) : null,
+    hookDistinctness: singleDoor
+      ? null   // excluded, weight redistributed — see header
+      : (typeof validator.distinctness === 'number' ? clamp10(validator.distinctness) : null),
     hookIntegrity: hookIntegrityScore({
       hookCount,
       specHooks: Number(validator.specHooks) || 0,
@@ -141,13 +147,14 @@ export function scoreBrief({ body, sourceText, validator = {}, weights = DEFAULT
   if (Number(validator.specHooks) > 0)   flags.push(`SPEC_HOOK x${validator.specHooks}`);
   if (Number(validator.unsupported) > 0) flags.push(`UNSUPPORTED_HOOK x${validator.unsupported}`);
   if (Number(validator.duplicates) > 0)  flags.push(`DUPLICATE_HOOK x${validator.duplicates}`);
-  if (components.hookDistinctness !== null && components.hookDistinctness < 7) flags.push('HOOKS_ALIKE');
+  if (!singleDoor && components.hookDistinctness !== null && components.hookDistinctness < 7) flags.push('HOOKS_ALIKE');
+  if (singleDoor) flags.push(`${String(validator.architecture).toUpperCase()}_ONE_FRAME`);
   if (components.lengthParity !== null && components.lengthParity < 6) {
     const pct = Math.round((String(body).length / String(sourceText).length) * 100);
     flags.push(`LENGTH_${pct}PCT_OF_SOURCE`);
   }
   if (components.specificity !== null && components.specificity < 5) flags.push('LOW_SPECIFICITY');
-  if (hookCount && hookCount < 3) flags.push(`ONLY_${hookCount}_HOOKS`);
+  if (hookCount && hookCount < (singleDoor ? 3 : 3)) flags.push(`ONLY_${hookCount}_HOOKS`);
   if (present.length < Object.keys(components).length) {
     flags.push(`PARTIAL(${present.length}/${Object.keys(components).length})`);
   }
