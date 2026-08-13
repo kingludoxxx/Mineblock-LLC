@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import { authenticate } from '../middleware/auth.js';
+import { scoreBrief } from '../services/briefScore.js';
 import { requirePermission } from '../middleware/rbac.js';
 import { pgQuery } from '../db/pg.js';
 import { transcribeVideoUrl } from '../services/videoTranscribe.js';
@@ -4611,16 +4612,14 @@ async function executeGenerationJob({
           // Hook-body blend is validated AFTER the brief row is inserted (off the
           // critical path — saves 8-20s of blocking) and the row is patched if
           // the hooks need a POV rewrite. See the post-insert block below.
-          const scores = {
-            novelty: { score: 7, rationale: 'Clone mode — structural fidelity over originality; product/angle swap adds freshness' },
-            aggression: { score: 8, rationale: 'Preserved from proven original' },
-            coherence: { score: 9, rationale: 'Structural clone maintains original flow and logic' },
-            hook_body_blend: { score: 8, rationale: 'Validated post-insert by the blend agent (score patched if rewrite fires)' },
-            conversion_potential: { score: 9, rationale: 'Proven structure with validated conversion path' },
-            verdict: 'YES',
-            _clone_fast_path: true,
-          };
-          const overall = (7 * 0.15) + (8 * 0.15) + (9 * 0.25) + (8 * 0.15) + (9 * 0.30); // 8.4
+          // Scores are computed POST-INSERT by services/briefScore.js, from the
+          // finished text and the blend validator's findings. They are left NULL
+          // here on purpose: the previous version returned a hardcoded block
+          // whose overall worked out to a constant 8.4, and every one of the 41
+          // briefs in the corpus carries it. A row that has not been scored must
+          // LOOK unscored rather than plausible.
+          const scores = { _pending: true, _scored_post_insert: true };
+          const overall = null;
 
           // Record which model produced the clone so the operator can see
           // whether Opus landed or we fell back to Sonnet. Clears any prior
@@ -4861,16 +4860,32 @@ async function executeGenerationJob({
                 hooks = gen.hooks.map((h, i) => ({ ...h, text: removeDashes(fixed.hooks[i].text) }));
               }
             }
-            const recordScore = Math.round(blendScore !== null ? (blendFail ? 7 : blendScore) : 7);
+            // Compose the real score now that the validator has run. Its
+            // findings (blend, distinctness, spec/unsupported/duplicate hooks)
+            // are the components that genuinely vary between briefs; the rest is
+            // arithmetic on the finished text.
+            const scored = scoreBrief({
+              body: gen.body,
+              sourceText: rawScript,
+              validator: {
+                hookCount: hooks.length,
+                blendScore: blendScore ?? undefined,
+                distinctness: distinctness ?? undefined,
+                specHooks: specIdx.length,
+                unsupported: unsupportedIdx.length,
+                duplicates: dupeOfIdx.length + dupIdx.length,
+              },
+            });
+            if (scored.flags?.length) {
+              console.log(`[BriefPipeline] brief ${brief.id} scored ${scored.overall} — ${scored.flags.join('; ')}`);
+            }
             await pgQuery(
               `UPDATE brief_pipeline_generated
                   SET hooks = $1,
-                      scores_json = jsonb_set(
-                        CASE WHEN jsonb_typeof(scores_json) = 'object' THEN scores_json ELSE '{}'::jsonb END,
-                        '{hook_body_blend}',
-                        jsonb_build_object('score', $2::int, 'rationale', 'Measured by blend validation agent post-insert'))
-                WHERE id = $3`,
-              [JSON.stringify(hooks), recordScore, brief.id]
+                      overall_score = $2,
+                      scores_json = $3::jsonb
+                WHERE id = $4`,
+              [JSON.stringify(hooks), scored.overall, JSON.stringify(scored), brief.id]
             );
           } catch (e) {
             console.warn(`[BriefPipeline] post-insert blend validation skipped for brief ${brief.id}: ${e.message}`);
