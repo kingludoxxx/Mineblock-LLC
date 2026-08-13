@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { Link } from 'react-router-dom';
 import {
+  Bot,
   RefreshCw,
   Loader2,
   Sparkles,
@@ -25,6 +26,7 @@ import GeneratedBriefCard from './briefs/GeneratedBriefCard';
 import ReferenceCard from './briefs/ReferenceCard';
 import ReferencePreviewModal from './briefs/ReferencePreviewModal';
 import LeagueImportModal from './briefs/LeagueImportModal';
+import AutopilotModal from './briefs/AutopilotModal';
 import QueueStrip from './briefs/QueueStrip';
 import MetaVideoImportModal from './briefs/MetaVideoImportModal';
 import ScriptUploadModal from './briefs/ScriptUploadModal';
@@ -86,6 +88,7 @@ const PIPELINE_COLUMNS = [
 
 export default function BriefPipeline() {
   // Data
+  const [autopilotOpen, setAutopilotOpen] = useState(false);
   const [generated, setGenerated] = useState([]);
   const [references, setReferences] = useState([]);
 
@@ -838,6 +841,16 @@ export default function BriefPipeline() {
             <ChevronRight className="w-3.5 h-3.5 text-zinc-700" />
             <span className="text-[#e8d5a3] font-medium text-glow-gold">BRIEF_PIPELINE</span>
           </div>
+
+          <button
+            type="button"
+            onClick={() => setAutopilotOpen(true)}
+            title="Autopilot Mode — generate briefs from the League automatically"
+            className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-[11px] font-mono font-semibold uppercase tracking-wide border border-white/[0.08] text-zinc-400 hover:text-white hover:bg-white/[0.04] transition-all cursor-pointer"
+          >
+            <Bot className="w-3.5 h-3.5" />
+            Autopilot
+          </button>
         </header>
 
         {/* Page header */}
@@ -1372,6 +1385,8 @@ export default function BriefPipeline() {
       />
 
       {/* League Import Modal */}
+      <AutopilotModal open={autopilotOpen} onClose={() => setAutopilotOpen(false)} />
+
       <LeagueImportModal
         open={leagueImportOpen}
         onClose={() => setLeagueImportOpen(false)}

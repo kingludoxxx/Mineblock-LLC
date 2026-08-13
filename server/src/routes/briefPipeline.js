@@ -2,8 +2,7 @@ import { Router } from 'express';
 import { authenticate } from '../middleware/auth.js';
 import { scoreBrief } from '../services/briefScore.js';
 import {
-  getAutopilotConfig, saveAutopilotConfig, selectCandidates,
-  applyDiversityCap, formatReport, reportToSlack,
+  getAutopilotConfig, saveAutopilotConfig, runAutopilotBatch, reportToSlack,
 } from '../services/autopilot.js';
 import { requirePermission } from '../middleware/rbac.js';
 import { pgQuery } from '../db/pg.js';
@@ -6758,54 +6757,19 @@ router.put('/autopilot/settings', authenticate, async (req, res) => {
 // without enqueueing anything, so the operator can see exactly what tonight
 // would produce before letting it run unattended.
 router.post('/autopilot/run', authenticate, async (req, res) => {
-  const startedAt = Date.now();
   try {
-    const cfg = { ...(await getAutopilotConfig()), ...(req.body?.overrides || {}) };
+    // dry_run DEFAULTS TO TRUE: a caller must opt in to actually enqueueing.
     const dryRun = req.body?.dry_run !== false;
-
-    const candidates = await selectCandidates(cfg);
-    const { picked, skipped } = applyDiversityCap(candidates, cfg);
-
-    const generated = [];
-    const failures = [];
-    if (!dryRun) {
-      for (const c of picked) {
-        try {
-          // Same duplicate guard the manual queue uses — a run must never
-          // enqueue an ad that is already in flight.
-          const dupe = await pgQuery(
-            `SELECT id FROM brief_generation_jobs
-              WHERE ad_archive_id = $1 AND status IN ('queued','transcribing','generating') LIMIT 1`,
-            [String(c.ad_archive_id)]
-          );
-          if (dupe.length) {
-            skipped.push({ ad: c.id, brand: c.brand_domain, headline: c.headline, reason: 'already queued or running' });
-            continue;
-          }
-          const ins = await pgQuery(
-            `INSERT INTO brief_generation_jobs (
-               brand_spy_ad_id, ad_archive_id, brand_id, brand_name, tier, headline,
-               product_id, product_code, angle, model
-             ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
-             RETURNING id, headline, status`,
-            [String(c.id), String(c.ad_archive_id), String(c.brand_id), c.brand_domain,
-             c.tier, c.headline, cfg.productId, cfg.productCode, null, 'claude']
-          );
-          generated.push({ jobId: ins[0].id, naming: `${c.brand_domain} — ${String(c.headline || '').slice(0, 44)}`, score: null, flags: [] });
-        } catch (e) {
-          failures.push({ brand: c.brand_domain, headline: c.headline, error: e.message });
-        }
-      }
+    const result = await runAutopilotBatch({ dryRun, overrides: req.body?.overrides || {} });
+    if (!dryRun && (result.generated.length || result.failures.length)) {
+      await reportToSlack(result.report);
     }
-
-    const report = formatReport({ picked, skipped, generated, failures, dryRun, startedAt });
-    if (!dryRun && (generated.length || failures.length)) await reportToSlack(report);
-
     res.json({
       success: true, dryRun,
-      considered: candidates.length,
-      picked: picked.map(p => ({ id: p.id, brand: p.brand_domain, tier: p.tier, headline: p.headline })),
-      queued: generated, failures, skipped, report,
+      considered: result.considered,
+      picked: result.picked.map(p => ({ id: p.id, brand: p.brand_domain, tier: p.tier, headline: p.headline })),
+      queued: result.generated, failures: result.failures, skipped: result.skipped,
+      report: result.report,
     });
   } catch (err) {
     console.error('[Autopilot] run error:', err);

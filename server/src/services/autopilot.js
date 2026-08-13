@@ -200,3 +200,106 @@ export async function reportToSlack(text) {
     return false;
   }
 }
+
+
+/**
+ * Run one batch. Shared by the route and the scheduler so a scheduled run and a
+ * manual "Run now" are the same code path — a difference between them would be
+ * the kind of bug you only find at 21:00 with nobody watching.
+ *
+ * Enqueues into brief_generation_jobs; the existing worker does
+ * import -> transcribe -> generate. Never pushes to ClickUp.
+ */
+export async function runAutopilotBatch({ dryRun = true, overrides = {} } = {}) {
+  const startedAt = Date.now();
+  const cfg = { ...(await getAutopilotConfig()), ...overrides };
+
+  const candidates = await selectCandidates(cfg);
+  const { picked, skipped } = applyDiversityCap(candidates, cfg);
+  const generated = [];
+  const failures = [];
+
+  if (!dryRun) {
+    for (const c of picked) {
+      try {
+        const dupe = await pgQuery(
+          `SELECT id FROM brief_generation_jobs
+            WHERE ad_archive_id = $1 AND status IN ('queued','transcribing','generating') LIMIT 1`,
+          [String(c.ad_archive_id)]
+        );
+        if (dupe.length) {
+          skipped.push({ ad: c.id, brand: c.brand_domain, headline: c.headline, reason: 'already queued or running' });
+          continue;
+        }
+        const ins = await pgQuery(
+          `INSERT INTO brief_generation_jobs (
+             brand_spy_ad_id, ad_archive_id, brand_id, brand_name, tier, headline,
+             product_id, product_code, angle, model
+           ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+           RETURNING id`,
+          [String(c.id), String(c.ad_archive_id), String(c.brand_id), c.brand_domain,
+           c.tier, c.headline, cfg.productId, cfg.productCode, null, 'claude']
+        );
+        generated.push({ jobId: ins[0].id, naming: `${c.brand_domain} — ${String(c.headline || '').slice(0, 44)}`, score: null, flags: [] });
+      } catch (e) {
+        failures.push({ brand: c.brand_domain, headline: c.headline, error: e.message });
+      }
+    }
+  }
+
+  const report = formatReport({ picked, skipped, generated, failures, dryRun, startedAt });
+  return { cfg, considered: candidates.length, picked, skipped, generated, failures, report, dryRun };
+}
+
+/**
+ * In-process scheduler, matching the pattern already used for the Monday editor
+ * report. Checks every minute and fires once when the configured Madrid hour is
+ * reached.
+ *
+ * Guards, each earning its place:
+ *  - reads config on EVERY tick, so enabling/disabling or moving the hour takes
+ *    effect without a redeploy
+ *  - lastRunDate is the Madrid calendar date, so a run happens at most once a
+ *    day and a restart mid-window cannot double-fire
+ *  - the hour comparison uses Intl with an explicit timeZone, so it follows
+ *    Madrid across DST instead of drifting an hour twice a year
+ */
+let _autopilotTimer = null;
+let _lastRunDate = null;
+
+export function startAutopilotScheduler({ intervalMs = 60_000 } = {}) {
+  if (_autopilotTimer) return;
+  _autopilotTimer = setInterval(async () => {
+    try {
+      const cfg = await getAutopilotConfig();
+      if (!cfg.enabled) return;
+
+      const parts = new Intl.DateTimeFormat('en-GB', {
+        timeZone: cfg.timezone || 'Europe/Madrid',
+        year: 'numeric', month: '2-digit', day: '2-digit',
+        hour: '2-digit', minute: '2-digit', hour12: false,
+      }).formatToParts(new Date());
+      const get = t => parts.find(p => p.type === t)?.value;
+      const hour = parseInt(get('hour'), 10);
+      const localDate = `${get('year')}-${get('month')}-${get('day')}`;
+
+      if (hour !== Number(cfg.startHour)) return;
+      if (_lastRunDate === localDate) return;
+      _lastRunDate = localDate;
+
+      console.log(`[Autopilot] firing scheduled run for ${localDate} ${String(cfg.startHour).padStart(2, '0')}:00 ${cfg.timezone}`);
+      const result = await runAutopilotBatch({ dryRun: cfg.dryRun === true });
+      console.log(`[Autopilot] run complete — considered ${result.considered}, queued ${result.generated.length}, skipped ${result.skipped.length}`);
+      await reportToSlack(result.report);
+    } catch (err) {
+      console.error('[Autopilot] scheduled run failed:', err.message);
+      await reportToSlack(`*Autopilot Mode* — run FAILED: ${err.message}`).catch(() => {});
+    }
+  }, intervalMs);
+  if (_autopilotTimer.unref) _autopilotTimer.unref();
+  console.log('[Autopilot] scheduler active — checks every minute, fires at the configured Madrid hour when enabled');
+}
+
+export function stopAutopilotScheduler() {
+  if (_autopilotTimer) { clearInterval(_autopilotTimer); _autopilotTimer = null; }
+}

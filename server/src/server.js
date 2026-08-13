@@ -209,6 +209,15 @@ const start = async () => {
     logger.warn(`Statics queue worker failed to start: ${err.message}`);
   }
 
+  // 7. Autopilot Mode — checks every minute, fires at the configured Madrid
+  // hour only when enabled in settings. Inert until the operator turns it on.
+  try {
+    const { startAutopilotScheduler } = await import('./services/autopilot.js');
+    startAutopilotScheduler();
+  } catch (err) {
+    logger.warn(`Autopilot scheduler failed to start: ${err.message}`);
+  }
+
   // Graceful shutdown
   const shutdown = async (signal) => {
     logger.info(`${signal} received — shutting down gracefully`);
