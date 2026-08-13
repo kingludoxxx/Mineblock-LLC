@@ -4,6 +4,7 @@ import { scoreBrief, ungroundedHookClaims } from '../services/briefScore.js';
 import {
   getAutopilotConfig, saveAutopilotConfig, runAutopilotBatch, reportToSlack,
 } from '../services/autopilot.js';
+import { computeTrackRecord } from '../services/briefOutcomes.js';
 import { requirePermission } from '../middleware/rbac.js';
 import { pgQuery } from '../db/pg.js';
 import { transcribeVideoUrl } from '../services/videoTranscribe.js';
@@ -6832,6 +6833,18 @@ router.put('/autopilot/settings', authenticate, async (req, res) => {
 // POST /autopilot/run — one batch. dry_run (the DEFAULT) selects and reports
 // without enqueueing anything, so the operator can see exactly what tonight
 // would produce before letting it run unattended.
+// What the tool has learned from the operator's reviews — the same track
+// record the triage pass reads. Surfaced so learning is inspectable: a system
+// that adapts invisibly loses trust the first time it behaves unexpectedly.
+router.get('/autopilot/learning', authenticate, async (_req, res) => {
+  try {
+    res.json({ success: true, trackRecord: await computeTrackRecord() });
+  } catch (err) {
+    console.error('[Autopilot] learning error:', err.message);
+    res.status(500).json({ success: false, error: { message: err.message } });
+  }
+});
+
 router.post('/autopilot/run', authenticate, async (req, res) => {
   try {
     // dry_run DEFAULTS TO TRUE: a caller must opt in to actually enqueueing.

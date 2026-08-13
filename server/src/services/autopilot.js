@@ -21,6 +21,7 @@
  */
 
 import { pgQuery } from '../db/pg.js';
+import { computeTrackRecord, trackRecordPromptBlock } from './briefOutcomes.js';
 import sendSlackAlert from '../utils/slackAlert.js';
 
 export const AUTOPILOT_SETTINGS_KEY = 'brief_pipeline_autopilot';
@@ -209,6 +210,14 @@ export async function triageFit(candidates, cfg) {
     }
   } catch { /* profile unavailable — generic product line is fine for triage */ }
 
+  // The tool's memory: what the operator has actually approved and rejected.
+  // Injected into the triage prompt so selection learns from every review the
+  // operator makes, with no extra work on their part. Failure to compute it
+  // must never block a run — an empty history is a valid history.
+  let track = '';
+  try { track = trackRecordPromptBlock(await computeTrackRecord()); }
+  catch (e) { console.warn('[autopilot] track record unavailable:', e.message); }
+
   const list = candidates.map((c, i) =>
     `${i}. [${c.brand_domain} | ${c.tier}] headline: ${String(c.headline || '(none)').slice(0, 90)}\n   copy: ${String(c.body_text || '').replace(/\s+/g, ' ').slice(0, 260)}${c.transcript ? `\n   transcript: ${String(c.transcript).replace(/\s+/g, ' ').slice(0, 340)}` : ''}`
   ).join('\n');
@@ -219,7 +228,7 @@ export async function triageFit(candidates, cfg) {
     system: 'You are a senior direct response strategist choosing which competitor ads are worth cloning for a specific product. You judge transferability of the PSYCHOLOGY, not the quality of the ad for its own product. Return only JSON.',
     messages: [{ role: 'user', content:
 `OUR PRODUCT: ${productLine}
-OUR ANGLES: ${angleNames.join(' | ') || '(none defined)'}
+OUR ANGLES: ${angleNames.join(' | ') || '(none defined)'}\n${track}
 
 For each candidate ad below, rate FIT 0-10: how well would this ad's structure and psychology clone onto OUR product?
 High fit: same audience (women 40+), an emotional or bodily problem analogous to sagging/firmness, a narrative or authority structure that survives a product swap.
@@ -405,11 +414,14 @@ export async function runAutopilotBatch({ dryRun = true, overrides = {} } = {}) 
         const ins = await pgQuery(
           `INSERT INTO brief_generation_jobs (
              brand_spy_ad_id, ad_archive_id, brand_id, brand_name, tier, headline,
-             product_id, product_code, angle, model
-           ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+             product_id, product_code, angle, model, fit_score, fit_angle, fit_why
+           ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
            RETURNING id`,
           [String(c.id), String(c.ad_archive_id), String(c.brand_id), c.brand_domain,
-           c.tier, c.headline, cfg.productId, cfg.productCode, null, 'claude']
+           c.tier, c.headline, cfg.productId, cfg.productCode, null, 'claude',
+           // the triage verdict rides with the job so "does fit predict the
+           // operator's approval?" stays a one-query question forever
+           c.fit ?? null, c.fitAngle ?? null, c.fitWhy ?? null]
         );
         generated.push({ jobId: ins[0].id, naming: `${c.brand_domain} — ${String(c.headline || '').slice(0, 44)}`, score: null, flags: [] });
       } catch (e) {
