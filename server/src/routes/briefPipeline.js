@@ -3195,6 +3195,7 @@ A hook is the first line of the finished video, spoken by the SAME narrator as t
 - Product facts (name, mechanism, price, offer, guarantee) come from the MASTER BRIEF. Proof devices, stats, story elements, and testimonial characters are crafted to mirror the source's structure and specificity one-for-one (PROOF PARITY above — the operator owns responsibility for claims).
 - Respect compliance_restrictions from the brief — flag anything borderline in compliance_notes.
 - Never leave a competitor brand name, price, or offer in the output.
+- SWAP THE CHANNEL AND THE CALENDAR. The source's SALES CHANNEL (TikTok Shop, Amazon, their retailer) and its SEASONAL EVENT (Mother's Day, Black Friday) are not creative to preserve — they are facts about THEIR business. Replace them with ours from the master brief, or drop the reference entirely if we have no equivalent. Keeping them produces a brief that sends our customers to a channel we do not sell on. The NARRATIVE gimmick still survives word-for-word; only the channel and the date are swapped.
 - VOICE (anti-AI): contractions always (don't, can't, it's, here's); sentence fragments where the source uses them; speak to one person, never "audiences". BANNED: "Imagine", "Picture this", "In a world where", "What if I told you", "Did you know", "But here's the thing", "Now here's where it gets interesting", "And that's not all", "Let me explain". No softeners ("may", "might", "could potentially") unless the source used them.
 - NO DASHES OR HYPHENS. Never use the "-" character, em-dashes (—), or en-dashes (–) anywhere in hooks, body, or cta. Use periods, commas, or rewrite the sentence. Write compounds as separate words ("90 day guarantee" not "90-day", "board certified" not "board-certified").
 - Never use any phrase in the selected angle's banned_phrases list.
@@ -3532,11 +3533,12 @@ Penalise: two hooks sharing the same angle; two hooks leading with the same subj
 - issue: null if that hook's continuity >= 7, else name the break in one sentence.
 - fix_suggestion: null if fine, else how to fix the HANDOFF while KEEPING that hook's angle. NEVER suggest changing the body, and NEVER suggest making a hook more similar to the others.
 - duplicate_of: null, or the id of the earlier hook this one substantially repeats.
+- unsupported: true when the hook asserts a person, number, place or event that does NOT appear in the body (a surgeon, a dollar quote, a timeframe the body never gives). This is a coherence check: the hook opens something the script never pays off.
 
 Return ONLY valid JSON:
 {
   "hooks": [
-    { "id": 1, "blend_score": 9, "issue": null, "fix_suggestion": null, "duplicate_of": null },
+    { "id": 1, "blend_score": 9, "issue": null, "fix_suggestion": null, "duplicate_of": null, "unsupported": false },
     { "id": 2, "blend_score": 7, "issue": null, "fix_suggestion": null, "duplicate_of": 1 }
   ],
   "distinctness": 6.0,
@@ -4819,20 +4821,40 @@ async function executeGenerationJob({
               .map(h => h.id)
               .filter(Boolean);
             const sameyFail = (distinctness !== null && distinctness < 7) || dupeOfIdx.length > 0;
+            // SPEC HOOKS. Measured across four sources: the live pipeline
+            // produced a hook leading on the device's component count on three
+            // of them ("Others use one red light. Ours uses three."). It comes
+            // from the master brief, never from the source story, and it is the
+            // single most common bad hook the operator reports. Deterministic
+            // regex, not a judgement call — the model cannot argue with it.
+            const SPEC_HOOK_RX = /\b(one|two|three|1|2|3)\s+(red\s+)?(light|lights|wavelength|wavelengths|led|leds)\b|\bwavelengths?\b|\b\d+\s?mm\b|\bothers?\s+use\b|\bmost\s+devices\b/i;
+            const specIdx = gen.hooks
+              .map((h, i) => (SPEC_HOOK_RX.test(String(h.text || h)) ? i + 1 : null))
+              .filter(Boolean);
+            // UNSUPPORTED CLAIMS. Not a compliance check — a coherence one. A
+            // hook naming a person or number the body never mentions hands the
+            // editor an opening the video does not pay off.
+            const unsupportedIdx = perHook
+              .filter(h => h?.unsupported === true)
+              .map(h => h.id)
+              .filter(Boolean);
+            const contentFail = specIdx.length > 0 || unsupportedIdx.length > 0;
             // Continuity bar relaxed 7.5 -> 7.0 (and per-hook 7 -> 6) because a
             // hook entering on a different facet is now explicitly a pass; the
             // distinctness axis is what keeps quality up.
             const blendFail = (blendScore !== null && blendScore < 7.0) || lowHook;
-            if (blendScore === null && !lowHook && !dupIdx.length && !sameyFail) return;
+            if (blendScore === null && !lowHook && !dupIdx.length && !sameyFail && !contentFail) return;
             let hooks = gen.hooks;
-            if (blendFail || dupIdx.length || sameyFail) {
+            if (blendFail || dupIdx.length || sameyFail || contentFail) {
               const reasons = [];
               if (blendFail) reasons.push(`blend below bar (overall ${blendScore ?? '?'}${lowHook ? ', a hook scored < 6' : ''}) — handoff seam vs the body`);
               if (dupIdx.length) reasons.push(`hook(s) ${dupIdx.map(i => 'H' + i).join(', ')} restate the body's opening line verbatim`);
               if (sameyFail) reasons.push(`hooks too alike (distinctness ${distinctness ?? '?'}${dupeOfIdx.length ? `, H${dupeOfIdx.join(', H')} repeat an earlier hook` : ''})`);
+              if (specIdx.length) reasons.push(`hook(s) ${specIdx.map(i => 'H' + i).join(', ')} lead on the device's specs — banned`);
+              if (unsupportedIdx.length) reasons.push(`hook(s) ${unsupportedIdx.map(i => 'H' + i).join(', ')} claim something the body never says`);
               console.warn(`[BriefPipeline] brief ${brief.id}: rewriting hooks — ${reasons.join('; ')}`);
               const rewriteSys = 'You are a direct response copywriter. You fix hooks so they blend seamlessly into an existing ad script body. You never change the body.';
-              const rewriteUser = `The 5 hooks below need fixing. Rewrite all 5 so each is speakable by the body's narrator, in the body's voice, and reads seamlessly into the body's first sentence. Keep them <= 20 words (H5 under 12), sentence case, no emoji, no dashes. The 5 hooks are 5 DIFFERENT DOORS into the same script. Each must keep its own angle of attack and its own first subject: fix the HANDOFF, never the angle. If a hook already enters on a distinct facet (a mechanism, a stat, a price, a moment, an objection), KEEP that facet and re-aim only its final beat so the body's opening beat can follow without a bridge. Making two hooks resemble each other is a FAILURE of this task, not a fix. If some hooks are near duplicates, replace the duplicates with genuinely different doors rather than rewording them.\n\nCRITICAL: NONE of the 5 hooks may restate the body's OPENING LINE. The hooks are 5 ways IN that all lead to the body's first sentence, never a verbatim copy of it. Even if the body opens on a signature gimmick, the hooks are alternative ways IN that lead to it — never the same sentence reworded, re-punctuated, or joined with "and".\n\nBODY:\n${gen.body}\n\nCURRENT HOOKS:\n${gen.hooks.map(h => `${h.id}: ${h.text || h}`).join('\n')}\n\nIssues:\n${blendFail ? `Blend issues: ${JSON.stringify(blend?.hooks || [])}\n` : ''}${dupIdx.length ? `Duplicate-of-opening: ${dupIdx.map(i => 'H' + i).join(', ')}\n` : ''}\nReturn ONLY valid JSON: { "hooks": [ { "id": "H1", "text": "..." }, ... 5 items ] }`;
+              const rewriteUser = `The 5 hooks below need fixing. Rewrite all 5 so each is speakable by the body's narrator, in the body's voice, and reads seamlessly into the body's first sentence. Keep them <= 20 words (H5 under 12), sentence case, no emoji, no dashes. The 5 hooks are 5 DIFFERENT DOORS into the same script. Each must keep its own angle of attack and its own first subject: fix the HANDOFF, never the angle. If a hook already enters on a distinct facet (a mechanism, a stat, a price, a moment, an objection), KEEP that facet and re-aim only its final beat so the body's opening beat can follow without a bridge. Making two hooks resemble each other is a FAILURE of this task, not a fix. NEVER write a hook that leads on the device's mechanism, component count, wavelengths or millimetre depth, and NEVER assert a person, price or event the BODY does not contain — those are the two failures you are most likely to reintroduce. If some hooks are near duplicates, replace the duplicates with genuinely different doors rather than rewording them.\n\nCRITICAL: NONE of the 5 hooks may restate the body's OPENING LINE. The hooks are 5 ways IN that all lead to the body's first sentence, never a verbatim copy of it. Even if the body opens on a signature gimmick, the hooks are alternative ways IN that lead to it — never the same sentence reworded, re-punctuated, or joined with "and".\n\nBODY:\n${gen.body}\n\nCURRENT HOOKS:\n${gen.hooks.map(h => `${h.id}: ${h.text || h}`).join('\n')}\n\nIssues:\n${blendFail ? `Blend issues: ${JSON.stringify(blend?.hooks || [])}\n` : ''}${dupIdx.length ? `Duplicate-of-opening: ${dupIdx.map(i => 'H' + i).join(', ')}\n` : ''}\nReturn ONLY valid JSON: { "hooks": [ { "id": "H1", "text": "..." }, ... 5 items ] }`;
               // Rewriting hooks is script generation → Opus, per operator directive.
               const fixed = await callClaude(rewriteSys, rewriteUser, 2000, { opus: true, timeoutMs: 180000 });
               if (Array.isArray(fixed?.hooks) && fixed.hooks.length === 5 && fixed.hooks.every(h => h?.text)) {
