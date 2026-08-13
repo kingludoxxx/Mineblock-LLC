@@ -127,10 +127,13 @@ function normalizeServerQueueRow(row) {
 // Constants
 // ---------------------------------------------------------------------------
 
-const STANDARD_CREATIVE_STATUSES = ['review', 'ready', 'queued', 'launched'];
+// 'composer' included so the Generated tab can filter to imported/described
+// statics. A status missing here is unfilterable, not just unstyled.
+const STANDARD_CREATIVE_STATUSES = ['composer', 'review', 'ready', 'queued', 'launched'];
 const ADVERTORIAL_STATUSES = ['draft', 'copy_review', 'copy_approved', 'images_pending', 'images_review', 'ready', 'queued', 'launched', 'archived'];
 
 const STATUS_COLORS = {
+  composer: { bg: 'bg-violet-500/10', text: 'text-violet-300', border: 'border-violet-500/20' },
   review: { bg: 'bg-amber-500/10', text: 'text-amber-300', border: 'border-amber-500/20' },
   approved: { bg: 'bg-emerald-500/10', text: 'text-emerald-300', border: 'border-emerald-500/20' },
   queued: { bg: 'bg-accent-muted', text: 'text-accent-text', border: 'border-accent/20' },
@@ -2077,6 +2080,10 @@ export default function StaticsGeneration() {
       const pipeline = res.data?.data || {};
       const variants = res.data?.variants || [];
       const flat = [
+        // 'composer' must be included or the COMPOSER column is permanently
+        // empty: PipelineView buckets from this flat array, so a status the
+        // fetch drops can never be rendered no matter what the column does.
+        ...(pipeline.composer || []),
         ...(pipeline.generating || []),
         ...(pipeline.review || []),
         ...(pipeline.ready || []),

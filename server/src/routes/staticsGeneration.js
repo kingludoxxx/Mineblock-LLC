@@ -4925,7 +4925,7 @@ router.get('/creatives', authenticate, async (req, res) => {
   try {
     await ensureCreativesTable();
     const { product_id, status, pipeline = 'standard', parent_creative_id } = req.query;
-    let query = "SELECT id, product_id, product_name, image_url, thumbnail_url, source_label, angle, archetype, aspect_ratio, status, reference_thumbnail, reference_name, review_notes, parent_creative_id, pipeline, copy_set_id, meta_ad_ids, meta_image_hash, generated_copy, parent_creative_id_ref, parent_im_number, im_number, iteration_change_description, quality_warning, image_engine, pending_edit_url, pending_edit_token, previous_image_url, last_edit_prompt, last_edit_error, created_at FROM spy_creatives WHERE pipeline = $1";
+    let query = "SELECT id, product_id, product_name, image_url, thumbnail_url, source_label, angle, archetype, aspect_ratio, status, reference_thumbnail, reference_name, review_notes, parent_creative_id, pipeline, copy_set_id, meta_ad_ids, meta_image_hash, generated_copy, parent_creative_id_ref, parent_im_number, im_number, iteration_change_description, quality_warning, image_engine, composer_source, composer_import_id, composer_prompt, pending_edit_url, pending_edit_token, previous_image_url, last_edit_prompt, last_edit_error, created_at FROM spy_creatives WHERE pipeline = $1";
     const params = [pipeline];
     let idx = 2;
 
@@ -5094,7 +5094,11 @@ router.get('/creatives/pipeline', authenticate, async (req, res) => {
     await ensureCreativesTable();
     const { product_id } = req.query;
 
-    let query = "SELECT id, product_id, product_name, image_url, thumbnail_url, source_label, angle, archetype, aspect_ratio, status, reference_thumbnail, reference_name, parent_creative_id, pipeline, copy_set_id, meta_ad_ids, meta_image_hash, generated_copy, parent_creative_id_ref, parent_im_number, im_number, iteration_change_description, created_at FROM spy_creatives WHERE pipeline IN ('standard', 'iteration') AND COALESCE(is_reference, false) = false";
+    // image_engine + composer_* are selected so the board can badge which engine
+    // made a card and how a Composer card arrived. Omitting them made
+    // composer_source read as null on every card even though the column was
+    // populated.
+    let query = "SELECT id, product_id, product_name, image_url, thumbnail_url, source_label, angle, archetype, aspect_ratio, status, reference_thumbnail, reference_name, parent_creative_id, pipeline, copy_set_id, meta_ad_ids, meta_image_hash, generated_copy, parent_creative_id_ref, parent_im_number, im_number, iteration_change_description, image_engine, composer_source, composer_import_id, composer_prompt, created_at FROM spy_creatives WHERE pipeline IN ('standard', 'iteration') AND COALESCE(is_reference, false) = false";
     const params = [];
     if (product_id) {
       query += ' AND product_id = $1';
@@ -5107,7 +5111,11 @@ router.get('/creatives/pipeline', authenticate, async (req, res) => {
     // 'approved' bucket is deprecated — rows that still have it (older data
     // that escaped migration 051, e.g. inserted during the deploy window)
     // are folded into 'ready'.
-    const pipeline = { generating: [], review: [], ready: [], launched: [] };
+    // 'composer' is a first-class bucket. Without it, rows with status='composer'
+    // matched no branch below and were silently dropped — imported statics
+    // existed in the DB but never reached the board, so the COMPOSER column
+    // read as permanently empty.
+    const pipeline = { composer: [], generating: [], review: [], ready: [], launched: [] };
     const variants = [];
     for (const row of rows) {
       if (row.parent_creative_id && (row.status === 'generating' || row.status === 'rejected')) {
