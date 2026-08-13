@@ -6457,7 +6457,27 @@ router.get('/league/ads', authenticate, async (req, res) => {
     const limit = Math.min(100, Math.max(1, parseInt(req.query.limit, 10) || 20));
     const offset = (page - 1) * limit;
 
+    // Recency. The default ordering is tier_score then active_days DESC, i.e.
+    // longest-running first — correct for "proven winner", but it buries every
+    // new ad at the bottom of the list, so the feed reads as stale even when
+    // the scraper ran minutes ago. `sort=newest` orders by the ad's Meta start
+    // date instead, and `days=N` restricts to ads that started within N days.
+    // Default is unchanged, so existing callers keep the old behaviour.
+    const sortNewest = String(req.query.sort || '').toLowerCase() === 'newest';
+    const daysRaw = parseInt(req.query.days, 10);
+    const days = Number.isFinite(daysRaw) && daysRaw > 0 ? Math.min(365, daysRaw) : null;
+
     const params = [brandId, tiers, limit, offset];
+    let recencyWhere = '';
+    if (days) {
+      params.push(days);
+      // start_date is nullable on older rows; those are excluded from an
+      // explicit recency filter rather than silently treated as new.
+      recencyWhere = `AND a.start_date IS NOT NULL AND a.start_date >= NOW() - ($${params.length} * INTERVAL '1 day')`;
+    }
+    const orderBy = sortNewest
+      ? 'ORDER BY a.start_date DESC NULLS LAST, a.tier_score DESC NULLS LAST'
+      : 'ORDER BY a.tier_score DESC NULLS LAST, a.active_days DESC NULLS LAST';
 
     const sql = `
       SELECT
@@ -6471,6 +6491,7 @@ router.get('/league/ads', authenticate, async (req, res) => {
         a.body_text,
         a.display_format,
         a.active_days,
+        a.start_date,
         a.is_active,
         a.transcript,
         a.transcript_at,
@@ -6497,7 +6518,8 @@ router.get('/league/ads', authenticate, async (req, res) => {
         AND (a.display_format ILIKE 'video%'
              OR (a.raw_snapshot->'videos'->0->>'video_hd_url') IS NOT NULL
              OR (a.raw_snapshot->'videos'->0->>'video_sd_url') IS NOT NULL)
-      ORDER BY a.tier_score DESC NULLS LAST, a.active_days DESC NULLS LAST
+      ${recencyWhere}
+      ${orderBy}
       LIMIT $3 OFFSET $4
     `;
     const rows = await pgQuery(sql, params);
@@ -6509,6 +6531,7 @@ router.get('/league/ads', authenticate, async (req, res) => {
       tier: r.tier,
       tierScore: r.tier_score,
       currentRank: r.current_rank,
+      startDate: r.start_date ? new Date(r.start_date).toISOString() : null,
       headline: r.headline,
       bodyText: r.body_text,
       displayFormat: r.display_format,
