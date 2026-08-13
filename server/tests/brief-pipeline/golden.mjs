@@ -101,7 +101,7 @@ function assertions(fx, brief, sourceScript) {
     push("source's channel/date not cloned", !bad, bad ? String(body.match(fx.forbidBodyPattern)) : '');
   }
   if (fx.architecture) {
-    const got = String(sj.architecture || brief.hook_architecture || '').toUpperCase();
+    const got = String(sj.architecture || '').toUpperCase();
     push(`architecture = ${fx.architecture}`, got === fx.architecture, `got "${got || 'ABSENT'}"`);
   }
 
@@ -116,12 +116,26 @@ function assertions(fx, brief, sourceScript) {
 (async () => {
   const h = await login();
   const storyScript = FIXTURES.find(f => f.id === 'story-vsl').script;
+  // Real long source from the League — see the fixture note on why a repeated
+  // script is not an acceptable substitute.
+  async function longestRealTranscript(h) {
+    const brands = (await (await fetch(`${BASE}/api/v1/brief-pipeline/league/brands`, { headers: h })).json()).brands || [];
+    let best = '';
+    for (const b of brands.slice(0, 8)) {
+      const j = await (await fetch(`${BASE}/api/v1/brief-pipeline/league/ads?brand_id=${b.id}&limit=60`, { headers: h })).json();
+      for (const a of (j.ads || [])) if (a.transcript && a.transcript.length > best.length) best = a.transcript;
+    }
+    return best.length >= 6000 ? best : null;
+  }
   let failed = 0, total = 0;
   const rows = [];
 
   for (const fx of FIXTURES) {
     let script = fx.script;
-    if (fx.buildLong) { script = ''; while (script.length < 11516) script += storyScript + ' '; script = script.slice(0, 11516); }
+    if (fx.fetchLongestTranscript) {
+      script = await longestRealTranscript(h);
+      if (!script) { console.log('skipped — no long transcript available in the League'); continue; }
+    }
     process.stdout.write(`\n▶ ${fx.id} (${script.length} chars) … `);
     let res;
     try { res = await generate(h, script); }

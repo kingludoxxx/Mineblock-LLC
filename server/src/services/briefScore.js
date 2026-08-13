@@ -161,6 +161,10 @@ export function scoreBrief({ body, sourceText, validator = {}, weights = DEFAULT
 
   return {
     scored: true,
+    // Persisted so the operator and the golden harness can both see WHICH hook
+    // strategy was applied. It was previously consumed and thrown away, which
+    // made the architecture branch impossible to verify from the outside.
+    architecture: validator.architecture || null,
     overall: Math.round(overall * 10) / 10,
     components,
     reuse: proofStackReuse(body),   // reported, zero weight — see header

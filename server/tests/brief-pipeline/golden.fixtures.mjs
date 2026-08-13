@@ -51,8 +51,13 @@ export const FIXTURES = [
     architecture: null,          // any
     hookCount: [3, 5],
     minBodyChars: 2000,
-    script: null,                // built at run time by repeating the story VSL
-    buildLong: true,
+    script: null,
+    // Pulled at run time from the League: the longest real transcript available.
+    // An earlier version built this by REPEATING one script eight times, and the
+    // model correctly collapsed the duplication — which the harness then reported
+    // as a 14% length-parity failure. A fixture that is not representative
+    // manufactures false defects, which is worse than having no fixture.
+    fetchLongestTranscript: true,
   },
 ];
 
