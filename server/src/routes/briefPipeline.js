@@ -17,7 +17,7 @@ import { existsSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import {
-  resolveAdAccountNames, getPages, getPixels, getCampaigns, getAdSets,
+  resolveAdAccountNames, getAdAccounts, getPages, getPixels, getCampaigns, getAdSets,
   getCustomAudiences, createAdSet, createFlexibleAdCreative, createAd,
   uploadAdImage, uploadAdVideo, uploadAdImageFromUrl, isMetaAdsConfigured, getAllAdAccountIds
 } from '../services/metaAdsApi.js';
