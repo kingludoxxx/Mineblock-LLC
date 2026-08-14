@@ -3670,7 +3670,21 @@ router.get('/status/:taskId', authenticate, async (req, res) => {
         return res.json({ success: true, data: { taskId, status: 'processing', progress: result.progress || 'Generating...' } });
       }
       if (result.status === 'error') {
-        return res.json({ success: true, data: { taskId, status: 'failed', error: result.error } });
+        // Project the machine-readable fields too, not just the prose. A batch
+        // caller (or the phone-triggered flow) needs to distinguish "reference
+        // was unusable, skipped cheaply" from a real generation failure without
+        // string-matching the message.
+        return res.json({
+          success: true,
+          data: {
+            taskId,
+            status: 'failed',
+            error: result.error,
+            ...(result.error_code ? { error_code: result.error_code } : {}),
+            ...(result.reference_words !== undefined ? { reference_words: result.reference_words } : {}),
+            ...(result.skipped_before_image_generation ? { skipped_before_image_generation: true } : {}),
+          },
+        });
       }
       return res.json({
         success: true,
