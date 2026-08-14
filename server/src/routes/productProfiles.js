@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { pgQuery } from '../db/pg.js';
 import { authenticate } from '../middleware/auth.js';
 import { requirePermission } from '../middleware/rbac.js';
+import { PUURE_ANGLES } from '../utils/puureAngles.js';
 
 const router = Router();
 
@@ -418,7 +419,7 @@ async function ensureTable() {
   tableReady = true;
 }
 
-ensureTable().then(seedMinerAngles).catch(console.error);
+ensureTable().then(seedMinerAngles).then(seedPuureAngles).catch(console.error);
 
 // ── Seed MinerForge Pro angles on startup ───────────────────────────────────
 // Runs once per server start. Uses ID-based merge: only appends angles whose
@@ -477,6 +478,48 @@ async function seedMinerAngles() {
     console.log(`[productProfiles] seedMinerAngles: appended ${toAdd.length} angle(s), patched ${patchCount} existing angle(s) for product ${product.id} (total: ${merged.length})`);
   } catch (err) {
     console.error('[productProfiles] seedMinerAngles error:', err.message);
+  }
+}
+
+// ── Seed Puure angles on startup ────────────────────────────────────────────
+// Same additive, ID-based merge as seedMinerAngles: only appends angles whose
+// id is not already in the DB, so operator edits are always preserved. Targets
+// the Puure product (ILIKE match). Inert on non-Puure instances (0 rows → exit).
+// Set SEED_PUURE_ANGLES=false to skip entirely.
+async function seedPuureAngles() {
+  try {
+    if (process.env.SEED_PUURE_ANGLES === 'false') {
+      console.log('[productProfiles] seedPuureAngles: disabled via SEED_PUURE_ANGLES=false');
+      return;
+    }
+    const products = await pgQuery(
+      `SELECT id, angles FROM product_profiles
+        WHERE name ILIKE '%puure%' OR product_code IN ('PL', 'PUURE')
+        ORDER BY updated_at DESC LIMIT 1`
+    );
+    if (!products.length) {
+      console.log('[productProfiles] seedPuureAngles: no Puure product found — skipping (inert)');
+      return;
+    }
+    const product = products[0];
+    let existing = product.angles;
+    if (typeof existing === 'string') { try { existing = JSON.parse(existing); } catch { existing = []; } }
+    if (!Array.isArray(existing)) existing = [];
+
+    const existingIds = new Set(existing.map(a => String(a.id)));
+    const toAdd = PUURE_ANGLES.filter(a => !existingIds.has(String(a.id)));
+    if (toAdd.length === 0) {
+      console.log(`[productProfiles] seedPuureAngles: product ${product.id} already has all ${PUURE_ANGLES.length} Puure angles — skipping`);
+      return;
+    }
+    const merged = [...existing, ...toAdd];
+    await pgQuery(
+      `UPDATE product_profiles SET angles = $1::jsonb, updated_at = NOW() WHERE id = $2`,
+      [JSON.stringify(merged), product.id]
+    );
+    console.log(`[productProfiles] seedPuureAngles: appended ${toAdd.length} angle(s) for product ${product.id} (total: ${merged.length})`);
+  } catch (err) {
+    console.error('[productProfiles] seedPuureAngles error:', err.message);
   }
 }
 

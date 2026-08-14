@@ -3086,6 +3086,7 @@ router.post('/generate', authenticate, async (req, res) => {
         common_objections:       product.profile?.commonObjections,
         winning_angles:          product.profile?.winningAngles,
         custom_angles_text:      product.profile?.customAngles,
+        angles:                  product.profile?.angles, // rich per-angle library (hook/tone/directives)
         offer_details:           product.profile?.offerDetails,
         max_discount:            product.profile?.maxDiscount,
         discount_codes:          product.profile?.discountCodes,

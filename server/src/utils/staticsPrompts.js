@@ -118,7 +118,48 @@ export function buildClaudeAnalysisPrompt(product = {}, angle = '', template = '
     PRODUCT_IMAGE_NOTE:   extras.PRODUCT_IMAGE_NOTE || '',
     ...extras,
   };
-  return interpolate(template, vars);
+  // Append the full per-angle context (Product Library angles) so the static
+  // generator gets who/how/hooks, not just the angle name. No template edit
+  // needed — mirrors the MASTER_BRIEF block approach.
+  return interpolate(template, vars) + renderAngleDetailsBlock(p.angles, angle);
+}
+
+/**
+ * Render the Product Library angle context: the full list of available angles
+ * plus the deep detail (hook_strategy, lead_with, tone, copy_directives,
+ * required_elements, headline_examples, banned_phrases, avatar) for the
+ * selected one. Returns '' when the product has no angles — block collapses.
+ */
+function renderAngleDetailsBlock(angles, angleName) {
+  let arr = angles;
+  if (typeof arr === 'string') { try { arr = JSON.parse(arr); } catch { arr = []; } }
+  if (!Array.isArray(arr) || arr.length === 0) return '';
+  const list = arr
+    .map(a => `- ${a.name} [${(a.funnel_stage || 'middle').toUpperCase()}]${a.avatar ? ` — avatar: ${a.avatar}` : ''}`)
+    .join('\n');
+  let detail = '';
+  const name = (angleName && angleName !== 'NA' && angleName !== 'AUTO') ? String(angleName) : '';
+  if (name) {
+    const m = arr.find(a => (a.name || '').toLowerCase() === name.toLowerCase());
+    if (m) {
+      const lines = [];
+      if (m.avatar)          lines.push(`avatar: ${m.avatar}`);
+      if (m.awareness)       lines.push(`awareness: ${m.awareness}`);
+      if (m.funnel_stage)    lines.push(`funnel_stage: ${m.funnel_stage}`);
+      if (m.messenger)       lines.push(`messenger: ${m.messenger}`);
+      if (m.hook_strategy)   lines.push(`hook_strategy: ${m.hook_strategy}`);
+      if (m.lead_with)       lines.push(`lead_with: ${m.lead_with}`);
+      if (m.tone)            lines.push(`tone: ${m.tone}`);
+      if (m.copy_directives) lines.push(`copy_directives:\n${m.copy_directives}`);
+      if (Array.isArray(m.required_elements) && m.required_elements.length) lines.push(`required_elements:\n- ${m.required_elements.join('\n- ')}`);
+      if (Array.isArray(m.headline_examples) && m.headline_examples.length) lines.push(`headline_examples:\n- ${m.headline_examples.join('\n- ')}`);
+      if (Array.isArray(m.banned_phrases) && m.banned_phrases.length) lines.push(`banned_phrases (HARD ban):\n- ${m.banned_phrases.join('\n- ')}`);
+      detail = `\n\n----- SELECTED ANGLE: ${m.name} -----\n${lines.join('\n')}`;
+    } else {
+      detail = `\n\n----- SELECTED ANGLE: ${name} (not in Product Library — reason from the name) -----`;
+    }
+  }
+  return `\n\n===== MARKETING ANGLES — PRODUCT LIBRARY (angle strategy source of truth) =====\n\nAVAILABLE ANGLES:\n${list}${detail}`;
 }
 
 /**
@@ -174,6 +215,11 @@ export function mapProductRowToFlatProfile(row = {}) {
     ingredients:          row.ingredients || '',
     winning_angles:       row.winning_angles || '',
     custom_angles:        row.custom_angles_text || '',
+    angles:               Array.isArray(row.angles)
+                            ? row.angles
+                            : (typeof row.angles === 'string'
+                                ? (() => { try { return JSON.parse(row.angles); } catch { return []; } })()
+                                : []),
     objections:           row.common_objections  || '',
     offer_hook:           row.offer_details      || '',
     pricing:              row.bundle_variants    || row.price || '',
