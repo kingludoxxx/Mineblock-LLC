@@ -1363,6 +1363,70 @@ router.get('/frame-asset/:assetId', async (req, res) => {
   }
 });
 
+// GET/POST /api/v1/clickup-webhook/pl-frame-rename  (guarded by x-admin-secret)
+// Renames Frame.io video files in each PL card's folder to match the card's
+// CURRENT ClickUp name, PRESERVING any trailing hook marker (H1/H2/H3 / "Hook 2").
+// Dry-run by default; ?apply=1 renames. ?card=B0007 limits to one card (canary).
+router.all('/pl-frame-rename', adminOrSuperAdmin, async (req, res) => {
+  const apply = req.query.apply === '1';
+  const onlyCard = req.query.card ? String(req.query.card) : null;
+  const HOOK = /[\s_\-]+(H\s?\d+|Hook\s?\d+)\s*$/i;
+  const results = [];
+  try {
+    // 1. all PL cards (name + adsFrameLink)
+    const tasks = [];
+    let page = 0;
+    while (true) {
+      const d = await clickupFetch(`/list/${PL_VIDEO_LIST}/task?page=${page}&limit=100&include_closed=true&subtasks=false`);
+      const t = d.tasks || [];
+      tasks.push(...t);
+      if (t.length < 100) break;
+      page += 1;
+    }
+    for (const task of tasks) {
+      if (onlyCard && !String(task.name).includes(onlyCard)) continue;
+      const link = getFieldValue(task, FIELD_IDS.adsFrameLink);
+      if (!link) continue;
+      // folder id = LAST uuid in the next.frame.io/project/<proj>/<folder> link
+      const ids = String(link).match(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi);
+      const folderId = ids && ids[ids.length - 1];
+      if (!folderId) continue;
+      let children;
+      try {
+        children = await frameioFetchV4(`/accounts/${FRAMEIO_ACCOUNT_ID}/folders/${folderId}/children?page_size=100`);
+      } catch (e) {
+        results.push({ card: task.name, folderId, error: e.message.slice(0, 160) });
+        continue;
+      }
+      const items = children?.data || (Array.isArray(children) ? children : []);
+      for (const it of items) {
+        if (it.type === 'folder') continue; // rename files (videos) only
+        const oldName = it.name || '';
+        const hm = oldName.match(HOOK);
+        const hook = hm ? hm[1].replace(/\s+/g, '').toUpperCase() : null;
+        const newName = hook ? `${task.name} - ${hook}` : task.name;
+        const entry = { card: task.name, fileId: it.id, old: oldName, new: newName, changed: newName !== oldName };
+        if (apply && entry.changed) {
+          try {
+            await frameioFetchV4(`/accounts/${FRAMEIO_ACCOUNT_ID}/files/${it.id}`, {
+              method: 'PATCH',
+              body: JSON.stringify({ data: { name: newName } }),
+            });
+            entry.applied = true;
+          } catch (e) { entry.error = e.message.slice(0, 160); }
+        }
+        results.push(entry);
+      }
+    }
+    const changed = results.filter((r) => r.changed).length;
+    const applied = results.filter((r) => r.applied).length;
+    const errors = results.filter((r) => r.error).length;
+    res.json({ apply, cards: tasks.length, files: results.length, changed, applied, errors, results });
+  } catch (err) {
+    res.status(500).json({ error: err.message, partial: results });
+  }
+});
+
 // Frame.io folder creation is handled by Make.com scenario
 // Use /frame-diagnose to check Frame.io API access if needed
 
