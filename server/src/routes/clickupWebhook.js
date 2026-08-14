@@ -1422,19 +1422,26 @@ router.all('/pl-frame-rename', adminOrSuperAdmin, async (req, res) => {
         }
         const entry = { card: task.name, fileId: it.id, type: it.type, old: oldName, new: newName, changed: newName !== oldName };
         if (apply && entry.changed) {
-          // Frame folder children are either files or version_stacks (grouped
-          // re-uploads). Route to the right endpoint; fall back to the other.
-          const fileP = `/accounts/${FRAMEIO_ACCOUNT_ID}/files/${it.id}`;
-          const stackP = `/accounts/${FRAMEIO_ACCOUNT_ID}/version_stacks/${it.id}`;
-          const primary = it.type === 'version_stack' ? stackP : fileP;
-          const alt = it.type === 'version_stack' ? fileP : stackP;
+          const acc = FRAMEIO_ACCOUNT_ID;
           const patch = (p) => frameioFetchV4(p, { method: 'PATCH', body: JSON.stringify({ data: { name: newName } }) });
           try {
-            await patch(primary); entry.applied = true;
-          } catch (e1) {
-            try { await patch(alt); entry.applied = true; }
-            catch (e2) { entry.error = e1.message.slice(0, 160); }
-          }
+            if (it.type === 'version_stack') {
+              // V4 has no direct version-stack rename — rename the file(s) inside.
+              let kids = null;
+              for (const cp of [`/accounts/${acc}/version_stacks/${it.id}/children`,
+                                `/accounts/${acc}/version_stacks/${it.id}/versions`]) {
+                try { kids = await frameioFetchV4(cp); if (kids) break; } catch (_) { /* next */ }
+              }
+              const files = (kids && (kids.data || (Array.isArray(kids) ? kids : []))) || [];
+              if (!files.length) throw new Error('version_stack: no renamable children found');
+              let n = 0;
+              for (const f of files) { await patch(`/accounts/${acc}/files/${f.id}`); n += 1; }
+              entry.applied = true; entry.versions = n;
+            } else {
+              await patch(`/accounts/${acc}/files/${it.id}`);
+              entry.applied = true;
+            }
+          } catch (e) { entry.error = e.message.slice(0, 160); }
         }
         results.push(entry);
       }
