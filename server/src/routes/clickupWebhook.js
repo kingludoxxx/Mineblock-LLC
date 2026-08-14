@@ -1420,15 +1420,21 @@ router.all('/pl-frame-rename', adminOrSuperAdmin, async (req, res) => {
         } else {
           newName = task.name + ext;
         }
-        const entry = { card: task.name, fileId: it.id, old: oldName, new: newName, changed: newName !== oldName };
+        const entry = { card: task.name, fileId: it.id, type: it.type, old: oldName, new: newName, changed: newName !== oldName };
         if (apply && entry.changed) {
+          // Frame folder children are either files or version_stacks (grouped
+          // re-uploads). Route to the right endpoint; fall back to the other.
+          const fileP = `/accounts/${FRAMEIO_ACCOUNT_ID}/files/${it.id}`;
+          const stackP = `/accounts/${FRAMEIO_ACCOUNT_ID}/version_stacks/${it.id}`;
+          const primary = it.type === 'version_stack' ? stackP : fileP;
+          const alt = it.type === 'version_stack' ? fileP : stackP;
+          const patch = (p) => frameioFetchV4(p, { method: 'PATCH', body: JSON.stringify({ data: { name: newName } }) });
           try {
-            await frameioFetchV4(`/accounts/${FRAMEIO_ACCOUNT_ID}/files/${it.id}`, {
-              method: 'PATCH',
-              body: JSON.stringify({ data: { name: newName } }),
-            });
-            entry.applied = true;
-          } catch (e) { entry.error = e.message.slice(0, 160); }
+            await patch(primary); entry.applied = true;
+          } catch (e1) {
+            try { await patch(alt); entry.applied = true; }
+            catch (e2) { entry.error = e1.message.slice(0, 160); }
+          }
         }
         results.push(entry);
       }
