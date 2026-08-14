@@ -4967,7 +4967,12 @@ async function executeGenerationJob({
             // arithmetic on the finished text.
             const scored = scoreBrief({
               body: gen.body,
-              sourceText: rawScript,
+              // Parity must be judged against what the generator was ASKED to
+              // clone — the spoken script — not the raw transcript with its
+              // on-screen overlays. Measured on the 2026-08-14 batch: one brief
+              // read 47% against raw while being 118% against spoken, i.e.
+              // penalized for a baseline it was never targeting.
+              sourceText: spokenScript || rawScript,
               validator: {
                 architecture: gen.hook_architecture || null,
                 hookCount: hooks.length,
