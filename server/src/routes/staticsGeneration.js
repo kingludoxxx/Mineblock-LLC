@@ -1689,7 +1689,7 @@ const MAX_TEMP_IMAGES = 200;
 // forever. Verified before bumping: all six stored templates on Puure were
 // byte-identical to the baked defaults, so this one-shot refresh discards no
 // operator work.
-const STATICS_CLAUDE_SIGNATURE = 'TEXT RULES — this is a SWAP';
+const STATICS_CLAUDE_SIGNATURE = 'AD TYPE — judge what the reference LEADS WITH';
 (async () => {
   try {
     await new Promise(r => setTimeout(r, 6000)); // let migrations settle
@@ -2525,11 +2525,31 @@ words with ours; you are NOT authoring an ad from scratch.
 - Set reference_has_text to true whenever you can see any text in the image, even
   if you can only read part of it.
 
+AD TYPE — judge what the reference LEADS WITH, from the image itself:
+  promo             the OFFER is the message. The discount/sale/price is the
+                    headline and the visual hook ("60% OFF THIS WEEK",
+                    "FLASH SALE $79", "Black Friday", a big price slash).
+  problem_solution  leads with a problem, pain or fear, then presents the
+                    product as the fix.
+  testimonial       a named or shown person's words/experience carry the ad.
+  ugc               looks like an unpolished customer phone photo/screenshot.
+  comparison        us-vs-them, before/after, or a checklist table.
+  educational       explains a mechanism or teaches something ("how it works").
+  other             none of the above.
+
+CRITICAL: a discount badge sitting on an otherwise educational, testimonial or
+problem/solution ad does NOT make it a promo. An ad headlined "HOW TO TONE YOUR
+ARMS RISK-FREE" that happens to wear a "60% OFF" starburst is problem_solution,
+not promo. Ask what the ad is ARGUING, not what stickers it carries. Set
+reference_is_promo true only when the offer itself is the argument.
+
 Analyze the reference image and respond in valid JSON only:
 {
   "original_text": { "headline": "...", "subheadline": "...", "body": "...", "cta": "...", "badges": [], "bullets": [] },
   "adapted_text": { "headline": "...", "subheadline": "...", "body": "...", "cta": "...", "badges": [], "bullets": [] },
   "reference_has_text": true,
+  "reference_ad_type": "promo",
+  "reference_is_promo": true,
   "people_count": 0,
   "character_adaptation": "...",
   "reference_has_product_visual": true,
@@ -3223,7 +3243,11 @@ router.post('/generate', authenticate, async (req, res) => {
       // is a different creative strategy, the second has no text structure to
       // adapt (and is the signature of a mis-scraped image).
       {
-        const verdict = assessReferenceUsability(claudeResult);
+        const verdict = assessReferenceUsability(claudeResult, {
+          // Batch callers can demand a creative strategy, e.g. require_ad_type:
+          // 'promo' for "import the top promo ads and clone those".
+          requireAdType: req.body.require_ad_type || null,
+        });
         if (!verdict.usable) {
           console.warn(`[staticsGeneration] reference REJECTED (${verdict.code}, ${verdict.words} words): ${reqRefImage}`);
           clearTimeout(watchdog);
@@ -3232,6 +3256,7 @@ router.post('/generate', authenticate, async (req, res) => {
             error: verdict.reason,
             error_code: verdict.code,
             reference_words: verdict.words,
+            ...(verdict.adType ? { reference_ad_type: verdict.adType } : {}),
             skipped_before_image_generation: true,
           };
           storeTaskResult(earlyTaskId, payload);
@@ -7897,6 +7922,90 @@ const BRAND_SPY_THUMB_SQL = `
   )
 `;
 
+// ─────────────────────────────────────────────────────────────────────────────
+// REFERENCE IMAGE SANITY — reject non-creatives at IMPORT time.
+//
+// The League scrape sometimes resolves a row's thumbnail to the brand's PAGE
+// AVATAR instead of the ad creative. Observed 2026-08-14: two of ten imported
+// mydermadream references were the same byte-identical 1,271-byte, 48x48
+// "Derma Dream" logo, under two different ad ids. Those are not ads.
+//
+// Left alone they occupy import slots, then burn a ~30s Claude analysis each
+// before the usability gate rejects them — and before that gate existed they
+// produced finished "ads" built from a logo.
+//
+// Deterministic checks only: no model call, no judgement about content. A logo
+// cannot pass a dimension floor, and nothing legitimate fails one.
+// ─────────────────────────────────────────────────────────────────────────────
+
+// A real ad creative is never a few hundred bytes. 5KB is well below any genuine
+// static and well above any avatar/placeholder.
+const REF_IMG_MIN_BYTES = Math.max(1, parseInt(process.env.STATICS_REF_IMG_MIN_BYTES, 10) || 5000);
+// Short side floor. Meta serves avatars at 48-180px; ad creatives are >=320px.
+const REF_IMG_MIN_SHORT_SIDE = Math.max(1, parseInt(process.env.STATICS_REF_IMG_MIN_PX, 10) || 300);
+
+/**
+ * Judge an already-downloaded reference image. Exported for testing.
+ * @returns {{ok: boolean, bytes: number, width: number|null, height: number|null, reason: string|null}}
+ */
+export async function assessReferenceImageBuffer(buf) {
+  const bytes = buf ? buf.length : 0;
+  if (bytes === 0) return { ok: false, bytes, width: null, height: null, reason: 'image is empty (0 bytes)' };
+  if (bytes < REF_IMG_MIN_BYTES) {
+    return { ok: false, bytes, width: null, height: null,
+      reason: `image is only ${bytes} bytes (min ${REF_IMG_MIN_BYTES}) — this is an avatar or placeholder, not an ad creative` };
+  }
+  let meta;
+  try {
+    meta = await sharp(buf).metadata();
+  } catch (err) {
+    return { ok: false, bytes, width: null, height: null, reason: `not a readable image (${err.message})` };
+  }
+  const w = meta.width || 0, h = meta.height || 0;
+  const shortSide = Math.min(w, h);
+  if (shortSide < REF_IMG_MIN_SHORT_SIDE) {
+    return { ok: false, bytes, width: w, height: h,
+      reason: `${w}x${h} is too small (min ${REF_IMG_MIN_SHORT_SIDE}px short side) — brand logos and avatars land here, ad creatives do not` };
+  }
+  return { ok: true, bytes, width: w, height: h, reason: null };
+}
+
+/** Fetch + judge a reference image URL. Never throws — a fetch failure is a verdict. */
+export async function assessReferenceImageUrl(url) {
+  if (!url || typeof url !== 'string') return { ok: false, bytes: 0, width: null, height: null, reason: 'no image url on this ad' };
+  try {
+    const res = await fetch(url, { signal: AbortSignal.timeout(20000) });
+    if (!res.ok) return { ok: false, bytes: 0, width: null, height: null, reason: `image fetch failed (HTTP ${res.status})` };
+    return await assessReferenceImageBuffer(Buffer.from(await res.arrayBuffer()));
+  } catch (err) {
+    return { ok: false, bytes: 0, width: null, height: null, reason: `image fetch error: ${err.message}` };
+  }
+}
+
+/**
+ * Filter a list of candidate ads down to those whose image is a real creative.
+ * Checked concurrently — these are small files and the caller is holding an
+ * operator-facing request.
+ */
+async function keepAdsWithRealCreatives(ads) {
+  const verdicts = await Promise.all(ads.map(a => assessReferenceImageUrl(a.image_url)));
+  const kept = [], rejected = [];
+  ads.forEach((a, i) => {
+    const v = verdicts[i];
+    if (v.ok) kept.push(a);
+    else rejected.push({
+      ad_archive_id: a.ad_archive_id, headline: a.headline || null,
+      reason: v.reason, bytes: v.bytes,
+      dimensions: v.width ? `${v.width}x${v.height}` : null,
+    });
+  });
+  if (rejected.length) {
+    console.warn(`[league/import] rejected ${rejected.length} non-creative image(s): ` +
+      rejected.map(r => `${r.ad_archive_id}(${r.bytes}B${r.dimensions ? ' ' + r.dimensions : ''})`).join(', '));
+  }
+  return { kept, rejected };
+}
+
 function pickAspectRatio(displayFormat) {
   const d = String(displayFormat || '').toUpperCase();
   if (d.includes('SQUARE') || d === 'IMAGE_SQUARE' || d === '1:1') return '1:1';
@@ -8693,7 +8802,25 @@ router.post('/league/brand-configs/:brandId/sync', authenticate, async (req, res
       : (manualCount != null
           ? Math.min(manualCount, totalCandidates)
           : Math.max(1, Math.ceil(totalCandidates * (config.top_pct / 100))));
-    const picks = candidates.slice(0, takeN);
+    // Walk the ranked candidates in windows, dropping non-creatives (page
+    // avatars etc.), until takeN USABLE ones are found. Slicing first and
+    // filtering after would silently under-deliver: "import 10" would return 8.
+    const picks = [];
+    const rejectedImages = [];
+    let cursor = 0;
+    while (picks.length < takeN && cursor < candidates.length) {
+      const window = candidates.slice(cursor, cursor + Math.max(takeN, 5) * 2);
+      cursor += window.length;
+      const { kept, rejected } = await keepAdsWithRealCreatives(window);
+      rejectedImages.push(...rejected);
+      for (const a of kept) {
+        if (picks.length >= takeN) break;
+        picks.push(a);
+      }
+    }
+    if (rejectedImages.length) {
+      console.warn(`[league/sync] brand=${brandId} skipped ${rejectedImages.length} non-creative image(s) while filling ${takeN}`);
+    }
 
     if (picks.length === 0) {
       // Update last_synced_at even on empty result so the UI shows recent activity.
@@ -8703,7 +8830,14 @@ router.post('/league/brand-configs/:brandId/sync', authenticate, async (req, res
          ON CONFLICT (brand_id) DO UPDATE SET last_synced_at = NOW(), updated_at = NOW()`,
         [brandId]
       );
-      return res.json({ success: true, data: { scanned: totalCandidates, imported: 0, skipped: 0 } });
+      return res.json({ success: true, data: {
+        scanned: totalCandidates, imported: 0, skipped: 0,
+        rejected_images: rejectedImages.length,
+        rejected_image_reasons: rejectedImages.slice(0, 10),
+        note: rejectedImages.length > 0
+          ? 'Every candidate image was rejected as a non-creative (page avatar / placeholder) — the scrape resolved thumbnails to the wrong media.'
+          : 'No candidates matched this brand\u2019s filters.',
+      } });
     }
 
     // Dedup existing imports (same pattern as /league/import).
@@ -8813,7 +8947,14 @@ router.post('/league/brand-configs/:brandId/sync', authenticate, async (req, res
     console.log(`[league/brand-configs sync ${brandId.slice(0, 8)}…] scanned=${totalCandidates} picks=${picks.length} imported=${imported} skipped=${skipped}`);
     res.json({
       success: true,
-      data: { scanned: totalCandidates, picked: picks.length, imported, skipped },
+      data: {
+        scanned: totalCandidates, picked: picks.length, imported, skipped,
+        // Non-creatives dropped while filling the pick count. Reported rather
+        // than swallowed: a brand whose scrape keeps resolving to its avatar is
+        // a data problem the operator needs to see, not a silent shortfall.
+        rejected_images: rejectedImages.length,
+        rejected_image_reasons: rejectedImages.slice(0, 10),
+      },
     });
   } catch (err) {
     console.error('[league/brand-configs sync] error:', err);

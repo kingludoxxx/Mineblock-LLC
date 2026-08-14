@@ -463,6 +463,22 @@ export function assessReferenceUsability(claudeResult = {}, opts = {}) {
 
   const words = countTextWords(orig);
 
+  // AD-TYPE requirement, when the caller asked for one ("promo only"). Judged by
+  // Claude from the image in the same analysis, so this costs nothing extra.
+  // Absent field (older stored prompt) => no opinion => never blocks.
+  const wantType = opts.requireAdType ? String(opts.requireAdType).toLowerCase() : null;
+  if (wantType) {
+    const actual = claudeResult.reference_ad_type
+      ? String(claudeResult.reference_ad_type).toLowerCase()
+      : null;
+    if (actual && actual !== wantType) {
+      return {
+        usable: false, words, code: 'REFERENCE_WRONG_AD_TYPE', adType: actual,
+        reason: `Reference is a "${actual}" ad, not "${wantType}". A discount badge on an educational or problem/solution ad does not make it a promo — what the ad LEADS with is what counts. Skipped before image generation.`,
+      };
+    }
+  }
+
   if (words > maxWords) {
     return {
       usable: false, words, code: 'REFERENCE_TOO_MUCH_TEXT',
