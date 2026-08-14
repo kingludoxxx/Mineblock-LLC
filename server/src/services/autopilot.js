@@ -55,6 +55,12 @@ export const DEFAULT_CONFIG = {
   // This is what turns selection from "filters + tier score" into judgement —
   // tier score measures how well an ad works for ITS product, not for ours
   // ("Today Only: Extra 20% Off" outranked story ads on tier alone).
+  // Directed angle: when set, every queued job generates under this angle and
+  // the triage rates fit FOR that angle specifically. This is what lets an
+  // operator request ("5 briefs, The Surgeon's Secret") run through the full
+  // selection brain instead of the triage-less manual queue — the gap that let
+  // two thin offer ads into the 2026-08-14 batch.
+  angle: null,
   fitTriage: true,
   minFit: 6,          // below this: skipped, with the model's reason attached
   triagePool: 30,     // top candidates triaged per run (one batched Haiku call)
@@ -228,7 +234,7 @@ export async function triageFit(candidates, cfg) {
     system: 'You are a senior direct response strategist choosing which competitor ads are worth cloning for a specific product. You judge transferability of the PSYCHOLOGY, not the quality of the ad for its own product. Return only JSON.',
     messages: [{ role: 'user', content:
 `OUR PRODUCT: ${productLine}
-OUR ANGLES: ${angleNames.join(' | ') || '(none defined)'}\n${track}
+OUR ANGLES: ${angleNames.join(' | ') || '(none defined)'}${cfg.angle ? `\nOPERATOR-DIRECTED ANGLE: every brief will be generated under "${cfg.angle}" — rate FIT FOR THAT ANGLE: does this source's structure carry an authority/mechanism narrative well? A bare offer card cannot, whatever its tier.` : ''}\n${track}
 
 For each candidate ad below, rate FIT 0-10: how well would this ad's structure and psychology clone onto OUR product?
 High fit: same audience (women 40+), an emotional or bodily problem analogous to sagging/firmness, a narrative or authority structure that survives a product swap.
@@ -418,7 +424,7 @@ export async function runAutopilotBatch({ dryRun = true, overrides = {} } = {}) 
            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
            RETURNING id`,
           [String(c.id), String(c.ad_archive_id), String(c.brand_id), c.brand_domain,
-           c.tier, c.headline, cfg.productId, cfg.productCode, null, 'claude',
+           c.tier, c.headline, cfg.productId, cfg.productCode, cfg.angle || null, 'claude',
            // the triage verdict rides with the job so "does fit predict the
            // operator's approval?" stays a one-query question forever
            c.fit ?? null, c.fitAngle ?? null, c.fitWhy ?? null]
