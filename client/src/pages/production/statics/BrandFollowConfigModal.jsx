@@ -556,6 +556,99 @@ function BrandRow({ brand, expanded, onToggleExpand, onPatch, onSynced }) {
             </div>
           </div>
 
+          {/* ── Import breadth (migration 094) ────────────────────────────────
+              These three were hardcoded before: currently-running plain images,
+              best-tier-first. On mydermadream that reached 9 of 100 available
+              creatives. "Longest running" in particular was unreachable, because
+              a proven long-runner that has since ended fails the active filter. */}
+
+          {/* Sort by */}
+          <div>
+            <div className="flex items-center justify-between mb-2">
+              <label className="text-xs font-mono text-zinc-300">Import by</label>
+            </div>
+            <div className="flex flex-wrap gap-1.5">
+              {[
+                { v: 'tier_score',      label: 'Top performers' },
+                { v: 'longest_running', label: 'Longest running' },
+                { v: 'newest',          label: 'Newest' },
+              ].map(o => {
+                const active = (config.sort_mode || 'tier_score') === o.v;
+                return (
+                  <button
+                    key={o.v}
+                    type="button"
+                    onClick={() => onPatch({ sort_mode: o.v })}
+                    className={`px-2.5 h-7 rounded-lg text-[11px] font-mono border transition-colors cursor-pointer ${
+                      active
+                        ? 'border-violet-500/40 bg-violet-500/15 text-violet-200'
+                        : 'border-white/[0.08] bg-white/[0.03] text-zinc-400 hover:text-zinc-200'
+                    }`}
+                  >
+                    {o.label}
+                  </button>
+                );
+              })}
+            </div>
+            <p className="text-[9px] font-mono text-zinc-600 mt-1">
+              Longest running = proven staying power, not just current rank.
+            </p>
+          </div>
+
+          {/* Format */}
+          <div>
+            <div className="flex items-center justify-between mb-2">
+              <label className="text-xs font-mono text-zinc-300">Creative formats</label>
+            </div>
+            <div className="flex flex-wrap gap-1.5">
+              {[
+                { v: 'IMAGE',      label: 'Images only' },
+                { v: 'ALL_STATIC', label: 'All statics' },
+                { v: 'CAROUSEL',   label: 'Carousel only' },
+              ].map(o => {
+                const active = (config.format_filter || 'IMAGE') === o.v;
+                return (
+                  <button
+                    key={o.v}
+                    type="button"
+                    onClick={() => onPatch({ format_filter: o.v })}
+                    className={`px-2.5 h-7 rounded-lg text-[11px] font-mono border transition-colors cursor-pointer ${
+                      active
+                        ? 'border-violet-500/40 bg-violet-500/15 text-violet-200'
+                        : 'border-white/[0.08] bg-white/[0.03] text-zinc-400 hover:text-zinc-200'
+                    }`}
+                  >
+                    {o.label}
+                  </button>
+                );
+              })}
+            </div>
+            <p className="text-[9px] font-mono text-zinc-600 mt-1">
+              &ldquo;Images only&rdquo; excludes carousel/DCO/DPA — which is most of some brands&apos; libraries.
+            </p>
+          </div>
+
+          {/* Include ended ads */}
+          <div className="flex items-center justify-between">
+            <div>
+              <label className="text-xs font-mono text-zinc-300">Include ended ads</label>
+              <p className="text-[9px] font-mono text-zinc-600 mt-0.5">
+                Off = only ads running right now.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => onPatch({ include_inactive: !config.include_inactive })}
+              className={`px-2 h-6 rounded text-[10px] font-mono border transition-colors cursor-pointer shrink-0 ${
+                config.include_inactive
+                  ? 'border-violet-500/40 bg-violet-500/15 text-violet-200'
+                  : 'border-white/[0.08] bg-white/[0.03] text-zinc-500 hover:text-zinc-300'
+              }`}
+            >
+              {config.include_inactive ? 'On' : 'Off'}
+            </button>
+          </div>
+
           {/* Auto-sync */}
           <div>
             <div className="flex items-center justify-between mb-2">

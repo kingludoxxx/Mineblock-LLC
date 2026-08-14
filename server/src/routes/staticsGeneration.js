@@ -8278,7 +8278,39 @@ function mergeBrandConfig(row) {
     auto_sync_enabled: !!row.auto_sync_enabled,
     auto_sync_interval_hours: row.auto_sync_interval_hours ?? LEAGUE_CONFIG_DEFAULTS.auto_sync_interval_hours,
     last_synced_at: row.last_synced_at ?? null,
+    // Import-breadth controls (migration 094). Defaults reproduce the previous
+    // hardcoded behaviour exactly: currently-running plain images, best-tier first.
+    sort_mode: row.sort_mode ?? 'tier_score',
+    format_filter: row.format_filter ?? 'IMAGE',
+    include_inactive: !!row.include_inactive,
   };
+}
+
+// Allowed values, shared by the sync query and the PATCH validator so the two
+// can never drift.
+const LEAGUE_SORT_MODES = ['tier_score', 'longest_running', 'newest'];
+const LEAGUE_FORMAT_FILTERS = ['IMAGE', 'ALL_STATIC', 'CAROUSEL'];
+
+/** SQL predicate for a format filter. */
+function leagueFormatPredicate(filter) {
+  if (filter === 'ALL_STATIC') {
+    // Any non-video format — image, carousel, dco, dpa. Defence in depth: a NULL
+    // display_format is excluded too, since we cannot prove it is not a video.
+    return `(a.display_format IS NOT NULL AND a.display_format NOT ILIKE 'video%')`;
+  }
+  if (filter === 'CAROUSEL') return `a.display_format ILIKE 'carousel%'`;
+  return `a.display_format ILIKE 'image%'`;
+}
+
+/** ORDER BY clause for a sort mode. tier_score is always the tiebreak. */
+function leagueOrderBy(mode) {
+  if (mode === 'longest_running') {
+    return 'a.active_days DESC NULLS LAST, a.tier_score DESC NULLS LAST, a.id';
+  }
+  if (mode === 'newest') {
+    return 'a.start_date DESC NULLS LAST, a.tier_score DESC NULLS LAST, a.id';
+  }
+  return 'a.tier_score DESC NULLS LAST, a.current_rank ASC NULLS LAST, a.id';
 }
 
 // GET /league/brand-configs — followed brands + their import configs +
@@ -8478,6 +8510,27 @@ router.patch('/league/brand-configs/:brandId', authenticate, async (req, res) =>
       : (body.max_copy_length != null
           ? Math.max(1, parseInt(body.max_copy_length, 10) || 0) || null
           : undefined);
+    // Import-breadth controls (migration 094). Validate rather than silently
+    // coercing — an unknown sort mode should be a 400, not a quiet fallback to
+    // tier_score that leaves the operator wondering why nothing changed.
+    let sort_mode = null;
+    if (body.sort_mode != null) {
+      const v = String(body.sort_mode);
+      if (!LEAGUE_SORT_MODES.includes(v)) {
+        return res.status(400).json({ success: false, error: { message: `sort_mode must be one of ${LEAGUE_SORT_MODES.join(', ')}` } });
+      }
+      sort_mode = v;
+    }
+    let format_filter = null;
+    if (body.format_filter != null) {
+      const v = String(body.format_filter).toUpperCase();
+      if (!LEAGUE_FORMAT_FILTERS.includes(v)) {
+        return res.status(400).json({ success: false, error: { message: `format_filter must be one of ${LEAGUE_FORMAT_FILTERS.join(', ')}` } });
+      }
+      format_filter = v;
+    }
+    const include_inactive = body.include_inactive != null ? !!body.include_inactive : null;
+
     const auto_sync_enabled = body.auto_sync_enabled != null ? !!body.auto_sync_enabled : null;
     const auto_sync_interval_hours = body.auto_sync_interval_hours != null
       ? Math.max(1, Math.min(168, parseInt(body.auto_sync_interval_hours, 10) || 4))
@@ -8487,13 +8540,17 @@ router.patch('/league/brand-configs/:brandId', authenticate, async (req, res) =>
     // overwrite the columns the caller actually passed.
     const rows = await pgQuery(
       `INSERT INTO league_brand_configs
-         (brand_id, top_pct, tier_filter, max_copy_length, auto_sync_enabled, auto_sync_interval_hours)
+         (brand_id, top_pct, tier_filter, max_copy_length, auto_sync_enabled, auto_sync_interval_hours,
+          sort_mode, format_filter, include_inactive)
        VALUES ($1,
                COALESCE($2, ${LEAGUE_CONFIG_DEFAULTS.top_pct}),
                $3::text[],
                $4,
                COALESCE($5, FALSE),
-               COALESCE($6, ${LEAGUE_CONFIG_DEFAULTS.auto_sync_interval_hours}))
+               COALESCE($6, ${LEAGUE_CONFIG_DEFAULTS.auto_sync_interval_hours}),
+               COALESCE($9, 'tier_score'),
+               COALESCE($10, 'IMAGE'),
+               COALESCE($11, FALSE))
        ON CONFLICT (brand_id) DO UPDATE SET
          top_pct                  = COALESCE($2, league_brand_configs.top_pct),
          tier_filter              = CASE WHEN $7::boolean THEN $3::text[]
@@ -8502,6 +8559,9 @@ router.patch('/league/brand-configs/:brandId', authenticate, async (req, res) =>
                                          ELSE league_brand_configs.max_copy_length END,
          auto_sync_enabled        = COALESCE($5, league_brand_configs.auto_sync_enabled),
          auto_sync_interval_hours = COALESCE($6, league_brand_configs.auto_sync_interval_hours),
+         sort_mode                = COALESCE($9,  league_brand_configs.sort_mode),
+         format_filter            = COALESCE($10, league_brand_configs.format_filter),
+         include_inactive         = COALESCE($11, league_brand_configs.include_inactive),
          updated_at               = NOW()
        RETURNING *`,
       [
@@ -8513,6 +8573,11 @@ router.patch('/league/brand-configs/:brandId', authenticate, async (req, res) =>
         auto_sync_interval_hours,
         tier_filter !== undefined,
         max_copy_length !== undefined,
+        // $9-$11 — import-breadth controls. NULL means "caller did not pass it",
+        // so COALESCE leaves the stored value alone.
+        sort_mode,
+        format_filter,
+        include_inactive,
       ]
     );
 
@@ -8547,11 +8612,11 @@ router.post('/league/brand-configs/:brandId/sync', authenticate, async (req, res
 
     // Build the candidate query — active image ads, optionally tier-filtered,
     // sorted best-first.
-    const where = [
-      'a.brand_id = $1',
-      'a.is_active = TRUE',
-      `a.display_format ILIKE 'image%'`,
-    ];
+    // Import breadth is now operator-controlled (migration 094). Previously all
+    // three of these were hardcoded, which made "longest running" and any
+    // non-plain-image format unreachable.
+    const where = ['a.brand_id = $1', leagueFormatPredicate(config.format_filter)];
+    if (!config.include_inactive) where.push('a.is_active = TRUE');
     const params = [brandId];
     if (Array.isArray(config.tier_filter) && config.tier_filter.length > 0) {
       params.push(config.tier_filter);
@@ -8576,8 +8641,10 @@ router.post('/league/brand-configs/:brandId/sync', authenticate, async (req, res
       FROM brand_spy.ads a
       JOIN brand_spy.brands b ON b.id = a.brand_id
       WHERE ${where.join(' AND ')}
-      ORDER BY a.tier_score DESC NULLS LAST, a.current_rank ASC NULLS LAST, a.id
+      ORDER BY ${leagueOrderBy(config.sort_mode)}
     `, params);
+
+    console.log(`[league/sync] brand=${brandId} sort=${config.sort_mode} format=${config.format_filter} include_inactive=${config.include_inactive} -> ${candidates.length} candidate(s)`);
 
     const totalCandidates = candidates.length;
     // Pick count: manual override wins if provided; otherwise top_pct math.
