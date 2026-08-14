@@ -10750,6 +10750,16 @@ ${brief}
 PRODUCT CONTEXT (render THIS product, exactly as it appears in the attached image):
 ${context}
 
+COPY BUDGET — THIS IS THE MOST IMPORTANT RULE:
+- MAXIMUM 20 WORDS of visible text on the entire image. Count them.
+- The headline is at most 8 words. Everything else totals at most 12 more.
+- A static ad is a bold statement plus at most a short sub-line, optional
+  short bullets, and a CTA. It is NOT a poster, a leaflet or an infographic.
+- NO paragraphs, NO labelled sections, NO body-copy blocks, NO explanatory
+  captions. A person scrolling reads a headline, not a page.
+- If the brief lists several ideas, those shape the CONCEPT and the IMAGE.
+  Print only the single strongest one. The picture carries the rest.
+
 RULES:
 - The attached image is the ONLY product reference. Match its shape, colour, label and branding exactly.
 - Render every piece of text crisply and spelled correctly. Do not invent claims that are not in the brief or context above.
