@@ -3707,6 +3707,7 @@ router.get('/status/:taskId', authenticate, async (req, res) => {
             error: result.error,
             ...(result.error_code ? { error_code: result.error_code } : {}),
             ...(result.reference_words !== undefined ? { reference_words: result.reference_words } : {}),
+            ...(result.reference_ad_type ? { reference_ad_type: result.reference_ad_type } : {}),
             ...(result.skipped_before_image_generation ? { skipped_before_image_generation: true } : {}),
           },
         });
