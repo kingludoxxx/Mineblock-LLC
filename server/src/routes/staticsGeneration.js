@@ -26,6 +26,8 @@ import { Router } from 'express';
 import {
   enforceTextShape,
   describeShapeReport,
+  enforceOfferClaims,
+  describeOfferReport,
   assessReferenceUsability,
   buildClaudeAnalysisPrompt,
   buildNanoBananaImagePrompt,
@@ -1689,7 +1691,7 @@ const MAX_TEMP_IMAGES = 200;
 // forever. Verified before bumping: all six stored templates on Puure were
 // byte-identical to the baked defaults, so this one-shot refresh discards no
 // operator work.
-const STATICS_CLAUDE_SIGNATURE = 'AD TYPE — judge what the reference LEADS WITH';
+const STATICS_CLAUDE_SIGNATURE = 'OFFER RULES — never invent commercial terms';
 (async () => {
   try {
     await new Promise(r => setTimeout(r, 6000)); // let migrations settle
@@ -2537,6 +2539,17 @@ AD TYPE — judge what the reference LEADS WITH, from the image itself:
   educational       explains a mechanism or teaches something ("how it works").
   other             none of the above.
 
+OFFER RULES — never invent commercial terms. This is money and compliance, not copy.
+- Use ONLY discount codes listed in Discount Codes below. If that field is empty,
+  the ad must contain NO code at all. Never make one up, however plausible.
+- Never state a struck-through / "was" price, a "% off" figure or a savings
+  amount unless it is given in Pricing, Max Discount or Offers below.
+- Never invent urgency the operator has not stated: no "ends tonight", no
+  "limited time sale", no countdowns, unless the offer fields say so.
+- If the reference ad shows an offer we do not have, adapt the LAYOUT and drop
+  the offer — keep the composition, lose the claim. A promo layout with our real
+  price is fine; a fake code or invented sale is not.
+
 CRITICAL: a discount badge sitting on an otherwise educational, testimonial or
 problem/solution ad does NOT make it a promo. An ad headlined "HOW TO TONE YOUR
 ARMS RISK-FREE" that happens to wear a "60% OFF" starburst is problem_solution,
@@ -3234,6 +3247,17 @@ router.post('/generate', authenticate, async (req, res) => {
           console.warn('[staticsGeneration] ⚠️ Claude asserted the reference HAS text but returned none — copy was NOT stripped; treat this generation as suspect');
         }
         claudeResult = shaped.result;
+      }
+
+      // OFFER CLAIMS — a discount code either exists in the operator's product
+      // profile or it does not. Anything else gets replaced with the real code
+      // (when there is exactly one) or stripped. Prod produced "USE CODE:
+      // PUURE10" against a profile with no codes at all.
+      {
+        const offer = enforceOfferClaims(claudeResult, product);
+        const summary = describeOfferReport(offer.report);
+        if (summary) console.warn(`[staticsGeneration] offer claims — ${summary}`);
+        claudeResult = offer.result;
       }
 
       // REFERENCE USABILITY GATE — decided from the text Claude just read off the

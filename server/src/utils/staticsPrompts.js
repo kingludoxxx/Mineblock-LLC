@@ -494,6 +494,97 @@ export function assessReferenceUsability(claudeResult = {}, opts = {}) {
   return { usable: true, words, reason: null, code: null };
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// OFFER CLAIMS
+//
+// Observed in prod 2026-08-14: a generated Puure static read "USE CODE:
+// PUURE10". No such code exists — the product profile's discount_codes, offers
+// and max_discount were all empty. Asked for a "Promo" angle with no offer data
+// to work from, the model produced a plausible-looking one.
+//
+// That is not a cosmetic defect. A customer types a dead code at checkout, the
+// sale is lost and support hears about it — and a "LIMITED TIME SALE" on a
+// product sold at its normal price is a claim nobody wants to defend.
+//
+// Discount codes are the one offer claim that can be checked mechanically: a
+// code is a literal string that either exists in the operator's profile or does
+// not. Enforced here rather than only requested in the prompt, for the same
+// reason as the text shape — a prompt is a request, this needs to be a
+// guarantee. Everything softer (fake "was" prices, invented urgency) is covered
+// by the prompt rule that ships alongside this.
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Only treat a token as a code when it FOLLOWS a code-indicating word. A bare
+// all-caps token would drag in "FDA", "TRIRED", "FREE" and every headline word.
+const CODE_MENTION = /\b(?:use\s+)?(?:code|coupon|promo\s*code)\s*[:\-—]?\s*["“']?([A-Za-z0-9][A-Za-z0-9_-]{2,19})["”']?/gi;
+
+/** Pull the authorised codes out of a free-text discount_codes field. */
+export function extractAuthorisedCodes(discountCodesField) {
+  if (!discountCodesField || typeof discountCodesField !== 'string') return [];
+  // Codes are conventionally upper-case alphanumerics with at least one digit
+  // or 4+ letters; take those, ignore prose around them.
+  const out = new Set();
+  for (const m of discountCodesField.matchAll(/\b([A-Z][A-Z0-9]{3,19})\b/g)) {
+    const t = m[1];
+    if (['ONLY','NEVER','THIS','CODE','THE','AND','WITH','OFF','FULL','PRICE','TOTAL'].includes(t)) continue;
+    out.add(t);
+  }
+  return [...out];
+}
+
+/**
+ * Strip or correct discount codes that the operator has not authorised.
+ *
+ * @returns {{result: Object, report: {removed: string[], substituted: Array, authorised: string[]}}}
+ */
+export function enforceOfferClaims(claudeResult = {}, product = {}) {
+  const report = { removed: [], substituted: [], authorised: [] };
+  const adapted = claudeResult?.adapted_text;
+  if (!adapted || typeof adapted !== 'object') return { result: claudeResult, report };
+
+  const p = product.profile || {};
+  const authorised = extractAuthorisedCodes(p.discountCodes || p.discount_codes || product.discount_codes);
+  report.authorised = authorised;
+  const canonical = authorised.length === 1 ? authorised[0] : null;
+
+  const fix = (text) => {
+    if (typeof text !== 'string' || !text) return text;
+    return text.replace(CODE_MENTION, (whole, code) => {
+      if (authorised.some(a => a.toUpperCase() === code.toUpperCase())) return whole;
+      if (canonical) {
+        report.substituted.push({ from: code, to: canonical });
+        return whole.replace(code, canonical);
+      }
+      // Nothing authorised — remove the entire code mention rather than leave a
+      // dangling "USE CODE:" with no code after it.
+      report.removed.push(code);
+      return '';
+    });
+  };
+
+  const next = { ...adapted };
+  for (const f of TEXT_SCALARS) if (typeof next[f] === 'string') next[f] = fix(next[f]).replace(/\s{2,}/g, ' ').trim();
+  for (const f of TEXT_ARRAYS) {
+    if (Array.isArray(next[f])) {
+      next[f] = next[f].map(x => (typeof x === 'string' ? fix(x).replace(/\s{2,}/g, ' ').trim() : x)).filter(x => x !== '');
+    }
+  }
+  return { result: { ...claudeResult, adapted_text: next }, report };
+}
+
+/** One-line log summary for an offer report, or null when nothing changed. */
+export function describeOfferReport(report) {
+  if (!report) return null;
+  const bits = [];
+  if (report.substituted.length) {
+    bits.push('replaced invented code(s) ' + report.substituted.map(s => `${s.from}→${s.to}`).join(', '));
+  }
+  if (report.removed.length) {
+    bits.push(`removed unauthorised code mention(s): ${report.removed.join(', ')} (none authorised on this product)`);
+  }
+  return bits.length ? bits.join(' · ') : null;
+}
+
 /**
  * One-line summary of a shape report, or null when nothing changed.
  * Kept next to the enforcer so the log wording cannot drift from the logic.
