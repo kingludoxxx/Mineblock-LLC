@@ -435,7 +435,7 @@ export async function runAutopilotBatch({ dryRun = true, overrides = {} } = {}) 
   }
   // A directed angle supplies the argument, so the bar for the source's
   // structure rises: minFit at least 7 on directed runs.
-  if (cfg.angle) cfg = { ...cfg, minFit: Math.max(Number(cfg.minFit) || 6, 7) };
+  if (cfg.angle) cfg.minFit = Math.max(Number(cfg.minFit) || 6, 7);   // cfg is const — mutate the property, don't reassign
   const { picked, skipped } = applyDiversityCap(candidates, cfg);
   const generated = [];
   const failures = [];
