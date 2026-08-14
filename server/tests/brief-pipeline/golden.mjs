@@ -24,7 +24,7 @@
  */
 
 import { FIXTURES, SPEC_HOOK_RX } from './golden.fixtures.mjs';
-import { ungroundedHookClaims } from '../../src/services/briefScore.js';
+import { ungroundedHookClaims, nearDuplicateHookIdx } from '../../src/services/briefScore.js';
 
 const BASE = process.env.BASE || 'https://puure-dashboard.onrender.com';
 const EMAIL = process.env.EMAIL || process.env.PUURE_EMAIL;
@@ -91,6 +91,19 @@ function assertions(fx, brief, sourceScript) {
   const ungrounded = hooks
     .map((t, i) => ({ h: `H${i + 1}`, claims: ungroundedHookClaims(t, body) }))
     .filter(x => x.claims.length);
+  const singleDoor = ['FRAMED_LIST', 'REVERSAL'].includes(String(sj.architecture || '').toUpperCase());
+  const echoes = nearDuplicateHookIdx(hooks.map(t => ({ text: t })), { singleDoor });
+  // CTA parity: the close must not recite the whole offer block onto a source
+  // whose close had one sentence. Offer facts counted over the final 260 chars.
+  const OFFER_RX = /\$\s?\d|% off|money back|guarantee|official (site|store)|free shipping|down from/gi;
+  const closeFacts = t => (String(t).slice(-260).match(OFFER_RX) || []).length;
+  if (sourceScript) {
+    const delta = closeFacts(body) - closeFacts(sourceScript);
+    push('CTA offer-facts within +2 of source close', delta <= 2, `body ${closeFacts(body)} vs source ${closeFacts(sourceScript)}`);
+  }
+
+  push('no near-duplicate hooks delivered', echoes.length === 0, echoes.length ? `${echoes.length} echo(es)` : '');
+
   push('hooks grounded in the body', ungrounded.length === 0,
        ungrounded.map(x => `${x.h}: ${x.claims.join('/')}`).join('; ').slice(0, 100));
 
@@ -131,6 +144,7 @@ const PROMPT_INVARIANTS = [
   ['source-precedent mechanism rule', 'SOURCE PRECEDENT'],
   ['traceability rule', 'TRACEABLE'],
   ['channel/calendar swap', 'SWAP THE CHANNEL AND THE CALENDAR'],
+  ['CTA source-parity', "MATCH THE SOURCE'S CLOSE"],
   ['signature H1 rule', "H1 IS ALWAYS THE SOURCE'S SIGNATURE OPENING"],
   ['framed-list one-door rule', 'ONLY ONE DOOR'],
 ];

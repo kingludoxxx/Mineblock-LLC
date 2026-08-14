@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { authenticate } from '../middleware/auth.js';
-import { scoreBrief, ungroundedHookClaims } from '../services/briefScore.js';
+import { scoreBrief, ungroundedHookClaims, nearDuplicateHookIdx } from '../services/briefScore.js';
 import {
   getAutopilotConfig, saveAutopilotConfig, runAutopilotBatch, reportToSlack,
 } from '../services/autopilot.js';
@@ -4947,6 +4947,10 @@ async function executeGenerationJob({
               hooks.forEach((h, i) => {
                 if ((!mechPrecedent && SPEC_HOOK_RX.test(String(h.text))) || ungroundedHookClaims(h.text, gen.body).length) offending.add(i);
               });
+              // Echoes die like lies: near-duplicate hooks (the later of each
+              // pair) join the drop set. DUPLICATE_HOOK cost 4 of 5 briefs on
+              // 2026-08-14 — 3 distinct hooks beat 5 where two are echoes.
+              for (const i of nearDuplicateHookIdx(hooks, { singleDoor })) offending.add(i);
               if (offending.size && hooks.length - offending.size >= 3) {
                 const droppedTexts = [...offending].map(i => `"${String(hooks[i].text).slice(0, 60)}"`);
                 hooks = hooks.filter((_, i) => !offending.has(i)).map((h, i) => ({ ...h, id: `H${i + 1}` }));

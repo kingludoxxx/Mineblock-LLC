@@ -102,6 +102,46 @@ export function ungroundedHookClaims(hookText, body) {
   return [...new Set(claims)];
 }
 
+/**
+ * Deterministic near-duplicate detection between hooks. DUPLICATE_HOOK cost
+ * 4 of 5 briefs in the 2026-08-14 batch: a thin source holds one idea, and a
+ * model pushed toward 4-5 hooks writes that idea in different clothes. Lies
+ * are dropped; echoes shipped. Same treatment now.
+ *
+ * Two hooks are near-duplicates when their content-token Jaccard overlap is
+ * high or they open with the same five words. Single-door architectures
+ * (framed list / reversal) legitimately share the FRAME's words, so their
+ * threshold is stricter before we call it an echo.
+ *
+ * Returns indexes of LATER members of each duplicate pair (keep the first).
+ */
+export function nearDuplicateHookIdx(hooks, { singleDoor = false } = {}) {
+  const norm = t => String(t || '').toLowerCase().replace(/[^a-z0-9\s]/g, ' ').split(/\s+/).filter(w => w.length > 2);
+  const sets = hooks.map(h => new Set(norm(h.text ?? h)));
+  const first5 = hooks.map(h => norm(h.text ?? h).slice(0, 5).join(' '));
+  // Overlap COEFFICIENT (inter / smaller set), not union-Jaccard: a short echo
+  // of a long hook shares nearly all of its own words while the union stays
+  // big — B0161's four same-argument hooks scored 0.28 by Jaccard.
+  // Second signal: hooks sharing >= 2 NUMBER anchors (twenty thousand + ninety
+  // nine) are the same argument whatever the phrasing.
+  const NUMRX = /\$?\d[\d,]*|\b(?:one|two|three|four|five|six|seven|eight|nine|ten|twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety|hundred|thousand|million)(?:[ -](?:one|two|three|four|five|six|seven|eight|nine|thousand|hundred))*\b/gi;
+  const nums = hooks.map(h => new Set((String(h.text ?? h).toLowerCase().match(NUMRX) || []).map(x => x.replace(/[$,]/g, '').trim())));
+  const bar = singleDoor ? 0.9 : 0.7;
+  const dupes = new Set();
+  for (let a = 0; a < sets.length; a++) {
+    if (dupes.has(a)) continue;
+    for (let b = a + 1; b < sets.length; b++) {
+      if (dupes.has(b)) continue;
+      const inter = [...sets[a]].filter(w => sets[b].has(w)).length;
+      const coeff = inter / Math.max(1, Math.min(sets[a].size, sets[b].size));
+      const sameOpen = !singleDoor && first5[a] && first5[a] === first5[b];
+      const sharedNums = !singleDoor ? [...nums[a]].filter(x => nums[b].has(x)).length : 0;
+      if (coeff >= bar || sameOpen || sharedNums >= 2) dupes.add(b);
+    }
+  }
+  return [...dupes];
+}
+
 export function specificityScore(body) {
   const w = words(body);
   if (w.length === 0) return null;

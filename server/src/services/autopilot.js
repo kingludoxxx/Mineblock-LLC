@@ -202,6 +202,25 @@ export async function selectCandidates(cfg) {
  * reason a nightly run produced nothing.
  */
 export async function triageFit(candidates, cfg) {
+  // CHUNKED: one batched call silently overflowed max_tokens at pool=100,
+  // parseTriage returned null, and the run fell back to tier ordering with
+  // nothing saying so. Chunks of 25 keep every call inside its budget, and a
+  // failed chunk degrades only ITS 25 candidates.
+  const CHUNK = 25;
+  if (!process.env.ANTHROPIC_API_KEY || !candidates.length) return null;
+  const merged = new Map();
+  let chunksOk = 0;
+  const chunksTotal = Math.ceil(candidates.length / CHUNK);
+  for (let off = 0; off < candidates.length; off += CHUNK) {
+    const part = candidates.slice(off, off + CHUNK);
+    const fits = await triageFitChunk(part, cfg);
+    if (fits) { chunksOk++; for (const [i, r] of fits) merged.set(off + i, r); }
+  }
+  if (!merged.size) return null;
+  return { fits: merged, chunksOk, chunksTotal };
+}
+
+async function triageFitChunk(candidates, cfg) {
   const key = process.env.ANTHROPIC_API_KEY;
   if (!key || !candidates.length) return null;
 
@@ -225,7 +244,7 @@ export async function triageFit(candidates, cfg) {
   catch (e) { console.warn('[autopilot] track record unavailable:', e.message); }
 
   const list = candidates.map((c, i) =>
-    `${i}. [${c.brand_domain} | ${c.tier}] headline: ${String(c.headline || '(none)').slice(0, 90)}\n   copy: ${String(c.body_text || '').replace(/\s+/g, ' ').slice(0, 260)}${c.transcript ? `\n   transcript: ${String(c.transcript).replace(/\s+/g, ' ').slice(0, 340)}` : ''}`
+    `${i}. [${c.brand_domain} | ${c.tier} | substance: ${(String(c.transcript || '').length || String(c.body_text || '').length)} chars] headline: ${String(c.headline || '(none)').slice(0, 90)}\n   copy: ${String(c.body_text || '').replace(/\s+/g, ' ').slice(0, 260)}${c.transcript ? `\n   transcript: ${String(c.transcript).replace(/\s+/g, ' ').slice(0, 340)}` : ''}`
   ).join('\n');
 
   const body = {
@@ -239,6 +258,7 @@ OUR ANGLES: ${angleNames.join(' | ') || '(none defined)'}${cfg.angle ? `\nOPERAT
 For each candidate ad below, rate FIT 0-10: how well would this ad's structure and psychology clone onto OUR product?
 High fit: same audience (women 40+), an emotional or bodily problem analogous to sagging/firmness, a narrative or authority structure that survives a product swap.
 Low fit: bare discount/offer ads with no transferable structure, unrelated audiences or problems (pest control, supplements for stamina), pure brand spots.
+HARD RULE ON SUBSTANCE: an ad under ~600 chars of substance whose copy is only an offer or a discount CANNOT score above 5, whatever its tier. A clone inherits its source's poverty.
 
 CANDIDATES:
 ${list}
@@ -293,6 +313,7 @@ export function applyDiversityCap(candidates, cfg) {
   const perBrand = new Map();
   const seenAds = new Set();
   const seenHeadlines = new Set();
+  const perAngle = new Map();
   const maxPerBrand = Number(cfg.maxPerBrand) || Infinity;
   const target = Number(cfg.briefsPerRun) || DEFAULT_CONFIG.briefsPerRun;
 
@@ -318,6 +339,16 @@ export function applyDiversityCap(candidates, cfg) {
     }
     // Same rule within the batch: one run queued two "Use This On Wrinkles…"
     // ads side by side — different ad ids, same creative. One per family.
+    // Portfolio: a batch is a spread, not five of one argument — cap two
+    // picks per triage-assigned angle.
+    if (c.fitAngle) {
+      const nA = perAngle.get(c.fitAngle) || 0;
+      if (nA >= 2) {
+        skipped.push({ ad: c.id, brand: c.brand_domain, headline: c.headline, reason: 'portfolio: angle "' + c.fitAngle + '" already covered twice' });
+        continue;
+      }
+      perAngle.set(c.fitAngle, nA + 1);
+    }
     const headKey = String(c.headline || '').trim().toLowerCase();
     if (headKey && seenHeadlines.has(headKey)) {
       skipped.push({ ad: c.id, brand: c.brand_domain, headline: c.headline, reason: 'same headline as another ad in this batch' });
@@ -342,7 +373,8 @@ export function formatReport({ picked, skipped, generated, failures, dryRun, sta
   const lines = [];
   lines.push(`*Autopilot Mode*${dryRun ? ' _(dry run — nothing generated)_' : ''} — ${secs}s`);
   lines.push(`Selected *${picked.length}*, generated *${generated.length}*, failed *${failures.length}*, skipped *${skipped.length}*`);
-  if (triaged) lines.push(`_Candidates ranked by reference-fit (Haiku triage), not tier score._`);
+  if (triaged) lines.push(`_Ranked by reference-fit (${triaged})._`);
+  else lines.push('⚠ _Fit triage UNAVAILABLE — this batch was TIER-SORTED. Selection quality degraded._');
   const withFit = picked.filter(p => typeof p.fit === 'number');
   if (withFit.length) lines.push('*Picked* ' + withFit.map(p => `${p.brand_domain} ${p.fit}/10`).join(' · '));
   if (generated.length) {
@@ -389,18 +421,21 @@ export async function runAutopilotBatch({ dryRun = true, overrides = {} } = {}) 
 
   let candidates = await selectCandidates(cfg);
   const considered = candidates.length;
-  let triaged = false;
+  let triaged = null;   // 'n/m chunks' when ranked; null = tier fallback
   if (cfg.fitTriage !== false && candidates.length) {
     const pool = candidates.slice(0, Number(cfg.triagePool) || 30);
-    const fits = await triageFit(pool, cfg);
-    if (fits) {
-      triaged = true;
-      for (const [i, r] of fits) Object.assign(pool[i], { fit: r.fit, fitAngle: r.angle, fitWhy: r.why });
+    const t = await triageFit(pool, cfg);
+    if (t) {
+      triaged = t.chunksOk + '/' + t.chunksTotal + ' chunks';
+      for (const [i, r] of t.fits) Object.assign(pool[i], { fit: r.fit, fitAngle: r.angle, fitWhy: r.why });
       // judged order: fit first, tier as the tiebreak; unrated sink to the back
       candidates = pool.slice().sort((a, b) => (b.fit ?? -1) - (a.fit ?? -1) || (b.tier_score ?? 0) - (a.tier_score ?? 0));
     }
     // fits === null -> tier ordering stands; the run must never die on triage
   }
+  // A directed angle supplies the argument, so the bar for the source's
+  // structure rises: minFit at least 7 on directed runs.
+  if (cfg.angle) cfg = { ...cfg, minFit: Math.max(Number(cfg.minFit) || 6, 7) };
   const { picked, skipped } = applyDiversityCap(candidates, cfg);
   const generated = [];
   const failures = [];
