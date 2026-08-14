@@ -1402,9 +1402,24 @@ router.all('/pl-frame-rename', adminOrSuperAdmin, async (req, res) => {
       for (const it of items) {
         if (it.type === 'folder') continue; // rename files (videos) only
         const oldName = it.name || '';
-        const hm = oldName.match(HOOK);
-        const hook = hm ? hm[1].replace(/\s+/g, '').toUpperCase() : null;
-        const newName = hook ? `${task.name} - ${hook}` : task.name;
+        // Frame convention: "<CODE> - H<n> - <rest>.mp4". The hook is a segment,
+        // not a trailing token. Preserve it + the file extension.
+        const ext = (oldName.match(/\.[a-z0-9]{2,4}$/i) || [''])[0];
+        const base = ext ? oldName.slice(0, -ext.length) : oldName;
+        let hook = base.split(' - ').map((s) => s.trim()).find((s) => /^H\d+$/i.test(s));
+        if (!hook) { const m = base.match(/\b(H\d+)\b/i); hook = m ? m[1] : null; }
+        hook = hook ? hook.toUpperCase() : null;
+        // New name = new card name with the hook re-inserted right after the
+        // brief code (B####), keeping the original file extension.
+        let newName;
+        if (hook) {
+          const segs = String(task.name).split(' - ');
+          const ci = segs.findIndex((s) => /^B\d+$/i.test(s.trim()));
+          if (ci >= 0) { segs.splice(ci + 1, 0, hook); newName = segs.join(' - ') + ext; }
+          else { newName = `${task.name} - ${hook}${ext}`; }
+        } else {
+          newName = task.name + ext;
+        }
         const entry = { card: task.name, fileId: it.id, old: oldName, new: newName, changed: newName !== oldName };
         if (apply && entry.changed) {
           try {
