@@ -26,6 +26,7 @@ import { Router } from 'express';
 import {
   enforceTextShape,
   describeShapeReport,
+  assessReferenceUsability,
   buildClaudeAnalysisPrompt,
   buildNanoBananaImagePrompt,
   buildAdjustmentPrompt,
@@ -3213,6 +3214,31 @@ router.post('/generate', authenticate, async (req, res) => {
           console.warn('[staticsGeneration] ⚠️ Claude asserted the reference HAS text but returned none — copy was NOT stripped; treat this generation as suspect');
         }
         claudeResult = shaped.result;
+      }
+
+      // REFERENCE USABILITY GATE — decided from the text Claude just read off the
+      // reference image, and BEFORE the ~150s image generation, so an unusable
+      // reference costs the cheap analysis only. Long-form story statics (>300
+      // words on the image) and text-free references are both skipped: the first
+      // is a different creative strategy, the second has no text structure to
+      // adapt (and is the signature of a mis-scraped image).
+      {
+        const verdict = assessReferenceUsability(claudeResult);
+        if (!verdict.usable) {
+          console.warn(`[staticsGeneration] reference REJECTED (${verdict.code}, ${verdict.words} words): ${reqRefImage}`);
+          clearTimeout(watchdog);
+          const payload = {
+            status: 'error',
+            error: verdict.reason,
+            error_code: verdict.code,
+            reference_words: verdict.words,
+            skipped_before_image_generation: true,
+          };
+          storeTaskResult(earlyTaskId, payload);
+          for (const ct of preChildTasks) storeTaskResult(ct.taskId, payload);
+          return;
+        }
+        console.log(`[staticsGeneration] reference usable — ${verdict.words} words of on-image text`);
       }
       console.log(`[staticsGeneration] ⏱ Claude finished in ${claudeMs}ms`);
 

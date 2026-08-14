@@ -398,6 +398,86 @@ export function enforceTextShape(claudeResult = {}) {
   return { result: out, report };
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// REFERENCE USABILITY
+//
+// Not every winning ad is a usable reference for THIS tool. Two kinds are not,
+// and both are decided from the text Claude reads off the reference image —
+// after the ~30s analysis, before the ~150s image generation, so an unusable
+// reference costs the cheap step only.
+//
+//   TOO MUCH TEXT — a long-form/story static (operator threshold: >300 words on
+//   the image). That is a different creative strategy: it works by being read,
+//   not by being seen. Cloning its composition for a product card produces a
+//   wall of copy, not an ad.
+//
+//   NO TEXT AT ALL — nothing to swap. Either the ad genuinely has no copy, or
+//   (as seen in prod) the scrape attached the wrong image to the ad. Either way
+//   there is no winning text structure to adapt.
+//
+// The band between them is where this tool works.
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Operator-set, env-overridable. 300 is deliberately generous: a normal static
+// carries 20-60 words, so this only catches genuine long-form.
+const REF_MAX_WORDS = Math.max(1, parseInt(process.env.STATICS_REF_MAX_WORDS, 10) || 300);
+// 1 = "must have at least one word". Set to 0 to allow text-free references.
+const REF_MIN_WORDS = (() => {
+  const raw = process.env.STATICS_REF_MIN_WORDS;
+  if (raw === undefined || raw === '') return 1;
+  const n = parseInt(raw, 10);
+  return Number.isFinite(n) && n >= 0 ? n : 1;
+})();
+
+/** Count whitespace-delimited words across every text field of a block. */
+export function countTextWords(textBlock = {}) {
+  const parts = [];
+  for (const f of TEXT_SCALARS) {
+    const v = textBlock?.[f];
+    if (typeof v === 'string' && v.trim()) parts.push(v.trim());
+  }
+  for (const f of TEXT_ARRAYS) {
+    const arr = textBlock?.[f];
+    if (Array.isArray(arr)) for (const x of arr) if (typeof x === 'string' && x.trim()) parts.push(x.trim());
+  }
+  if (parts.length === 0) return 0;
+  return parts.join(' ').split(/\s+/).filter(Boolean).length;
+}
+
+/**
+ * Decide whether a reference is usable, from the text Claude read off its image.
+ *
+ * @returns {{usable: boolean, words: number, reason: string|null, code: string|null}}
+ */
+export function assessReferenceUsability(claudeResult = {}, opts = {}) {
+  const maxWords = Number.isFinite(opts.maxWords) ? opts.maxWords : REF_MAX_WORDS;
+  const minWords = Number.isFinite(opts.minWords) ? opts.minWords : REF_MIN_WORDS;
+
+  // Judge the ORIGINAL text — what is actually on the reference — never our
+  // adapted copy, which is downstream of this decision.
+  const orig = claudeResult?.original_text;
+  if (!orig || typeof orig !== 'object') {
+    // No reading to judge. Do not block on an absence of evidence.
+    return { usable: true, words: 0, reason: null, code: null, skipped: 'no original_text to assess' };
+  }
+
+  const words = countTextWords(orig);
+
+  if (words > maxWords) {
+    return {
+      usable: false, words, code: 'REFERENCE_TOO_MUCH_TEXT',
+      reason: `Reference carries ${words} words of on-image text (limit ${maxWords}). That is a long-form/story static — a different creative strategy that does not translate to a product card. Skipped before image generation.`,
+    };
+  }
+  if (words < minWords) {
+    return {
+      usable: false, words, code: 'REFERENCE_NO_TEXT',
+      reason: `Reference has no readable on-image text, so there is no winning text structure to adapt. This is also the signature of a mis-scraped image. Skipped before image generation.`,
+    };
+  }
+  return { usable: true, words, reason: null, code: null };
+}
+
 /**
  * One-line summary of a shape report, or null when nothing changed.
  * Kept next to the enforcer so the log wording cannot drift from the logic.
