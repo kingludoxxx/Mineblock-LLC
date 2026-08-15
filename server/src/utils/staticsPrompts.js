@@ -182,6 +182,44 @@ function renderAngleDetailsBlock(angles, angleName) {
  * Returns '' when the angle is unknown or carries no usable material, so the
  * block collapses and the caller's own brief is left untouched.
  */
+const LAYOUT_NOUN = /\b(table|chart|graph|grid|diagram|infographic|checklist|matrix|column|row)s?\b/i;
+
+/**
+ * Walk the (hook, proof) pair space so BOTH coordinates move card to card.
+ *
+ * Enumerating pairs in the obvious order — hook fast, proof once per lap —
+ * keeps a whole lap on proof 0, and when proof 0 reads "A comparison table"
+ * every card in a short batch renders a table whatever format was asked for.
+ * Stepping the flat pair index by a stride coprime to H*R is a bijection, so
+ * all H*R pairs still come out before anything repeats; among the valid strides
+ * we take the one that spreads proof points widest over the first few cards,
+ * because short batches are the case that was broken.
+ *
+ * Pure function of (H, R) — same inputs always give the same walk.
+ */
+const gcd = (a, b) => (b === 0 ? a : gcd(b, a % b));
+const strideCache = new Map();
+function pairStride(H, R) {
+  const key = `${H}x${R}`;
+  if (strideCache.has(key)) return strideCache.get(key);
+  const total = H * R;
+  const window = Math.min(R, total);
+  let best = 1, bestScore = -1;
+  for (let s = 1; s < total; s++) {
+    if (gcd(s, total) !== 1) continue;
+    const seenP = new Set(), seenH = new Set();
+    for (let i = 0; i < window; i++) {
+      const p = (i * s) % total;
+      seenP.add(Math.floor(p / H));
+      seenH.add(p % H);
+    }
+    const score = seenP.size * 1000 + seenH.size;   // proof spread dominates
+    if (score > bestScore) { bestScore = score; best = s; }
+  }
+  strideCache.set(key, best);
+  return best;
+}
+
 export function renderAngleVariantBlock(angles, angleName, variantIndex = 0) {
   let arr = angles;
   if (typeof arr === 'string') { try { arr = JSON.parse(arr); } catch { arr = []; } }
@@ -207,10 +245,16 @@ export function renderAngleVariantBlock(angles, angleName, variantIndex = 0) {
   // Non-negative, integer. A garbage variantIndex must not silently collapse
   // every card onto slot 0 — that is the exact failure this function fixes.
   const i = Number.isFinite(Number(variantIndex)) ? Math.abs(Math.trunc(Number(variantIndex))) : 0;
-  const hook = hooks.length ? hooks[i % hooks.length] : '';
-  const proof = proofs.length
-    ? proofs[(hooks.length ? Math.floor(i / hooks.length) : i) % proofs.length]
-    : '';
+  let hook = '', proof = '';
+  if (hooks.length && proofs.length) {
+    const p = (i * pairStride(hooks.length, proofs.length)) % (hooks.length * proofs.length);
+    hook = hooks[p % hooks.length];
+    proof = proofs[Math.floor(p / hooks.length)];
+  } else if (hooks.length) {
+    hook = hooks[i % hooks.length];
+  } else {
+    proof = proofs[i % proofs.length];
+  }
 
   const lines = [`ANGLE: ${m.name}`];
   if (m.messenger) lines.push(`MESSENGER (whose voice this is): ${m.messenger}`);
@@ -225,8 +269,17 @@ export function renderAngleVariantBlock(angles, angleName, variantIndex = 0) {
   if (proof) {
     lines.push(`- THE SINGLE PROOF POINT THIS AD CARRIES: ${proof}`);
     lines.push('  Every other point the angle could make belongs to a DIFFERENT ad. Leave them out.');
-    lines.push('  If this proof point names a layout (a table, a chart, a diagram), that is a hint');
-    lines.push('  about the ARGUMENT only — the visual format the operator asked for wins.');
+    // Proof points are written for advertorials, so several of them name a
+    // layout ("A comparison table (Puure vs surgery vs creams)"). Left alone
+    // that noun beats the operator's format every time — a "product hero" brief
+    // came back as a diagram plus a six-row table. Name the conflict explicitly.
+    if (LAYOUT_NOUN.test(proof)) {
+      lines.push('  !! That proof point NAMES A LAYOUT. It is describing the ARGUMENT, not the');
+      lines.push('     design. Do NOT draw it as a table/chart/diagram unless the operator\'s');
+      lines.push('     VISUAL FORMAT above explicitly asked for one. The format wins. If the');
+      lines.push('     format is a hero shot or a statement card, make this point in the');
+      lines.push('     HEADLINE instead, and draw no grid of any kind.');
+    }
   }
   if (banned.length) lines.push(`- NEVER USE THESE PHRASES: ${banned.join(', ')}`);
 
