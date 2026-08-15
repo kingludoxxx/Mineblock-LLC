@@ -142,13 +142,29 @@ export function nearDuplicateHookIdx(hooks, { singleDoor = false } = {}) {
   return [...dupes];
 }
 
+// Spoken scripts spell numbers out for the voice actor — "sixty percent off",
+// "ninety days". Counting only digit-form specifics scored B0175's
+// specific-heavy body 0/10. Normalise spelled numbers to digits first so both
+// forms count. Compounds ("sixty five") become "60 5"; the unit regexes still
+// see the trailing "5 percent"/"5 days", so the detail is counted once.
+const SPELLED_NUM = {
+  one: '1', two: '2', three: '3', four: '4', five: '5', six: '6', seven: '7',
+  eight: '8', nine: '9', ten: '10', eleven: '11', twelve: '12', thirteen: '13',
+  fourteen: '14', fifteen: '15', sixteen: '16', seventeen: '17', eighteen: '18',
+  nineteen: '19', twenty: '20', thirty: '30', forty: '40', fifty: '50',
+  sixty: '60', seventy: '70', eighty: '80', ninety: '90', hundred: '100',
+};
+const SPELLED_NUM_RX = new RegExp(`\\b(${Object.keys(SPELLED_NUM).join('|')})\\b`, 'gi');
+
 export function specificityScore(body) {
   const w = words(body);
   if (w.length === 0) return null;
-  const text = String(body);
+  const text = String(body).replace(SPELLED_NUM_RX, m => SPELLED_NUM[m.toLowerCase()]);
   const hits =
     (text.match(/\$\s?\d[\d,.]*/g) || []).length +          // prices
-    (text.match(/\b\d+\s?(%|percent)\b/gi) || []).length +   // percentages
+    // \b inside the alternation: "%" is a non-word char, so a boundary AFTER it
+    // never exists before a space — "10% off" was failing the old pattern.
+    (text.match(/\b\d+\s?(%|percent\b)/gi) || []).length +   // percentages
     (text.match(/\b(?:at|i'?m|she'?s|he'?s|was)\s+\d{2}\b/gi) || []).length + // ages
     (text.match(/\b\d+\s+(day|days|week|weeks|month|months|year|years|minute|minutes)\b/gi) || []).length +
     (text.match(/\b\d[\d,]{2,}\b/g) || []).length;           // big round numbers

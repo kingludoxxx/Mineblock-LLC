@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { authenticate } from '../middleware/auth.js';
-import { scoreBrief, ungroundedHookClaims, nearDuplicateHookIdx } from '../services/briefScore.js';
+import { scoreBrief, specificityScore, DEFAULT_WEIGHTS, ungroundedHookClaims, nearDuplicateHookIdx } from '../services/briefScore.js';
 import {
   getAutopilotConfig, saveAutopilotConfig, runAutopilotBatch, reportToSlack,
 } from '../services/autopilot.js';
@@ -5189,6 +5189,46 @@ router.get('/generated/:id', authenticate, async (req, res) => {
     res.json({ success: true, brief });
   } catch (err) {
     console.error('[BriefPipeline] GET /generated/:id error:', err.message);
+    res.status(500).json({ success: false, error: { message: err.message } });
+  }
+});
+
+// POST /generated/:id/rescore — recompute the body-derived score components
+// against the CURRENT scorer and re-weight the overall. Exists so a scorer fix
+// can correct already-generated briefs instead of stranding stale numbers in
+// the Kanban. Validator-derived components (blend, integrity, parity) are kept
+// as stored: they came from signals that no longer exist on the row.
+router.post('/generated/:id/rescore', authenticate, async (req, res) => {
+  if (!validateUuid(req, res)) return;
+  try {
+    const rows = await pgQuery(
+      `SELECT id, body, overall_score, scores_json FROM brief_pipeline_generated WHERE id = $1`,
+      [req.params.id]
+    );
+    if (!rows.length) return res.status(404).json({ success: false, error: { message: 'Brief not found' } });
+    const brief = rows[0];
+    const prev = parseJsonb(brief.scores_json);
+    if (!prev?.scored || !prev.components) {
+      return res.status(409).json({ success: false, error: { message: 'Brief has no stored score to rescore' } });
+    }
+    const weights = prev.weights || DEFAULT_WEIGHTS;
+    const components = { ...prev.components, specificity: specificityScore(brief.body) };
+    const present = Object.entries(components).filter(([, v]) => typeof v === 'number');
+    const totalWeight = present.reduce((s, [k]) => s + (weights[k] ?? 0), 0);
+    if (!present.length || totalWeight <= 0) {
+      return res.status(409).json({ success: false, error: { message: 'No weighted component present after rescore' } });
+    }
+    const overall = Math.round(present.reduce((s, [k, v]) => s + v * ((weights[k] ?? 0) / totalWeight), 0) * 10) / 10;
+    const flags = (prev.flags || []).filter(f => f !== 'LOW_SPECIFICITY');
+    if (components.specificity !== null && components.specificity < 5) flags.push('LOW_SPECIFICITY');
+    const next = { ...prev, overall, components, flags, rescoredAt: new Date().toISOString() };
+    await pgQuery(
+      `UPDATE brief_pipeline_generated SET overall_score = $1, scores_json = $2::jsonb WHERE id = $3`,
+      [overall, JSON.stringify(next), brief.id]
+    );
+    res.json({ success: true, brief: { id: brief.id, overall_score: overall, was: prev.overall, components, flags } });
+  } catch (err) {
+    console.error('[BriefPipeline] POST /generated/:id/rescore error:', err.message);
     res.status(500).json({ success: false, error: { message: err.message } });
   }
 });
