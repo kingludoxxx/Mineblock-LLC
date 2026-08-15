@@ -68,9 +68,22 @@ was probably intended.
 ${angleName ? `The ad was written for the "${angleName}" angle.` : ''}
 ${requestedFormat ? `The requested visual format was: ${requestedFormat}` : ''}
 
-BANNED PHRASES for this angle — flag any that appear, including close paraphrases
-that carry the same meaning:
+BANNED PHRASES for this angle:
 ${banned}
+
+HOW TO APPLY THE BAN — read this carefully, it is easy to get wrong:
+- These ban specific WORDINGS, not ideas. Flag only text that renders the banned
+  phrase itself, near-verbatim (the same words in the same order, allowing for
+  case, punctuation and trivial inflection).
+- An entry annotated "(as clickbait)" bans that exact stock formulation ONLY.
+- The angle's own argument is NEVER a violation. This ad is SUPPOSED to make the
+  angle's case. If the copy argues the same idea in original words, that is the
+  ad working correctly — do NOT flag it.
+- Worked example: with "they do not want you to know" banned —
+    "THE LIGHT THEY DON'T WANT YOU TO KNOW ABOUT"        -> FLAG (verbatim)
+    "They hid this from you."                            -> do NOT flag (different wording)
+    "Clinics keep this quiet because it costs them."     -> do NOT flag (original phrasing of the same argument)
+- When in doubt, do NOT flag. A false alarm on good copy is worse than a miss.
 
 Return ONLY raw JSON, no markdown fence, in EXACTLY this shape:
 
@@ -80,9 +93,14 @@ Return ONLY raw JSON, no markdown fence, in EXACTLY this shape:
   "banned_phrases_found": ["the exact rendered text that matches a banned phrase"],
   "spelling_or_grammar_errors": ["the exact broken text, e.g. 'A SURGERY RESULTS.'"],
   "duplicated_text": ["text that appears more than once and should not, e.g. a row label repeated"],
+  "product_depictions": [
+    {"where": "where in the ad this depiction sits, e.g. 'hero shot, lower half' or 'the device drawn on the skin inside the cross-section diagram'",
+     "matches_reference": true,
+     "problem": "null, or exactly what differs from IMAGE 1"}
+  ],
   "product_fidelity": {
     "matches_reference": true,
-    "problem": "null, or what differs — e.g. 'the device drawn inside the diagram is a plain white slab, not the pink pad + white cup in IMAGE 1'"
+    "problem": "null, or the worst mismatch across product_depictions"
   },
   "text_illegible_or_garbled": false,
   "verdict_notes": "one short sentence on the single worst problem, or 'clean'"
@@ -92,9 +110,19 @@ RULES FOR COUNTING:
 - word_count counts EVERY visible word: headline, sub-line, table cells, row
   labels, badge text, price, brand wordmark, attribution — all of it. A number
   like "$20,000" is one word. "8mm" is one word.
-- A product appearing more than once in the ad (e.g. hero shot AND inside a
-  diagram) must match the reference EVERY time. If any depiction is invented,
-  matches_reference is false.
+RULES FOR PRODUCT FIDELITY — do this as a deliberate sweep, not an impression:
+- FIRST scan the whole ad and list EVERY place the product is drawn, into
+  product_depictions. Ads often show it twice: a clean hero shot AND a second
+  depiction inside a diagram, a table cell, a split-screen panel or an icon.
+  The second one is where inventions hide.
+- For EACH depiction, compare against IMAGE 1 on shape, colour, parts and count.
+  The reference here is typically a MULTI-PART device — check that every part is
+  present and correct in each depiction, not just that "a device" is there.
+- A depiction that is a generic featureless shape (a plain slab, a bare oval, a
+  smooth puck) where IMAGE 1 shows a specific multi-part product is a MISMATCH,
+  even when it is small, stylised or diagrammatic. Say so.
+- product_fidelity.matches_reference is false if ANY entry in product_depictions
+  is false. A correct hero shot does not excuse an invented second depiction.
 - Only report spelling_or_grammar_errors you can point at in the transcript.
   Do not report stylistic choices — sentence fragments and one-word sentences
   are deliberate in advertising and are NOT errors.
@@ -193,10 +221,15 @@ export function summarise(report = {}, wordCap = DEFAULT_WORD_CAP) {
   const dups = Array.isArray(report.duplicated_text) ? report.duplicated_text.filter(Boolean) : [];
   if (dups.length) problems.push(`repeated: "${String(dups[0]).slice(0, 40)}"${dups.length > 1 ? ` +${dups.length - 1}` : ''}`);
 
-  // Explicit false only. A missing product_fidelity block means "not assessed",
-  // which must not read as a failure.
-  if (report.product_fidelity && report.product_fidelity.matches_reference === false) {
-    const p = report.product_fidelity.problem;
+  // Explicit false only — a missing block means "not assessed", not a failure.
+  // Trust the per-depiction list over the roll-up: the roll-up read "true" on a
+  // card whose diagram drew an invented device, so a summary that only consults
+  // it inherits that blind spot.
+  const deps = Array.isArray(report.product_depictions) ? report.product_depictions : [];
+  const badDep = deps.find(d => d && d.matches_reference === false);
+  if (badDep || (report.product_fidelity && report.product_fidelity.matches_reference === false)) {
+    const p = (badDep && (badDep.problem || badDep.where))
+           || (report.product_fidelity && report.product_fidelity.problem);
     problems.push(`product mismatch${p && p !== 'null' ? `: ${String(p).slice(0, 80)}` : ''}`);
   }
 
