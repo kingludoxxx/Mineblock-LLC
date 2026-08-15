@@ -10863,13 +10863,23 @@ router.post('/composer/describe', authenticate, async (req, res) => {
       // OUR product and offer rather than a generic one. Kept compact on
       // purpose: NanoBanana's 5,000-char cap applies here too (and is enforced
       // again inside submitToNanoBanana).
-      const context = [
-        `PRODUCT: ${prod.name || ''}`.trim(),
-        prod.price ? `PRICE: ${prod.price}` : '',
-        prod.big_promise ? `PROMISE: ${prod.big_promise}` : '',
-        prod.mechanism ? `MECHANISM: ${prod.mechanism}` : '',
-        prod.guarantee ? `GUARANTEE: ${prod.guarantee}` : '',
-      ].filter(Boolean).join('\n');
+      // Grounding prose is only needed when the renderer is also WRITING. Once
+      // copy is authored upstream, a block headed PROMISE / MECHANISM is pure
+      // temptation: a `statement` card capped at 12 words came back with
+      // big_promise AND mechanism set verbatim as body paragraphs, ~70 words,
+      // because the guardrail that used to say "NO body-copy blocks" had been
+      // replaced by the authored-copy rules. Remove the material, not just the
+      // permission — the copy stage has already used these facts.
+      const buildContext = (full) => (full
+        ? [
+            `PRODUCT: ${prod.name || ''}`.trim(),
+            prod.price ? `PRICE: ${prod.price}` : '',
+            prod.big_promise ? `PROMISE: ${prod.big_promise}` : '',
+            prod.mechanism ? `MECHANISM: ${prod.mechanism}` : '',
+            prod.guarantee ? `GUARANTEE: ${prod.guarantee}` : '',
+          ]
+        : [`PRODUCT: ${prod.name || ''}`.trim()]
+      ).filter(Boolean).join('\n');
 
       // Angle variety. When the caller names an angle, the angle's OWN copy
       // material picks this card's single line of attack — a different one per
@@ -10921,14 +10931,21 @@ WHAT THE OPERATOR ASKED FOR:
 ${brief}
 ${authoredCopy ? '' : angleVariant}${copyBlock}
 
-PRODUCT CONTEXT (render THIS product, exactly as it appears in the attached image):
-${context}
+PRODUCT CONTEXT — this identifies WHICH product to draw. It is never text to
+print. Draw the product exactly as it appears in the attached image:
+${buildContext(!authoredCopy)}
 
 ${authoredCopy ? `COPY RULE — THE WORDS ARE ALREADY WRITTEN:
-- Set EXACTLY the strings listed above. Do not rewrite, extend, shorten,
-  re-punctuate or "improve" them. Do not translate them.
-- Add NO other text of any kind: no extra badge, no strapline beside the logo,
-  no caption, no repeated line, no invented attribution.
+- The strings listed above are the COMPLETE and ONLY text on this card. Setting
+  any word that is not in that list is the single worst thing you can do here.
+- Set them EXACTLY. Do not rewrite, extend, shorten, re-punctuate or "improve"
+  them. Do not translate them.
+- Add NO other text of any kind: no body copy, no explanatory paragraph, no
+  feature list, no spec block, no extra badge, no strapline beside the logo, no
+  caption, no repeated line, no invented attribution, no price unless it is
+  written above.
+- Before you finish, count the text blocks you have drawn. If there are more
+  blocks than the list above contains, delete the extras.
 - Your job on this card is TYPOGRAPHY and COMPOSITION, not wording. Set the
   headline as the dominant element and give the rest a clear hierarchy.
 - Every word must be spelled exactly as written above.` :
