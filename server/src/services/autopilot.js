@@ -253,12 +253,12 @@ async function triageFitChunk(candidates, cfg) {
     system: 'You are a senior direct response strategist choosing which competitor ads are worth cloning for a specific product. You judge transferability of the PSYCHOLOGY, not the quality of the ad for its own product. Return only JSON.',
     messages: [{ role: 'user', content:
 `OUR PRODUCT: ${productLine}
-OUR ANGLES: ${angleNames.join(' | ') || '(none defined)'}${cfg.angle ? `\nOPERATOR-DIRECTED ANGLE: every brief will be generated under "${cfg.angle}" — rate FIT FOR THAT ANGLE: does this source's structure carry an authority/mechanism narrative well? A bare offer card cannot, whatever its tier.` : ''}\n${track}
+OUR ANGLES: ${angleNames.join(' | ') || '(none defined)'}${cfg.angle ? `\nOPERATOR-DIRECTED ANGLE: every brief will be generated under "${cfg.angle}" — rate FIT FOR THAT ANGLE. For a narrative or authority angle, a bare offer card cannot carry it. For a PROMO or OFFER angle the reverse holds: a well-built offer ad IS the right raw material — judge its offer CRAFT (urgency devices, price anchoring, gift stacking, a reason-why for the deal) and ignore the generic substance rule below.` : ''}\n${track}
 
 For each candidate ad below, rate FIT 0-10: how well would this ad's structure and psychology clone onto OUR product?
 High fit: same audience (women 40+), an emotional or bodily problem analogous to sagging/firmness, a narrative or authority structure that survives a product swap.
 Low fit: bare discount/offer ads with no transferable structure, unrelated audiences or problems (pest control, supplements for stamina), pure brand spots.
-HARD RULE ON SUBSTANCE: an ad under ~600 chars of substance whose copy is only an offer or a discount CANNOT score above 5, whatever its tier. A clone inherits its source's poverty.
+HARD RULE ON SUBSTANCE: an ad under ~600 chars whose copy is only an offer or a discount CANNOT score above 5, whatever its tier — UNLESS the operator-directed angle is itself a promo/offer angle, in which case judge offer craft instead: for a promo clone, the source's craft IS the substance.
 
 CANDIDATES:
 ${list}
