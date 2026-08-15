@@ -21,7 +21,10 @@ import { randomUUID } from 'crypto';
 import { uploadBuffer } from './r2.js';
 
 const OPENAI_BASE = 'https://api.openai.com/v1';
-const CUTOUT_MODEL = process.env.OPENAI_IMAGE_MODEL || 'gpt-image-2';
+// NOT OPENAI_IMAGE_MODEL. gpt-image-2 answers background=transparent with a
+// 400 ("Transparent background is not supported for this model"), so the
+// generative fallback pins gpt-image-1, which does support it.
+const CUTOUT_MODEL = process.env.OPENAI_CUTOUT_MODEL || 'gpt-image-1';
 
 const UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0 Safari/537.36';
 
@@ -129,19 +132,53 @@ export async function trimToSubject(buffer) {
  * Resolves to { ok, url, stats, problems, error } and never throws — a failed
  * cutout must degrade to "keep redrawing" rather than break generation.
  */
-export async function generateCutout(sourceImageUrl, { persist = true, keyPrefix = 'product-cutouts' } = {}) {
+export async function generateCutout(sourceImageUrl, { persist = true, keyPrefix = 'product-cutouts', force = false } = {}) {
+  // ── Is the source ALREADY a cutout? ──────────────────────────────────────
+  // Both of Puure's product images turned out to be transparent PNGs at 64%
+  // and 74% clear. Generating a "cutout" from an existing cutout spends money
+  // to hand a generative model the one job it is worst at — reproducing the
+  // product — when the asset we want is already the input. Always look first.
+  let sourceBuf = null;
+  try {
+    sourceBuf = await fetchBuffer(sourceImageUrl);
+    if (!force) {
+      const srcStats = await measureTransparency(sourceBuf);
+      const srcVerdict = assessCutout(srcStats);
+      if (srcVerdict.ok) {
+        const trimmed = await trimToSubject(sourceBuf);
+        const stats = { ...srcStats, trimmed: await measureTransparency(trimmed) };
+        let url = sourceImageUrl;
+        if (persist) {
+          try {
+            url = await uploadBuffer(trimmed, `${keyPrefix}/${randomUUID()}.png`, 'image/png');
+          } catch (err) {
+            return { ok: false, url: null, stats, problems: [], error: `upload failed: ${err.message}` };
+          }
+        }
+        console.log(`[cutout] source already transparent (${(srcStats.transparentRatio * 100).toFixed(1)}%) — trimmed, no generation`);
+        return { ok: true, url, stats, problems: [], error: null, source: 'existing', buffer: persist ? null : trimmed };
+      }
+    }
+  } catch (err) {
+    console.warn(`[cutout] could not inspect source: ${err.message}`);
+  }
+
   if (!process.env.OPENAI_API_KEY) {
-    return { ok: false, url: null, stats: null, problems: [], error: 'OPENAI_API_KEY missing' };
+    return { ok: false, url: null, stats: null, problems: [], error: 'OPENAI_API_KEY missing', source: null };
   }
   let out;
   try {
-    const src = await fetchBuffer(sourceImageUrl);
+    const src = sourceBuf || await fetchBuffer(sourceImageUrl);
     const form = new FormData();
     form.append('model', CUTOUT_MODEL);
     form.append('prompt', CUTOUT_PROMPT);
     form.append('n', '1');
     form.append('quality', 'high');
-    // Both are required together: transparency is only honoured on png/webp.
+    // gpt-image-2 REJECTS background=transparent outright:
+    //   "Transparent background is not supported for this model." (400)
+    // gpt-image-1 does support it, so the fallback path pins that model rather
+    // than inheriting OPENAI_IMAGE_MODEL. This path only runs for a source that
+    // is not already transparent — Puure's images are, so it is currently cold.
     form.append('background', 'transparent');
     form.append('output_format', 'png');
     form.append('image[]', new Blob([src], { type: 'image/png' }), 'product.png');
