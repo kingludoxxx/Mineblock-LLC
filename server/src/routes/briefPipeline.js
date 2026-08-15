@@ -6604,6 +6604,10 @@ router.get('/league/ads', authenticate, async (req, res) => {
     const days = Number.isFinite(daysRaw) && daysRaw > 0 ? Math.min(365, daysRaw) : null;
 
     const params = [brandId, tiers, limit, offset];
+    // Style filter — reads the persistent brand_spy.ads.style tag (A-series #2).
+    let styleWhere = '';
+    const styleQ = String(req.query.style || '').toUpperCase();
+    if (/^[A-Z_]{3,12}$/.test(styleQ)) { params.push(styleQ); styleWhere = `AND a.style = $${params.length}`; }
     let recencyWhere = '';
     if (days) {
       params.push(days);
@@ -6628,6 +6632,7 @@ router.get('/league/ads', authenticate, async (req, res) => {
         a.display_format,
         a.active_days,
         a.start_date,
+        a.style,
         a.is_active,
         a.transcript,
         a.transcript_at,
@@ -6654,6 +6659,7 @@ router.get('/league/ads', authenticate, async (req, res) => {
         AND (a.display_format ILIKE 'video%'
              OR (a.raw_snapshot->'videos'->0->>'video_hd_url') IS NOT NULL
              OR (a.raw_snapshot->'videos'->0->>'video_sd_url') IS NOT NULL)
+      ${styleWhere}
       ${recencyWhere}
       ${orderBy}
       LIMIT $3 OFFSET $4
@@ -6668,6 +6674,7 @@ router.get('/league/ads', authenticate, async (req, res) => {
       tierScore: r.tier_score,
       currentRank: r.current_rank,
       startDate: r.start_date ? new Date(r.start_date).toISOString() : null,
+      style: r.style || null,
       headline: r.headline,
       bodyText: r.body_text,
       displayFormat: r.display_format,
@@ -6871,6 +6878,23 @@ router.put('/autopilot/settings', authenticate, async (req, res) => {
 // What the tool has learned from the operator's reviews — the same track
 // record the triage pass reads. Surfaced so learning is inspectable: a system
 // that adapts invisibly loses trust the first time it behaves unexpectedly.
+// A-series #1, decision-free slice: mark a brief's real-world outcome. This
+// column is the seed of the performance loop — Meta API or manual marking
+// later, the storage is the same, and the learning endpoint reads it now.
+router.post('/generated/:id/outcome', authenticate, async (req, res) => {
+  try {
+    const o = req.body?.outcome;
+    if (o !== 'won' && o !== 'lost' && o !== null) {
+      return res.status(400).json({ success: false, error: { message: "outcome must be 'won', 'lost' or null" } });
+    }
+    const rows = await pgQuery(`UPDATE brief_pipeline_generated SET outcome = $1 WHERE id = $2 RETURNING id, outcome`, [o, req.params.id]);
+    if (!rows.length) return res.status(404).json({ success: false, error: { message: 'brief not found' } });
+    res.json({ success: true, brief: rows[0] });
+  } catch (err) {
+    res.status(500).json({ success: false, error: { message: err.message } });
+  }
+});
+
 router.get('/autopilot/learning', authenticate, async (_req, res) => {
   try {
     res.json({ success: true, trackRecord: await computeTrackRecord() });

@@ -108,6 +108,16 @@ function parseFollowInput(body) {
   return [];
 }
 
+// POST /classify-styles — tag untagged ads with their creative STYLE (PROMO /
+// STORY / DEMO / REVERSAL / EXPLAINER / LISTICLE). Resumable: call until
+// remaining is 0. Powers the League style filter and style-directed autopilot.
+router.post('/classify-styles', async (req, res, next) => {
+  try {
+    const { classifyUntaggedAds } = await import('../services/adStyle.js');
+    res.json({ success: true, ...(await classifyUntaggedAds({ limit: req.body?.limit })) });
+  } catch (err) { next(err); }
+});
+
 // GET /brands
 router.get('/brands', async (req, res, next) => {
   try {

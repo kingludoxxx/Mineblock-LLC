@@ -61,6 +61,9 @@ export const DEFAULT_CONFIG = {
   // selection brain instead of the triage-less manual queue — the gap that let
   // two thin offer ads into the 2026-08-14 batch.
   angle: null,
+  // Style-directed selection reads the persistent brand_spy.ads.style tag —
+  // 'give me promos' becomes a WHERE clause, with triage still ranking within.
+  style: null,
   fitTriage: true,
   minFit: 6,          // below this: skipped, with the model's reason attached
   triagePool: 30,     // top candidates triaged per run (one batched Haiku call)
@@ -143,6 +146,11 @@ export async function selectCandidates(cfg) {
     params.push(cfg.brands);
     brandClause = `AND b.domain = ANY($${params.length}::text[])`;
   }
+  let styleClause = '';
+  if (cfg.style && /^[A-Z_]{3,12}$/.test(String(cfg.style).toUpperCase())) {
+    params.push(String(cfg.style).toUpperCase());
+    styleClause = `AND a.style = $${params.length}`;
+  }
   let ageClause = '';
   if (cfg.maxAgeDays) {
     params.push(Number(cfg.maxAgeDays));
@@ -163,6 +171,7 @@ export async function selectCandidates(cfg) {
     WHERE a.is_active = TRUE
       AND a.tier = ANY($1::text[])
       ${brandClause}
+      ${styleClause}
       ${ageClause}
       AND (
         a.raw_snapshot->'videos'->0->>'video_hd_url' IS NOT NULL
