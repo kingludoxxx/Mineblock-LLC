@@ -37,6 +37,8 @@ import {
   renderAngleVariantBlock,
 } from '../utils/staticsPrompts.js';
 import { auditStaticImage } from '../services/staticsQualityAudit.js';
+import { generateCopySets, renderCopyForImage, totalWords } from '../services/staticsCopywriter.js';
+import { STATICS_FORMATS, getFormat, capFor, resolveFormat } from '../config/staticsFormats.js';
 import { pgQuery } from '../db/pg.js';
 import { authenticate } from '../middleware/auth.js';
 import { requirePermission } from '../middleware/rbac.js';
@@ -10696,6 +10698,65 @@ router.delete('/composer/imports/:id', authenticate, async (req, res) => {
   }
 });
 
+/** Resolve the richest angle definition matching a name, or null. */
+function resolveAngleDef(productRow, angleName) {
+  if (!angleName || !productRow) return null;
+  let arr = productRow.angles;
+  if (typeof arr === 'string') { try { arr = JSON.parse(arr); } catch { arr = []; } }
+  if (!Array.isArray(arr)) return null;
+  const material = a => (Array.isArray(a.headline_examples) ? a.headline_examples.length : 0)
+                      + (Array.isArray(a.required_elements) ? a.required_elements.length : 0)
+                      + (Array.isArray(a.banned_phrases) ? a.banned_phrases.length : 0);
+  const matches = arr.filter(a => (a.name || '').toLowerCase() === String(angleName).toLowerCase());
+  if (!matches.length) return null;
+  return matches.reduce((b, a) => (material(a) > material(b) ? a : b), matches[0]);
+}
+
+/** Pull the rotated hook + proof for a variant, mirroring renderAngleVariantBlock. */
+function variantHookAndProof(angleDef, variantIndex = 0) {
+  const hooks = Array.isArray(angleDef?.headline_examples) ? angleDef.headline_examples.filter(Boolean) : [];
+  const proofs = Array.isArray(angleDef?.required_elements) ? angleDef.required_elements.filter(Boolean) : [];
+  if (!hooks.length && !proofs.length) return { hook: '', proof: '' };
+  const blk = renderAngleVariantBlock([angleDef], angleDef.name, variantIndex);
+  return {
+    hook: (blk.match(/HEADLINE DIRECTION: .*?"(.*?)"/) || [])[1] || '',
+    proof: (blk.match(/THE SINGLE PROOF POINT THIS AD CARRIES: (.*)/) || [])[1]?.trim() || '',
+  };
+}
+
+// GET /formats — the canonical layout registry, so the UI can offer formats
+// instead of the operator pasting prose into a brief.
+router.get('/formats', authenticate, (req, res) => {
+  res.json({ success: true, data: { formats: STATICS_FORMATS } });
+});
+
+// POST /composer/copy-preview — run ONLY the copy stage.
+// Cheap (no image), so copy can be judged and re-rolled before spending a
+// generation. Also the test surface for the copywriter.
+router.post('/composer/copy-preview', authenticate, async (req, res) => {
+  const b = req.body || {};
+  if (!b.product_id) return res.status(400).json({ success: false, error: { message: 'product_id is required' } });
+  const prows = await pgQuery('SELECT * FROM product_profiles WHERE id = $1', [parseInt(b.product_id, 10)]);
+  if (!prows.length) return res.status(404).json({ success: false, error: { message: `Product ${b.product_id} not found` } });
+  const prod = prows[0];
+  const angleDef = resolveAngleDef(prod, b.angle);
+  const fmt = resolveFormat(b.format) || getFormat('statement');
+  const { hook, proof } = variantHookAndProof(angleDef, Number(b.variant_index) || 0);
+  const out = await generateCopySets({
+    product: prod, angle: angleDef, format: fmt.id, hook, proof,
+    count: Math.min(Math.max(parseInt(b.count, 10) || 3, 1), 6),
+  });
+  res.json({
+    success: true,
+    data: {
+      format: fmt.id, cap: fmt.cap, angle: angleDef?.name || null, hook, proof,
+      candidates: out.candidates.map(c => ({ ...c.set, words: c.totalWords, score: c.score })),
+      rejected: out.rejected,
+      error: out.error,
+    },
+  });
+});
+
 /**
  * Run vision QC on one creative row and persist the verdict.
  *
@@ -10703,30 +10764,25 @@ router.delete('/composer/imports/:id', authenticate, async (req, res) => {
  * audit that could not execute must not be indistinguishable from a pass.
  * Returns the audit result; never throws.
  */
-async function auditCreativeAndPersist(creativeId, { imageUrl, productRow, angleName, requestedFormat } = {}) {
+async function auditCreativeAndPersist(creativeId, { imageUrl, productRow, angleName, requestedFormat, prefixNote = null } = {}) {
   try {
-    let angle = null;
-    if (angleName && productRow) {
-      let arr = productRow.angles;
-      if (typeof arr === 'string') { try { arr = JSON.parse(arr); } catch { arr = []; } }
-      if (Array.isArray(arr)) {
-        // Same richest-match rule as renderAngleVariantBlock — an empty stub
-        // sharing a name would otherwise audit against an empty banned list.
-        const material = a => (Array.isArray(a.headline_examples) ? a.headline_examples.length : 0)
-                            + (Array.isArray(a.banned_phrases) ? a.banned_phrases.length : 0);
-        const matches = arr.filter(a => (a.name || '').toLowerCase() === String(angleName).toLowerCase());
-        if (matches.length) angle = matches.reduce((b, a) => (material(a) > material(b) ? a : b), matches[0]);
-      }
-    }
+    // Same richest-match rule as renderAngleVariantBlock — an empty stub sharing
+    // a name would otherwise audit against an empty banned list.
+    const angle = resolveAngleDef(productRow, angleName);
+    // Score against the FORMAT's cap. A flat 20 flagged every checklist and
+    // diagram in the 20-card audit while type-led cards passed untouched.
+    const fmt = resolveFormat(requestedFormat);
     const res = await auditStaticImage({
       imageUrl,
       referenceProductImage: productRow ? productImageAtIndex(productRow, 0) : null,
       angle,
       requestedFormat,
+      wordCap: fmt ? fmt.cap : undefined,
     });
-    await pgQuery('UPDATE spy_creatives SET quality_warning = $1 WHERE id = $2', [res.warning, creativeId]);
-    console.log(`[staticsQC] ${creativeId} -> ${res.warning || 'clean'}`);
-    return res;
+    const warning = [prefixNote, res.warning].filter(Boolean).join(' · ') || null;
+    await pgQuery('UPDATE spy_creatives SET quality_warning = $1 WHERE id = $2', [warning, creativeId]);
+    console.log(`[staticsQC] ${creativeId} -> ${warning || 'clean'}`);
+    return { ...res, warning };
   } catch (err) {
     console.error(`[staticsQC] persist failed for ${creativeId}: ${err.message}`);
     try {
@@ -10826,30 +10882,69 @@ router.post('/composer/describe', authenticate, async (req, res) => {
         Number.isFinite(Number(b.variant_index)) ? Number(b.variant_index) : 0,
       );
 
+      // ── COPY STAGE ────────────────────────────────────────────────────────
+      // Words are authored and validated as STRINGS before anything is drawn.
+      // When a valid set comes back the renderer is handed exact text to
+      // typeset and stops improvising copy — the root of "A SURGERY RESULTS.",
+      // of taxonomy labels printed as bylines, and of banned phrases that only
+      // a vision model could catch.
+      //
+      // Falls back to the old brief-led path if the copy stage yields nothing,
+      // so a copy outage degrades quality rather than stopping generation. The
+      // fallback is recorded on the card, never silent.
+      const fmt = resolveFormat(b.format) || resolveFormat(brief);
+      let authoredCopy = null;
+      let copyNote = null;
+      if (b.copy_mode !== 'off') {
+        const angleDef = resolveAngleDef(prod, b.angle);
+        const { hook, proof } = variantHookAndProof(angleDef, Number(b.variant_index) || 0);
+        storeTaskResult(taskId, { status: 'processing', progress: 'Writing copy...' });
+        const copy = await generateCopySets({
+          product: prod, angle: angleDef, format: fmt ? fmt.id : null, hook, proof, count: 3,
+        });
+        if (copy.candidates.length) {
+          authoredCopy = copy.candidates[0].set;
+          console.log(`[composer] authored copy (${totalWords(authoredCopy)}w): "${authoredCopy.headline}"`);
+        } else {
+          copyNote = `copy stage produced nothing usable (${copy.error || copy.rejected.map(r => r.problems[0]).join('; ') || 'no candidates'})`;
+          console.warn(`[composer] ${copyNote} — falling back to brief-led generation`);
+        }
+      }
+
+      const copyBlock = authoredCopy ? `\n\n${renderCopyForImage(authoredCopy)}` : '';
+      const effectiveCap = fmt ? fmt.cap : 20;
+
       const prompt =
 `Create a single ${ratio} static advertisement image.
 
 WHAT THE OPERATOR ASKED FOR:
 ${brief}
-${angleVariant}
+${authoredCopy ? '' : angleVariant}${copyBlock}
 
 PRODUCT CONTEXT (render THIS product, exactly as it appears in the attached image):
 ${context}
 
-COPY BUDGET — THIS IS THE MOST IMPORTANT RULE:
-- MAXIMUM 20 WORDS of visible text on the entire image. Count them.
-- The headline is at most 8 words. Everything else totals at most 12 more.
+${authoredCopy ? `COPY RULE — THE WORDS ARE ALREADY WRITTEN:
+- Set EXACTLY the strings listed above. Do not rewrite, extend, shorten,
+  re-punctuate or "improve" them. Do not translate them.
+- Add NO other text of any kind: no extra badge, no strapline beside the logo,
+  no caption, no repeated line, no invented attribution.
+- Your job on this card is TYPOGRAPHY and COMPOSITION, not wording. Set the
+  headline as the dominant element and give the rest a clear hierarchy.
+- Every word must be spelled exactly as written above.` :
+`COPY BUDGET — THIS IS THE MOST IMPORTANT RULE:
+- MAXIMUM ${effectiveCap} WORDS of visible text on the entire image. Count them.
+- The headline is at most 8 words.
 - A static ad is a bold statement plus at most a short sub-line, optional
   short bullets, and a CTA. It is NOT a poster, a leaflet or an infographic.
 - NO paragraphs, NO labelled sections, NO body-copy blocks, NO explanatory
   captions. A person scrolling reads a headline, not a page.
 - If the brief lists several ideas, those shape the CONCEPT and the IMAGE.
   Print only the single strongest one. The picture carries the rest.
-- A TABLE IS TEXT. Every header, row label and cell counts toward the 20 words.
-  A 6-row x 4-column table is 30+ words on its own and blows the budget outright.
+- A TABLE IS TEXT. Every header, row label and cell counts toward the budget.
   Do not draw a table, grid, chart or checklist AT ALL unless the requested
   visual format explicitly asks for one — and when it does, cap it at 3 rows and
-  3 columns with single-word cells or tick/cross marks, nothing longer.
+  3 columns with single-word cells or tick/cross marks, nothing longer.`}
 
 RULES:
 - The attached image is the ONLY product reference. Match its shape, colour, label and branding exactly.
@@ -10909,7 +11004,8 @@ RULES:
           imageUrl: stableUrl,
           productRow: prod,
           angleName: b.angle,
-          requestedFormat: (brief.match(/VISUAL FORMAT FOR THIS ONE:\s*(.+)/) || [])[1] || '',
+          requestedFormat: fmt ? fmt.id : ((brief.match(/VISUAL FORMAT FOR THIS ONE:\s*(.+)/) || [])[1] || ''),
+          prefixNote: copyNote,
         }).catch(e => console.error('[staticsQC] post-describe audit failed:', e.message));
       }
     } catch (err) {
