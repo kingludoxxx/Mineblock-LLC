@@ -38,6 +38,7 @@ import {
 } from '../utils/staticsPrompts.js';
 import { auditStaticImage } from '../services/staticsQualityAudit.js';
 import { generateCopySets, renderCopyForImage, totalWords } from '../services/staticsCopywriter.js';
+import { generateCutout } from '../services/productCutout.js';
 import { STATICS_FORMATS, getFormat, capFor, resolveFormat } from '../config/staticsFormats.js';
 import { pgQuery } from '../db/pg.js';
 import { authenticate } from '../middleware/auth.js';
@@ -10723,6 +10724,53 @@ function variantHookAndProof(angleDef, variantIndex = 0) {
     proof: (blk.match(/THE SINGLE PROOF POINT THIS AD CARRIES: (.*)/) || [])[1]?.trim() || '',
   };
 }
+
+// POST /products/:id/cutout — make (or remake) a transparent cutout for one of
+// a product's images, so the product can be COMPOSITED onto cards instead of
+// redrawn. Returns the asset plus its measured transparency; `save: true`
+// records it on the profile. Deliberately explicit: a cutout becomes an input
+// to every future card, so it is generated on request and inspected, never
+// silently refreshed underneath running work.
+router.post('/products/:id/cutout', authenticate, async (req, res) => {
+  const rows = await pgQuery('SELECT * FROM product_profiles WHERE id = $1', [parseInt(req.params.id, 10)]);
+  if (!rows.length) return res.status(404).json({ success: false, error: { message: 'product not found' } });
+  const prod = rows[0];
+  const index = Number.isInteger(req.body?.index) ? req.body.index : 0;
+  const source = productImageAtIndex(prod, index);
+  if (!source) return res.status(400).json({ success: false, error: { message: `product has no image at index ${index}` } });
+
+  const out = await generateCutout(source);
+  if (out.ok && req.body?.save) {
+    let existing = prod.product_cutouts;
+    if (typeof existing === 'string') { try { existing = JSON.parse(existing); } catch { existing = []; } }
+    if (!Array.isArray(existing)) existing = [];
+    const next = existing.filter(c => c && c.source !== source);
+    next.push({
+      source, url: out.url,
+      created_at: new Date().toISOString(),
+      transparent_ratio: out.stats?.transparentRatio ?? null,
+    });
+    await pgQuery('UPDATE product_profiles SET product_cutouts = $1 WHERE id = $2',
+      [JSON.stringify(next), prod.id]);
+  }
+  res.json({
+    success: true,
+    data: {
+      source, url: out.url, ok: out.ok, problems: out.problems, error: out.error,
+      saved: Boolean(out.ok && req.body?.save),
+      stats: out.stats && {
+        width: out.stats.width, height: out.stats.height,
+        transparent_pct: +(out.stats.transparentRatio * 100).toFixed(1),
+        corners_transparent: out.stats.cornersTransparent,
+        bbox: out.stats.bbox,
+        trimmed: out.stats.trimmed && {
+          width: out.stats.trimmed.width, height: out.stats.trimmed.height,
+          subject_pct: +(out.stats.trimmed.subjectRatio * 100).toFixed(1),
+        },
+      },
+    },
+  });
+});
 
 // GET /formats — the canonical layout registry, so the UI can offer formats
 // instead of the operator pasting prose into a brief.
