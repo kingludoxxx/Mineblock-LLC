@@ -36,6 +36,7 @@ import {
   mapProductRowToFlatProfile,
   renderAngleVariantBlock,
 } from '../utils/staticsPrompts.js';
+import { auditStaticImage } from '../services/staticsQualityAudit.js';
 import { pgQuery } from '../db/pg.js';
 import { authenticate } from '../middleware/auth.js';
 import { requirePermission } from '../middleware/rbac.js';
@@ -5243,7 +5244,7 @@ router.get('/creatives/pipeline', authenticate, async (req, res) => {
     // made a card and how a Composer card arrived. Omitting them made
     // composer_source read as null on every card even though the column was
     // populated.
-    let query = "SELECT id, product_id, product_name, image_url, thumbnail_url, source_label, angle, archetype, aspect_ratio, status, reference_thumbnail, reference_name, parent_creative_id, pipeline, copy_set_id, meta_ad_ids, meta_image_hash, generated_copy, parent_creative_id_ref, parent_im_number, im_number, iteration_change_description, image_engine, composer_source, composer_import_id, composer_prompt, created_at FROM spy_creatives WHERE pipeline IN ('standard', 'iteration') AND COALESCE(is_reference, false) = false";
+    let query = "SELECT id, product_id, product_name, image_url, thumbnail_url, source_label, angle, archetype, aspect_ratio, status, reference_thumbnail, reference_name, parent_creative_id, pipeline, copy_set_id, meta_ad_ids, meta_image_hash, generated_copy, parent_creative_id_ref, parent_im_number, im_number, iteration_change_description, image_engine, composer_source, composer_import_id, composer_prompt, quality_warning, created_at FROM spy_creatives WHERE pipeline IN ('standard', 'iteration') AND COALESCE(is_reference, false) = false";
     const params = [];
     if (product_id) {
       query += ' AND product_id = $1';
@@ -10695,6 +10696,78 @@ router.delete('/composer/imports/:id', authenticate, async (req, res) => {
   }
 });
 
+/**
+ * Run vision QC on one creative row and persist the verdict.
+ *
+ * Writes quality_warning on EVERY outcome, including "QC not run: ..." — an
+ * audit that could not execute must not be indistinguishable from a pass.
+ * Returns the audit result; never throws.
+ */
+async function auditCreativeAndPersist(creativeId, { imageUrl, productRow, angleName, requestedFormat } = {}) {
+  try {
+    let angle = null;
+    if (angleName && productRow) {
+      let arr = productRow.angles;
+      if (typeof arr === 'string') { try { arr = JSON.parse(arr); } catch { arr = []; } }
+      if (Array.isArray(arr)) {
+        // Same richest-match rule as renderAngleVariantBlock — an empty stub
+        // sharing a name would otherwise audit against an empty banned list.
+        const material = a => (Array.isArray(a.headline_examples) ? a.headline_examples.length : 0)
+                            + (Array.isArray(a.banned_phrases) ? a.banned_phrases.length : 0);
+        const matches = arr.filter(a => (a.name || '').toLowerCase() === String(angleName).toLowerCase());
+        if (matches.length) angle = matches.reduce((b, a) => (material(a) > material(b) ? a : b), matches[0]);
+      }
+    }
+    const res = await auditStaticImage({
+      imageUrl,
+      referenceProductImage: productRow ? productImageAtIndex(productRow, 0) : null,
+      angle,
+      requestedFormat,
+    });
+    await pgQuery('UPDATE spy_creatives SET quality_warning = $1 WHERE id = $2', [res.warning, creativeId]);
+    console.log(`[staticsQC] ${creativeId} -> ${res.warning || 'clean'}`);
+    return res;
+  } catch (err) {
+    console.error(`[staticsQC] persist failed for ${creativeId}: ${err.message}`);
+    try {
+      await pgQuery('UPDATE spy_creatives SET quality_warning = $1 WHERE id = $2',
+        [`QC not run: ${err.message}`.slice(0, 200), creativeId]);
+    } catch { /* row may be gone; the console line above is the record */ }
+    return { ok: null, skipped: true, warning: `QC not run: ${err.message}`, report: null };
+  }
+}
+
+// POST /creatives/:id/audit — (re)run vision QC on one existing card.
+// POST /creatives/audit-batch { ids: [...] } — same, for a backfill.
+router.post('/creatives/:id/audit', authenticate, async (req, res) => {
+  const rows = await pgQuery('SELECT * FROM spy_creatives WHERE id = $1', [req.params.id]);
+  if (rows.length === 0) return res.status(404).json({ success: false, error: { message: 'creative not found' } });
+  const c = rows[0];
+  const prods = c.product_id ? await pgQuery('SELECT * FROM product_profiles WHERE id = $1', [c.product_id]) : [];
+  const out = await auditCreativeAndPersist(c.id, {
+    imageUrl: c.image_url, productRow: prods[0] || null, angleName: c.angle,
+  });
+  res.json({ success: true, data: { id: c.id, angle: c.angle, ...out } });
+});
+
+router.post('/creatives/audit-batch', authenticate, async (req, res) => {
+  const ids = Array.isArray(req.body?.ids) ? req.body.ids.slice(0, 200) : [];
+  if (ids.length === 0) return res.status(400).json({ success: false, error: { message: 'ids[] is required' } });
+  const results = [];
+  for (const id of ids) {
+    const rows = await pgQuery('SELECT * FROM spy_creatives WHERE id = $1', [id]);
+    if (rows.length === 0) { results.push({ id, error: 'not found' }); continue; }
+    const c = rows[0];
+    const prods = c.product_id ? await pgQuery('SELECT * FROM product_profiles WHERE id = $1', [c.product_id]) : [];
+    const out = await auditCreativeAndPersist(c.id, {
+      imageUrl: c.image_url, productRow: prods[0] || null, angleName: c.angle,
+    });
+    results.push({ id, angle: c.angle, ok: out.ok, warning: out.warning, report: out.report });
+  }
+  const flagged = results.filter(r => r.ok === false).length;
+  res.json({ success: true, data: { audited: results.length, flagged, results } });
+});
+
 // POST /composer/describe — "Describe a new static".
 //
 // No League reference: the operator types what they want and the engine renders
@@ -10826,6 +10899,19 @@ RULES:
         image_engine: engine.name,
       });
       console.log(`[composer] describe → COMPOSER card ${inserted[0]?.id || '(existing)'} via ${engine.name} ${ratio}`);
+
+      // Vision QC runs AFTER the task is marked completed, deliberately: the
+      // image is already safe in R2 and the caller already has it. QC annotates
+      // the card, it is not a gate — a slow or failing audit must never hold up
+      // or fail a generation that succeeded.
+      if (inserted[0]?.id) {
+        auditCreativeAndPersist(inserted[0].id, {
+          imageUrl: stableUrl,
+          productRow: prod,
+          angleName: b.angle,
+          requestedFormat: (brief.match(/VISUAL FORMAT FOR THIS ONE:\s*(.+)/) || [])[1] || '',
+        }).catch(e => console.error('[staticsQC] post-describe audit failed:', e.message));
+      }
     } catch (err) {
       console.error('[composer] describe failed:', err);
       storeTaskResult(taskId, { status: 'error', error: err.message });
