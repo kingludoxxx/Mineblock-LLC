@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { authenticate } from '../middleware/auth.js';
-import { scoreBrief, specificityScore, DEFAULT_WEIGHTS, ungroundedHookClaims, nearDuplicateHookIdx } from '../services/briefScore.js';
+import { scoreBrief, specificityScore, lengthParityScore, DEFAULT_WEIGHTS, ungroundedHookClaims, nearDuplicateHookIdx } from '../services/briefScore.js';
 import {
   getAutopilotConfig, saveAutopilotConfig, runAutopilotBatch, reportToSlack,
 } from '../services/autopilot.js';
@@ -3316,6 +3316,11 @@ function stripOnScreenText(transcript) {
   let out = transcript;
   // Drop the whole [ON-SCREEN TEXT] block up to the next [SECTION] marker.
   out = out.replace(/\[ON[- ]?SCREEN\s*TEXT\]\s*[\s\S]*?(?=\n\s*\[[A-Z][^\]]*\]|$)/i, '');
+  // Drop the transcriber's ANALYSIS blocks too — [SELLING MESSAGE] and [BRAND]
+  // are scraper metadata, not spoken words (see videoTranscribe.js assembly).
+  // Leaving them in inflated the length-parity baseline by ~330 chars on
+  // B0179: a body at ~100% of the real spoken script measured as 71%.
+  out = out.replace(/\[(?:SELLING\s*MESSAGE|BRAND)\]\s*[\s\S]*?(?=\n\s*\[[A-Z][^\]]*\]|$)/gi, '');
   // Remove remaining section markers so the parser reads plain script.
   out = out.replace(/^\s*\[(AUDIO(?:\s*\/\s*VOICEOVER)?|VOICEOVER(?:\s+TRANSCRIPT)?|AD COPY)\]\s*/gim, '');
   return out.replace(/\n{3,}/g, '\n\n').trim();
@@ -5232,7 +5237,11 @@ router.post('/generated/:id/rescore', authenticate, async (req, res) => {
   if (!validateUuid(req, res)) return;
   try {
     const rows = await pgQuery(
-      `SELECT id, body, overall_score, scores_json FROM brief_pipeline_generated WHERE id = $1`,
+      `SELECT g.id, g.body, g.overall_score, g.scores_json, r.transcript
+         FROM brief_pipeline_generated g
+         LEFT JOIN brief_pipeline_winners w ON w.id = g.winner_id
+         LEFT JOIN brief_pipeline_references r ON r.id = w.reference_id
+        WHERE g.id = $1`,
       [req.params.id]
     );
     if (!rows.length) return res.status(404).json({ success: false, error: { message: 'Brief not found' } });
@@ -5243,14 +5252,29 @@ router.post('/generated/:id/rescore', authenticate, async (req, res) => {
     }
     const weights = prev.weights || DEFAULT_WEIGHTS;
     const components = { ...prev.components, specificity: specificityScore(brief.body) };
+    // Length parity is recomputed against the CURRENT spoken-script extraction
+    // when the reference transcript is still on file — the stored value was
+    // measured against a baseline that included [SELLING MESSAGE]/[BRAND]
+    // scraper metadata, ~330 chars nobody ever spoke.
+    let parityPct = null;
+    if (brief.transcript) {
+      const spoken = stripOnScreenText(brief.transcript);
+      if (spoken && spoken.length) {
+        components.lengthParity = lengthParityScore(String(brief.body || '').length, spoken.length);
+        parityPct = Math.round((String(brief.body || '').length / spoken.length) * 100);
+      }
+    }
     const present = Object.entries(components).filter(([, v]) => typeof v === 'number');
     const totalWeight = present.reduce((s, [k]) => s + (weights[k] ?? 0), 0);
     if (!present.length || totalWeight <= 0) {
       return res.status(409).json({ success: false, error: { message: 'No weighted component present after rescore' } });
     }
     const overall = Math.round(present.reduce((s, [k, v]) => s + v * ((weights[k] ?? 0) / totalWeight), 0) * 10) / 10;
-    const flags = (prev.flags || []).filter(f => f !== 'LOW_SPECIFICITY');
+    const flags = (prev.flags || []).filter(f => f !== 'LOW_SPECIFICITY' && !/^LENGTH_\d+PCT/.test(f));
     if (components.specificity !== null && components.specificity < 5) flags.push('LOW_SPECIFICITY');
+    if (parityPct !== null && typeof components.lengthParity === 'number' && components.lengthParity < 6) {
+      flags.push(`LENGTH_${parityPct}PCT_OF_SOURCE`);
+    }
     const next = { ...prev, overall, components, flags, rescoredAt: new Date().toISOString() };
     await pgQuery(
       `UPDATE brief_pipeline_generated SET overall_score = $1, scores_json = $2::jsonb WHERE id = $3`,
