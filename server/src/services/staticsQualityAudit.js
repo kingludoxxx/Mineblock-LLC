@@ -88,7 +88,7 @@ HOW TO APPLY THE BAN — read this carefully, it is easy to get wrong:
 Return ONLY raw JSON, no markdown fence, in EXACTLY this shape:
 
 {
-  "transcript": "every word of visible text in IMAGE 2, in reading order, separated by | between distinct blocks",
+  "transcript": "every word of visible text in IMAGE 2, in reading order, separated by | between distinct blocks (this is the only long field — keep every other string under 25 words)",
   "word_count": 0,
   "banned_phrases_found": ["the exact rendered text that matches a banned phrase"],
   "spelling_or_grammar_errors": ["the exact broken text, e.g. 'A SURGERY RESULTS.'"],
@@ -188,10 +188,18 @@ export async function auditStaticImage({
   try {
     const res = await anthropic.messages.create({
       model: AUDIT_MODEL,
-      max_tokens: 1500,
+      // Headroom for product_depictions on a busy card. At 1500 the response
+      // truncated mid-string and every audit failed to parse — a budget set
+      // before the schema grew.
+      max_tokens: 3000,
       messages: [{ role: 'user', content }],
     });
     const raw = (res.content || []).filter(b => b.type === 'text').map(b => b.text).join('').trim();
+    // Name truncation for what it is. "Unterminated string in JSON" sends you
+    // hunting a malformed response when the real cause is the token ceiling.
+    if (res.stop_reason === 'max_tokens') {
+      throw new Error(`audit response hit the ${3000}-token ceiling (${raw.length} chars) — raise max_tokens`);
+    }
     const jsonText = raw.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '');
     report = JSON.parse(jsonText);
   } catch (err) {
