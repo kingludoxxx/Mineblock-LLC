@@ -163,6 +163,77 @@ function renderAngleDetailsBlock(angles, angleName) {
 }
 
 /**
+ * Pick ONE angle of attack out of an angle's own copy material, so a BATCH of
+ * N statics on one angle argues N different points instead of rendering the
+ * angle's summary sentence N times.
+ *
+ * Why this exists: an angle definition carries a single `lead_with` paragraph
+ * plus several `headline_examples` and `required_elements`. Feeding `lead_with`
+ * to every card in a batch is the same instruction N times, so the copy
+ * converges — 15 Comparison cards all said "only one holds up" because that is
+ * the last clause of Comparison's lead_with. The variety was already in the
+ * library; nothing was reading it.
+ *
+ * Pairing rule: hook rotates fastest, proof point rotates once per full lap of
+ * the hooks. That yields headlines.length * required_elements.length DISTINCT
+ * (hook, proof) pairs before anything repeats — 16 for Comparison, 20 for
+ * Mechanism, against a typical batch of 15.
+ *
+ * Returns '' when the angle is unknown or carries no usable material, so the
+ * block collapses and the caller's own brief is left untouched.
+ */
+export function renderAngleVariantBlock(angles, angleName, variantIndex = 0) {
+  let arr = angles;
+  if (typeof arr === 'string') { try { arr = JSON.parse(arr); } catch { arr = []; } }
+  if (!Array.isArray(arr) || arr.length === 0) return '';
+  const name = String(angleName || '').trim();
+  if (!name || name === 'NA' || name === 'AUTO') return '';
+  // Names are NOT unique in a real product library: Puure carries two angles
+  // called "Promo" — an empty stub AND the full pl_angle_promo. A plain .find()
+  // hits the stub and silently yields no variation at all, which looks exactly
+  // like "this angle has no material". Prefer the richest match instead.
+  const matches = arr.filter(a => (a.name || '').toLowerCase() === name.toLowerCase());
+  if (matches.length === 0) return '';
+  const material = a =>
+    (Array.isArray(a.headline_examples) ? a.headline_examples.length : 0) +
+    (Array.isArray(a.required_elements) ? a.required_elements.length : 0);
+  const m = matches.reduce((best, a) => (material(a) > material(best) ? a : best), matches[0]);
+
+  const hooks = Array.isArray(m.headline_examples) ? m.headline_examples.filter(Boolean) : [];
+  const proofs = Array.isArray(m.required_elements) ? m.required_elements.filter(Boolean) : [];
+  const banned = Array.isArray(m.banned_phrases) ? m.banned_phrases.filter(Boolean) : [];
+  if (hooks.length === 0 && proofs.length === 0) return '';
+
+  // Non-negative, integer. A garbage variantIndex must not silently collapse
+  // every card onto slot 0 — that is the exact failure this function fixes.
+  const i = Number.isFinite(Number(variantIndex)) ? Math.abs(Math.trunc(Number(variantIndex))) : 0;
+  const hook = hooks.length ? hooks[i % hooks.length] : '';
+  const proof = proofs.length
+    ? proofs[(hooks.length ? Math.floor(i / hooks.length) : i) % proofs.length]
+    : '';
+
+  const lines = [`ANGLE: ${m.name}`];
+  if (m.messenger) lines.push(`MESSENGER (whose voice this is): ${m.messenger}`);
+  if (m.tone)      lines.push(`TONE: ${m.tone}`);
+  lines.push('');
+  lines.push(`THIS AD'S ANGLE OF ATTACK — variant ${i + 1}. Make ONE point, not the whole case:`);
+  if (hook) {
+    lines.push(`- HEADLINE DIRECTION: write a FRESH headline that argues this — "${hook}"`);
+    lines.push('  Do NOT copy that line verbatim, and do NOT fall back on the angle\'s');
+    lines.push('  general summary sentence. Other ads in this set use the other directions.');
+  }
+  if (proof) {
+    lines.push(`- THE SINGLE PROOF POINT THIS AD CARRIES: ${proof}`);
+    lines.push('  Every other point the angle could make belongs to a DIFFERENT ad. Leave them out.');
+    lines.push('  If this proof point names a layout (a table, a chart, a diagram), that is a hint');
+    lines.push('  about the ARGUMENT only — the visual format the operator asked for wins.');
+  }
+  if (banned.length) lines.push(`- NEVER USE THESE PHRASES: ${banned.join(', ')}`);
+
+  return `\n\n${lines.join('\n')}`;
+}
+
+/**
  * Wrap the master_brief in a labeled block so Claude recognizes it as
  * primary source-of-truth (not just more flat context). Empty when the
  * product has no brief. Soft-caps at 40,000 chars (~10k tokens) with a

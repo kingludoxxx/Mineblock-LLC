@@ -34,6 +34,7 @@ import {
   buildAdjustmentPrompt,
   buildLayoutAnalysisPrompt,
   mapProductRowToFlatProfile,
+  renderAngleVariantBlock,
 } from '../utils/staticsPrompts.js';
 import { pgQuery } from '../db/pg.js';
 import { authenticate } from '../middleware/auth.js';
@@ -10741,11 +10742,23 @@ router.post('/composer/describe', authenticate, async (req, res) => {
         prod.guarantee ? `GUARANTEE: ${prod.guarantee}` : '',
       ].filter(Boolean).join('\n');
 
+      // Angle variety. When the caller names an angle, the angle's OWN copy
+      // material picks this card's single line of attack — a different one per
+      // variant_index. Without this a batch of N cards on one angle is the same
+      // instruction N times, and the copy converges (15 Comparison cards all
+      // landing on "only one holds up"). Collapses to '' for unknown angles.
+      const angleVariant = renderAngleVariantBlock(
+        prod.angles,
+        b.angle,
+        Number.isFinite(Number(b.variant_index)) ? Number(b.variant_index) : 0,
+      );
+
       const prompt =
 `Create a single ${ratio} static advertisement image.
 
 WHAT THE OPERATOR ASKED FOR:
 ${brief}
+${angleVariant}
 
 PRODUCT CONTEXT (render THIS product, exactly as it appears in the attached image):
 ${context}
