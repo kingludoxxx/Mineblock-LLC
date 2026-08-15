@@ -10772,6 +10772,11 @@ COPY BUDGET — THIS IS THE MOST IMPORTANT RULE:
   captions. A person scrolling reads a headline, not a page.
 - If the brief lists several ideas, those shape the CONCEPT and the IMAGE.
   Print only the single strongest one. The picture carries the rest.
+- A TABLE IS TEXT. Every header, row label and cell counts toward the 20 words.
+  A 6-row x 4-column table is 30+ words on its own and blows the budget outright.
+  Do not draw a table, grid, chart or checklist AT ALL unless the requested
+  visual format explicitly asks for one — and when it does, cap it at 3 rows and
+  3 columns with single-word cells or tick/cross marks, nothing longer.
 
 RULES:
 - The attached image is the ONLY product reference. Match its shape, colour, label and branding exactly.
