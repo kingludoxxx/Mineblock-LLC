@@ -4611,6 +4611,36 @@ async function executeGenerationJob({
             generated.key_changes_from_original = generated.key_adaptations || generated.key_changes_from_original || '';
           }
 
+          // BODY COVERAGE ENFORCEMENT — the body-side counterpart of the hook
+          // enforcement below. B0179 (2026-08-15): the clone dropped the source
+          // beats whose facts didn't map to our product ("organic, safe for
+          // kids") instead of adapting them, duplicated another beat to fill
+          // the hole, and shipped at 71% of source length. The parity scorer
+          // can only FLAG that after the fact; nothing forced a repair. One
+          // targeted retry, accepted only if it genuinely closes the gap.
+          try {
+            const srcLen = (spokenScript || '').trim().length;
+            const bodyLen = String(generated.body || '').length;
+            if (srcLen >= 400 && bodyLen < srcLen * 0.8) {
+              console.log(`[BriefPipeline] clone body covers ${Math.round((bodyLen / srcLen) * 100)}% of source — beat-coverage retry`);
+              const covSys = 'You repair cloned ad scripts. You restore dropped beats faithfully, adapting facts to the new product. You never pad, never invent claims, and never change beats that are already correct.';
+              const covUser = `# SOURCE SPOKEN SCRIPT (${srcLen} chars)\n${spokenScript.trim()}\n\n# OUR CLONED BODY (${bodyLen} chars — too short: it dropped beats)\n${generated.body}\n\n# TASK\nRebuild OUR body so it covers EVERY beat of the source, in order.\nRules:\n1. A source beat whose facts do not map to our product must be ADAPTED — swap in our product's equivalent facts drawn from our current body's own claims. Never omit a beat, and never invent a claim our body does not already make.\n2. If our body says the same beat twice, keep one strong version and delete the echo.\n3. A joke or aside survives only if its context still makes sense after the product swap; otherwise drop it and cover that beat straight.\n4. Do not pad. Target ${Math.round(srcLen * 0.9)} to ${Math.round(srcLen * 1.1)} characters. No dashes or em dashes.\n5. Keep the narrator, POV and voice of our current body.\nReturn ONLY JSON: {"body":"..."}`;
+              const cov = await callClaude(covSys, covUser, 6000, { opus: true, timeoutMs: 180000 });
+              const newBody = String(cov?.body || '').trim();
+              // accept only a genuine improvement inside sane bounds — a
+              // rejected retry keeps the original body and the scorer's flag
+              if (newBody.length > bodyLen && newBody.length >= srcLen * 0.75 && newBody.length <= srcLen * 1.4) {
+                generated.body = newBody;
+                stripDashesFromBrief(generated);
+                console.log(`[BriefPipeline] beat-coverage retry accepted: ${bodyLen} -> ${newBody.length} chars (${Math.round((newBody.length / srcLen) * 100)}% of source)`);
+              } else {
+                console.warn(`[BriefPipeline] beat-coverage retry rejected (${newBody.length} chars vs source ${srcLen}) — keeping original body`);
+              }
+            }
+          } catch (covErr) {
+            console.warn(`[BriefPipeline] beat-coverage retry skipped: ${covErr.message}`);
+          }
+
           // Clone scoring: measure fidelity, not novelty. Clones replicate proven winners
           // so high scores reflect successful structural replication, not creative originality.
           // Hook-body blend is validated AFTER the brief row is inserted (off the
