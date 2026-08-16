@@ -36,6 +36,7 @@ export const DEFAULT_CONFIG = {
   brands: [],               // domains; empty = every followed brand
   tiers: ['BANGER', 'CHAMP', 'A'],
   maxAgeDays: null,         // null = no recency limit
+  dedup: 'family',          // 'family' = ad-id + headline family; 'ad' = ad-id only (+ same-script transcript guard)
   maxPerSourceAd: 1,        // diversity: never two briefs off one ad in a run
   maxPerBrand: 2,           // diversity: spread across brands
   productId: 37,            // Puure
@@ -156,6 +157,21 @@ export async function selectCandidates(cfg) {
     params.push(Number(cfg.maxAgeDays));
     ageClause = `AND a.start_date IS NOT NULL AND a.start_date >= NOW() - ($${params.length} * INTERVAL '1 day')`;
   }
+  // CONTENT-LEVEL dedup, not just ad-id. Brands run the same creative under
+  // many ad ids: "Firm Body or Money Back!" had been briefed SEVEN times via
+  // seven different archive ids before this guard existed. Headline is the
+  // cheap proxy for "same creative family" — but it also excludes a genuinely
+  // NEW video that reuses an old headline (2026-08-15: every recent seranova
+  // ad sat in an already-briefed family, so a "brief their newest ads" run
+  // found zero candidates). cfg.dedup='ad' relaxes this to ad-id only; the
+  // transcript-similarity guard in runAutopilotBatch then catches the actual
+  // same-script re-uploads that the headline clause was protecting against.
+  const familyClause = cfg.dedup === 'ad' ? '' : `
+      AND NOT EXISTS (
+        SELECT 1 FROM brief_pipeline_references r2
+         WHERE r2.headline IS NOT NULL AND a.headline IS NOT NULL
+           AND LOWER(TRIM(r2.headline)) = LOWER(TRIM(a.headline))
+      )`;
   params.push(Number(cfg.minTranscriptChars) || 0);
   const minChars = `$${params.length}`;
 
@@ -184,19 +200,7 @@ export async function selectCandidates(cfg) {
         SELECT 1 FROM brief_pipeline_references r
          WHERE r.ad_archive_id = a.ad_archive_id::text
       )
-      -- CONTENT-LEVEL dedup, not just ad-id. Brands run the same creative under
-      -- many ad ids: "Firm Body or Money Back!" had been briefed SEVEN times via
-      -- seven different archive ids before this guard existed. Ad-id dedup is
-      -- necessary but blind to that. Headline is the cheap, good-enough proxy
-      -- for "same creative family" — it can rarely exclude a genuinely new
-      -- video that reuses an old headline, and that trade is deliberate: a
-      -- missed candidate costs nothing, a duplicate brief costs review time and
-      -- an editor's day.
-      AND NOT EXISTS (
-        SELECT 1 FROM brief_pipeline_references r2
-         WHERE r2.headline IS NOT NULL AND a.headline IS NOT NULL
-           AND LOWER(TRIM(r2.headline)) = LOWER(TRIM(a.headline))
-      )
+      ${familyClause}
     ORDER BY a.tier_score DESC NULLS LAST, a.start_date DESC NULLS LAST
     LIMIT 200
   `, params);
@@ -430,6 +434,38 @@ export async function runAutopilotBatch({ dryRun = true, overrides = {} } = {}) 
 
   let candidates = await selectCandidates(cfg);
   const considered = candidates.length;
+  const preSkipped = [];
+  // dedup='ad' dropped the headline-family clause, so catch the case it was
+  // guarding: the SAME SCRIPT re-uploaded under a new ad id. Compare each
+  // candidate transcript against every already-briefed transcript of the same
+  // brand; >=0.85 token overlap = same creative, skip with a named reason.
+  if (cfg.dedup === 'ad' && candidates.length) {
+    const domains = [...new Set(candidates.map(c => String(c.brand_domain || '').toLowerCase()).filter(Boolean))];
+    const refRows = await pgQuery(
+      `SELECT LOWER(brand_name) AS brand, transcript FROM brief_pipeline_references
+        WHERE transcript IS NOT NULL AND length(transcript) > 200 AND LOWER(brand_name) = ANY($1::text[])`,
+      [domains]
+    );
+    const tok = t => new Set(String(t || '').toLowerCase().replace(/[^a-z0-9\s]/g, ' ').split(/\s+/).filter(w => w.length > 2));
+    const byBrand = new Map();
+    for (const r of refRows) {
+      if (!byBrand.has(r.brand)) byBrand.set(r.brand, []);
+      byBrand.get(r.brand).push(tok(r.transcript));
+    }
+    candidates = candidates.filter(c => {
+      const mine = tok(c.transcript);
+      if (!mine.size) return true;
+      for (const theirs of (byBrand.get(String(c.brand_domain || '').toLowerCase()) || [])) {
+        let inter = 0;
+        for (const w of mine) if (theirs.has(w)) inter++;
+        if (inter / Math.min(mine.size, theirs.size) >= 0.85) {
+          preSkipped.push({ ad: c.id, brand: c.brand_domain, headline: c.headline, reason: 'same script as an already briefed ad (new ad id, same creative)' });
+          return false;
+        }
+      }
+      return true;
+    });
+  }
   let triaged = null;   // 'n/m chunks' when ranked; null = tier fallback
   if (cfg.fitTriage !== false && candidates.length) {
     const pool = candidates.slice(0, Number(cfg.triagePool) || 30);
@@ -446,6 +482,7 @@ export async function runAutopilotBatch({ dryRun = true, overrides = {} } = {}) 
   // structure rises: minFit at least 7 on directed runs.
   if (cfg.angle) cfg.minFit = Math.max(Number(cfg.minFit) || 6, 7);   // cfg is const — mutate the property, don't reassign
   const { picked, skipped } = applyDiversityCap(candidates, cfg);
+  skipped.push(...preSkipped);
   const generated = [];
   const failures = [];
 
