@@ -652,10 +652,17 @@ export async function getAdTierCounts(brandId) {
 // stripped. Schemeless values fall back to the raw first 160 chars, since
 // `new URL()` would have thrown for them.
 function landingKeySql(u) {
-  return `CASE WHEN ${u} ~ '^[A-Za-z][A-Za-z0-9+.-]*://'
-            THEN lower(regexp_replace(split_part(regexp_replace(split_part(split_part(${u}, '#', 1), '?', 1), '^[A-Za-z][A-Za-z0-9+.-]*://', ''), '/', 1), '^www\\.', ''))
-                 || regexp_replace(COALESCE(substring(regexp_replace(split_part(split_part(${u}, '#', 1), '?', 1), '^[A-Za-z][A-Za-z0-9+.-]*://', '') from '/.*'), ''), '/+$', '')
-            ELSE left(${u}, 160) END`;
+  // Keep the URL as the advertiser wrote it — scheme included — so rows read
+  // `https://track.tryrosabella.com/cdc16426-…` exactly like the reference.
+  //
+  // This used to strip the scheme, lowercase the host and drop `www.`, which
+  // produced the mangled `track.tryrosabella.com/cdc16426…` labels. It also
+  // must NOT collapse tracking subdomains: track. / get. / the bare domain are
+  // genuinely different destinations and belong on separate rows.
+  //
+  // Query and fragment are still dropped: utm/fbclid parameters differ per ad,
+  // so keeping them would shatter one landing page into hundreds of rows.
+  return `regexp_replace(split_part(split_part(${u}, '#', 1), '?', 1), '/+$', '')`;
 }
 
 const AGG_KEY_SQL = {
