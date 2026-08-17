@@ -372,7 +372,14 @@ export async function listAds(brandId, q) {
       orderBy = 'a.is_active DESC, a.active_days DESC NULLS LAST';
       break;
     case 'first_seen_desc':
-      orderBy = 'a.is_active DESC, a.first_seen_at DESC';
+      // "Most recent" must order by the date the CARD shows — start_date, the
+      // ad's launch date. It used to order by first_seen_at (when WE first
+      // scraped it) behind is_active, which produced visibly scrambled dates:
+      // every ad discovered in the same scrape shares a near-identical
+      // first_seen_at, so within a batch the order was arbitrary relative to
+      // the launch dates on screen, and the is_active bucket came first.
+      // first_seen_at stays as the tie-breaker for ads with no start_date.
+      orderBy = 'a.start_date DESC NULLS LAST, a.first_seen_at DESC';
       break;
     case 'impressions_desc':
       // Meta's raw impression order — mirrors what the FB Ad Library shows
