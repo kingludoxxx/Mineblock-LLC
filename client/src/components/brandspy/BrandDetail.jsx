@@ -941,6 +941,8 @@ export default function BrandDetail({ apiBaseUrl, brandId, onBack }) {
   // visit — expanded it was the tallest thing on the page and pushed the
   // creatives down a full band. Collapsed by default, one click to open.
   const [intelOpen, setIntelOpen] = useState(false);
+  // Media mix + the four counters are opt-in — see the effects below.
+  const [statsOpen, setStatsOpen] = useState(false);
   const openAd = useCallback((ad) => {
     if (!ad?.id) return;
     setModalAd(ad);
@@ -1013,28 +1015,36 @@ export default function BrandDetail({ apiBaseUrl, brandId, onBack }) {
   }, [activeTab, intelFetched, intelLoading, loadIntel]);
 
   // ---- Brand-wide media-mix counts (for the Overview Media-Mix card) ----
+  // Gated behind statsOpen. Both this and the aggregation counters below have
+  // to read every ad row in the brand, and on a 10k-ad brand they take minutes
+  // — measured 244 s for format-counts and >300 s for aggregation-counts. They
+  // used to fire on every page open, where they saturated a small Postgres and
+  // starved the ads query that actually renders the page, so the GRID sat on
+  // skeletons behind two queries nobody had asked for. Worse, each one times
+  // out at the edge but keeps running server-side, so every reload stacked
+  // another multi-minute query on the same database.
   useEffect(() => {
-    if (activeTab !== 'overview' || !brandId) return;
+    if (activeTab !== 'overview' || !brandId || !statsOpen) return;
     let cancelled = false;
     authFetch(`${apiBaseUrl}/brands/${brandId}/format-counts`)
       .then((r) => (r.ok ? r.json() : { counts: null }))
       .then((d) => { if (!cancelled) setFormatCounts(d.counts ?? null); })
       .catch(() => { if (!cancelled) setFormatCounts(null); });
     return () => { cancelled = true; };
-  }, [apiBaseUrl, brandId, activeTab]);
+  }, [apiBaseUrl, brandId, activeTab, statsOpen]);
 
   // ---- Aggregation totals for the 4 mini stat boxes (Hooks/Ad copy/etc.) ----
   // Single combined endpoint replaces 4 parallel /aggregations calls — same
   // result, ~75% less server work, ~3× faster to populate the mini-stat row.
   useEffect(() => {
-    if (activeTab !== 'overview' || !brandId) return;
+    if (activeTab !== 'overview' || !brandId || !statsOpen) return;
     let cancelled = false;
     authFetch(`${apiBaseUrl}/brands/${brandId}/aggregation-counts`)
       .then((r) => (r.ok ? r.json() : { hooks: 0, adcopy: 0, headlines: 0, landing: 0 }))
       .then((d) => { if (!cancelled) setAggCounts(d); })
       .catch(() => { if (!cancelled) setAggCounts({ hooks: 0, adcopy: 0, headlines: 0, landing: 0 }); });
     return () => { cancelled = true; };
-  }, [apiBaseUrl, brandId, activeTab]);
+  }, [apiBaseUrl, brandId, activeTab, statsOpen]);
 
   // ---- Open ad detail modal by ID (used by aggregation tabs) ----
   // Aggregation rows only carry an adId, so fetch the ad before opening the
@@ -1304,7 +1314,22 @@ export default function BrandDetail({ apiBaseUrl, brandId, onBack }) {
                 right column, so the band between the filters and the first
                 creative was as tall as the intel list — the single biggest
                 source of dead space on the page. */}
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
+            {!statsOpen && (
+              <button
+                onClick={() => setStatsOpen(true)}
+                className="w-full flex items-center justify-between px-4 py-2.5 rounded-xl border border-border-subtle bg-bg-card hover:bg-white/[0.02] transition-colors text-left">
+                <span className="flex items-center gap-2 text-[13px] font-semibold text-text-primary">
+                  <Sparkles className="w-3.5 h-3.5 text-text-faint" />
+                  Media mix &amp; content counts
+                  <span className="text-[11px] font-normal text-text-faint">
+                    slow on large brands — loads on request
+                  </span>
+                </span>
+                <span className="text-[11px] text-text-muted">Load</span>
+              </button>
+            )}
+
+            <div className={`grid grid-cols-1 lg:grid-cols-2 gap-3 ${statsOpen ? '' : 'hidden'}`}>
               <div className="space-y-3">
                 <MediaMixBar counts={formatCounts} />
 
