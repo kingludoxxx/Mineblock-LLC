@@ -1114,7 +1114,10 @@ export default function BrandDetail({ apiBaseUrl, brandId, onBack }) {
   );
 
   return (
-    <div className="flex flex-col h-full overflow-hidden">
+    // bg-bg-card (#111113) — the same black as the sidebar. The page was
+    // sitting on the darker base colour, which read as a different, harsher
+    // surface than the rest of the app.
+    <div className="flex flex-col h-full overflow-hidden bg-bg-card">
       <div className="flex-1 overflow-y-auto flex flex-col min-h-0">
 
         {/* ============================================================
@@ -1504,7 +1507,12 @@ export default function BrandDetail({ apiBaseUrl, brandId, onBack }) {
                 </div>
               ) : (
                 <table className="min-w-[1300px] w-full border-collapse">
-                  <thead className="sticky top-[45px] z-10 bg-bg-elevated">
+                  {/* top-0, not a hardcoded offset. The toolbar above is a
+                      flex sibling OUTSIDE this scroll container, so an offset
+                      pushed the header down INTO the rows — and because that
+                      toolbar wraps, the overlap moved as the filters rewrapped,
+                      which is why it read as a bar sliding over row #1. */}
+                  <thead className="sticky top-0 z-10 bg-bg-elevated">
                     <tr>
                       {col('num')     && <th style={{ width: 42  }} className="px-2 py-2.5 text-right text-[10px] uppercase tracking-wider text-text-faint font-normal">#</th>}
                       {col('ad')      && <th style={{ width: 280 }} className="px-3 py-2.5 text-left text-[10px] uppercase tracking-wider text-text-faint font-normal">AD</th>}
