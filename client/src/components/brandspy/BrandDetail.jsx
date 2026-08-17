@@ -1033,18 +1033,9 @@ export default function BrandDetail({ apiBaseUrl, brandId, onBack }) {
     return () => { cancelled = true; };
   }, [apiBaseUrl, brandId, activeTab, statsOpen]);
 
-  // ---- Aggregation totals for the 4 mini stat boxes (Hooks/Ad copy/etc.) ----
-  // Single combined endpoint replaces 4 parallel /aggregations calls — same
-  // result, ~75% less server work, ~3× faster to populate the mini-stat row.
-  useEffect(() => {
-    if (activeTab !== 'overview' || !brandId || !statsOpen) return;
-    let cancelled = false;
-    authFetch(`${apiBaseUrl}/brands/${brandId}/aggregation-counts`)
-      .then((r) => (r.ok ? r.json() : { hooks: 0, adcopy: 0, headlines: 0, landing: 0 }))
-      .then((d) => { if (!cancelled) setAggCounts(d); })
-      .catch(() => { if (!cancelled) setAggCounts({ hooks: 0, adcopy: 0, headlines: 0, landing: 0 }); });
-    return () => { cancelled = true; };
-  }, [apiBaseUrl, brandId, activeTab, statsOpen]);
+  // The four content counters (Hooks/Ad copy/Headlines/LPs) were removed from
+  // the Overview: they cost a >300 s full-corpus scan for numbers nobody acted
+  // on, and the tabs above already open the real lists.
 
   // ---- Open ad detail modal by ID (used by aggregation tabs) ----
   // Aggregation rows only carry an adId, so fetch the ad before opening the
@@ -1330,32 +1321,7 @@ export default function BrandDetail({ apiBaseUrl, brandId, onBack }) {
             )}
 
             <div className={`grid grid-cols-1 lg:grid-cols-2 gap-3 ${statsOpen ? '' : 'hidden'}`}>
-              <div className="space-y-3">
-                <MediaMixBar counts={formatCounts} />
-
-                <div className="rounded-xl border border-border-subtle bg-bg-card p-4">
-                  <div className="grid grid-cols-4 gap-2">
-                    {[
-                      { label: 'Hooks',     value: aggCounts?.hooks,     tabId: 'hooks'     },
-                      { label: 'Ad copy',   value: aggCounts?.adcopy,    tabId: 'adcopy'    },
-                      { label: 'Headlines', value: aggCounts?.headlines, tabId: 'headlines' },
-                      { label: 'LPs',       value: aggCounts?.landing,   tabId: 'landing'   },
-                    ].map(({ label, value, tabId }) => (
-                      <button key={label}
-                        onClick={() => setActiveTab(tabId)}
-                        className="text-center group hover:bg-white/[0.02] rounded-md py-1 transition-colors">
-                        <p className="text-[20px] font-bold text-text-primary tabular-nums leading-none">
-                          {value == null ? '—' : (value >= 100 ? '99+' : value)}
-                        </p>
-                        <p className="text-[11px] text-text-muted mt-1.5 group-hover:text-text-primary transition-colors">
-                          {label}
-                        </p>
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              </div>
-
+              <MediaMixBar counts={formatCounts} />
             </div>
 
             {/* AI Brand Intel — collapsed by default. */}
