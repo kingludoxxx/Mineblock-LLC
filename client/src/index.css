@@ -4,7 +4,10 @@
 
 @theme {
   /* ─── Backgrounds ──────────────────────────────────────────── */
-  --color-bg-main: #09090b;
+  /* Matches the sidebar (--color-bg-card). Was #09090b, a near-black that read
+     as a harsher, separate surface from the nav beside it. Cards stay legible
+     against it via their borders, and bg-elevated (#18181b) still lifts. */
+  --color-bg-main: #111113;
   --color-bg-card: #111113;
   --color-bg-elevated: #18181b;
   --color-bg-hover: #1e1e22;
