@@ -788,10 +788,13 @@ export default function IntelDrawer({
             </div>
 
             <div className="px-5 pb-5 space-y-3 flex-1">
-              {/* Atria-style "Atria AI" card — only in pageMode. Triggers the
-                  right-side Video Script panel. Disabled when the ad has no
-                  video URL (e.g. image / DCO with page-logo fallback). */}
-              {pageMode && (
+              {/* Atria-style "Atria AI" card. Renders in BOTH modes: it used
+                  to be gated to pageMode, so when ad detail became a modal the
+                  only way to transcribe was a small orange button floating on
+                  the video itself — present, but nobody could find it. The
+                  labelled card in the signal column is the discoverable entry
+                  point. Disabled when the ad has no video URL (image / DCO). */}
+              {(
                 <div
                   className="rounded-xl p-3.5 flex flex-col gap-2.5"
                   style={{ background: '#1c1c1f', border: '1px solid #2a2a2a' }}
