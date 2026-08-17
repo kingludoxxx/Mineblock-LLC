@@ -482,6 +482,37 @@ export async function getAdDetail(adId) {
   };
 }
 
+
+// Runs a query under a hard server-side time limit.
+//
+// This is the guard that today's incident needed. Cloudflare cuts the client
+// connection at ~100 s but Postgres keeps executing, so every reload of a slow
+// page stacked ANOTHER multi-minute query onto a basic_256mb instance. They
+// accumulated until unrelated queries starved too — a single-row brand lookup
+// was measured at 284 s. Capping server-side means a runaway query dies
+// instead of piling up, so one slow endpoint can no longer degrade the rest.
+//
+// SET LOCAL requires a transaction: the pool reuses connections, so a bare SET
+// would leak the timeout onto every later query on that connection.
+async function queryCapped(sql, params, ms = 10000) {
+  const client = await getClient();
+  try {
+    await client.query('BEGIN');
+    await client.query(`SET LOCAL statement_timeout = ${Number(ms)}`);
+    const res = await client.query(sql, params);
+    await client.query('COMMIT');
+    return res;
+  } catch (err) {
+    try { await client.query('ROLLBACK'); } catch { /* connection already gone */ }
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
+// Postgres raises 57014 (query_canceled) when statement_timeout fires.
+const isTimeout = (err) => err?.code === '57014';
+
 // ---------------------------------------------------------------------------
 // Per-brand derived-stat cache.
 //
@@ -517,7 +548,14 @@ async function cachedByScrape(name, brandId, compute) {
 }
 
 export async function getAdFormatCounts(brandId) {
-  return cachedByScrape('format', brandId, () => computeAdFormatCounts(brandId));
+  return cachedByScrape('format', brandId, async () => {
+    try {
+      return await computeAdFormatCounts(brandId);
+    } catch (err) {
+      if (isTimeout(err)) return null;   // UI renders the card empty
+      throw err;
+    }
+  });
 }
 
 async function computeAdFormatCounts(brandId) {
@@ -526,7 +564,7 @@ async function computeAdFormatCounts(brandId) {
   // DCO ads whose video variants live in raw_snapshot but no extracted
   // video_url is materialized). Returns both the new collapsed counts and
   // the legacy raw breakdown so older clients don't break.
-  const { rows } = await query(
+  const { rows } = await queryCapped(
     `SELECT
        display_format,
        (raw_snapshot->'videos' IS NOT NULL
@@ -639,7 +677,14 @@ const AGG_KEY_SQL = {
 };
 
 export async function getBrandAggregationCounts(brandId) {
-  return cachedByScrape('aggcounts', brandId, () => computeBrandAggregationCounts(brandId));
+  return cachedByScrape('aggcounts', brandId, async () => {
+    try {
+      return await computeBrandAggregationCounts(brandId);
+    } catch (err) {
+      if (isTimeout(err)) return { hooks: 0, adcopy: 0, headlines: 0, landing: 0 };
+      throw err;
+    }
+  });
 }
 
 async function computeBrandAggregationCounts(brandId) {
@@ -650,7 +695,7 @@ async function computeBrandAggregationCounts(brandId) {
   //   * count(DISTINCT <long text>) sorts multi-KB ad bodies; hashing to a
   //     fixed 32-byte digest keeps the sort key small. Digest collisions are
   //     negligible at these cardinalities and this is a display counter.
-  const { rows } = await query(
+  const { rows } = await queryCapped(
     `SELECT
        count(DISTINCT md5(CASE WHEN ${AGG_KEY_SQL.hooks.keep('hook_v')}
                                THEN ${AGG_KEY_SQL.hooks.key('hook_v')} END))::int AS hooks,
