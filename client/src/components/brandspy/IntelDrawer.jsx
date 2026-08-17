@@ -674,51 +674,6 @@ export default function IntelDrawer({
               )}
             </div>
 
-            {/* Transcript panel below the creative — modal-only. The
-                pageMode route renders the transcript in a dedicated
-                right-side Video Script panel instead, so we skip this
-                block to avoid showing the same content twice. */}
-            {!pageMode && ad.videoUrl && (transcript || transcriptError) && (
-              <div
-                className="mx-5 mt-3 rounded-xl px-4 py-3"
-                style={{ background: '#1a1a1c', border: '1px solid #2a2a2a' }}
-              >
-                <div className="flex items-center justify-between mb-2">
-                  <div className="flex items-center gap-2">
-                    <FileText className="w-3.5 h-3.5 text-orange-400" />
-                    <span className="text-xs font-semibold uppercase tracking-wider text-zinc-300">
-                      Transcript
-                    </span>
-                    {transcriptCached && (
-                      <span className="text-[10px] uppercase tracking-wider text-zinc-500">
-                        Cached
-                      </span>
-                    )}
-                  </div>
-                  {transcript && (
-                    <button
-                      onClick={copyTranscript}
-                      className="flex items-center gap-1 text-[11px] text-zinc-400 hover:text-zinc-200 transition-colors"
-                      title="Copy transcript"
-                    >
-                      <Copy className="w-3 h-3" /> Copy
-                    </button>
-                  )}
-                </div>
-                {transcriptError ? (
-                  <p className="text-xs text-rose-400 leading-relaxed">
-                    {transcriptError}
-                  </p>
-                ) : (
-                  <p
-                    className="text-sm text-zinc-200 leading-relaxed whitespace-pre-wrap"
-                    style={{ maxHeight: '24vh', overflowY: 'auto' }}
-                  >
-                    {transcript}
-                  </p>
-                )}
-              </div>
-            )}
 
             {/* Ad destination bar */}
             {(ad.linkUrl || ad.ctaText) && (
@@ -1022,6 +977,51 @@ export default function IntelDrawer({
                   No Ad Library ID
                 </div>
               )}
+                {/* Transcript — lives in the signal column, under the Meta
+                    button, where there was dead space. pageMode renders it in
+                    its own side panel instead, so skip it there. */}
+              {!pageMode && ad.videoUrl && (transcript || transcriptError) && (
+                <div
+                  className="mt-3 rounded-xl px-4 py-3"
+                  style={{ background: '#1a1a1c', border: '1px solid #2a2a2a' }}
+                >
+                  <div className="flex items-center justify-between mb-2">
+                    <div className="flex items-center gap-2">
+                      <FileText className="w-3.5 h-3.5 text-orange-400" />
+                      <span className="text-xs font-semibold uppercase tracking-wider text-zinc-300">
+                        Transcript
+                      </span>
+                      {transcriptCached && (
+                        <span className="text-[10px] uppercase tracking-wider text-zinc-500">
+                          Cached
+                        </span>
+                      )}
+                    </div>
+                    {transcript && (
+                      <button
+                        onClick={copyTranscript}
+                        className="flex items-center gap-1 text-[11px] text-zinc-400 hover:text-zinc-200 transition-colors"
+                        title="Copy transcript"
+                      >
+                        <Copy className="w-3 h-3" /> Copy
+                      </button>
+                    )}
+                  </div>
+                  {transcriptError ? (
+                    <p className="text-xs text-rose-400 leading-relaxed">
+                      {transcriptError}
+                    </p>
+                  ) : (
+                    <p
+                      className="text-sm text-zinc-200 leading-relaxed whitespace-pre-wrap"
+                      style={{ maxHeight: '24vh', overflowY: 'auto' }}
+                    >
+                      {transcript}
+                    </p>
+                  )}
+                </div>
+              )}
+
             </div>
           </div>
     </div>
