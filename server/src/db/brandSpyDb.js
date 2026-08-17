@@ -166,13 +166,14 @@ export async function listBrands(workspaceId) {
   // to "Norse Organics" beats falling back to "norseorganics.co".
   const { rows } = await query(
     `SELECT b.*,
+            -- Orders on the count brand_pages already stores. This used to run
+            -- a correlated COUNT(*) over brand_spy.ads for EVERY page of EVERY
+            -- brand — ~200 pages against 46k ads on each load of the Following
+            -- list, which measured 9.8 s. Same page wins, no table scan.
             (SELECT bp.page_name
                FROM brand_spy.brand_pages bp
               WHERE bp.brand_id = b.id
-              ORDER BY (
-                SELECT COUNT(*) FROM brand_spy.ads a
-                 WHERE a.brand_page_id = bp.id
-              ) DESC NULLS LAST
+              ORDER BY bp.total_ads_count DESC NULLS LAST, bp.active_ads_count DESC
               LIMIT 1) AS first_page_name
        FROM brand_spy.brands b
       WHERE ($1::uuid IS NULL AND b.workspace_id IS NULL)
@@ -188,7 +189,7 @@ export async function getBrand(id) {
     `SELECT b.*,
             (SELECT bp.page_name FROM brand_spy.brand_pages bp
               WHERE bp.brand_id = b.id
-              ORDER BY (SELECT COUNT(*) FROM brand_spy.ads a WHERE a.brand_page_id = bp.id) DESC NULLS LAST
+              ORDER BY bp.total_ads_count DESC NULLS LAST, bp.active_ads_count DESC
               LIMIT 1) AS first_page_name
        FROM brand_spy.brands b WHERE b.id = $1`,
     [id],
