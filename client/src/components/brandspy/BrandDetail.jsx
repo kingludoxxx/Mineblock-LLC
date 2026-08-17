@@ -567,31 +567,11 @@ function AdCard({ ad, brand, onOpenIntel }) {
           </>
         )}
 
-        {/* Active indicator only — format badge removed per request.
-            Visual format cue is the play overlay (videos) or its absence (images). */}
-        {!playing && isAdActive(ad) && (
-          <div className="absolute top-2 left-2 z-20 pointer-events-none flex items-center">
-            <span className="relative flex items-center justify-center" title="Active">
-              <span className="absolute w-3 h-3 rounded-full bg-emerald-400 opacity-60 animate-ping" />
-              <span className="relative w-2.5 h-2.5 rounded-full bg-emerald-400 ring-2 ring-black/40" />
-            </span>
-          </div>
-        )}
-        {/* Tier badge — top right */}
-        {/* Tier badge — only shown for ads currently active. A tier on an
-            OFF ad is stale data left over from a previous successful scrape;
-            scoreBrand never re-tiers inactive ads (they get tier=null), so
-            anything non-null on an OFF ad is from before the last reset. */}
-        {ad.tier && ad.isActive && !playing && (
-          <div className="absolute top-2 right-2 z-20 pointer-events-none">
-            <span
-              className={`inline-flex items-center gap-1 whitespace-nowrap text-[9px] font-bold px-1.5 py-0.5 rounded-md border backdrop-blur-sm ${TIER_COLORS[ad.tier] ?? ''}`}
-              title={TIER_TOOLTIPS[ad.tier]}>
-              {TIER_ICONS[ad.tier] && <span aria-hidden>{TIER_ICONS[ad.tier]}</span>}
-              {ad.tier}
-            </span>
-          </div>
-        )}
+        {/* No overlays on the creative. The green active dot and the tier
+            badge both sat on top of the ad image; the same information is
+            already on the row above (status dot + date) and in the tier
+            filters, so on the grid they were decoration covering the thing
+            you actually came to look at. */}
       </div>
 
       {/* ── Footer — Facebook-style link-preview card
