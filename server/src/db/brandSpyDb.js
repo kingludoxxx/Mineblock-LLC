@@ -482,7 +482,45 @@ export async function getAdDetail(adId) {
   };
 }
 
+// ---------------------------------------------------------------------------
+// Per-brand derived-stat cache.
+//
+// format-counts and aggregation-counts both have to read EVERY ad row in the
+// brand: format-counts probes raw_snapshot->'videos' (detoasting that JSONB
+// once per row) and the aggregation counters de-duplicate body_text. Measured
+// on the live corpus that is ~16 s and ~225 s respectively on a 9k-ad brand,
+// and it was being paid on every single page view — even though the answers
+// only change when a scrape lands.
+//
+// Keyed on the brand's last_scraped_at, so a completed scrape invalidates the
+// entry automatically and a stale count can never be served. Held in process
+// rather than in a table because migrations are not run on deploy here, so a
+// new column would break the page rather than speed it up. Cost is four
+// integers per brand; the first load after each scrape still pays full price.
+const derivedCache = new Map(); // `${name}:${brandId}` -> { key, value }
+
+async function cachedByScrape(name, brandId, compute) {
+  const cacheId = `${name}:${brandId}`;
+  const { rows } = await query(
+    `SELECT last_scraped_at FROM brand_spy.brands WHERE id = $1`,
+    [brandId],
+  );
+  const ts = rows[0]?.last_scraped_at;
+  const key = ts ? new Date(ts).toISOString() : 'never';
+
+  const hit = derivedCache.get(cacheId);
+  if (hit && hit.key === key) return hit.value;
+
+  const value = await compute();
+  derivedCache.set(cacheId, { key, value });
+  return value;
+}
+
 export async function getAdFormatCounts(brandId) {
+  return cachedByScrape('format', brandId, () => computeAdFormatCounts(brandId));
+}
+
+async function computeAdFormatCounts(brandId) {
   // Group by "has-video" since that's the only thing the UI cares about:
   // ads collapse to VID (has any video) or IMG (everything else, including
   // DCO ads whose video variants live in raw_snapshot but no extracted
@@ -601,6 +639,10 @@ const AGG_KEY_SQL = {
 };
 
 export async function getBrandAggregationCounts(brandId) {
+  return cachedByScrape('aggcounts', brandId, () => computeBrandAggregationCounts(brandId));
+}
+
+async function computeBrandAggregationCounts(brandId) {
   // Derive each key ONCE per row in the inner select, then count distinct over
   // md5() of it. Two deliberate choices, both measured:
   //   * the first version evaluated every regex twice per row (once for the
