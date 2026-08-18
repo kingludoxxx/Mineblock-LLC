@@ -989,10 +989,15 @@ export default function BrandDetail({ apiBaseUrl, brandId, onBack }) {
   }, [apiBaseUrl, brandId]);
 
   useEffect(() => {
-    if (activeTab === 'overview' && !intelFetched && !intelLoading) {
+    // Gated on intelOpen. The panel is collapsed by default, so this fired on
+    // every page open for a card nobody was looking at — and when a scrape has
+    // landed the cached payload is stale, so it regenerates through Claude
+    // Haiku (~7-8 s) against the same contended database the grid is waiting
+    // on. Fetch it when the user actually opens the panel.
+    if (activeTab === 'overview' && intelOpen && !intelFetched && !intelLoading) {
       loadIntel();
     }
-  }, [activeTab, intelFetched, intelLoading, loadIntel]);
+  }, [activeTab, intelOpen, intelFetched, intelLoading, loadIntel]);
 
   // ---- Brand-wide media-mix counts (for the Overview Media-Mix card) ----
   // Gated behind statsOpen. Both this and the aggregation counters below have
