@@ -944,13 +944,21 @@ function scheduleDailyScrape() {
 }
 
 scheduleDailyScrape();
-// Media mirror worker temporarily disabled — instance crash-looping ~5-6 min
-// after boot with mirror active. Ads already largely mirrored during the
-// 13 h the previous instance ran, so R2 URLs continue to be served. Fresh
-// videos still work via the IntelDrawer onError → yt-dlp fresh-video-url
-// fallback. Will re-enable behind an env flag after diagnosis.
+// Media mirror. The full worker (ads + pages) stays behind
+// BRAND_SPY_MIRROR_ENABLED — it crash-looped the instance ~5-6 min after boot
+// and that was never diagnosed; on a 256 MB instance, multi-MB video buffers
+// are the obvious suspect and the timing fits.
+//
+// Page profile pictures run unconditionally, because they are the half that is
+// actually broken: Facebook signs those fbcdn URLs and they expire, so 22 of
+// tryrosabella's 24 page logos now 403 and the UI falls back to a letter
+// initial. Only mirroring makes them permanent — re-scraping just fetches
+// another URL that expires again. At ~20 KB each these carry almost none of
+// the memory risk the videos do.
 if (process.env.BRAND_SPY_MIRROR_ENABLED === 'true') {
   startMediaMirrorWorker();
+} else {
+  startMediaMirrorWorker({ pagesOnly: true });
 }
 
 export default router;
