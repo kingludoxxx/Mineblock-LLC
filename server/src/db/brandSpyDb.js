@@ -420,6 +420,15 @@ async function computeListAds(brandId, q) {
       orderBy = 'a.current_rank ASC NULLS LAST, a.first_seen_at DESC';
   }
 
+  // Landing-page filter. Matches on landingKeySql() — the exact expression the
+  // Landing Pages rows are grouped by — so a row saying "191 ads" opens a grid
+  // showing 191. If these two normalisations ever drift, the tool contradicts
+  // itself, which is worse than not having the feature.
+  if (q.landingUrl) {
+    params.push(q.landingUrl);
+    where.push(`${landingKeySql('a.link_url')} = $${params.length}`);
+  }
+
   const whereClause = where.join(' AND ');
 
   // The grid header only needs "10,057 Ads". Counting that exactly meant a
@@ -614,16 +623,24 @@ async function computeAdFormatCounts(brandId) {
   // DCO ads whose video variants live in raw_snapshot but no extracted
   // video_url is materialized). Returns both the new collapsed counts and
   // the legacy raw breakdown so older clients don't break.
+  // Reads only display_format and is_active — both real columns, both covered
+  // by ads_brand_active_idx. The previous version derived has_video from
+  // raw_snapshot->'videos', which forced Postgres to pull a multi-KB JSONB off
+  // disk once per ad: ~244 s on a 10k-ad brand, so the panel never loaded.
+  //
+  // Trade-off, stated plainly: a DCO ad whose video variant exists only inside
+  // raw_snapshot (no VIDEO display_format) now counts as Image rather than
+  // Video. That is a small edge-case shift in exchange for a panel that
+  // renders immediately instead of not at all.
   const { rows } = await queryCapped(
     `SELECT
        display_format,
-       (raw_snapshot->'videos' IS NOT NULL
-          AND jsonb_array_length(raw_snapshot->'videos') > 0) AS has_video,
+       (display_format = 'VIDEO') AS has_video,
        is_active,
        COUNT(*) AS count
        FROM brand_spy.ads
       WHERE brand_id = $1
-      GROUP BY display_format, has_video, is_active`,
+      GROUP BY display_format, is_active`,
     [brandId],
   );
   const out = {
@@ -785,11 +802,17 @@ async function computeBrandAggregationCounts(brandId) {
 // Normalize a "hook" = first 100 chars of body_text up to first newline.
 // For headlines, ad copy, landing — we group on the raw value.
 // Returns { items: [{ key, sample, count, activeCount, tierCounts, days, topAdId, sampleAdIds }], total }
-export async function getBrandAggregations(brandId, type, { limit = 50, activeOnly = false } = {}) {
+export async function getBrandAggregations(brandId, type, { limit = 50, activeOnly = false, minStartDate } = {}) {
   // Pull all ads' content fields once — most brands have <2k ads, fits easily in mem.
   const where = ['a.brand_id = $1'];
   const params = [brandId];
   if (activeOnly) where.push('a.is_active = TRUE');
+  // Timeframe from the Landing Pages selector — "ads that were live in the
+  // selected timeframe".
+  if (minStartDate) {
+    params.push(minStartDate);
+    where.push(`(a.last_seen_at >= $${params.length} OR a.start_date >= $${params.length})`);
+  }
   const whereSql = where.join(' AND ');
 
   const K = AGG_KEY_SQL[type];

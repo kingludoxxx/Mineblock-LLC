@@ -10,6 +10,7 @@ import {
   Video as VideoIcon, Image as ImageIcon, Columns as CarouselIcon,
 } from 'lucide-react';
 import AggregationsTab from './AggregationsTab';
+import LandingPagesTable from './LandingPagesTable';
 import IntelDrawer from './IntelDrawer';
 
 // ---------------------------------------------------------------------------
@@ -923,6 +924,8 @@ export default function BrandDetail({ apiBaseUrl, brandId, onBack }) {
   const [intelOpen, setIntelOpen] = useState(false);
   // Media mix + the four counters are opt-in — see the effects below.
   const [statsOpen, setStatsOpen] = useState(false);
+  // Set by the Landing Pages "View ads" action — filters the grid to one URL.
+  const [landingUrl, setLandingUrl] = useState(null);
   const openAd = useCallback((ad) => {
     if (!ad?.id) return;
     setModalAd(ad);
@@ -1009,14 +1012,14 @@ export default function BrandDetail({ apiBaseUrl, brandId, onBack }) {
   // out at the edge but keeps running server-side, so every reload stacked
   // another multi-minute query on the same database.
   useEffect(() => {
-    if (activeTab !== 'overview' || !brandId || !statsOpen) return;
+    if (activeTab !== 'overview' || !brandId) return;
     let cancelled = false;
     authFetch(`${apiBaseUrl}/brands/${brandId}/format-counts`)
       .then((r) => (r.ok ? r.json() : { counts: null }))
       .then((d) => { if (!cancelled) setFormatCounts(d.counts ?? null); })
       .catch(() => { if (!cancelled) setFormatCounts(null); });
     return () => { cancelled = true; };
-  }, [apiBaseUrl, brandId, activeTab, statsOpen]);
+  }, [apiBaseUrl, brandId, activeTab]);
 
   // The four content counters (Hooks/Ad copy/Headlines/LPs) were removed from
   // the Overview: they cost a >300 s full-corpus scan for numbers nobody acted
@@ -1293,22 +1296,9 @@ export default function BrandDetail({ apiBaseUrl, brandId, onBack }) {
                 right column, so the band between the filters and the first
                 creative was as tall as the intel list — the single biggest
                 source of dead space on the page. */}
-            {!statsOpen && (
-              <button
-                onClick={() => setStatsOpen(true)}
-                className="w-full flex items-center justify-between px-4 py-2.5 rounded-xl border border-border-subtle bg-bg-card hover:bg-white/[0.02] transition-colors text-left">
-                <span className="flex items-center gap-2 text-[13px] font-semibold text-text-primary">
-                  <Sparkles className="w-3.5 h-3.5 text-text-faint" />
-                  Media mix &amp; content counts
-                  <span className="text-[11px] font-normal text-text-faint">
-                    slow on large brands — loads on request
-                  </span>
-                </span>
-                <span className="text-[11px] text-text-muted">Load</span>
-              </button>
-            )}
-
-            <div className={`grid grid-cols-1 lg:grid-cols-2 gap-3 ${statsOpen ? '' : 'hidden'}`}>
+            {/* Always visible: format-counts no longer reads raw_snapshot, so
+                it is cheap enough to load with the page as the reference does. */}
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
               <MediaMixBar counts={formatCounts} />
             </div>
 
@@ -1544,7 +1534,11 @@ export default function BrandDetail({ apiBaseUrl, brandId, onBack }) {
           <AggregationsTab apiBaseUrl={apiBaseUrl} brandId={brandId} type="headlines" onOpenAd={openAdById} />
         )}
         {activeTab === 'landing' && (
-          <AggregationsTab apiBaseUrl={apiBaseUrl} brandId={brandId} type="landing" onOpenAd={openAdById} />
+          <LandingPagesTable
+            apiBaseUrl={apiBaseUrl}
+            brandId={brandId}
+            onViewAds={(url) => { setLandingUrl(url); setActiveTab('overview'); }}
+          />
         )}
 
       </div>

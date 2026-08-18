@@ -148,6 +148,8 @@ router.get('/brands/:id/ads', validateUuidParam('id'), async (req, res, next) =>
       format:       req.query.format      ? String(req.query.format)      : undefined,
       status:       req.query.status      ? String(req.query.status)      : undefined,
       brandPageId:  req.query.brandPageId ? String(req.query.brandPageId) : undefined,
+      // Set by the Landing Pages "View ads" action.
+      landingUrl:   req.query.landingUrl  ? String(req.query.landingUrl)  : undefined,
       minStartDate: (days && days > 0)
         ? new Date(Date.now() - days * 86400000).toISOString()
         : undefined,
@@ -186,7 +188,14 @@ router.get('/brands/:id/aggregations', validateUuidParam('id'), async (req, res,
     const limitRaw = parseInt(String(req.query.limit ?? ''), 10);
     const limit = (!isNaN(limitRaw) && limitRaw > 0 && limitRaw <= 200) ? limitRaw : 50;
     const activeOnly = String(req.query.activeOnly ?? '') === '1';
-    const result = await getBrandAggregations(req.params.id, type, { limit, activeOnly });
+    // Landing Pages ships a timeframe selector (30/60/90/180). Without this the
+    // dropdown would change its own label and nothing else — worse than having
+    // no selector at all.
+    const daysRaw = parseInt(String(req.query.days ?? ''), 10);
+    const minStartDate = (!isNaN(daysRaw) && daysRaw > 0)
+      ? new Date(Date.now() - daysRaw * 86400000).toISOString()
+      : undefined;
+    const result = await getBrandAggregations(req.params.id, type, { limit, activeOnly, minStartDate });
     res.json(result);
   } catch (err) { next(err); }
 });

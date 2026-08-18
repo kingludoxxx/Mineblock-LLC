@@ -936,16 +936,10 @@ export default function IntelDrawer({
                 </div>
               </div>
 
-              {/* CHARTS — placeholder */}
-              <div>
-                <p className="text-[10px] uppercase tracking-wider mb-2 font-medium" style={{ color: '#6b7280' }}>
-                  Charts
-                </p>
-                <div className="rounded-xl py-8 flex items-center justify-center text-xs"
-                  style={{ background: '#1e1e20', border: '1px solid #2a2a2a', color: '#4b5563' }}>
-                  Coming soon
-                </div>
-              </div>
+              {/* No CHARTS placeholder. An empty "Coming soon" block cost ~150px
+                  of the signal column and pushed "View on Meta Ad Library"
+                  below the fold — a stub should not outrank a working button.
+                  Reinstate it when there is a chart to draw. */}
 
               {/* TECH STACK */}
               {techStack.length > 0 && (
