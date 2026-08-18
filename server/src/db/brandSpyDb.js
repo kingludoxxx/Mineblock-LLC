@@ -232,7 +232,23 @@ export async function getBrandExpanded(id) {
       metaPageId: r.meta_page_id,
       pageName: r.page_name,
       // R2-mirrored URL preferred (never expires); fbcdn URL is a fallback.
-      pageProfilePic: r.page_profile_pic_r2 || r.page_profile_pic,
+      // Logo source, in order of durability:
+      //   1. our R2 mirror — permanent
+      //   2. graph.facebook.com/<page_id>/picture — Facebook resolves this to a
+      //      freshly-signed CDN URL on every request, so it cannot go stale
+      //   3. the stored scontent-*.fbcdn.net URL — last resort
+      //
+      // (3) used to be second, and that is why logos rendered as letter
+      // initials: those URLs carry an `oe=` expiry and 22 of tryrosabella's 24
+      // had lapsed (all 403). Re-scraping did not help — the ad snapshot
+      // returns the same expired URL — and mirroring cannot copy a dead link,
+      // so the fix is to stop depending on a signed URL at all.
+      pageProfilePic:
+        r.page_profile_pic_r2
+        || (r.meta_page_id
+          ? `https://graph.facebook.com/${r.meta_page_id}/picture?type=square&width=200`
+          : null)
+        || r.page_profile_pic,
       // Prefer the live computed counts (always current) over the column
       // values (which the worker historically forgot to populate).
       activeAdsCount: live || Number(r.active_ads_count) || 0,
