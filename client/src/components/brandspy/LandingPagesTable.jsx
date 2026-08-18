@@ -59,8 +59,9 @@ export default function LandingPagesTable({ apiBaseUrl, brandId, onViewAds }) {
 
   useEffect(() => { load(); }, [load]);
 
-  // Percentage is a share of the ads on THIS page of results, so the column
-  // sums to 100% for what is shown rather than to some hidden global total.
+  // Share of every ad in the window, not of the rows currently on screen.
+  // The reference reads 77.3% for a page holding 1296 of ~1676 ads, so the
+  // denominator is the whole window — paging must not move the percentages.
   const totalAds = useMemo(
     () => items.reduce((sum, it) => sum + (it.count ?? 0), 0),
     [items],
@@ -131,7 +132,11 @@ export default function LandingPagesTable({ apiBaseUrl, brandId, onViewAds }) {
                   Ads <SortCaret active={sortKey === 'count'} dir={sortDir} />
                 </button>
               </th>
-              <th className={`${th} text-left px-4 py-2.5 w-[120px]`}>Percentage</th>
+              <th className={`${th} text-left px-4 py-2.5 w-[120px]`}>
+                <button onClick={() => toggleSort('count')} className="flex items-center gap-1 hover:text-text-primary transition-colors">
+                  Percentage <SortCaret active={sortKey === 'count'} dir={sortDir} />
+                </button>
+              </th>
               <th className={`${th} text-left px-4 py-2.5 w-[150px]`}>
                 <button onClick={() => toggleSort('days')} className="flex items-center gap-1 hover:text-text-primary transition-colors">
                   Longest running <SortCaret active={sortKey === 'days'} dir={sortDir} />
