@@ -426,7 +426,11 @@ async function computeListAds(brandId, q) {
   // itself, which is worse than not having the feature.
   if (q.landingUrl) {
     params.push(q.landingUrl);
-    where.push(`${landingKeySql('a.link_url')} = $${params.length}`);
+    // $${p++}, not params.length — this function keeps a separate placeholder
+    // counter that every other filter increments, and mixing the two shifted
+    // every later placeholder by one, so LIMIT received the URL string
+    // ("argument of LIMIT must be type bigint, not type text").
+    where.push(`${landingKeySql('a.link_url')} = $${p++}`);
   }
 
   const whereClause = where.join(' AND ');
