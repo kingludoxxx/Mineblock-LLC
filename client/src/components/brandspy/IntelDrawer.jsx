@@ -702,9 +702,13 @@ export default function IntelDrawer({
                       </>
                     )}
                   </button>
-                  {/* Play-button overlay — visible until the user starts
-                      the video so they have a clear "this is playable"
-                      affordance. Native controls take over after play. */}
+                  {/* Play-button overlay — a clear "this is playable" cue
+                      before playback starts.
+                      Stops short of the bottom (bottom-16) instead of
+                      inset-0: as a full-bleed button it covered the control
+                      bar and, rendering after it, painted over the timeline
+                      and swallowed its clicks — so there was no scrubber to
+                      drag until the video was already playing. */}
                   {!videoStarted && (
                     <button
                       type="button"
@@ -715,7 +719,7 @@ export default function IntelDrawer({
                           setVideoStarted(true);
                         }
                       }}
-                      className="absolute inset-0 flex items-center justify-center transition-opacity hover:bg-black/15"
+                      className="absolute inset-x-0 top-0 bottom-16 z-10 flex items-center justify-center transition-opacity hover:bg-black/15"
                       title="Play video"
                     >
                       <div
