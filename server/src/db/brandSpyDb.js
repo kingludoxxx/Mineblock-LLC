@@ -394,11 +394,21 @@ export async function listAds(brandId, q) {
   }
 
   const whereClause = where.join(' AND ');
-  const countRes = await query(
-    `SELECT COUNT(*) AS count FROM brand_spy.ads a WHERE ${whereClause}`,
-    params,
-  );
-  const total = parseInt(countRes.rows[0]?.count ?? '0', 10);
+
+  // The grid header only needs "10,057 Ads". Counting that exactly meant a
+  // COUNT(*) across every matching row of a table whose rows carry a multi-KB
+  // raw_snapshot — measured ~5.5 s per page view on a 10k-ad brand, and it ran
+  // BEFORE the data query rather than alongside it, so the user waited for both
+  // in series.
+  //
+  // Unfiltered (brand_id only) the answer is already on the brand row, kept up
+  // to date by the scrape worker — one indexed lookup instead of a scan. With
+  // filters applied we still count for real, because the number has to match
+  // what the filter actually returns.
+  const isUnfiltered = where.length === 1;
+  const countPromise = isUnfiltered
+    ? query('SELECT total_ads_count AS count FROM brand_spy.brands WHERE id = $1', [params[0]])
+    : query(`SELECT COUNT(*) AS count FROM brand_spy.ads a WHERE ${whereClause}`, params);
 
   // raw_snapshot can be a large JSON blob (~5-10 KB each). For the LIST view
   // we only need the thumbnail URL and video URL; computing them in SQL with
@@ -442,6 +452,11 @@ export async function listAds(brandId, q) {
      LIMIT $${p++} OFFSET $${p++}`,
     [...params, pageSize, offset],
   );
+
+  // Awaited here, not above: the count and the page of rows are independent,
+  // so they run concurrently instead of one after the other.
+  const countRes = await countPromise;
+  const total = parseInt(countRes.rows[0]?.count ?? '0', 10);
 
   return { ads: dataRes.rows.map(mapAdListItem), total, page, pageSize };
 }
