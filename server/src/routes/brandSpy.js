@@ -848,7 +848,6 @@ router.use((err, _req, res, _next) => {
 // ---------------------------------------------------------------------------
 function scheduleDailyScrape() {
   const INTERVAL_MS = 24 * 60 * 60 * 1000; // 24 hours
-  const BOOT_DELAY_MS = 5 * 60 * 1000;     // 5 min — let the server fully settle
 
   const runScrapeAll = async () => {
     try {
@@ -879,11 +878,34 @@ function scheduleDailyScrape() {
     })
     .catch((err) => console.error('[brand-spy] boot recovery check failed:', err.message));
 
-  // Regular auto-scrape: 5 min after boot (give server time to settle), then every 24h.
+  // Regular auto-scrape: at a FIXED hour, not "5 min after boot".
+  //
+  // Every deploy is a boot, so the old schedule kicked off a full 18-brand
+  // scrape 5 minutes after each one. On a heavy deploy day that meant 17 of 18
+  // brands re-scraping within the hour: bulk writes and re-ranking saturating a
+  // 256 MB Postgres while someone was browsing, every last_scraped_at cache
+  // invalidated at the same moment, and ScrapeCreators credits spent for data
+  // that was already fresh.
+  //
+  // A fixed 04:00 UTC slot (06:00 CEST) makes deploys free, keeps the database
+  // quiet during working hours, and leaves the caches warm all day. Genuinely
+  // stuck brands are still picked up immediately by the boot recovery above,
+  // and the pending sweep below still retries failures every 15 min.
+  const SCRAPE_HOUR_UTC = 4;
+  const msUntilScrapeSlot = () => {
+    const now = new Date();
+    const next = new Date(Date.UTC(
+      now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), SCRAPE_HOUR_UTC, 0, 0, 0,
+    ));
+    if (next.getTime() <= now.getTime()) next.setUTCDate(next.getUTCDate() + 1);
+    return next.getTime() - now.getTime();
+  };
+  const untilSlot = msUntilScrapeSlot();
+  console.log(`[brand-spy] auto-scrape scheduled for ${String(SCRAPE_HOUR_UTC).padStart(2, '0')}:00 UTC (in ${(untilSlot / 3600000).toFixed(1)}h)`);
   setTimeout(() => {
     runScrapeAll();
     setInterval(runScrapeAll, INTERVAL_MS);
-  }, BOOT_DELAY_MS);
+  }, untilSlot);
 
   // Pending sweep — every 15 min, look for brands that never finished a
   // successful scrape (last_scrape_status NULL or 'OUT_OF_CREDITS') and
