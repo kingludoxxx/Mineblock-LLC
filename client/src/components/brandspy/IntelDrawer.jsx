@@ -597,8 +597,16 @@ export default function IntelDrawer({
                     ref={videoRef}
                     src={freshVideoUrl || ad.videoUrl}
                     poster={ad.thumbnailUrl ?? undefined}
+                    preload="metadata"
                     className="block w-full cursor-pointer"
-                    style={{ maxHeight: '70vh', background: '#000' }}
+                    // 52vh, not 70vh. At 70vh the element ran to ~589px inside a
+                    // modal that also carries a header, body copy and a footer,
+                    // so the control bar landed below the viewport — measured at
+                    // y=823 on a 764px screen. The bar was rendering correctly
+                    // the whole time; it was simply off-screen. preload=metadata
+                    // also gives us the real duration before playback, so the
+                    // timeline is scrubbable immediately.
+                    style={{ maxHeight: '52vh', background: '#000' }}
                     onClick={togglePlay}
                     onPlay={() => { setVideoStarted(true); setPaused(false); }}
                     onPause={() => setPaused(true)}
