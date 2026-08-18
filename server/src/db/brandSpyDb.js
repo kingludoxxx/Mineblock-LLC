@@ -302,7 +302,27 @@ export async function recomputeBrandCounters(brandId, client) {
 const DEFAULT_PAGE_SIZE = 24;
 const MAX_PAGE_SIZE = 100;
 
+// The first page of the default view is byte-identical for every visitor
+// until the next scrape lands, yet it was recomputed on every page open — and
+// on a 10k-ad brand that is the single query the whole page waits for.
+// Memoised against last_scraped_at like the derived counts, so a completed
+// scrape invalidates it and a stale grid can never be served. Only the
+// unfiltered first page is cached: filtered and paged views are open-ended and
+// would bloat the map for little gain.
 export async function listAds(brandId, q) {
+  const cacheable =
+    (q.page ?? 1) === 1 &&
+    (q.sort ?? 'rank_asc') === 'rank_asc' &&
+    (q.tier ?? 'ALL') === 'ALL' &&
+    !q.format && !q.status && !q.brandPageId && !q.minStartDate && !q.landingUrl;
+
+  if (cacheable) {
+    return cachedByScrape(`ads:${q.pageSize ?? 'def'}`, brandId, () => computeListAds(brandId, q));
+  }
+  return computeListAds(brandId, q);
+}
+
+async function computeListAds(brandId, q) {
   const page = Math.max(1, q.page ?? 1);
   const pageSize = Math.min(MAX_PAGE_SIZE, Math.max(1, q.pageSize ?? DEFAULT_PAGE_SIZE));
   const offset = (page - 1) * pageSize;
