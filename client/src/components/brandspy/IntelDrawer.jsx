@@ -11,7 +11,7 @@
 import authFetch from '../../services/authFetch';
 import { useEffect, useRef, useState } from 'react';
 import {
-  X, ExternalLink, Copy, Download, Play, FileText, Loader2,
+  X, ExternalLink, Copy, Download, Play, Pause, Volume2, VolumeX, Maximize2, FileText, Loader2,
 } from 'lucide-react';
 
 // ---------------------------------------------------------------------------
@@ -372,6 +372,44 @@ export default function IntelDrawer({
   // Lets "View transcript" jump to the panel when the text is already loaded.
   const transcriptRef = useRef(null);
 
+  // Custom player controls. The native `controls` bar auto-hides and never
+  // appeared reliably in the modal, so there was no timeline to drag — the
+  // reference keeps a bar visible at all times, so we render our own.
+  const [paused, setPaused]           = useState(true);
+  const [muted, setMuted]             = useState(false);
+  const [currentTime, setCurrentTime] = useState(0);
+  const [duration, setDuration]       = useState(0);
+
+  const fmtClock = (sec) => {
+    if (!Number.isFinite(sec) || sec < 0) return '0:00';
+    const m = Math.floor(sec / 60);
+    const r = Math.floor(sec % 60);
+    return `${m}:${String(r).padStart(2, '0')}`;
+  };
+  const togglePlay = () => {
+    const v = videoRef.current;
+    if (!v) return;
+    if (v.paused) v.play().catch(() => {}); else v.pause();
+  };
+  const seekTo = (e) => {
+    const v = videoRef.current;
+    if (!v) return;
+    const t = Number(e.target.value);
+    v.currentTime = t;
+    setCurrentTime(t);
+  };
+  const toggleMute = () => {
+    const v = videoRef.current;
+    if (!v) return;
+    v.muted = !v.muted;
+    setMuted(v.muted);
+  };
+  const goFullscreen = () => {
+    const v = videoRef.current;
+    if (!v) return;
+    (v.requestFullscreen || v.webkitRequestFullscreen || (() => {})).call(v);
+  };
+
   async function handleTranscribe() {
     if (!ad?.id) return;
     // In pageMode the page owns both the state and the fetch — just toggle
@@ -559,12 +597,56 @@ export default function IntelDrawer({
                     ref={videoRef}
                     src={freshVideoUrl || ad.videoUrl}
                     poster={ad.thumbnailUrl ?? undefined}
-                    controls
-                    className="block w-full"
+                    className="block w-full cursor-pointer"
                     style={{ maxHeight: '70vh', background: '#000' }}
-                    onPlay={() => setVideoStarted(true)}
+                    onClick={togglePlay}
+                    onPlay={() => { setVideoStarted(true); setPaused(false); }}
+                    onPause={() => setPaused(true)}
+                    onTimeUpdate={() => setCurrentTime(videoRef.current?.currentTime ?? 0)}
+                    onLoadedMetadata={() => setDuration(videoRef.current?.duration ?? 0)}
                     onError={() => { if (!freshAttemptedRef.current) tryRefreshVideoUrl(); }}
                   />
+
+                  {/* Duration badge, top-left — as in the reference. */}
+                  {duration > 0 && (
+                    <div className="absolute top-3 left-3 z-20 px-2 py-0.5 rounded-md text-[11px] font-medium text-white pointer-events-none"
+                      style={{ background: 'rgba(0,0,0,0.65)' }}>
+                      {fmtClock(duration)}
+                    </div>
+                  )}
+
+                  {/* Always-visible control bar. */}
+                  <div
+                    className="absolute bottom-0 left-0 right-0 z-20 px-3 pt-8 pb-2.5 flex flex-col gap-2"
+                    style={{ background: 'linear-gradient(to top, rgba(0,0,0,0.9) 0%, rgba(0,0,0,0.35) 65%, transparent 100%)' }}
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    <input
+                      type="range"
+                      min={0}
+                      max={duration || 100}
+                      step={0.1}
+                      value={currentTime}
+                      onChange={seekTo}
+                      className="w-full h-1 cursor-pointer rounded-full appearance-none bg-white/25"
+                      style={{ accentColor: '#fff' }}
+                    />
+                    <div className="flex items-center gap-3">
+                      <button onClick={togglePlay} className="text-white hover:text-white/75 transition-colors shrink-0">
+                        {paused ? <Play className="w-4 h-4" fill="white" /> : <Pause className="w-4 h-4" fill="white" />}
+                      </button>
+                      <span className="text-[11px] text-white/75 font-mono tabular-nums leading-none">
+                        {fmtClock(currentTime)} / {fmtClock(duration)}
+                      </span>
+                      <div className="flex-1" />
+                      <button onClick={toggleMute} className="text-white/75 hover:text-white transition-colors shrink-0">
+                        {muted ? <VolumeX className="w-4 h-4" /> : <Volume2 className="w-4 h-4" />}
+                      </button>
+                      <button onClick={goFullscreen} className="text-white/75 hover:text-white transition-colors shrink-0">
+                        <Maximize2 className="w-4 h-4" />
+                      </button>
+                    </div>
+                  </div>
                   {refreshingVideo && (
                     <div className="absolute inset-0 flex items-center justify-center bg-black/60 z-10 pointer-events-none">
                       <div className="flex items-center gap-2 text-xs text-white bg-zinc-900/80 border border-white/10 rounded-full px-3 py-1.5">
