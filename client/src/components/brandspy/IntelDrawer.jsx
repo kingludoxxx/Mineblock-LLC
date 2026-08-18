@@ -369,6 +369,9 @@ export default function IntelDrawer({
     return () => document.removeEventListener('brand-spy:seek-video', handler);
   }, []);
 
+  // Lets "View transcript" jump to the panel when the text is already loaded.
+  const transcriptRef = useRef(null);
+
   async function handleTranscribe() {
     if (!ad?.id) return;
     // In pageMode the page owns both the state and the fetch — just toggle
@@ -766,6 +769,14 @@ export default function IntelDrawer({
                     type="button"
                     onClick={() => {
                       if (!ad.videoUrl) return;
+                      // Already transcribed? The text is rendered further down
+                      // this column, below the fold — re-fetching it changed
+                      // nothing on screen, so the button read as broken. Jump
+                      // to it instead; only fetch when we don't have it yet.
+                      if (transcript) {
+                        transcriptRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                        return;
+                      }
                       handleTranscribe();
                     }}
                     disabled={!ad.videoUrl || transcribing}
@@ -982,6 +993,7 @@ export default function IntelDrawer({
                     its own side panel instead, so skip it there. */}
               {!pageMode && ad.videoUrl && (transcript || transcriptError) && (
                 <div
+                  ref={transcriptRef}
                   className="mt-3 rounded-xl px-4 py-3"
                   style={{ background: '#1a1a1c', border: '1px solid #2a2a2a' }}
                 >
