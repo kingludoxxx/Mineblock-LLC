@@ -1267,8 +1267,11 @@ export default function BrandDetail({ apiBaseUrl, brandId, onBack }) {
               const tf = TIME_FILTERS.find((f) => f.value === timeFilter);
               const label = tf?.value === 'all' ? null : tf?.label;
               return (
-                <p className="text-[14px] text-text-muted leading-snug">
-                  <span className="text-xl font-bold text-text-primary tabular-nums">{total.toLocaleString()}</span>
+                // Sized to sit with the Media mix card below it rather than
+                // read as a page heading — it is a caption for the grid, not a
+                // title.
+                <p className="text-[13px] text-text-muted leading-snug">
+                  <span className="text-[15px] font-semibold text-text-primary tabular-nums">{total.toLocaleString()}</span>
                   {' '}<span className="text-text-primary font-semibold">ads</span>{' '}
                   {label
                     ? <>were launched in the <span className="text-text-primary font-semibold">last {label}</span></>
