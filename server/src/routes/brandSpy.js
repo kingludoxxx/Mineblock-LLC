@@ -148,6 +148,8 @@ router.get('/brands/:id/ads', validateUuidParam('id'), async (req, res, next) =>
       format:       req.query.format      ? String(req.query.format)      : undefined,
       status:       req.query.status      ? String(req.query.status)      : undefined,
       brandPageId:  req.query.brandPageId ? String(req.query.brandPageId) : undefined,
+      // Set by the Landing Pages "View ads" action.
+      landingUrl:   req.query.landingUrl  ? String(req.query.landingUrl)  : undefined,
       minStartDate: (days && days > 0)
         ? new Date(Date.now() - days * 86400000).toISOString()
         : undefined,
@@ -186,7 +188,14 @@ router.get('/brands/:id/aggregations', validateUuidParam('id'), async (req, res,
     const limitRaw = parseInt(String(req.query.limit ?? ''), 10);
     const limit = (!isNaN(limitRaw) && limitRaw > 0 && limitRaw <= 200) ? limitRaw : 50;
     const activeOnly = String(req.query.activeOnly ?? '') === '1';
-    const result = await getBrandAggregations(req.params.id, type, { limit, activeOnly });
+    // Landing Pages ships a timeframe selector (30/60/90/180). Without this the
+    // dropdown would change its own label and nothing else — worse than having
+    // no selector at all.
+    const daysRaw = parseInt(String(req.query.days ?? ''), 10);
+    const minStartDate = (!isNaN(daysRaw) && daysRaw > 0)
+      ? new Date(Date.now() - daysRaw * 86400000).toISOString()
+      : undefined;
+    const result = await getBrandAggregations(req.params.id, type, { limit, activeOnly, minStartDate });
     res.json(result);
   } catch (err) { next(err); }
 });
@@ -848,7 +857,6 @@ router.use((err, _req, res, _next) => {
 // ---------------------------------------------------------------------------
 function scheduleDailyScrape() {
   const INTERVAL_MS = 24 * 60 * 60 * 1000; // 24 hours
-  const BOOT_DELAY_MS = 5 * 60 * 1000;     // 5 min — let the server fully settle
 
   const runScrapeAll = async () => {
     try {
@@ -879,11 +887,34 @@ function scheduleDailyScrape() {
     })
     .catch((err) => console.error('[brand-spy] boot recovery check failed:', err.message));
 
-  // Regular auto-scrape: 5 min after boot (give server time to settle), then every 24h.
+  // Regular auto-scrape: at a FIXED hour, not "5 min after boot".
+  //
+  // Every deploy is a boot, so the old schedule kicked off a full 18-brand
+  // scrape 5 minutes after each one. On a heavy deploy day that meant 17 of 18
+  // brands re-scraping within the hour: bulk writes and re-ranking saturating a
+  // 256 MB Postgres while someone was browsing, every last_scraped_at cache
+  // invalidated at the same moment, and ScrapeCreators credits spent for data
+  // that was already fresh.
+  //
+  // A fixed 04:00 UTC slot (06:00 CEST) makes deploys free, keeps the database
+  // quiet during working hours, and leaves the caches warm all day. Genuinely
+  // stuck brands are still picked up immediately by the boot recovery above,
+  // and the pending sweep below still retries failures every 15 min.
+  const SCRAPE_HOUR_UTC = 4;
+  const msUntilScrapeSlot = () => {
+    const now = new Date();
+    const next = new Date(Date.UTC(
+      now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), SCRAPE_HOUR_UTC, 0, 0, 0,
+    ));
+    if (next.getTime() <= now.getTime()) next.setUTCDate(next.getUTCDate() + 1);
+    return next.getTime() - now.getTime();
+  };
+  const untilSlot = msUntilScrapeSlot();
+  console.log(`[brand-spy] auto-scrape scheduled for ${String(SCRAPE_HOUR_UTC).padStart(2, '0')}:00 UTC (in ${(untilSlot / 3600000).toFixed(1)}h)`);
   setTimeout(() => {
     runScrapeAll();
     setInterval(runScrapeAll, INTERVAL_MS);
-  }, BOOT_DELAY_MS);
+  }, untilSlot);
 
   // Pending sweep — every 15 min, look for brands that never finished a
   // successful scrape (last_scrape_status NULL or 'OUT_OF_CREDITS') and
@@ -913,13 +944,21 @@ function scheduleDailyScrape() {
 }
 
 scheduleDailyScrape();
-// Media mirror worker temporarily disabled — instance crash-looping ~5-6 min
-// after boot with mirror active. Ads already largely mirrored during the
-// 13 h the previous instance ran, so R2 URLs continue to be served. Fresh
-// videos still work via the IntelDrawer onError → yt-dlp fresh-video-url
-// fallback. Will re-enable behind an env flag after diagnosis.
+// Media mirror. The full worker (ads + pages) stays behind
+// BRAND_SPY_MIRROR_ENABLED — it crash-looped the instance ~5-6 min after boot
+// and that was never diagnosed; on a 256 MB instance, multi-MB video buffers
+// are the obvious suspect and the timing fits.
+//
+// Page profile pictures run unconditionally, because they are the half that is
+// actually broken: Facebook signs those fbcdn URLs and they expire, so 22 of
+// tryrosabella's 24 page logos now 403 and the UI falls back to a letter
+// initial. Only mirroring makes them permanent — re-scraping just fetches
+// another URL that expires again. At ~20 KB each these carry almost none of
+// the memory risk the videos do.
 if (process.env.BRAND_SPY_MIRROR_ENABLED === 'true') {
   startMediaMirrorWorker();
+} else {
+  startMediaMirrorWorker({ pagesOnly: true });
 }
 
 export default router;

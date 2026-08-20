@@ -166,13 +166,14 @@ export async function listBrands(workspaceId) {
   // to "Norse Organics" beats falling back to "norseorganics.co".
   const { rows } = await query(
     `SELECT b.*,
+            -- Orders on the count brand_pages already stores. This used to run
+            -- a correlated COUNT(*) over brand_spy.ads for EVERY page of EVERY
+            -- brand — ~200 pages against 46k ads on each load of the Following
+            -- list, which measured 9.8 s. Same page wins, no table scan.
             (SELECT bp.page_name
                FROM brand_spy.brand_pages bp
               WHERE bp.brand_id = b.id
-              ORDER BY (
-                SELECT COUNT(*) FROM brand_spy.ads a
-                 WHERE a.brand_page_id = bp.id
-              ) DESC NULLS LAST
+              ORDER BY bp.total_ads_count DESC NULLS LAST, bp.active_ads_count DESC
               LIMIT 1) AS first_page_name
        FROM brand_spy.brands b
       WHERE ($1::uuid IS NULL AND b.workspace_id IS NULL)
@@ -188,7 +189,7 @@ export async function getBrand(id) {
     `SELECT b.*,
             (SELECT bp.page_name FROM brand_spy.brand_pages bp
               WHERE bp.brand_id = b.id
-              ORDER BY (SELECT COUNT(*) FROM brand_spy.ads a WHERE a.brand_page_id = bp.id) DESC NULLS LAST
+              ORDER BY bp.total_ads_count DESC NULLS LAST, bp.active_ads_count DESC
               LIMIT 1) AS first_page_name
        FROM brand_spy.brands b WHERE b.id = $1`,
     [id],
@@ -231,7 +232,23 @@ export async function getBrandExpanded(id) {
       metaPageId: r.meta_page_id,
       pageName: r.page_name,
       // R2-mirrored URL preferred (never expires); fbcdn URL is a fallback.
-      pageProfilePic: r.page_profile_pic_r2 || r.page_profile_pic,
+      // Logo source, in order of durability:
+      //   1. our R2 mirror — permanent
+      //   2. graph.facebook.com/<page_id>/picture — Facebook resolves this to a
+      //      freshly-signed CDN URL on every request, so it cannot go stale
+      //   3. the stored scontent-*.fbcdn.net URL — last resort
+      //
+      // (3) used to be second, and that is why logos rendered as letter
+      // initials: those URLs carry an `oe=` expiry and 22 of tryrosabella's 24
+      // had lapsed (all 403). Re-scraping did not help — the ad snapshot
+      // returns the same expired URL — and mirroring cannot copy a dead link,
+      // so the fix is to stop depending on a signed URL at all.
+      pageProfilePic:
+        r.page_profile_pic_r2
+        || (r.meta_page_id
+          ? `https://graph.facebook.com/${r.meta_page_id}/picture?type=square&width=200`
+          : null)
+        || r.page_profile_pic,
       // Prefer the live computed counts (always current) over the column
       // values (which the worker historically forgot to populate).
       activeAdsCount: live || Number(r.active_ads_count) || 0,
@@ -301,7 +318,27 @@ export async function recomputeBrandCounters(brandId, client) {
 const DEFAULT_PAGE_SIZE = 24;
 const MAX_PAGE_SIZE = 100;
 
+// The first page of the default view is byte-identical for every visitor
+// until the next scrape lands, yet it was recomputed on every page open — and
+// on a 10k-ad brand that is the single query the whole page waits for.
+// Memoised against last_scraped_at like the derived counts, so a completed
+// scrape invalidates it and a stale grid can never be served. Only the
+// unfiltered first page is cached: filtered and paged views are open-ended and
+// would bloat the map for little gain.
 export async function listAds(brandId, q) {
+  const cacheable =
+    (q.page ?? 1) === 1 &&
+    (q.sort ?? 'rank_asc') === 'rank_asc' &&
+    (q.tier ?? 'ALL') === 'ALL' &&
+    !q.format && !q.status && !q.brandPageId && !q.minStartDate && !q.landingUrl;
+
+  if (cacheable) {
+    return cachedByScrape(`ads:${q.pageSize ?? 'def'}`, brandId, () => computeListAds(brandId, q));
+  }
+  return computeListAds(brandId, q);
+}
+
+async function computeListAds(brandId, q) {
   const page = Math.max(1, q.page ?? 1);
   const pageSize = Math.min(MAX_PAGE_SIZE, Math.max(1, q.pageSize ?? DEFAULT_PAGE_SIZE));
   const offset = (page - 1) * pageSize;
@@ -366,13 +403,20 @@ export async function listAds(brandId, q) {
   let orderBy;
   switch (sort) {
     case 'velocity_7d_desc':
-      orderBy = 'a.is_active DESC, a.velocity_7d DESC NULLS LAST, a.current_rank ASC NULLS LAST';
+      orderBy = 'a.velocity_7d DESC NULLS LAST, a.current_rank ASC NULLS LAST';
       break;
     case 'active_days_desc':
       orderBy = 'a.is_active DESC, a.active_days DESC NULLS LAST';
       break;
     case 'first_seen_desc':
-      orderBy = 'a.is_active DESC, a.first_seen_at DESC';
+      // "Most recent" must order by the date the CARD shows — start_date, the
+      // ad's launch date. It used to order by first_seen_at (when WE first
+      // scraped it) behind is_active, which produced visibly scrambled dates:
+      // every ad discovered in the same scrape shares a near-identical
+      // first_seen_at, so within a batch the order was arbitrary relative to
+      // the launch dates on screen, and the is_active bucket came first.
+      // first_seen_at stays as the tie-breaker for ads with no start_date.
+      orderBy = 'a.start_date DESC NULLS LAST, a.first_seen_at DESC';
       break;
     case 'impressions_desc':
       // Meta's raw impression order — mirrors what the FB Ad Library shows
@@ -382,15 +426,45 @@ export async function listAds(brandId, q) {
       orderBy = 'a.is_active DESC, a.meta_rank ASC NULLS LAST, a.active_days DESC NULLS LAST';
       break;
     default:
-      orderBy = 'a.is_active DESC, a.current_rank ASC NULLS LAST, a.first_seen_at DESC';
+      // No leading `is_active DESC`. It blocked ads_brand_rank_idx
+      // (brand_id, current_rank) WHERE is_active — the index that serves
+      // exactly this ordering — forcing a sort of all 10k rows on every page
+      // open (measured 4.3 s vs 1.1 s for the one sort that lacks the prefix).
+      // It is also redundant: scoreBrand leaves inactive ads with a NULL
+      // current_rank, so NULLS LAST already puts them last. Same visible
+      // order, without the full sort.
+      orderBy = 'a.current_rank ASC NULLS LAST, a.first_seen_at DESC';
+  }
+
+  // Landing-page filter. Matches on landingKeySql() — the exact expression the
+  // Landing Pages rows are grouped by — so a row saying "191 ads" opens a grid
+  // showing 191. If these two normalisations ever drift, the tool contradicts
+  // itself, which is worse than not having the feature.
+  if (q.landingUrl) {
+    params.push(q.landingUrl);
+    // $${p++}, not params.length — this function keeps a separate placeholder
+    // counter that every other filter increments, and mixing the two shifted
+    // every later placeholder by one, so LIMIT received the URL string
+    // ("argument of LIMIT must be type bigint, not type text").
+    where.push(`${landingKeySql('a.link_url')} = $${p++}`);
   }
 
   const whereClause = where.join(' AND ');
-  const countRes = await query(
-    `SELECT COUNT(*) AS count FROM brand_spy.ads a WHERE ${whereClause}`,
-    params,
-  );
-  const total = parseInt(countRes.rows[0]?.count ?? '0', 10);
+
+  // The grid header only needs "10,057 Ads". Counting that exactly meant a
+  // COUNT(*) across every matching row of a table whose rows carry a multi-KB
+  // raw_snapshot — measured ~5.5 s per page view on a 10k-ad brand, and it ran
+  // BEFORE the data query rather than alongside it, so the user waited for both
+  // in series.
+  //
+  // Unfiltered (brand_id only) the answer is already on the brand row, kept up
+  // to date by the scrape worker — one indexed lookup instead of a scan. With
+  // filters applied we still count for real, because the number has to match
+  // what the filter actually returns.
+  const isUnfiltered = where.length === 1;
+  const countPromise = isUnfiltered
+    ? query('SELECT total_ads_count AS count FROM brand_spy.brands WHERE id = $1', [params[0]])
+    : query(`SELECT COUNT(*) AS count FROM brand_spy.ads a WHERE ${whereClause}`, params);
 
   // raw_snapshot can be a large JSON blob (~5-10 KB each). For the LIST view
   // we only need the thumbnail URL and video URL; computing them in SQL with
@@ -434,6 +508,11 @@ export async function listAds(brandId, q) {
      LIMIT $${p++} OFFSET $${p++}`,
     [...params, pageSize, offset],
   );
+
+  // Awaited here, not above: the count and the page of rows are independent,
+  // so they run concurrently instead of one after the other.
+  const countRes = await countPromise;
+  const total = parseInt(countRes.rows[0]?.count ?? '0', 10);
 
   return { ads: dataRes.rows.map(mapAdListItem), total, page, pageSize };
 }
@@ -482,22 +561,106 @@ export async function getAdDetail(adId) {
   };
 }
 
+
+// Runs a query under a hard server-side time limit.
+//
+// This is the guard that today's incident needed. Cloudflare cuts the client
+// connection at ~100 s but Postgres keeps executing, so every reload of a slow
+// page stacked ANOTHER multi-minute query onto a basic_256mb instance. They
+// accumulated until unrelated queries starved too — a single-row brand lookup
+// was measured at 284 s. Capping server-side means a runaway query dies
+// instead of piling up, so one slow endpoint can no longer degrade the rest.
+//
+// SET LOCAL requires a transaction: the pool reuses connections, so a bare SET
+// would leak the timeout onto every later query on that connection.
+async function queryCapped(sql, params, ms = 10000) {
+  const client = await getClient();
+  try {
+    await client.query('BEGIN');
+    await client.query(`SET LOCAL statement_timeout = ${Number(ms)}`);
+    const res = await client.query(sql, params);
+    await client.query('COMMIT');
+    return res;
+  } catch (err) {
+    try { await client.query('ROLLBACK'); } catch { /* connection already gone */ }
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
+// Postgres raises 57014 (query_canceled) when statement_timeout fires.
+const isTimeout = (err) => err?.code === '57014';
+
+// ---------------------------------------------------------------------------
+// Per-brand derived-stat cache.
+//
+// format-counts and aggregation-counts both have to read EVERY ad row in the
+// brand: format-counts probes raw_snapshot->'videos' (detoasting that JSONB
+// once per row) and the aggregation counters de-duplicate body_text. Measured
+// on the live corpus that is ~16 s and ~225 s respectively on a 9k-ad brand,
+// and it was being paid on every single page view — even though the answers
+// only change when a scrape lands.
+//
+// Keyed on the brand's last_scraped_at, so a completed scrape invalidates the
+// entry automatically and a stale count can never be served. Held in process
+// rather than in a table because migrations are not run on deploy here, so a
+// new column would break the page rather than speed it up. Cost is four
+// integers per brand; the first load after each scrape still pays full price.
+const derivedCache = new Map(); // `${name}:${brandId}` -> { key, value }
+
+async function cachedByScrape(name, brandId, compute) {
+  const cacheId = `${name}:${brandId}`;
+  const { rows } = await query(
+    `SELECT last_scraped_at FROM brand_spy.brands WHERE id = $1`,
+    [brandId],
+  );
+  const ts = rows[0]?.last_scraped_at;
+  const key = ts ? new Date(ts).toISOString() : 'never';
+
+  const hit = derivedCache.get(cacheId);
+  if (hit && hit.key === key) return hit.value;
+
+  const value = await compute();
+  derivedCache.set(cacheId, { key, value });
+  return value;
+}
+
 export async function getAdFormatCounts(brandId) {
+  return cachedByScrape('format', brandId, async () => {
+    try {
+      return await computeAdFormatCounts(brandId);
+    } catch (err) {
+      if (isTimeout(err)) return null;   // UI renders the card empty
+      throw err;
+    }
+  });
+}
+
+async function computeAdFormatCounts(brandId) {
   // Group by "has-video" since that's the only thing the UI cares about:
   // ads collapse to VID (has any video) or IMG (everything else, including
   // DCO ads whose video variants live in raw_snapshot but no extracted
   // video_url is materialized). Returns both the new collapsed counts and
   // the legacy raw breakdown so older clients don't break.
-  const { rows } = await query(
+  // Reads only display_format and is_active — both real columns, both covered
+  // by ads_brand_active_idx. The previous version derived has_video from
+  // raw_snapshot->'videos', which forced Postgres to pull a multi-KB JSONB off
+  // disk once per ad: ~244 s on a 10k-ad brand, so the panel never loaded.
+  //
+  // Trade-off, stated plainly: a DCO ad whose video variant exists only inside
+  // raw_snapshot (no VIDEO display_format) now counts as Image rather than
+  // Video. That is a small edge-case shift in exchange for a panel that
+  // renders immediately instead of not at all.
+  const { rows } = await queryCapped(
     `SELECT
        display_format,
-       (raw_snapshot->'videos' IS NOT NULL
-          AND jsonb_array_length(raw_snapshot->'videos') > 0) AS has_video,
+       (display_format = 'VIDEO') AS has_video,
        is_active,
        COUNT(*) AS count
        FROM brand_spy.ads
       WHERE brand_id = $1
-      GROUP BY display_format, has_video, is_active`,
+      GROUP BY display_format, is_active`,
     [brandId],
   );
   const out = {
@@ -568,10 +731,17 @@ export async function getAdTierCounts(brandId) {
 // stripped. Schemeless values fall back to the raw first 160 chars, since
 // `new URL()` would have thrown for them.
 function landingKeySql(u) {
-  return `CASE WHEN ${u} ~ '^[A-Za-z][A-Za-z0-9+.-]*://'
-            THEN lower(regexp_replace(split_part(regexp_replace(split_part(split_part(${u}, '#', 1), '?', 1), '^[A-Za-z][A-Za-z0-9+.-]*://', ''), '/', 1), '^www\\.', ''))
-                 || regexp_replace(COALESCE(substring(regexp_replace(split_part(split_part(${u}, '#', 1), '?', 1), '^[A-Za-z][A-Za-z0-9+.-]*://', '') from '/.*'), ''), '/+$', '')
-            ELSE left(${u}, 160) END`;
+  // Keep the URL as the advertiser wrote it — scheme included — so rows read
+  // `https://track.tryrosabella.com/cdc16426-…` exactly like the reference.
+  //
+  // This used to strip the scheme, lowercase the host and drop `www.`, which
+  // produced the mangled `track.tryrosabella.com/cdc16426…` labels. It also
+  // must NOT collapse tracking subdomains: track. / get. / the bare domain are
+  // genuinely different destinations and belong on separate rows.
+  //
+  // Query and fragment are still dropped: utm/fbclid parameters differ per ad,
+  // so keeping them would shatter one landing page into hundreds of rows.
+  return `regexp_replace(split_part(split_part(${u}, '#', 1), '?', 1), '/+$', '')`;
 }
 
 const AGG_KEY_SQL = {
@@ -601,6 +771,17 @@ const AGG_KEY_SQL = {
 };
 
 export async function getBrandAggregationCounts(brandId) {
+  return cachedByScrape('aggcounts', brandId, async () => {
+    try {
+      return await computeBrandAggregationCounts(brandId);
+    } catch (err) {
+      if (isTimeout(err)) return { hooks: 0, adcopy: 0, headlines: 0, landing: 0 };
+      throw err;
+    }
+  });
+}
+
+async function computeBrandAggregationCounts(brandId) {
   // Derive each key ONCE per row in the inner select, then count distinct over
   // md5() of it. Two deliberate choices, both measured:
   //   * the first version evaluated every regex twice per row (once for the
@@ -608,7 +789,7 @@ export async function getBrandAggregationCounts(brandId) {
   //   * count(DISTINCT <long text>) sorts multi-KB ad bodies; hashing to a
   //     fixed 32-byte digest keeps the sort key small. Digest collisions are
   //     negligible at these cardinalities and this is a display counter.
-  const { rows } = await query(
+  const { rows } = await queryCapped(
     `SELECT
        count(DISTINCT md5(CASE WHEN ${AGG_KEY_SQL.hooks.keep('hook_v')}
                                THEN ${AGG_KEY_SQL.hooks.key('hook_v')} END))::int AS hooks,
@@ -641,11 +822,17 @@ export async function getBrandAggregationCounts(brandId) {
 // Normalize a "hook" = first 100 chars of body_text up to first newline.
 // For headlines, ad copy, landing — we group on the raw value.
 // Returns { items: [{ key, sample, count, activeCount, tierCounts, days, topAdId, sampleAdIds }], total }
-export async function getBrandAggregations(brandId, type, { limit = 50, activeOnly = false } = {}) {
+export async function getBrandAggregations(brandId, type, { limit = 50, activeOnly = false, minStartDate } = {}) {
   // Pull all ads' content fields once — most brands have <2k ads, fits easily in mem.
   const where = ['a.brand_id = $1'];
   const params = [brandId];
   if (activeOnly) where.push('a.is_active = TRUE');
+  // Timeframe from the Landing Pages selector — "ads that were live in the
+  // selected timeframe".
+  if (minStartDate) {
+    params.push(minStartDate);
+    where.push(`(a.last_seen_at >= $${params.length} OR a.start_date >= $${params.length})`);
+  }
   const whereSql = where.join(' AND ');
 
   const K = AGG_KEY_SQL[type];

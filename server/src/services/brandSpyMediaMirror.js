@@ -273,16 +273,33 @@ async function mirrorPagesBatch() {
   }
 }
 
-export function startMediaMirrorWorker() {
+/**
+ * @param {object} [opts]
+ * @param {boolean} [opts.pagesOnly] Mirror page profile pictures only, leaving
+ *   ad videos alone.
+ *
+ * pagesOnly exists because the full mirror was switched off after crash-looping
+ * the instance ~5-6 min after boot, and that was never diagnosed. The likely
+ * cause is memory: this instance has 256 MB and ad videos are multi-MB buffers
+ * (the batch size and concurrency comments above are already fighting that).
+ * Page profile pictures are ~20 KB, so mirroring just those carries almost none
+ * of that risk — and they are the half that is actually broken, since every
+ * un-mirrored fbcdn logo URL now 403s.
+ */
+export function startMediaMirrorWorker(opts = {}) {
+  const { pagesOnly = false } = opts;
   if (!isR2Configured()) {
     console.log('[bs-mirror] R2 not configured — media mirror disabled');
     return;
   }
-  console.log(`[bs-mirror] media mirror scheduled (every ${MIRROR_TICK_MS / 1000}s, batch=${MIRROR_BATCH_SIZE}, concurrency=${MIRROR_CONCURRENCY})`);
+  console.log(`[bs-mirror] media mirror scheduled (every ${MIRROR_TICK_MS / 1000}s, batch=${MIRROR_BATCH_SIZE}, concurrency=${MIRROR_CONCURRENCY}${pagesOnly ? ', PAGES ONLY' : ''})`);
   // First tick 1 min after boot to let the server settle
   setTimeout(() => {
-    mirrorAdsBatch();
+    if (!pagesOnly) mirrorAdsBatch();
     mirrorPagesBatch();
-    setInterval(() => { mirrorAdsBatch(); mirrorPagesBatch(); }, MIRROR_TICK_MS);
+    setInterval(() => {
+      if (!pagesOnly) mirrorAdsBatch();
+      mirrorPagesBatch();
+    }, MIRROR_TICK_MS);
   }, 60_000);
 }

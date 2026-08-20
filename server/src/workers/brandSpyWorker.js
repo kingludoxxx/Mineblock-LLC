@@ -770,6 +770,8 @@ async function upsertAdBatch(brandId, ads, pageCache, pageIdFallback = null, cro
 
   // Resolve page IDs (may upsert new pages) before entering bulk transaction
   const rows = [];
+  // Pages whose logo we have already refreshed this run — see below.
+  const refreshedProfilePics = new Set();
   for (let i = 0; i < ads.length; i++) {
     const ad = ads[i];
     const metaPageId = String(ad.page_id ?? ad.meta_page_id ?? pageIdFallback ?? '');
@@ -785,6 +787,32 @@ async function upsertAdBatch(brandId, ads, pageCache, pageIdFallback = null, cro
     if (metaPageId && !brandPageId) {
       brandPageId = await upsertBrandPage(brandId, metaPageId, pageName, profilePic);
       pageCache.set(metaPageId, brandPageId);
+    } else if (metaPageId && brandPageId && profilePic && !refreshedProfilePics.has(metaPageId)) {
+      // Refresh the stored logo for a page we already know about.
+      //
+      // upsertBrandPage above only fires for NEW pages, and on a re-scrape every
+      // page is already in pageCache — so page_profile_pic was written once at
+      // discovery and never again. Facebook signs those URLs with an `oe=`
+      // expiry, so they rot: 22 of tryrosabella's 24 logos now 403 and the UI
+      // falls back to a letter initial. A completed re-scrape changed nothing,
+      // which is what pointed here.
+      //
+      // Clearing page_profile_pic_r2_attempted_at lets the media mirror retry
+      // immediately rather than waiting out its 1-hour backoff, so the fresh
+      // URL gets copied to R2 while it is still alive — mirroring is what makes
+      // a logo permanent; refreshing alone just restarts the same clock.
+      //
+      // Guarded by a per-run Set so this costs one UPDATE per page, not one per
+      // ad, and IS DISTINCT FROM makes it a no-op when the URL has not moved.
+      refreshedProfilePics.add(metaPageId);
+      await query(
+        `UPDATE brand_spy.brand_pages
+            SET page_profile_pic = $2,
+                page_profile_pic_r2_attempted_at = NULL
+          WHERE id = $1
+            AND page_profile_pic IS DISTINCT FROM $2`,
+        [brandPageId, profilePic],
+      ).catch((e) => console.warn(`[brand-spy] profile-pic refresh failed for ${metaPageId}: ${e.message}`));
     }
     // Populate page name cache so Phase 2 can identify Meta platform pages
     if (metaPageId && pageName && pageNameCache && !pageNameCache.has(metaPageId)) {
