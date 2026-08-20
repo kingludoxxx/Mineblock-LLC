@@ -56,6 +56,84 @@ router.use(authenticate, requirePermission('ads-launcher', 'access'));
 // (no env-var iteration). New accounts added or shared into the BM appear
 // automatically within the 5-minute cache TTL. Pass ?nocache=1 to force a
 // fresh fetch — the editor's Sync button uses this.
+// GET /meta/diagnose — why is Meta refusing us?
+//
+// /me/adaccounts returning `"API access blocked." (OAuthException, code 200)`
+// is ambiguous on its own: it can mean a dead token, a token missing ads
+// scopes, or the APP being restricted by Meta regardless of token. Those have
+// completely different fixes, so probe each layer separately and report which
+// one fails first. Authenticated (unlike the older _diag-meta) — this reports
+// on credentials and must not be a public surface.
+router.get('/meta/diagnose', async (req, res) => {
+  const GRAPH = 'https://graph.facebook.com/v21.0';
+  const token = process.env.META_ACCESS_TOKEN;
+  const appId = process.env.META_APP_ID;
+  const appSecret = process.env.META_APP_SECRET;
+  const out = { checks: [] };
+
+  // Credentials go in the Authorization header, never the URL — query strings
+  // land in logs and proxies.
+  const call = async (label, path, useAppToken = false) => {
+    const started = Date.now();
+    try {
+      const headers = useAppToken ? {} : { Authorization: `Bearer ${token}` };
+      const url = useAppToken
+        ? `${GRAPH}${path}${path.includes('?') ? '&' : '?'}access_token=${appId}|${appSecret}`
+        : `${GRAPH}${path}`;
+      const r = await fetch(url, { headers, signal: AbortSignal.timeout(20000) });
+      const text = await r.text();
+      let body; try { body = JSON.parse(text); } catch { body = { raw: text.slice(0, 300) }; }
+      out.checks.push({
+        check: label, status: r.status, ok: r.ok, ms: Date.now() - started,
+        error: body?.error ? { message: body.error.message, code: body.error.code, sub: body.error.error_subcode, type: body.error.type } : null,
+        data: r.ok ? body : undefined,
+      });
+      return r.ok ? body : null;
+    } catch (err) {
+      out.checks.push({ check: label, status: null, ok: false, ms: Date.now() - started, error: { message: err.message } });
+      return null;
+    }
+  };
+
+  out.config = {
+    token_set: !!token, token_len: token?.length || 0,
+    token_prefix: token ? token.slice(0, 10) : null,   // fingerprint, not the key
+    app_id: appId || null, app_secret_set: !!appSecret,
+  };
+  if (!token) return res.json({ success: true, data: { ...out, verdict: 'META_ACCESS_TOKEN is not set' } });
+
+  // 1. Is the token itself alive, and what can it do?
+  const dbg = await call('debug_token', `/debug_token?input_token=${encodeURIComponent(token)}`, true);
+  const info = dbg?.data;
+  if (info) {
+    out.token = {
+      is_valid: info.is_valid, type: info.type, app_id: info.app_id,
+      application: info.application,
+      expires_at: info.expires_at ? new Date(info.expires_at * 1000).toISOString() : 'never',
+      scopes: info.scopes || [],
+      granular_scopes: info.granular_scopes || [],
+    };
+  }
+  // 2. Can it identify itself at all?
+  await call('me', '/me?fields=id,name');
+  // 3. Is the APP restricted, independent of the token?
+  if (appId && appSecret) await call('app_status', `/${appId}?fields=id,name,app_type,restrictions,link`, true);
+  // 4. The call the launcher actually makes.
+  await call('me_adaccounts', '/me/adaccounts?fields=id,name,account_status&limit=5');
+  // 5. Direct access to a configured account, bypassing discovery.
+  const first = (process.env.META_AD_ACCOUNT_IDS || '').split(',').map(s => s.trim()).filter(Boolean)[0];
+  if (first) await call('direct_account', `/${first}?fields=id,name,account_status`);
+
+  const blocked = out.checks.some(c => c.error && /API access blocked/i.test(c.error.message || ''));
+  const scopes = out.token?.scopes || [];
+  const hasAds = scopes.includes('ads_management') || scopes.includes('ads_read');
+  out.verdict = !out.token?.is_valid ? 'TOKEN INVALID — regenerate the system user token'
+    : blocked ? 'APP BLOCKED BY META — the token is valid but Meta is refusing the app (check App Dashboard for restrictions / business verification)'
+    : !hasAds ? `TOKEN MISSING ADS SCOPES — has [${scopes.join(', ')}]`
+    : 'no single obvious cause — read the per-check errors';
+  res.json({ success: true, data: out });
+});
+
 router.get('/meta/accounts', async (req, res) => {
   try {
     if (!process.env.META_ACCESS_TOKEN) {
