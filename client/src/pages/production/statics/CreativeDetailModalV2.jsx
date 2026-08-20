@@ -97,13 +97,12 @@ export function CreativeDetailModalV2({
 
   // Whole-card delete — DELETE /creatives/:parentId cascades to all children
   // (1:1 + 4:5 + 9:16 all removed in one transaction on the backend).
+  // No confirm step: reviewing a board means rejecting most of what is on it,
+  // and a modal on every discard turns a one-click judgement into two. The
+  // button is already destructive-styled and out of the way of the primary
+  // actions, so a mis-click is unlikely and a card is cheap to regenerate.
   const handleDeleteCard = useCallback(async () => {
     if (!trueParent || deletingCard) return;
-    const ratiosFound = ['1:1','4:5','9:16'].filter(r => ratioMap[r]).length;
-    const ok = window.confirm(
-      `Delete this entire card?\n\n"${trueParent.angle || trueParent.product_name || 'Creative'}"\n${ratiosFound} ratio${ratiosFound === 1 ? '' : 's'} will be removed. This cannot be undone.`
-    );
-    if (!ok) return;
     setDeletingCard(true);
     setDeleteCardError(null);
     try {
@@ -115,7 +114,7 @@ export function CreativeDetailModalV2({
     } finally {
       setDeletingCard(false);
     }
-  }, [trueParent, deletingCard, ratioMap, onRefresh, onClose]);
+  }, [trueParent, deletingCard, onRefresh, onClose]);
 
   if (!isOpen || !parent) return null;
 
@@ -311,9 +310,9 @@ function RatioColumn({ ratio, creative, parentId, parentReviewNotes, onRefresh, 
     }
   };
 
+  // No confirm — same reasoning as the whole-card delete above.
   const handleDelete = async () => {
     if (!creative?.id || deleting) return;
-    if (!window.confirm(`Delete the ${ratio} version?`)) return;
     setDeleting(true);
     setDeleteError(null);
     try {

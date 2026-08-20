@@ -2379,7 +2379,7 @@ function firstProductImageFromRow(p) {
 // shot flows do NOT change behavior unless an angle is set (which is the
 // exact case the operator wants variety in).
 // ─────────────────────────────────────────────────────────────────────────
-function resolveProductImageIndex({ explicitIndex, angle, productAngles, iterationIndex, productImagesLength }) {
+export function resolveProductImageIndex({ explicitIndex, angle, productAngles, iterationIndex, productImagesLength }) {
   const len = Number.isInteger(productImagesLength) ? productImagesLength : 0;
   if (len <= 1) return 0;
 
@@ -10902,10 +10902,31 @@ router.post('/composer/describe', authenticate, async (req, res) => {
       if (prows.length === 0) throw new Error(`Product ${b.product_id} not found`);
       const prod = prows[0];
 
-      const productImage = productImageAtIndex(prod, Number.isInteger(b.product_image_index) ? b.product_image_index : 0);
+      // Shot selection. This line used to read `... : 0`, so every card the
+      // Composer ever produced used product image [0] — a whole 60-card batch
+      // rendered the same photograph because no caller passes an explicit
+      // index. resolveProductImageIndex has done angle-aware rotation since the
+      // multiproduct work; /generate calls it and /composer/describe never did.
+      //
+      // variant_index feeds the iteration offset, so consecutive cards in a
+      // batch step through the available shots instead of sharing one.
+      const _pImages = (() => {
+        let raw = prod.product_images;
+        if (typeof raw === 'string') { try { raw = JSON.parse(raw); } catch { raw = []; } }
+        return Array.isArray(raw) ? raw : [];
+      })();
+      const productImageIndex = resolveProductImageIndex({
+        explicitIndex: Number.isInteger(b.product_image_index) ? b.product_image_index : null,
+        angle: b.angle,
+        productAngles: Array.isArray(prod.angles) ? prod.angles : [],
+        iterationIndex: Number.isFinite(Number(b.variant_index)) ? Number(b.variant_index) : null,
+        productImagesLength: _pImages.length,
+      });
+      const productImage = productImageAtIndex(prod, productImageIndex);
       if (!productImage) {
         throw new Error(`"${prod.name}" has no product images — upload one before describing a static`);
       }
+      console.log(`[composer] shot ${productImageIndex + 1}/${_pImages.length} for angle="${b.angle || '-'}" variant=${b.variant_index ?? '-'}`);
 
       // The brief leads; product facts follow as grounding so the model renders
       // OUR product and offer rather than a generic one. Kept compact on
