@@ -124,11 +124,25 @@ router.get('/meta/diagnose', async (req, res) => {
   const first = (process.env.META_AD_ACCOUNT_IDS || '').split(',').map(s => s.trim()).filter(Boolean)[0];
   if (first) await call('direct_account', `/${first}?fields=id,name,account_status`);
 
-  const blocked = out.checks.some(c => c.error && /API access blocked/i.test(c.error.message || ''));
+  // Order matters, and getting it wrong is worse than having no verdict.
+  //
+  // A blocked APP also blocks debug_token, so `token.is_valid` is undefined —
+  // and a token-first check then reports "TOKEN INVALID" and sends someone off
+  // to regenerate credentials that were never the problem. The discriminator is
+  // whether the APP-TOKEN calls (debug_token, app_status) fail too: those do not
+  // use the user token at all, so if they are blocked the app is blocked.
+  const blockedIn = (name) => out.checks.some(
+    c => c.check === name && c.error && /API access blocked/i.test(c.error.message || ''));
+  const appTokenBlocked = blockedIn('debug_token') || blockedIn('app_status');
+  const anyBlocked = out.checks.some(c => c.error && /API access blocked/i.test(c.error.message || ''));
   const scopes = out.token?.scopes || [];
   const hasAds = scopes.includes('ads_management') || scopes.includes('ads_read');
-  out.verdict = !out.token?.is_valid ? 'TOKEN INVALID — regenerate the system user token'
-    : blocked ? 'APP BLOCKED BY META — the token is valid but Meta is refusing the app (check App Dashboard for restrictions / business verification)'
+
+  out.verdict = appTokenBlocked
+      ? `APP BLOCKED BY META — app ${appId} is refused even with an APP token, which does not involve the user token. Regenerating the token will NOT help. Check the App Dashboard for a restriction notice, business verification, or a disabled app.`
+    : anyBlocked ? 'USER TOKEN BLOCKED but the app itself answers — re-issue the system user token and confirm its ads permissions'
+    : out.token && out.token.is_valid === false ? 'TOKEN INVALID — regenerate the system user token'
+    : !out.token ? 'could not read the token — see debug_token error'
     : !hasAds ? `TOKEN MISSING ADS SCOPES — has [${scopes.join(', ')}]`
     : 'no single obvious cause — read the per-check errors';
   res.json({ success: true, data: out });
