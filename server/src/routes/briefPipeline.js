@@ -6187,6 +6187,45 @@ router.delete('/launch-templates/:id', authenticate, async (req, res) => {
 
 // ── Copy Sets CRUD ─────────────────────────────────────────────────────
 
+/**
+ * Coerce a caller-supplied value into a real array for a jsonb column.
+ *
+ * postgres.js serialises JS values into jsonb itself. Passing it the output of
+ * JSON.stringify stores the STRING as a json string, so the column holds
+ * "[\"text\"]" rather than ["text"] — and every reader that does `.length`
+ * silently gets a character count instead of an item count.
+ */
+function toJsonArray(v) {
+  if (Array.isArray(v)) return v;
+  if (typeof v === 'string' && v.trim()) {
+    try {
+      const p = JSON.parse(v);
+      return Array.isArray(p) ? p : [v];
+    } catch {
+      return [v];              // a bare string is one item, not a parse failure
+    }
+  }
+  return [];
+}
+
+/**
+ * Read a jsonb array field that may have been written correctly (array) or
+ * double-encoded by the old write path (string, or even a string inside a
+ * string). Mirrors safeArr in staticsGeneration, which was written as a
+ * workaround for exactly this.
+ */
+function readJsonArray(v) {
+  if (Array.isArray(v)) return v;
+  if (typeof v === 'string') {
+    try {
+      let p = JSON.parse(v);
+      if (typeof p === 'string') p = JSON.parse(p);
+      return Array.isArray(p) ? p : [];
+    } catch { return []; }
+  }
+  return [];
+}
+
 router.get('/copy-sets', authenticate, async (req, res) => {
   try {
     await ensureLaunchTables();
@@ -6214,9 +6253,16 @@ router.post('/copy-sets', authenticate, async (req, res) => {
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *`,
       [
         c.product_id, c.angle,
-        JSON.stringify(c.primary_texts || []),
-        JSON.stringify(c.headlines || []),
-        JSON.stringify(c.descriptions || []),
+        // NOT JSON.stringify. This is postgres.js, which serialises JS values
+        // into jsonb itself — handing it a pre-stringified string stores the
+        // string AS a json string, so the column ends up holding
+        //   "[\"Our Summer Sale...\"]"
+        // instead of an array. The launcher below reads .length on that, gets
+        // 257 (characters), treats it as truthy and ships an ad whose body is
+        // the literal text with brackets and quotes in it.
+        toJsonArray(c.primary_texts),
+        toJsonArray(c.headlines),
+        toJsonArray(c.descriptions),
         c.cta_button || 'SHOP_NOW',
         c.landing_page_url || '',
         c.utm_parameters || 'tw_source={{site_source_name}}&tw_adid={{ad.id}}',
@@ -6237,13 +6283,14 @@ router.put('/copy-sets/:id', authenticate, async (req, res) => {
     await ensureLaunchTables();
     const c = req.body;
     const rows = await pgQuery(
+      // Same jsonb rule as the INSERT above — pass arrays, never JSON strings.
       `UPDATE brief_copy_sets SET angle=$1, primary_texts=$2, headlines=$3, descriptions=$4, cta_button=$5, landing_page_url=$6, utm_parameters=$7, updated_at=NOW()
        WHERE id=$8 RETURNING *`,
       [
         c.angle,
-        JSON.stringify(c.primary_texts || []),
-        JSON.stringify(c.headlines || []),
-        JSON.stringify(c.descriptions || []),
+        toJsonArray(c.primary_texts),
+        toJsonArray(c.headlines),
+        toJsonArray(c.descriptions),
         c.cta_button || 'SHOP_NOW',
         c.landing_page_url || '',
         c.utm_parameters || '',
@@ -6408,15 +6455,23 @@ router.post('/launch', authenticate, async (req, res) => {
           [launchId, brief.id, template_id, copy_set_id || null, template.ad_account_id, template.campaign_id, adsetId, adName, adsetName, page?.id, page?.name, batchNum]
         );
 
-        // Determine ad copy
-        const primaryTexts = copySet?.primary_texts?.length
-          ? copySet.primary_texts
+        // Determine ad copy.
+        // readJsonArray, not a raw .length check: a double-encoded row is a
+        // STRING, whose .length is its character count — truthy — so the old
+        // code shipped the literal '["Our Summer Sale..."]', brackets and all,
+        // as the Meta ad body. Rows written before the jsonb fix still look
+        // like that, so normalise on read as well as writing correctly.
+        const csPrimary = readJsonArray(copySet?.primary_texts);
+        const csHeadlines = readJsonArray(copySet?.headlines);
+        const csDescriptions = readJsonArray(copySet?.descriptions);
+        const primaryTexts = csPrimary.length
+          ? csPrimary
           : [brief.body || brief.hooks?.[0]?.text || 'Check this out'];
-        const headlines = copySet?.headlines?.length
-          ? copySet.headlines
+        const headlines = csHeadlines.length
+          ? csHeadlines
           : (brief.hooks || []).map(h => h.text).slice(0, 3);
-        const descriptions = copySet?.descriptions?.length
-          ? copySet.descriptions
+        const descriptions = csDescriptions.length
+          ? csDescriptions
           : [''];
         const cta = copySet?.cta_button || 'SHOP_NOW';
         const link = copySet?.landing_page_url || template.utm_parameters || '';
