@@ -183,6 +183,42 @@ function MetaIcon({ className = 'w-5 h-5' }) {
 // LaunchTemplateEditor
 // ---------------------------------------------------------------------------
 
+// ISO 3166-1 alpha-2 is the only shape Meta accepts for geo_locations.countries.
+// The name map covers the markets this account actually runs in; anything else
+// must be entered as a code. Deliberately NOT a full 249-country table — a
+// half-remembered mapping that silently picks the wrong country is worse than
+// asking for the code.
+const COUNTRY_NAMES = {
+  'UNITED STATES': 'US', 'UNITED STATES OF AMERICA': 'US', 'USA': 'US', 'AMERICA': 'US',
+  'UNITED KINGDOM': 'GB', 'GREAT BRITAIN': 'GB', 'BRITAIN': 'GB', 'ENGLAND': 'GB', 'UK': 'GB',
+  'CANADA': 'CA', 'AUSTRALIA': 'AU', 'NEW ZEALAND': 'NZ', 'IRELAND': 'IE',
+  'GERMANY': 'DE', 'FRANCE': 'FR', 'SPAIN': 'ES', 'ITALY': 'IT', 'PORTUGAL': 'PT',
+  'NETHERLANDS': 'NL', 'BELGIUM': 'BE', 'AUSTRIA': 'AT', 'SWITZERLAND': 'CH',
+  'SWEDEN': 'SE', 'NORWAY': 'NO', 'DENMARK': 'DK', 'FINLAND': 'FI', 'POLAND': 'PL',
+  'MEXICO': 'MX', 'BRAZIL': 'BR', 'ARGENTINA': 'AR', 'CHILE': 'CL', 'COLOMBIA': 'CO',
+  'JAPAN': 'JP', 'SOUTH KOREA': 'KR', 'SINGAPORE': 'SG', 'INDIA': 'IN',
+  'SOUTH AFRICA': 'ZA', 'UNITED ARAB EMIRATES': 'AE', 'ISRAEL': 'IL',
+};
+
+/** Return a valid alpha-2 code, or null when the input cannot be trusted. */
+export function normaliseCountry(input) {
+  const s = String(input || '').trim().toUpperCase().replace(/\s+/g, ' ');
+  if (!s) return null;
+  if (COUNTRY_NAMES[s]) return COUNTRY_NAMES[s];
+  if (/^[A-Z]{2}$/.test(s)) return s;      // already a code
+  return null;
+}
+
+/** Drop anything that is not a valid code — a last gate before Meta sees it. */
+export function sanitiseCountries(list) {
+  const out = [];
+  for (const c of Array.isArray(list) ? list : []) {
+    const code = normaliseCountry(c);
+    if (code && !out.includes(code)) out.push(code);
+  }
+  return out;
+}
+
 export default function LaunchTemplateEditor({ open, onClose, template, onSaved }) {
   const [form, setForm] = useState({ ...DEFAULT_FORM });
   const [accounts, setAccounts] = useState([]);
@@ -195,6 +231,7 @@ export default function LaunchTemplateEditor({ open, onClose, template, onSaved 
   const [saveError, setSaveError] = useState('');
   const [loadingAccounts, setLoadingAccounts] = useState(false);
   const [countryInput, setCountryInput] = useState('');
+  const [countryError, setCountryError] = useState(null);
 
   const isEdit = !!template;
 
@@ -329,11 +366,21 @@ export default function LaunchTemplateEditor({ open, onClose, template, onSaved 
     });
   };
 
+  // Meta's geo_locations.countries takes ISO 3166-1 alpha-2 codes and nothing
+  // else. This used to accept whatever was typed, uppercased — so "United
+  // States" was stored as "UNITED STATES" and sent to Meta verbatim, which
+  // rejects the ad set. Accept a code, or translate a name we recognise, and
+  // refuse anything else loudly rather than at launch time.
   const addCountry = () => {
-    const c = countryInput.trim().toUpperCase();
-    if (c && !form.countries.includes(c)) {
-      setForm((f) => ({ ...f, countries: [...f.countries, c] }));
+    const raw = countryInput.trim();
+    if (!raw) return;
+    const code = normaliseCountry(raw);
+    if (!code) {
+      setCountryError(`"${raw}" isn't a country code. Use the 2-letter ISO code, e.g. US, CA, GB, AU.`);
+      return;
     }
+    setCountryError(null);
+    setForm((f) => (f.countries.includes(code) ? f : { ...f, countries: [...f.countries, code] }));
     setCountryInput('');
   };
 
@@ -396,7 +443,9 @@ export default function LaunchTemplateEditor({ open, onClose, template, onSaved 
         attribution_window: form.attribution,
         include_audiences: resolvedInclude,
         exclude_audiences: resolvedExclude,
-        countries: form.countries.length ? form.countries : ['US'],
+        // Last gate: a template saved before validation existed can still
+        // hold junk like 'UNITED STATES'. Never let it reach Meta.
+        countries: sanitiseCountries(form.countries).length ? sanitiseCountries(form.countries) : ['US'],
         age_min: form.ageMin ?? 18,
         age_max: form.ageMax ?? 65,
         gender: form.gender.toLowerCase(),
@@ -879,7 +928,7 @@ export default function LaunchTemplateEditor({ open, onClose, template, onSaved 
                 <div className="flex gap-2">
                   <Input
                     value={countryInput}
-                    onChange={setCountryInput}
+                    onChange={(v) => { setCountryInput(v); if (countryError) setCountryError(null); }}
                     placeholder="e.g. US"
                     className="flex-1"
                     onKeyDown={(e) => e.key === 'Enter' && (e.preventDefault(), addCountry())}
@@ -891,6 +940,9 @@ export default function LaunchTemplateEditor({ open, onClose, template, onSaved 
                     <Plus className="w-4 h-4" />
                   </button>
                 </div>
+                {countryError && (
+                  <p className="mt-1.5 text-[11px] text-red-400">{countryError}</p>
+                )}
                 {form.countries.length > 0 && (
                   <div className="flex flex-wrap gap-1.5 mt-2">
                     {form.countries.map((c) => (
