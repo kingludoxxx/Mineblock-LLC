@@ -3422,24 +3422,16 @@ export default function StaticsGeneration() {
           open
           template={editingTemplate}
           onClose={() => { setTemplateEditorOpen(false); setEditingTemplate(null); }}
-          onSaved={async () => {
-            const listWasOpen = templatesListOpen;
+          onSaved={() => {
+            // Saving finishes the job: close the whole stack rather than
+            // dropping the operator back on the screen they came from. The
+            // list is already closed (onNew/onEdit close it) and refetches on
+            // every open, so there is nothing to refresh here — only the
+            // version bump, which is what PipelineView's dropdown listens to.
             setTemplateEditorOpen(false);
             setEditingTemplate(null);
-            setTemplatesVersion(v => v + 1);
-            // Saving finishes the job — close the list stack too. Leaving the
-            // list open dropped the operator back onto the screen they had
-            // just come from, which reads as "nothing happened", especially
-            // from the empty state where it still says "No templates yet"
-            // until the refetch lands.
             setTemplatesListOpen(false);
-            // Still refresh the list data so reopening it is instant and correct.
-            if (listWasOpen) {
-              try {
-                const { data } = await api.get('/brief-pipeline/launch-templates');
-                setTemplatesListData(data?.data || []);
-              } catch (_) { /* ignore — list will refresh on next open */ }
-            }
+            setTemplatesVersion(v => v + 1);
           }}
         />
       )}
@@ -3448,8 +3440,13 @@ export default function StaticsGeneration() {
         open={templatesListOpen}
         templates={templatesListLoading ? [] : templatesListData}
         onClose={() => setTemplatesListOpen(false)}
-        onNew={() => { setEditingTemplate(null); setTemplateEditorOpen(true); }}
-        onEdit={(tpl) => { setEditingTemplate(tpl); setTemplateEditorOpen(true); }}
+        // Close the list when handing off to the editor. Both modals are
+        // fixed-position overlays, so leaving the list mounted parks it ON TOP
+        // of the editor and the operator cannot reach the form they just asked
+        // for. Reopening the list always refetches (see onOpenTemplates), so
+        // closing it costs nothing.
+        onNew={() => { setTemplatesListOpen(false); setEditingTemplate(null); setTemplateEditorOpen(true); }}
+        onEdit={(tpl) => { setTemplatesListOpen(false); setEditingTemplate(tpl); setTemplateEditorOpen(true); }}
         onChanged={async () => {
           // Duplicate or delete inside the modal succeeded — reload the list
           // and bump the version so PipelineView's dropdown refreshes too.
