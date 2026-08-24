@@ -138,7 +138,12 @@ router.get('/meta/diagnose', async (req, res) => {
   const scopes = out.token?.scopes || [];
   const hasAds = scopes.includes('ads_management') || scopes.includes('ads_read');
 
-  out.verdict = appTokenBlocked
+  // All green is a real outcome, not an unexplained one. Without this the
+  // healthy path fell through to the "no single obvious cause" fallback, which
+  // reads like a failure nobody could diagnose.
+  const allOk = out.checks.length > 0 && out.checks.every(c => c.ok);
+  out.verdict = allOk ? `HEALTHY — app ${appId} reachable, token valid, ${scopes.length} scope(s) granted`
+    : appTokenBlocked
       ? `APP BLOCKED BY META — app ${appId} is refused even with an APP token, which does not involve the user token. Regenerating the token will NOT help. Check the App Dashboard for a restriction notice, business verification, or a disabled app.`
     : anyBlocked ? 'USER TOKEN BLOCKED but the app itself answers — re-issue the system user token and confirm its ads permissions'
     : out.token && out.token.is_valid === false ? 'TOKEN INVALID — regenerate the system user token'
