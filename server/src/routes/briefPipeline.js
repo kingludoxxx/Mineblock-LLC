@@ -6908,6 +6908,18 @@ async function repairReferenceVideo(ref) {
       return { status: 'repaired', videoUrl: r2Url, via: 'stored-or-brandspy' };
     } catch (e) { console.warn(`[BriefPipeline] ref ${ref.id} mirror of live candidate failed: ${e.message}`); }
   }
+  // OWNED ads never take the Ad Library route.
+  //
+  // The transcribe flow already refuses this for references carrying a
+  // meta_ad_id: "Playwright fallback REMOVED — it grabbed wrong videos from FB
+  // Ad Library 'related ads' panel". yt-dlp reads the same page and has the
+  // same failure mode, and repair had no equivalent guard — so repairing one of
+  // our own iteration references could silently attach a COMPETITOR's creative
+  // and we would iterate on it believing it was ours. A missing video is
+  // recoverable; a wrong video that looks right is not.
+  if (ref.meta_ad_id) {
+    return { status: 'owned-no-meta-video' };
+  }
   if (ref.ad_archive_id) {
     const fresh = await extractFreshVideoUrl(adLibraryUrl(ref.ad_archive_id));
     if (fresh) {
@@ -7323,7 +7335,7 @@ router.post('/references/:id/repair-video', authenticate, async (req, res) => {
       return res.status(503).json({ success: false, error: { message: 'R2 not configured on this environment' } });
     }
     const rows = await pgQuery(`
-      SELECT r.id, r.video_url, r.ad_archive_id,
+      SELECT r.id, r.video_url, r.ad_archive_id, r.meta_ad_id,
              a.raw_snapshot->'videos'->0->>'video_hd_url' AS fresh_hd,
              a.raw_snapshot->'videos'->0->>'video_sd_url' AS fresh_sd
       FROM brief_pipeline_references r
@@ -7340,6 +7352,8 @@ router.post('/references/:id/repair-video', authenticate, async (req, res) => {
       success: false,
       error: { message: result.status === 'unrecoverable'
         ? 'Video is unrecoverable — the ad is no longer live in the FB Ad Library and no stored copy exists.'
+        : result.status === 'owned-no-meta-video'
+        ? 'This is one of your own ads and Meta returned no video for it. We deliberately do not pull from the FB Ad Library here, because that page can return a neighbouring ad\u2019s video. Re-sync the ad from Meta, or open it in Ads Manager.'
         : `Repair failed: ${result.status}` },
     });
   } catch (err) {
