@@ -3423,12 +3423,18 @@ export default function StaticsGeneration() {
           template={editingTemplate}
           onClose={() => { setTemplateEditorOpen(false); setEditingTemplate(null); }}
           onSaved={async () => {
+            const listWasOpen = templatesListOpen;
             setTemplateEditorOpen(false);
             setEditingTemplate(null);
             setTemplatesVersion(v => v + 1);
-            // If the LIST modal is still open behind the editor, refresh
-            // its data so the new/edited template shows up immediately.
-            if (templatesListOpen) {
+            // Saving finishes the job — close the list stack too. Leaving the
+            // list open dropped the operator back onto the screen they had
+            // just come from, which reads as "nothing happened", especially
+            // from the empty state where it still says "No templates yet"
+            // until the refetch lands.
+            setTemplatesListOpen(false);
+            // Still refresh the list data so reopening it is instant and correct.
+            if (listWasOpen) {
               try {
                 const { data } = await api.get('/brief-pipeline/launch-templates');
                 setTemplatesListData(data?.data || []);
