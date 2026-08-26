@@ -6686,8 +6686,30 @@ router.get('/launch-history', authenticate, async (req, res) => {
 // "Followed" in the new Brand Spy workflow == any brand the user added
 // to brand_spy.brands (status='ACTIVE'). The older spy_brand_follows
 // table is unused here — entries in brand_spy.brands ARE the follow set.
+// Cached against the newest scrape across all brands. The tier CTE below has no
+// brand filter — it aggregates every ad in brand_spy.ads (46k+) on every page
+// open, and the video test has to detoast raw_snapshot for each row that is not
+// already display_format VIDEO. Measured 2.56 s, and the League runs it BEFORE
+// it can fetch any ads, so it sets the floor for the whole page.
+//
+// The counts only move when a scrape lands, so they are memoised on
+// max(last_scraped_at): a completed scrape invalidates the entry and a stale
+// board can never be served. Caching rather than narrowing the video test on
+// purpose — dropping the raw_snapshot branch would be faster still, but it
+// would silently undercount ads whose video only exists inside the snapshot,
+// and this board is what briefs get built from.
+let leagueBrandsCache = null; // { key, payload }
+
 router.get('/league/brands', authenticate, async (_req, res) => {
   try {
+    const stamp = await pgQuery(
+      `SELECT COALESCE(MAX(last_scraped_at), 'epoch') AS k FROM brand_spy.brands`,
+    );
+    const cacheKey = String(stamp[0]?.k ?? 'none');
+    if (leagueBrandsCache && leagueBrandsCache.key === cacheKey) {
+      return res.json(leagueBrandsCache.payload);
+    }
+
     const rows = await pgQuery(`
       WITH tier_counts AS (
         SELECT
@@ -6701,7 +6723,7 @@ router.get('/league/brands', authenticate, async (_req, res) => {
         FROM brand_spy.ads a
         WHERE a.is_active = TRUE
           AND a.tier IN ('BANGER','CHAMP','A','B','C')
-          AND (a.display_format ILIKE 'video%'
+          AND (a.display_format = 'VIDEO'
                OR (a.raw_snapshot->'videos'->0->>'video_hd_url') IS NOT NULL
                OR (a.raw_snapshot->'videos'->0->>'video_sd_url') IS NOT NULL)
         GROUP BY a.brand_id
@@ -6734,7 +6756,9 @@ router.get('/league/brands', authenticate, async (_req, res) => {
         C:      Number(r.c_count)      || 0,
       },
     }));
-    res.json({ success: true, brands });
+    const payload = { success: true, brands };
+    leagueBrandsCache = { key: cacheKey, payload };
+    res.json(payload);
   } catch (err) {
     console.error('[BriefPipeline] GET /league/brands error:', err.message);
     res.status(500).json({ success: false, error: { message: err.message } });
