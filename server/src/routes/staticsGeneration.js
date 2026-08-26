@@ -6341,33 +6341,38 @@ async function _doLaunch(req, res) {
       copySet = cs[0];
     }
 
+    // Recover rows stranded in 'launching' by a mid-launch deploy/restart —
+    // nothing else in the codebase ever resets them (audit 2026-08-26). Runs
+    // BEFORE the lock below so a stranded id in THIS request becomes
+    // launchable again on this attempt, not the next one. Safe against
+    // concurrent launches because the lock refreshes updated_at, keeping
+    // in-flight rows inside the 30-minute window (spy_creatives has no
+    // updated_at trigger — the refresh must be explicit).
+    await pgQuery(
+      `UPDATE spy_creatives SET status = 'ready', review_notes = 'Recovered from interrupted launch', updated_at = NOW()
+        WHERE status = 'launching' AND updated_at < NOW() - INTERVAL '30 minutes'`
+    ).catch(() => {});
+
+    // ATOMIC LOCK + SELECT: one statement flips eligible rows to 'launching'
+    // and returns exactly the rows it flipped. Closes the double-click race
+    // (two requests can no longer both select the same rows before either
+    // locks) and keeps launched/rejected ids untouched. updated_at = NOW()
+    // shields these rows from the recovery sweep for 30 minutes.
     const creatives = await pgQuery(
-      `SELECT * FROM spy_creatives WHERE id = ANY($1) AND status IN ('approved', 'ready')`,
+      `UPDATE spy_creatives SET status = 'launching', updated_at = NOW()
+        WHERE id = ANY($1) AND status IN ('approved', 'ready')
+        RETURNING *`,
       [creative_ids]
     );
     if (!creatives.length) {
-      return res.status(400).json({ success: false, error: { message: 'No launchable creatives found (must be approved or ready)' } });
+      return res.status(400).json({ success: false, error: { message: 'No launchable creatives found (must be approved or ready, and not already launching)' } });
     }
-
-    // Recover rows stranded in 'launching' by a mid-launch deploy/restart —
-    // nothing else in the codebase ever resets them (audit 2026-08-26).
-    await pgQuery(
-      `UPDATE spy_creatives SET status = 'ready', review_notes = 'Recovered from interrupted launch'
-        WHERE status = 'launching' AND updated_at < NOW() - INTERVAL '30 minutes'`
-    ).catch(() => {});
-    // Status-guarded: without the filter an already-launched/rejected id in the
-    // request got flipped to 'launching', then swept back to 'ready' at the
-    // end — destroying its real status and inviting a duplicate relaunch.
-    await pgQuery(
-      `UPDATE spy_creatives SET status = 'launching' WHERE id = ANY($1) AND status IN ('approved', 'ready')`,
-      [creative_ids]
-    );
 
     // LANDING-PAGE GUARD: the old chain ended in an 'https://example.com'
     // placeholder, which silently launched ACTIVE paid ads pointing at
     // example.com when no copy set / template URL / env var was present.
     // Money must never spend against a placeholder — refuse instead.
-    const resolvedLink = copySet?.landing_page_url || template.landing_page_url || process.env.SHOPIFY_STORE_URL || '';
+    const resolvedLink = String(copySet?.landing_page_url || '').trim() || String(template.landing_page_url || '').trim() || String(process.env.SHOPIFY_STORE_URL || '').trim();
     if (!/^https?:\/\//.test(resolvedLink) || /example\.com/.test(resolvedLink)) {
       await pgQuery(`UPDATE spy_creatives SET status = 'ready' WHERE id = ANY($1) AND status = 'launching'`, [creative_ids]).catch(() => {});
       return res.status(400).json({ success: false, error: { message: 'No landing page URL configured: set one on the copy set or the template (or SHOPIFY_STORE_URL env). Refusing to launch ads without a destination.' } });
@@ -6383,7 +6388,7 @@ async function _doLaunch(req, res) {
 
     const selectedPages = safeArr(template.page_ids).filter(p => p.selected !== false);
     if (!selectedPages.length || !selectedPages[0]?.id) {
-      await pgQuery(`UPDATE spy_creatives SET status = 'ready' WHERE id = ANY($1)`, [creative_ids]);
+      await pgQuery(`UPDATE spy_creatives SET status = 'ready' WHERE id = ANY($1) AND status = 'launching'`, [creative_ids]);
       return res.status(400).json({ success: false, error: { message: 'No Facebook pages configured in launch template. Edit the template and select at least one page.' } });
     }
 
@@ -6437,7 +6442,7 @@ async function _doLaunch(req, res) {
           status: 'ACTIVE',
         });
       } catch (err) {
-        await pgQuery(`UPDATE spy_creatives SET status = 'ready' WHERE id = ANY($1)`, [creative_ids]);
+        await pgQuery(`UPDATE spy_creatives SET status = 'ready' WHERE id = ANY($1) AND status = 'launching'`, [creative_ids]);
         return res.status(500).json({ success: false, error: { message: `Campaign creation failed: ${err.message}` } });
       }
     }
@@ -6455,6 +6460,10 @@ async function _doLaunch(req, res) {
     const createdAdsets = []; // [{ angle, adsetId, adsetName }]
     let pageIdx = 0;
     const processedGroupIds = new Set();
+    // Ids whose image already shipped inside another creative's placement-aware
+    // ad (group sibling or legacy ratio variant). Without this, selecting a
+    // parent AND its ratio variant in one batch launched the same image twice.
+    const absorbedIds = new Set();
 
     // Pre-fetch all legacy variants in one query (audit N+1 fix). Build a Map
     // keyed by parent_creative_id so the per-creative loop is a cheap lookup
@@ -6538,6 +6547,10 @@ async function _doLaunch(req, res) {
 
       if (creative.group_id && processedGroupIds.has(creative.group_id)) {
         results.push({ creative_id: creative.id, status: 'skipped', reason: 'Handled as part of group launch' });
+        continue;
+      }
+      if (absorbedIds.has(creative.id)) {
+        results.push({ creative_id: creative.id, status: 'skipped', reason: 'Ratio variant already included in another launched ad' });
         continue;
       }
       // NOTE: the group is marked processed on SUCCESS (below), not here —
@@ -6677,6 +6690,12 @@ async function _doLaunch(req, res) {
         const metaAdId = await createAd(template.ad_account_id, {
           name: adName, adsetId, creativeId: metaCreativeId, status: 'ACTIVE',
         });
+        // THE AD IS LIVE FROM THIS LINE ON. Everything below is bookkeeping:
+        // mark the group and absorbed variants NOW, so a transient DB error in
+        // the record-keeping can never cause a second live ad from the same
+        // group (the pre-fix ordering did exactly that).
+        if (creative.group_id) processedGroupIds.add(creative.group_id);
+        for (const r of uploadedRatios) { if (r.id !== creative.id) absorbedIds.add(r.id); }
 
         const primaryMetaAdId = metaAdId;
         const primaryImageHash = uploadedRatios.find(r => r.id === creative.id)?.imageHash || uploadedRatios[0]?.imageHash;
@@ -6704,7 +6723,11 @@ async function _doLaunch(req, res) {
         await pgQuery(
           `UPDATE spy_creatives SET status = 'launched', meta_ad_ids = $1, meta_image_hash = $2, updated_at = NOW() WHERE id = $3`,
           [JSON.stringify(existingMeta), primaryImageHash, creative.id]
-        );
+        ).catch((e) => {
+          // The Meta ad exists; a bookkeeping failure must not flip this
+          // creative into the failed path (it would read as relaunchable).
+          console.error(`[launch] LAUNCHED ad ${metaAdId} but status update failed for ${creative.id}: ${e.message}`);
+        });
 
         // Sibling ratio variants share the launched status (they're part of
         // the same Meta ad now, not separate ads as before).
@@ -6717,7 +6740,6 @@ async function _doLaunch(req, res) {
           }
         }
 
-        if (creative.group_id) processedGroupIds.add(creative.group_id);
         results.push({
           creative_id: creative.id,
           status: 'launched',
