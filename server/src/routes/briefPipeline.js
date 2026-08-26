@@ -6200,9 +6200,12 @@ router.post('/launch-templates', authenticate, async (req, res) => {
         attribution_window, include_audiences, exclude_audiences,
         countries, age_min, age_max, gender, ad_format, utm_parameters,
         landing_page_url, translation_languages, product_id, is_default, created_by,
-        schedule_enabled, schedule_date, schedule_time
+        schedule_enabled, schedule_date, schedule_time,
+        adset_grouping, campaign_mode, campaign_objective, campaign_name_pattern,
+        campaign_budget_mode, campaign_daily_budget, special_ad_categories
       ) VALUES (
-        $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35
+        $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,
+        $36,$37,$38,$39,$40,$41,$42
       ) RETURNING *`,
       [
         t.name, t.ad_account_id, t.ad_account_name, t.page_mode || 'single',
@@ -6221,7 +6224,12 @@ router.post('/launch-templates', authenticate, async (req, res) => {
         t.landing_page_url || null,
         JSON.stringify(ensureArr(t.translation_languages)),
         t.product_id || null, t.is_default || false, req.user?.id || null,
-        t.schedule_enabled || false, t.schedule_date || null, t.schedule_time || '00:00'
+        t.schedule_enabled || false, t.schedule_date || null, t.schedule_time || '00:00',
+        t.adset_grouping || 'per_angle', t.campaign_mode || 'existing',
+        t.campaign_objective || 'OUTCOME_SALES',
+        t.campaign_name_pattern || '{date} - {product} - {angle} - {batch}',
+        t.campaign_budget_mode || 'ABO', t.campaign_daily_budget ?? null,
+        JSON.stringify(ensureArr(t.special_ad_categories))
       ]
     );
     res.json({ success: true, data: rows[0] });

@@ -469,6 +469,11 @@ export async function createCampaign(adAccountId, params) {
     // Meta requires the field even when empty.
     special_ad_categories: Array.isArray(specialAdCategories) ? specialAdCategories : [],
   };
+  if (budgetMode !== 'CBO') {
+    // Meta rejects budget-less (ABO) campaigns without this field
+    // (error_subcode 4834011). False = ad sets keep their own budgets.
+    body.is_adset_budget_sharing_enabled = false;
+  }
   if (budgetMode === 'CBO') {
     const budgetNum = typeof dailyBudget === 'string' ? parseFloat(dailyBudget) : dailyBudget;
     if (isNaN(budgetNum) || budgetNum <= 0) throw new Error(`createCampaign: CBO needs a valid campaign daily budget, got: ${dailyBudget}`);
