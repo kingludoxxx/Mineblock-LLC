@@ -433,9 +433,12 @@ router.post('/import-frame', authenticate, async (req, res) => {
 
     // Extract asset ID from Frame.io URL patterns
     // Patterns: next.frame.io/project/.../asset_id, app.frame.io/...
-    const FRAME_TOKEN = process.env.FRAME_IO_TOKEN || '';
-    if (!FRAME_TOKEN) {
-      return res.status(400).json({ success: false, error: { message: 'Frame.io token not configured (FRAME_IO_TOKEN env var)' } });
+    // Accept both historical env names; V4 URLs (next.frame.io) don't need
+    // this token at all — they authenticate via the IMS OAuth machinery.
+    const FRAME_TOKEN = process.env.FRAME_IO_TOKEN || process.env.FRAMEIO_TOKEN || '';
+    const isV4Url = /(^|\.)next\.frame\.io$/.test((() => { try { return new URL(frame_url).hostname; } catch { return ''; } })());
+    if (!FRAME_TOKEN && !isV4Url) {
+      return res.status(400).json({ success: false, error: { message: 'Frame.io token not configured (FRAMEIO_TOKEN env var)' } });
     }
 
     // Parse the Frame.io URL to extract the folder/asset ID
