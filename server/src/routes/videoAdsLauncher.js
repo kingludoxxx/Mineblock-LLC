@@ -383,35 +383,48 @@ async function importFromFrameV4(folderOrFileId, frameUrl) {
   // recurses (bounded), and each file remembers the nearest brief-folder
   // name: that name becomes the imported video's identity, which the {name}
   // launch token turns into the ad's name.
+  const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+  // One retry with backoff: 50 brief subfolders means ~100 rapid API calls,
+  // and Frame rate-limits bursts. A swallowed 429 here looked like an empty
+  // folder — every failure is now recorded in walkErrors instead.
+  const walkErrors = [];
   const listChildren = async (id, kind) => {
     const path = kind === 'stack'
       ? `/accounts/${FRAMEIO_ACCOUNT_ID}/version_stacks/${id}/children?page_size=100`
       : `/accounts/${FRAMEIO_ACCOUNT_ID}/folders/${id}/children?page_size=100`;
-    const resp = await frameioFetchV4(path);
-    return Array.isArray(resp?.data) ? resp.data : (Array.isArray(resp) ? resp : []);
+    try {
+      const resp = await frameioFetchV4(path);
+      return Array.isArray(resp?.data) ? resp.data : (Array.isArray(resp) ? resp : []);
+    } catch (e1) {
+      await sleep(1200);
+      const resp = await frameioFetchV4(path);
+      return Array.isArray(resp?.data) ? resp.data : (Array.isArray(resp) ? resp : []);
+    }
   };
   const BRIEF_RX = /^PL\s*-\s*B\d+/i;
   const fileIds = [];   // [{ id, briefName }]
   const walk = async (id, depth, briefName, kind) => {
     if (depth > 3 || fileIds.length >= 200) return;
     let items;
-    try { items = await listChildren(id, kind); } catch { return; }
+    try { items = await listChildren(id, kind); }
+    catch (e) { walkErrors.push({ id, error: e.message }); return; }
     for (const it of items) {
+      await sleep(120); // stay under Frame's burst limit across ~100 calls
       if (it.type === 'folder') {
         await walk(it.id, depth + 1, BRIEF_RX.test(it.name || '') ? it.name : briefName, 'folder');
       } else if (it.type === 'version_stack') {
         await walk(it.id, depth + 1, briefName, 'stack');
       } else {
-        fileIds.push({ id: it.id, briefName });
+        fileIds.push({ id: it.id, name: it.name, briefName });
       }
     }
   };
 
-  let isFolder = true;
-  try { await listChildren(folderOrFileId, 'folder'); } catch { isFolder = false; }
-  if (isFolder) await walk(folderOrFileId, 0, null, 'folder');
+  let rootIsFolder = true;
+  try { await listChildren(folderOrFileId, 'folder'); } catch { rootIsFolder = false; }
+  if (rootIsFolder) await walk(folderOrFileId, 0, null, 'folder');
   else fileIds.push({ id: folderOrFileId, briefName: null }); // single file URL
-  if (!fileIds.length) return { videos: [], count: 0, message: 'No files found in Frame.io folder' };
+  if (!fileIds.length) return { videos: [], count: 0, message: 'No files found in Frame.io folder', walk_errors: walkErrors };
 
   const videos = [];
   const skipped = [];
@@ -437,7 +450,7 @@ async function importFromFrameV4(folderOrFileId, frameUrl) {
     );
     videos.push(row[0]);
   }
-  return { videos, count: videos.length, skipped };
+  return { videos, count: videos.length, skipped, walk_errors: walkErrors };
 }
 
 router.post('/import-frame', authenticate, async (req, res) => {
