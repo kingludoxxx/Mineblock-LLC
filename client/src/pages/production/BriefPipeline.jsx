@@ -766,10 +766,20 @@ export default function BriefPipeline() {
       await fetchGenerated();
       setLaunchModalOpen(false);
       setSelectedForLaunch([]);
-      const launched = (data.data?.results || []).filter(r => r.status === 'launched').length;
-      const failed = (data.data?.results || []).filter(r => r.status === 'failed').length;
-      if (failed > 0) {
-        setError(`Launched ${launched} ads, ${failed} failed. Check launch history for details.`);
+      if (data.data?.background) {
+        // VSL launches wait minutes for Meta video processing — the server
+        // answers immediately and finishes in the background. Poll the board
+        // a few times so statuses (launched / launch_failed) surface live.
+        setError(`Launching ${data.data.briefs_queued} ad(s) in the background — statuses update on the board as each one lands.`);
+        for (const delay of [15000, 45000, 90000, 180000, 360000]) {
+          setTimeout(() => { fetchGenerated().catch(() => {}); }, delay);
+        }
+      } else {
+        const launched = (data.data?.results || []).filter(r => r.status === 'launched').length;
+        const failed = (data.data?.results || []).filter(r => r.status === 'failed').length;
+        if (failed > 0) {
+          setError(`Launched ${launched} ads, ${failed} failed. Check launch history for details.`);
+        }
       }
     } catch (err) {
       console.error('Launch failed:', err);
@@ -1427,6 +1437,21 @@ export default function BriefPipeline() {
             </h3>
 
             <div className="space-y-3 mb-6">
+              <div className="space-y-1 max-h-40 overflow-y-auto">
+                {selectedForLaunch.map((id) => {
+                  const b = generated.find((g) => g.id === id);
+                  if (!b) return null;
+                  const hasVideo = !!(b.video_url && String(b.video_url).trim());
+                  return (
+                    <div key={id} className="flex items-center justify-between text-[11px] px-2 py-1 rounded bg-white/[0.03]">
+                      <span className="text-zinc-300 truncate">{(b.naming_convention || b.id).slice(0, 40)}</span>
+                      <span className={hasVideo ? 'text-emerald-400 font-mono' : 'text-amber-400 font-mono'}>
+                        {hasVideo ? 'VIDEO' : 'LINK AD (no video attached)'}
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
               <div>
                 <label className="font-mono text-[10px] text-[#c9a84c] uppercase tracking-[0.15em] block mb-1.5">
                   Launch Template
