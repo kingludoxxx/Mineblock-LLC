@@ -6249,7 +6249,15 @@ router.put('/launch-templates/:id', authenticate, async (req, res) => {
         attribution_window=$19, include_audiences=$20, exclude_audiences=$21,
         countries=$22, age_min=$23, age_max=$24, gender=$25, ad_format=$26, utm_parameters=$27,
         landing_page_url=$28, translation_languages=$29, product_id=$30, is_default=$31,
-        schedule_enabled=$32, schedule_date=$33, schedule_time=$34, updated_at=NOW()
+        schedule_enabled=$32, schedule_date=$33, schedule_time=$34,
+        adset_grouping=COALESCE($36, adset_grouping),
+        campaign_mode=COALESCE($37, campaign_mode),
+        campaign_objective=COALESCE($38, campaign_objective),
+        campaign_name_pattern=COALESCE($39, campaign_name_pattern),
+        campaign_budget_mode=COALESCE($40, campaign_budget_mode),
+        campaign_daily_budget=$41,
+        special_ad_categories=COALESCE($42, special_ad_categories),
+        updated_at=NOW()
       WHERE id=$35 RETURNING *`,
       [
         t.name, t.ad_account_id, t.ad_account_name, t.page_mode || 'single',
@@ -6267,7 +6275,11 @@ router.put('/launch-templates/:id', authenticate, async (req, res) => {
         JSON.stringify(ensureArr(t.translation_languages)),
         t.product_id || null, t.is_default || false,
         t.schedule_enabled || false, t.schedule_date || null, t.schedule_time || '00:00',
-        req.params.id
+        req.params.id,
+        t.adset_grouping || null, t.campaign_mode || null, t.campaign_objective || null,
+        t.campaign_name_pattern || null, t.campaign_budget_mode || null,
+        t.campaign_daily_budget ?? null,
+        t.special_ad_categories !== undefined ? JSON.stringify(ensureArr(t.special_ad_categories)) : null,
       ]
     );
     if (!rows.length) return res.status(404).json({ success: false, error: { message: 'Template not found' } });

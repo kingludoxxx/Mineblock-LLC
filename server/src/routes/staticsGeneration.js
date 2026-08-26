@@ -217,6 +217,7 @@ import sharp from 'sharp';
 import {
   isMetaAdsConfigured, createAdSet, createFlexibleAdCreative, createPlacementAwareAdCreative,
   createAd, uploadAdImageFromUrl, diagnoseMetaApp, switchAppToLiveMode,
+  createCampaign, deleteCampaign,
 } from '../services/metaAdsApi.js';
 import { sendSlackAlert } from '../utils/slackAlert.js';
 
@@ -6273,6 +6274,37 @@ function buildLaunchName(pattern, vars) {
 // Inline handler extracted into _doLaunch so a CRON_SECRET-gated /admin-launch
 // route (registered before the router-level authenticate gate) can reuse the
 // exact same launch logic without duplicating ~370 lines.
+// Smoke test for the create_new campaign path: creates a PAUSED campaign with
+// the template's settings, then deletes it immediately. Proves credentials,
+// objective, budget mode and account wiring with zero spend and no residue.
+router.post('/launch-campaign-smoke', authenticate, async (req, res) => {
+  try {
+    if (!isMetaAdsConfigured()) {
+      return res.status(400).json({ success: false, error: { message: 'Meta Ads API not configured' } });
+    }
+    const templates = await pgQuery('SELECT * FROM launch_templates WHERE id = $1', [req.body?.template_id]);
+    if (!templates.length) return res.status(404).json({ success: false, error: { message: 'Template not found' } });
+    const t = templates[0];
+    if (!t.ad_account_id) return res.status(400).json({ success: false, error: { message: 'Template has no ad account' } });
+    const safeArrLocal = (v) => { if (Array.isArray(v)) return v; if (typeof v === 'string') { try { const p = JSON.parse(v); return Array.isArray(p) ? p : []; } catch { return []; } } return []; };
+    const campaignId = await createCampaign(t.ad_account_id, {
+      name: `SMOKE TEST (auto-deleted) ${Date.now()}`,
+      objective: t.campaign_objective || 'OUTCOME_SALES',
+      budgetMode: t.campaign_budget_mode || 'ABO',
+      dailyBudget: t.campaign_daily_budget,
+      bidStrategy: t.bid_strategy,
+      specialAdCategories: safeArrLocal(t.special_ad_categories),
+      status: 'PAUSED',
+    });
+    let deleted = false;
+    try { deleted = await deleteCampaign(campaignId); }
+    catch (e) { return res.json({ success: true, campaign_id: campaignId, deleted: false, warning: `created but delete failed: ${e.message} — delete it manually in Ads Manager` }); }
+    res.json({ success: true, campaign_id: campaignId, deleted });
+  } catch (err) {
+    res.status(500).json({ success: false, error: { message: err.message } });
+  }
+});
+
 router.post('/launch', authenticate, (req, res) => _doLaunch(req, res));
 
 async function _doLaunch(req, res) {
@@ -6297,8 +6329,9 @@ async function _doLaunch(req, res) {
       // here with a clear app-level message instead.
       return res.status(400).json({ success: false, error: { message: 'Template has no ad account configured. Please edit the template and select an Ad Account.' } });
     }
-    if (!template.campaign_id) {
-      return res.status(400).json({ success: false, error: { message: 'Template has no campaign configured. Please edit the template and select a campaign.' } });
+    const createNewCampaign = template.campaign_mode === 'create_new';
+    if (!template.campaign_id && !createNewCampaign) {
+      return res.status(400).json({ success: false, error: { message: 'Template has no campaign configured. Please edit the template and select a campaign, or set the template to create a new campaign per launch.' } });
     }
 
     let copySet = null;
@@ -6346,12 +6379,49 @@ async function _doLaunch(req, res) {
     // Each bucket gets its own adsetId, adsetName, and runs the per-creative
     // launch loop scoped to that bucket only.
     const creativesByAngle = new Map();
-    for (const c of creatives) {
-      const angleKey = (c.angle || 'General').toString().trim() || 'General';
-      if (!creativesByAngle.has(angleKey)) creativesByAngle.set(angleKey, []);
-      creativesByAngle.get(angleKey).push(c);
+    if (template.adset_grouping === 'single') {
+      // RETARGETING FORMAT (operator spec 2026-08-15): ONE ad set holding
+      // every ad in the launch. The bucket key is the uniform angle when the
+      // box is uniform, else 'Mixed' — it feeds the {angle} naming token.
+      const distinct = [...new Set(creatives.map(c => (c.angle || 'General').toString().trim() || 'General'))];
+      creativesByAngle.set(distinct.length === 1 ? distinct[0] : 'Mixed', creatives.slice());
+    } else {
+      for (const c of creatives) {
+        const angleKey = (c.angle || 'General').toString().trim() || 'General';
+        if (!creativesByAngle.has(angleKey)) creativesByAngle.set(angleKey, []);
+        creativesByAngle.get(angleKey).push(c);
+      }
     }
-    console.log(`[launch] grouping ${creatives.length} creatives into ${creativesByAngle.size} ad set(s) by angle: ${Array.from(creativesByAngle.keys()).join(', ')}`);
+    console.log(`[launch] grouping ${creatives.length} creatives into ${creativesByAngle.size} ad set(s) (${template.adset_grouping === 'single' ? 'single/retargeting' : 'by angle'}): ${Array.from(creativesByAngle.keys()).join(', ')}`);
+
+    // NEW CAMPAIGN PER LAUNCH — template.campaign_mode='create_new' creates the
+    // campaign now and every ad set below lands inside it. On total failure of
+    // all ad sets the campaign is deleted again (no empty shells in the account).
+    let launchCampaignId = template.campaign_id;
+    let launchCampaignName = template.campaign_name || null;
+    if (createNewCampaign) {
+      const firstAngle = creativesByAngle.keys().next().value || 'General';
+      launchCampaignName = buildLaunchName(template.campaign_name_pattern || '{date} - {product} - {angle} - {batch}', {
+        date: dateStr,
+        product: creatives[0]?.product_name || '',
+        angle: creativesByAngle.size === 1 ? firstAngle : 'Mixed',
+        batch: batchNum,
+      }).replace(/\s+-\s+-\s+/g, ' - ').trim();
+      try {
+        launchCampaignId = await createCampaign(template.ad_account_id, {
+          name: launchCampaignName,
+          objective: template.campaign_objective || 'OUTCOME_SALES',
+          budgetMode: template.campaign_budget_mode || 'ABO',
+          dailyBudget: template.campaign_daily_budget,
+          bidStrategy: template.bid_strategy,
+          specialAdCategories: safeArr(template.special_ad_categories),
+          status: 'ACTIVE',
+        });
+      } catch (err) {
+        await pgQuery(`UPDATE spy_creatives SET status = 'ready' WHERE id = ANY($1)`, [creative_ids]);
+        return res.status(500).json({ success: false, error: { message: `Campaign creation failed: ${err.message}` } });
+      }
+    }
 
     const normalizedCountries = (() => {
       const raw = safeArr(template.countries);
@@ -6405,7 +6475,7 @@ async function _doLaunch(req, res) {
       try {
         adsetId = await createAdSet(template.ad_account_id, {
           name: adsetName,
-          campaignId: template.campaign_id,
+          campaignId: launchCampaignId,
           dailyBudget: template.daily_budget,
           optimizationGoal: template.optimization_goal,
           bidStrategy: template.bid_strategy,
@@ -6458,6 +6528,9 @@ async function _doLaunch(req, res) {
         num: i + 1,
         batch: bucketBatchNum,
         product: creative.product_name || '',
+        // {name}: the creative's own identity — lets a retargeting template
+        // keep each ad's own naming convention inside the single ad set.
+        name: creative.source_label || `${creative.angle || angleKey || 'General'} ${i + 1}`,
       });
 
       try {
@@ -6577,7 +6650,7 @@ async function _doLaunch(req, res) {
           ad_id: metaAdId,
           creative_id: metaCreativeId,
           adset_id: adsetId,
-          campaign_id: template.campaign_id,
+          campaign_id: launchCampaignId,
           page_id: page?.id || selectedPages[0]?.id,
           ad_name: adName,
           aspect_ratios: uploadedRatios.map(r => r.ratio),
@@ -6589,7 +6662,7 @@ async function _doLaunch(req, res) {
         await pgQuery(
           `INSERT INTO statics_launches (creative_id, template_id, copy_set_id, ad_account_id, meta_campaign_id, meta_adset_id, meta_ad_id, meta_creative_id, meta_image_hash, ad_name, adset_name, page_id, page_name, batch_number, status, launched_at)
            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,'launched',NOW())`,
-          [creative.id, template_id, copy_set_id || null, template.ad_account_id, template.campaign_id, adsetId, metaAdId, metaCreativeId, primaryImageHash, adName, adsetName, page?.id || null, page?.name || null, bucketBatchNum]
+          [creative.id, template_id, copy_set_id || null, template.ad_account_id, launchCampaignId, adsetId, metaAdId, metaCreativeId, primaryImageHash, adName, adsetName, page?.id || null, page?.name || null, bucketBatchNum]
         ).catch(err => console.warn('[staticsGeneration] Failed to log launch:', err.message));
 
         await pgQuery(
@@ -6636,10 +6709,20 @@ async function _doLaunch(req, res) {
       [creative_ids]
     ).catch(() => {});
 
+    // A freshly created campaign with zero surviving ad sets is an empty shell
+    // in the ad account — delete it so a failed launch leaves no residue.
+    if (createNewCampaign && launchCampaignId && !createdAdsets.length) {
+      try { await deleteCampaign(launchCampaignId); launchCampaignId = null; launchCampaignName = null; }
+      catch (e) { console.warn('[launch] empty new campaign cleanup failed:', e.message); }
+    }
+
     res.json({
       success: true,
       data: {
         results,
+        campaign_id: launchCampaignId,
+        campaign_name: launchCampaignName,
+        campaign_created: !!(createNewCampaign && launchCampaignId),
         adsets: createdAdsets, // [{ angle, adsetId, adsetName }, ...]
         // Back-compat: keep adset_id / adset_name pointing at the first one
         adset_id: createdAdsets[0]?.adsetId || null,

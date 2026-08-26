@@ -44,7 +44,7 @@ const TRANSLATION_LANGUAGES = [
   'Portuguese', 'Polish', 'Swedish', 'Danish', 'Romanian',
 ];
 
-const NAMING_VARIABLES = ['{date}', '{angle}', '{batch}', '{num}', '{product}'];
+const NAMING_VARIABLES = ['{date}', '{angle}', '{batch}', '{num}', '{product}', '{name}'];
 
 // Safe-array parser — JSONB columns can arrive as either an array (already
 // parsed) or a string (postgres-side JSON) depending on the driver mood.
@@ -68,6 +68,12 @@ const DEFAULT_FORM = {
   selectedPages: [],
   pixelId: '',
   campaignId: '',
+  campaignMode: 'existing',              // 'existing' | 'create_new'
+  campaignObjective: 'OUTCOME_SALES',
+  campaignNamePattern: '{date} - {product} - {angle} - {batch}',
+  campaignBudgetMode: 'ABO',             // budgets on ad sets (ABO) or campaign (CBO)
+  campaignDailyBudget: '',
+  adsetGrouping: 'per_angle',            // 'per_angle' | 'single' (retargeting)
   adSetNamePattern: '{date} - {angle} - Batch {batch}',
   adNamePattern: '{angle} - {num}',
   conversionLocation: 'WEBSITE',
@@ -247,6 +253,12 @@ export default function LaunchTemplateEditor({ open, onClose, template, onSaved 
         selectedPages: safeArr(template.page_ids).filter(p => p.selected !== false).map(p => p.id),
         pixelId: template.pixel_id || '',
         campaignId: template.campaign_id || '',
+        campaignMode: template.campaign_mode || 'existing',
+        campaignObjective: template.campaign_objective || 'OUTCOME_SALES',
+        campaignNamePattern: template.campaign_name_pattern || DEFAULT_FORM.campaignNamePattern,
+        campaignBudgetMode: template.campaign_budget_mode || 'ABO',
+        campaignDailyBudget: template.campaign_daily_budget ?? '',
+        adsetGrouping: template.adset_grouping || 'per_angle',
         adSetNamePattern: template.adset_name_pattern || DEFAULT_FORM.adSetNamePattern,
         adNamePattern: template.ad_name_pattern || DEFAULT_FORM.adNamePattern,
         conversionLocation: template.conversion_location || 'WEBSITE',
@@ -399,8 +411,12 @@ export default function LaunchTemplateEditor({ open, onClose, template, onSaved 
       setSaveError('Please pick an Ad Account before saving.');
       return;
     }
-    if (!form.campaignId) {
-      setSaveError('Please pick a Campaign before saving.');
+    if (!form.campaignId && form.campaignMode !== 'create_new') {
+      setSaveError('Please pick a Campaign before saving, or switch the template to create a new campaign per launch.');
+      return;
+    }
+    if (form.campaignMode === 'create_new' && form.campaignBudgetMode === 'CBO' && !(parseFloat(form.campaignDailyBudget) > 0)) {
+      setSaveError('CBO needs a campaign daily budget.');
       return;
     }
     if (!form.selectedPages || form.selectedPages.length === 0) {
@@ -429,8 +445,14 @@ export default function LaunchTemplateEditor({ open, onClose, template, onSaved 
         page_ids: resolvedPages,
         pixel_id: form.pixelId,
         pixel_name: pixels.find(p => p.id === form.pixelId)?.name || (template?.pixel_name || ''),
-        campaign_id: form.campaignId,
-        campaign_name: campaigns.find(c => c.id === form.campaignId)?.name || (template?.campaign_name || ''),
+        campaign_id: form.campaignMode === 'create_new' ? null : form.campaignId,
+        campaign_name: form.campaignMode === 'create_new' ? null : (campaigns.find(c => c.id === form.campaignId)?.name || (template?.campaign_name || '')),
+        campaign_mode: form.campaignMode,
+        campaign_objective: form.campaignObjective,
+        campaign_name_pattern: form.campaignNamePattern,
+        campaign_budget_mode: form.campaignBudgetMode,
+        campaign_daily_budget: form.campaignBudgetMode === 'CBO' ? (parseFloat(form.campaignDailyBudget) || null) : null,
+        adset_grouping: form.adsetGrouping,
         adset_name_pattern: form.adSetNamePattern,
         ad_name_pattern: form.adNamePattern,
         conversion_location: form.conversionLocation,
@@ -636,6 +658,65 @@ export default function LaunchTemplateEditor({ open, onClose, template, onSaved 
           {/* 5. Campaign */}
           <Card>
             <SectionLabel icon={Target}>Campaign</SectionLabel>
+            <div className="flex gap-2 mb-3">
+              {[['existing', 'Use existing'], ['create_new', 'New campaign per launch']].map(([mode, label]) => (
+                <button
+                  key={mode}
+                  type="button"
+                  onClick={() => set('campaignMode')(mode)}
+                  className={`px-3 py-1.5 rounded-md text-xs font-mono border transition-colors ${
+                    form.campaignMode === mode
+                      ? 'bg-[#c9a84c]/15 text-[#e8d5a3] border-[#c9a84c]/40'
+                      : 'bg-white/[0.02] text-zinc-500 border-white/[0.06] hover:text-zinc-300'
+                  }`}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+            {form.campaignMode === 'create_new' && (
+              <div className="space-y-4">
+                <div>
+                  <FieldLabel>Campaign Name Pattern</FieldLabel>
+                  <Input
+                    value={form.campaignNamePattern}
+                    onChange={set('campaignNamePattern')}
+                    placeholder="{date} - {product} - {angle} - {batch}"
+                  />
+                  <p className="mt-1.5 text-[11px] text-zinc-600 font-mono">
+                    Preview: <span className="text-zinc-400">{resolvePattern(form.campaignNamePattern)}</span>
+                  </p>
+                </div>
+                <div>
+                  <FieldLabel>Objective</FieldLabel>
+                  <Select value={form.campaignObjective} onChange={set('campaignObjective')}>
+                    <option value="OUTCOME_SALES">Sales</option>
+                    <option value="OUTCOME_LEADS">Leads</option>
+                    <option value="OUTCOME_TRAFFIC">Traffic</option>
+                    <option value="OUTCOME_AWARENESS">Awareness</option>
+                    <option value="OUTCOME_ENGAGEMENT">Engagement</option>
+                  </Select>
+                </div>
+                <div>
+                  <FieldLabel>Campaign Budget</FieldLabel>
+                  <Select value={form.campaignBudgetMode} onChange={set('campaignBudgetMode')}>
+                    <option value="ABO">On ad sets (ABO)</option>
+                    <option value="CBO">On campaign (CBO)</option>
+                  </Select>
+                  {form.campaignBudgetMode === 'CBO' && (
+                    <div className="mt-2">
+                      <Input
+                        type="number"
+                        value={form.campaignDailyBudget}
+                        onChange={set('campaignDailyBudget')}
+                        placeholder="Campaign daily budget (USD)"
+                      />
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+            {form.campaignMode !== 'create_new' && (
             <Select value={form.campaignId} onChange={set('campaignId')}>
               <option value="">Select campaign</option>
               {campaigns.map((c) => (
@@ -644,7 +725,8 @@ export default function LaunchTemplateEditor({ open, onClose, template, onSaved 
                 </option>
               ))}
             </Select>
-            {form.campaignId && (() => {
+            )}
+            {form.campaignMode !== 'create_new' && form.campaignId && (() => {
               const camp = campaigns.find((c) => c.id === form.campaignId);
               if (!camp) return null;
               return (
@@ -660,6 +742,13 @@ export default function LaunchTemplateEditor({ open, onClose, template, onSaved 
           <Card>
             <SectionLabel icon={Tag}>Naming Convention</SectionLabel>
             <div className="space-y-4">
+              <div>
+                <FieldLabel>Ad Set Grouping</FieldLabel>
+                <Select value={form.adsetGrouping} onChange={set('adsetGrouping')}>
+                  <option value="per_angle">One ad set per angle</option>
+                  <option value="single">Single ad set, all ads inside (retargeting)</option>
+                </Select>
+              </div>
               <div>
                 <FieldLabel>Ad Set Name Pattern</FieldLabel>
                 <Input

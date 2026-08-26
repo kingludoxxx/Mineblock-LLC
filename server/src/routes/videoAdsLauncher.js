@@ -6,7 +6,7 @@ import {
   uploadAdVideo, waitForVideoReady, createAd, createAdSet,
   createFlexibleAdCreative, getDefaultAdAccountId, isMetaAdsConfigured,
   getAdAccounts, getPages, getPixels, getCampaigns, getAdSets,
-  getCustomAudiences, DEFAULT_URL_TAGS,
+  getCustomAudiences, DEFAULT_URL_TAGS, createCampaign, deleteCampaign,
 } from '../services/metaAdsApi.js';
 import crypto from 'crypto';
 
@@ -675,7 +675,8 @@ router.post('/launch', authenticate, async (req, res) => {
     if (!templates.length) return res.status(404).json({ success: false, error: { message: 'Template not found' } });
     const template = templates[0];
 
-    if (!template.campaign_id) {
+    const createNewCampaign = template.campaign_mode === 'create_new';
+    if (!template.campaign_id && !createNewCampaign) {
       return res.status(400).json({ success: false, error: { message: 'Template has no campaign configured' } });
     }
 
@@ -707,6 +708,34 @@ router.post('/launch', authenticate, async (req, res) => {
 
     const normalizedCountries = normalizeCountries(template);
 
+    // NEW CAMPAIGN PER LAUNCH — mirrors the statics launcher: create the
+    // campaign first, every ad set below lands inside it; if all ad sets die
+    // the empty campaign is deleted again further down.
+    let launchCampaignId = template.campaign_id;
+    let launchCampaignName = template.campaign_name || null;
+    if (createNewCampaign) {
+      launchCampaignName = buildLaunchName(template.campaign_name_pattern || '{date} - {product} - {angle} - {batch}', {
+        date: dateStr,
+        product: '',
+        angle: videos[0]?.angle || 'General',
+        batch: batchNum,
+      }).replace(/\s+-\s+-\s+/g, ' - ').trim();
+      try {
+        launchCampaignId = await createCampaign(template.ad_account_id, {
+          name: launchCampaignName,
+          objective: template.campaign_objective || 'OUTCOME_SALES',
+          budgetMode: template.campaign_budget_mode || 'ABO',
+          dailyBudget: template.campaign_daily_budget,
+          bidStrategy: template.bid_strategy,
+          specialAdCategories: safeArr(template.special_ad_categories),
+          status: 'ACTIVE',
+        });
+      } catch (err) {
+        await pgQuery(`UPDATE video_ads SET status = 'ready', updated_at = NOW() WHERE id = ANY($1)`, [launchableIds]);
+        return res.status(500).json({ success: false, error: { message: `Campaign creation failed: ${err.message}` } });
+      }
+    }
+
     // Create all adsets
     const adsets = [];
     for (let a = 0; a < numAdsets; a++) {
@@ -721,7 +750,7 @@ router.post('/launch', authenticate, async (req, res) => {
       try {
         const adsetId = await createAdSet(template.ad_account_id, {
           name: adsetName,
-          campaignId: template.campaign_id,
+          campaignId: launchCampaignId,
           dailyBudget: template.daily_budget,
           optimizationGoal: template.optimization_goal,
           bidStrategy: template.bid_strategy,
@@ -749,6 +778,9 @@ router.post('/launch', authenticate, async (req, res) => {
         // If first adset fails, abort everything
         if (a === 0) {
           await pgQuery(`UPDATE video_ads SET status = 'ready', updated_at = NOW() WHERE id = ANY($1)`, [launchableIds]);
+          if (createNewCampaign && launchCampaignId) {
+            try { await deleteCampaign(launchCampaignId); } catch (e) { console.warn('[VideoAdsLauncher] empty new campaign cleanup failed:', e.message); }
+          }
           return res.status(500).json({ success: false, error: { message: `Ad set creation failed: ${err.message}` } });
         }
         // If subsequent adset fails, continue with what we have
@@ -778,11 +810,14 @@ router.post('/launch', authenticate, async (req, res) => {
           num: i + 1,
           batch: batchNum,
           product: '',
+          // {name}: the video's own identity, so a retargeting template can
+          // keep each ad's own naming convention inside the single ad set.
+          name: (video.original_name || video.filename || '').replace(/\.[a-z0-9]{2,4}$/i, '') || `Video ${i + 1}`,
         }) + (adsets.length > 1 ? ` [AS${adsets.indexOf(adset) + 1}]` : '');
 
         const result = await launchVideoToAdset({
           video: videoWithCache,
-          template,
+          template: { ...template, campaign_id: launchCampaignId },
           adsetId: adset.id,
           adsetName: adset.name,
           page,
@@ -824,6 +859,9 @@ router.post('/launch', authenticate, async (req, res) => {
       success: true,
       data: {
         results: allResults,
+        campaign_id: launchCampaignId,
+        campaign_name: launchCampaignName,
+        campaign_created: !!createNewCampaign,
         adsets: adsets.map(a => ({ id: a.id, name: a.name })),
         adset_count: adsets.length,
         failed_adsets: numAdsets - adsets.length,

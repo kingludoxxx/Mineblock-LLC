@@ -435,6 +435,79 @@ export async function getCustomAudiences(adAccountId) {
 /**
  * Create an ad set under a campaign
  */
+/**
+ * Create a campaign. Used by launch flows whose template says
+ * campaign_mode='create_new' — the campaign is created first, then ad sets go
+ * inside it. ABO campaigns carry no budget (budgets live on the ad sets, and
+ * createAdSet's CBO probe will correctly see no campaign budget); CBO
+ * campaigns get daily_budget here and ad sets skip theirs.
+ */
+export async function createCampaign(adAccountId, params) {
+  const {
+    name, objective = 'OUTCOME_SALES', status = 'ACTIVE',
+    budgetMode = 'ABO', dailyBudget, bidStrategy,
+    specialAdCategories = [],
+  } = params;
+  if (!name) throw new Error('createCampaign: name is required');
+
+  const VALID_OBJECTIVES = new Set([
+    'OUTCOME_SALES', 'OUTCOME_LEADS', 'OUTCOME_TRAFFIC', 'OUTCOME_AWARENESS',
+    'OUTCOME_ENGAGEMENT', 'OUTCOME_APP_PROMOTION',
+  ]);
+  let resolvedObjective = String(objective || '').toUpperCase();
+  if (!VALID_OBJECTIVES.has(resolvedObjective)) {
+    console.warn(`[createCampaign] Invalid objective "${objective}", falling back to OUTCOME_SALES`);
+    resolvedObjective = 'OUTCOME_SALES';
+  }
+
+  const body = {
+    access_token: META_ACCESS_TOKEN,
+    name,
+    objective: resolvedObjective,
+    status,
+    buying_type: 'AUCTION',
+    // Meta requires the field even when empty.
+    special_ad_categories: Array.isArray(specialAdCategories) ? specialAdCategories : [],
+  };
+  if (budgetMode === 'CBO') {
+    const budgetNum = typeof dailyBudget === 'string' ? parseFloat(dailyBudget) : dailyBudget;
+    if (isNaN(budgetNum) || budgetNum <= 0) throw new Error(`createCampaign: CBO needs a valid campaign daily budget, got: ${dailyBudget}`);
+    body.daily_budget = Math.round(budgetNum * 100); // cents
+    if (bidStrategy) body.bid_strategy = bidStrategy;
+  }
+
+  const res = await fetch(`${META_GRAPH_URL}/${adAccountId}/campaigns`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    signal: AbortSignal.timeout(META_API_TIMEOUT),
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    const err = await res.text();
+    console.error('[createCampaign] Meta error:', err.slice(0, 1000));
+    throw new Error(`Meta campaign create error ${res.status}: ${err.slice(0, 500)}`);
+  }
+  const data = await res.json();
+  console.log(`[createCampaign] created ${data.id} "${name}" (${resolvedObjective}, ${budgetMode})`);
+  return data.id;
+}
+
+/**
+ * Delete a campaign (used to clean up verification campaigns and to roll back
+ * a create_new launch whose ad sets all failed).
+ */
+export async function deleteCampaign(campaignId) {
+  const res = await fetch(`${META_GRAPH_URL}/${campaignId}?access_token=${META_ACCESS_TOKEN}`, {
+    method: 'DELETE',
+    signal: AbortSignal.timeout(META_API_TIMEOUT),
+  });
+  if (!res.ok) {
+    const err = await res.text();
+    throw new Error(`Meta campaign delete error ${res.status}: ${err.slice(0, 300)}`);
+  }
+  return true;
+}
+
 export async function createAdSet(adAccountId, params) {
   const {
     name, campaignId, dailyBudget, optimizationGoal = 'OFFSITE_CONVERSIONS',
