@@ -362,7 +362,21 @@ router.post('/upload', authenticate, async (req, res) => {
 // this is called BOTH at import time and again at LAUNCH time — a video
 // imported today must still upload to Meta next week.
 async function frameV4FreshLink(fileId) {
-  const resp = await frameioFetchV4(`/accounts/${FRAMEIO_ACCOUNT_ID}/files/${fileId}?include=media_links.original,media_links.high_quality,media_links.thumbnail`);
+  // 429-aware: Frame rate-limits bursts hard; a folder of 200 files makes
+  // 200 of these calls. Exponential backoff, then give up loudly.
+  let resp;
+  for (let attempt = 0; ; attempt++) {
+    try {
+      resp = await frameioFetchV4(`/accounts/${FRAMEIO_ACCOUNT_ID}/files/${fileId}?include=media_links.original,media_links.high_quality,media_links.thumbnail`);
+      break;
+    } catch (e) {
+      if (attempt < 3 && /429|Too Many/i.test(e.message)) {
+        await new Promise(r => setTimeout(r, [2000, 5000, 12000][attempt]));
+        continue;
+      }
+      throw e;
+    }
+  }
   const d = resp?.data || resp || {};
   const ml = d.media_links || {};
   const pick = (x) => x?.download_url || x?.url || null;
@@ -429,6 +443,7 @@ async function importFromFrameV4(folderOrFileId, frameUrl) {
   const videos = [];
   const skipped = [];
   for (const { id: fid, briefName } of fileIds) {
+    await sleep(250); // pace the file-detail calls under Frame's rate limit
     let meta;
     try { meta = await frameV4FreshLink(fid); }
     catch (e) { skipped.push({ id: fid, reason: e.message }); continue; }
