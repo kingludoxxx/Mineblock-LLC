@@ -166,6 +166,7 @@ function resolvePattern(pattern, vars = {}) {
   const defaults = {
     date: `${pad(today.getMonth() + 1)}${pad(today.getDate())}`,
     angle: 'Dad Bod',
+    name: 'Ad Name',
     batch: '1',
     num: '01',
     product: 'Product',

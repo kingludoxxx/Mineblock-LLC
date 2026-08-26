@@ -708,6 +708,19 @@ router.post('/launch', authenticate, async (req, res) => {
 
     const normalizedCountries = normalizeCountries(template);
 
+    // LANDING-PAGE GUARD: never launch ACTIVE paid ads whose link falls
+    // through to a placeholder (the old chain ended at example.com).
+    const resolvedLandingUrl = (ad_copy?.landing_page_url || '').trim() || template.landing_page_url || process.env.SHOPIFY_STORE_URL || '';
+    if (!/^https?:\/\//.test(resolvedLandingUrl) || /example\.com/.test(resolvedLandingUrl)) {
+      await pgQuery(`UPDATE video_ads SET status = 'ready', updated_at = NOW() WHERE id = ANY($1)`, [launchableIds]);
+      return res.status(400).json({ success: false, error: { message: 'No landing page URL configured: set it in the ad copy or on the template (or SHOPIFY_STORE_URL env). Refusing to launch ads without a destination.' } });
+    }
+
+    // Single-grouping templates are the retargeting format: exactly ONE ad
+    // set holding every ad. Clamp adset_count so a stray spinner value can't
+    // multiply a $50/day ad set N times.
+    const effectiveAdsets = template.adset_grouping === 'single' ? 1 : numAdsets;
+
     // NEW CAMPAIGN PER LAUNCH — mirrors the statics launcher: create the
     // campaign first, every ad set below lands inside it; if all ad sets die
     // the empty campaign is deleted again further down.
@@ -738,14 +751,14 @@ router.post('/launch', authenticate, async (req, res) => {
 
     // Create all adsets
     const adsets = [];
-    for (let a = 0; a < numAdsets; a++) {
+    for (let a = 0; a < effectiveAdsets; a++) {
       const adsetName = buildLaunchName(template.adset_name_pattern || '{date} - Video Batch {batch}', {
         date: dateStr,
         angle: videos[0]?.angle || 'General',
         batch: batchNum,
         product: '',
-        num: numAdsets > 1 ? `${a + 1}` : '01',
-      }) + (numAdsets > 1 ? ` #${a + 1}` : '');
+        num: effectiveAdsets > 1 ? `${a + 1}` : '01',
+      }) + (effectiveAdsets > 1 ? ` #${a + 1}` : '');
 
       try {
         const adsetId = await createAdSet(template.ad_account_id, {
@@ -864,18 +877,22 @@ router.post('/launch', authenticate, async (req, res) => {
         campaign_created: !!createNewCampaign,
         adsets: adsets.map(a => ({ id: a.id, name: a.name })),
         adset_count: adsets.length,
-        failed_adsets: numAdsets - adsets.length,
+        failed_adsets: effectiveAdsets - adsets.length,
         batch_status: allLaunched ? 'launched' : allResults.some(r => r.status === 'launched') ? 'partial' : 'failed',
       }
     });
   } catch (err) {
     console.error('[VideoAdsLauncher] POST /launch error:', err);
-    // CRITICAL: reset any videos stuck in 'launching' from this batch
-    if (video_ids?.length) {
+    // CRITICAL: reset any videos stuck in 'launching' from this batch.
+    // (Must read req.body — video_ids is const-scoped INSIDE the try, so
+    // referencing it here threw ReferenceError and made this whole block
+    // dead code, stranding videos in 'launching'.)
+    const stuckIds = req.body?.video_ids;
+    if (stuckIds?.length) {
       try {
         await pgQuery(
           `UPDATE video_ads SET status = 'ready', updated_at = NOW() WHERE id = ANY($1) AND status = 'launching'`,
-          [video_ids]
+          [stuckIds]
         );
       } catch (resetErr) {
         console.error('[VideoAdsLauncher] Failed to reset stuck videos:', resetErr.message);

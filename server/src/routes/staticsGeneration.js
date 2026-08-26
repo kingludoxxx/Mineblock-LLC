@@ -6349,10 +6349,29 @@ async function _doLaunch(req, res) {
       return res.status(400).json({ success: false, error: { message: 'No launchable creatives found (must be approved or ready)' } });
     }
 
+    // Recover rows stranded in 'launching' by a mid-launch deploy/restart —
+    // nothing else in the codebase ever resets them (audit 2026-08-26).
     await pgQuery(
-      `UPDATE spy_creatives SET status = 'launching' WHERE id = ANY($1)`,
+      `UPDATE spy_creatives SET status = 'ready', review_notes = 'Recovered from interrupted launch'
+        WHERE status = 'launching' AND updated_at < NOW() - INTERVAL '30 minutes'`
+    ).catch(() => {});
+    // Status-guarded: without the filter an already-launched/rejected id in the
+    // request got flipped to 'launching', then swept back to 'ready' at the
+    // end — destroying its real status and inviting a duplicate relaunch.
+    await pgQuery(
+      `UPDATE spy_creatives SET status = 'launching' WHERE id = ANY($1) AND status IN ('approved', 'ready')`,
       [creative_ids]
     );
+
+    // LANDING-PAGE GUARD: the old chain ended in an 'https://example.com'
+    // placeholder, which silently launched ACTIVE paid ads pointing at
+    // example.com when no copy set / template URL / env var was present.
+    // Money must never spend against a placeholder — refuse instead.
+    const resolvedLink = copySet?.landing_page_url || template.landing_page_url || process.env.SHOPIFY_STORE_URL || '';
+    if (!/^https?:\/\//.test(resolvedLink) || /example\.com/.test(resolvedLink)) {
+      await pgQuery(`UPDATE spy_creatives SET status = 'ready' WHERE id = ANY($1) AND status = 'launching'`, [creative_ids]).catch(() => {});
+      return res.status(400).json({ success: false, error: { message: 'No landing page URL configured: set one on the copy set or the template (or SHOPIFY_STORE_URL env). Refusing to launch ads without a destination.' } });
+    }
 
     const now = new Date();
     const dateStr = `${String(now.getDate()).padStart(2, '0')}/${String(now.getMonth() + 1).padStart(2, '0')}`;
@@ -6406,7 +6425,7 @@ async function _doLaunch(req, res) {
         product: creatives[0]?.product_name || '',
         angle: creativesByAngle.size === 1 ? firstAngle : 'Mixed',
         batch: batchNum,
-      }).replace(/\s+-\s+-\s+/g, ' - ').trim();
+      }).replace(/\{\w+\}/g, '').replace(/\s+-\s+-\s+/g, ' - ').replace(/(^\s*-\s*)|(\s*-\s*$)/g, '').trim();
       try {
         launchCampaignId = await createCampaign(template.ad_account_id, {
           name: launchCampaignName,
@@ -6446,7 +6465,7 @@ async function _doLaunch(req, res) {
         `SELECT id, parent_creative_id, aspect_ratio, image_url, meta_image_hash
            FROM spy_creatives
           WHERE parent_creative_id = ANY($1::uuid[])
-            AND status IN ('approved', 'ready')
+            AND status IN ('approved', 'ready', 'launching')
             AND image_url IS NOT NULL`,
         [creative_ids]
       );
@@ -6463,14 +6482,18 @@ async function _doLaunch(req, res) {
     let bucketIdx = 0;
     for (const [angleKey, bucketCreatives] of creativesByAngle.entries()) {
       bucketIdx++;
-      const bucketBatchNum = (batchNum + bucketIdx) % 10000;
+      // Single-bucket launches (the common case + retargeting) keep the same
+      // batch number as the campaign name; only extra buckets offset it.
+      const bucketBatchNum = creativesByAngle.size === 1 ? batchNum : (batchNum + bucketIdx) % 10000;
       let adsetId = null;
+      // Trailing scrub: {name}/{num} only exist per-AD; left in an AD SET
+      // pattern they reached Meta as the literal text "{name}".
       const adsetName = buildLaunchName(template.adset_name_pattern || '{date} - Batch {batch}', {
         date: dateStr,
         angle: angleKey,
         batch: bucketBatchNum,
         product: bucketCreatives[0]?.product_name || '',
-      });
+      }).replace(/\{\w+\}/g, '').replace(/\s+-\s+-\s+/g, ' - ').replace(/(^\s*-\s*)|(\s*-\s*$)/g, '').trim();
 
       try {
         adsetId = await createAdSet(template.ad_account_id, {
@@ -6517,7 +6540,10 @@ async function _doLaunch(req, res) {
         results.push({ creative_id: creative.id, status: 'skipped', reason: 'Handled as part of group launch' });
         continue;
       }
-      if (creative.group_id) processedGroupIds.add(creative.group_id);
+      // NOTE: the group is marked processed on SUCCESS (below), not here —
+      // marking it before the try meant a failed leader silently skipped
+      // every sibling with 'Handled as part of group launch' for a launch
+      // that never happened.
 
       const page = selectedPages.length ? selectedPages[pageIdx % selectedPages.length] : null;
       pageIdx++;
@@ -6530,7 +6556,17 @@ async function _doLaunch(req, res) {
         product: creative.product_name || '',
         // {name}: the creative's own identity — lets a retargeting template
         // keep each ad's own naming convention inside the single ad set.
-        name: creative.source_label || `${creative.angle || angleKey || 'General'} ${i + 1}`,
+        // Chain: the name it launched under before (retargeting = relaunching
+        // a proven ad) > a meaningful label > the house convention. Editor
+        // artifacts like 'auto-save'/'composer-describe' are NOT names.
+        name: (() => {
+          const prior = safeArr(creative.meta_ad_ids);
+          const priorName = prior.length ? prior[prior.length - 1]?.ad_name : null;
+          if (priorName) return priorName;
+          const label = String(creative.source_label || '').trim();
+          if (label && !/^(auto[- ]?save|composer([- ]describe)?|upload(ed)?|untitled)$/i.test(label)) return label;
+          return `${dateStr} - ${creative.angle || angleKey || 'General'} ${i + 1}`;
+        })(),
       });
 
       try {
@@ -6548,7 +6584,7 @@ async function _doLaunch(req, res) {
 
         if (creative.group_id) {
           const siblings = await pgQuery(
-            "SELECT id, aspect_ratio, image_url, meta_image_hash FROM spy_creatives WHERE group_id = $1 AND id != $2 AND status IN ('approved', 'ready') AND image_url IS NOT NULL",
+            "SELECT id, aspect_ratio, image_url, meta_image_hash FROM spy_creatives WHERE group_id = $1 AND id != $2 AND status IN ('approved', 'ready', 'launching') AND image_url IS NOT NULL",
             [creative.group_id, creative.id]
           ).catch(() => []);
           for (const s of siblings) {
@@ -6615,7 +6651,7 @@ async function _doLaunch(req, res) {
         const cta  = copySet?.cta_button || genCopy.cta || 'SHOP_NOW';
         // SHOPIFY_STORE_URL is a REQUIRED per-brand env var (Mineblock: https://mineblock.co,
         // Puure: https://trypuure.co, etc.). Placeholder catches missing config.
-        const link = copySet?.landing_page_url || template.landing_page_url || process.env.SHOPIFY_STORE_URL || 'https://example.com';
+        const link = resolvedLink;
 
         const existingMeta = safeArr(creative.meta_ad_ids);
 
@@ -6681,6 +6717,7 @@ async function _doLaunch(req, res) {
           }
         }
 
+        if (creative.group_id) processedGroupIds.add(creative.group_id);
         results.push({
           creative_id: creative.id,
           status: 'launched',
