@@ -9,6 +9,7 @@ import {
   getCustomAudiences, DEFAULT_URL_TAGS, createCampaign, deleteCampaign,
 } from '../services/metaAdsApi.js';
 import crypto from 'crypto';
+import { frameioFetchV4, FRAMEIO_ACCOUNT_ID } from './clickupWebhook.js';
 
 const router = Router();
 router.use(authenticate, requirePermission('video-ads-launcher', 'access'));
@@ -357,6 +358,71 @@ router.post('/upload', authenticate, async (req, res) => {
 
 // ── Frame.io import ──────────────────────────────────────────────────────
 
+// Resolve a fresh signed download URL for a V4 file. Media links expire, so
+// this is called BOTH at import time and again at LAUNCH time — a video
+// imported today must still upload to Meta next week.
+async function frameV4FreshLink(fileId) {
+  const resp = await frameioFetchV4(`/accounts/${FRAMEIO_ACCOUNT_ID}/files/${fileId}?include=media_links.original,media_links.high_quality,media_links.thumbnail`);
+  const d = resp?.data || resp || {};
+  const ml = d.media_links || {};
+  const pick = (x) => x?.download_url || x?.url || null;
+  return {
+    name: d.name || null,
+    fileSize: d.file_size ?? null,
+    mediaType: d.media_type || null,
+    videoUrl: pick(ml.original) || pick(ml.high_quality),
+    thumbUrl: pick(ml.thumbnail),
+    rawKeys: Object.keys(ml),
+  };
+}
+
+async function importFromFrameV4(folderOrFileId, frameUrl) {
+  if (!FRAMEIO_ACCOUNT_ID) throw new Error('FRAMEIO_ACCOUNT_ID not configured');
+  // Try folder children first (the operator connects FOLDERS); fall back to a
+  // single file when the children call rejects the id.
+  let items = null;
+  try {
+    const resp = await frameioFetchV4(`/accounts/${FRAMEIO_ACCOUNT_ID}/folders/${folderOrFileId}/children?page_size=100`);
+    items = Array.isArray(resp?.data) ? resp.data : (Array.isArray(resp) ? resp : null);
+  } catch { items = null; }
+
+  const fileIds = [];
+  if (items) {
+    for (const it of items) {
+      if (it.type === 'file' || it.media_type?.startsWith('video') || /\.(mp4|mov|webm|avi|mkv)$/i.test(it.name || '')) {
+        if (it.type !== 'folder') fileIds.push(it.id);
+      }
+    }
+  } else {
+    fileIds.push(folderOrFileId); // single file URL
+  }
+  if (!fileIds.length) return { videos: [], count: 0, message: 'No files found in Frame.io folder' };
+
+  const videos = [];
+  const skipped = [];
+  for (const fid of fileIds) {
+    let meta;
+    try { meta = await frameV4FreshLink(fid); }
+    catch (e) { skipped.push({ id: fid, reason: e.message }); continue; }
+    const isVideo = (meta.mediaType || '').startsWith('video') || /\.(mp4|mov|webm|avi|mkv)$/i.test(meta.name || '');
+    if (!isVideo) { continue; }
+    if (!meta.videoUrl) { skipped.push({ id: fid, name: meta.name, reason: `no media link (got: ${meta.rawKeys.join(',') || 'none'})` }); continue; }
+
+    // Skip re-imports of the same Frame file (same folder synced twice).
+    const dupe = await pgQuery(`SELECT id FROM video_ads WHERE launch_config->>'frame_file_id' = $1 AND status != 'failed' LIMIT 1`, [fid]);
+    if (dupe.length) { skipped.push({ id: fid, name: meta.name, reason: 'already imported' }); continue; }
+
+    const id = crypto.randomUUID();
+    const row = await pgQuery(
+      `INSERT INTO video_ads (id, filename, original_name, file_size, content_type, source, source_url, video_url, thumbnail_url, status, launch_config)
+       VALUES ($1,$2,$3,$4,$5,'frame',$6,$7,$8,'uploaded',$9::jsonb) RETURNING *`,
+      [id, meta.name || 'frame_video.mp4', meta.name, meta.fileSize || 0, meta.mediaType || 'video/mp4', frameUrl, meta.videoUrl, meta.thumbUrl, JSON.stringify({ frame_file_id: fid })]
+    );
+    videos.push(row[0]);
+  }
+  return { videos, count: videos.length, skipped };
+}
+
 router.post('/import-frame', authenticate, async (req, res) => {
   try {
     await ensureTables();
@@ -446,6 +512,19 @@ router.post('/import-frame', authenticate, async (req, res) => {
 
     if (!assetId) {
       return res.status(400).json({ success: false, error: { message: 'Could not extract asset ID from Frame.io URL. Supported formats: next.frame.io/project/.../assetId, app.frame.io/reviews/..., app.frame.io/presentations/...' } });
+    }
+
+    // V4 FIRST for next.frame.io URLs. The operator's editing folders live in
+    // Frame.io V4 (Adobe IMS OAuth) — the V2 API does not know V4 asset ids at
+    // all, so a next.frame.io folder URL used to dead-end with a V2 404.
+    if (urlObj.hostname === 'next.frame.io') {
+      try {
+        const out = await importFromFrameV4(assetId, frame_url);
+        return res.json({ success: true, data: out });
+      } catch (v4err) {
+        console.error('[VideoAdsLauncher] V4 import failed:', v4err.message);
+        return res.status(500).json({ success: false, error: { message: `Frame.io v4 import failed: ${v4err.message}` } });
+      }
     }
 
     // Fetch asset data from Frame.io API v2
@@ -814,6 +893,20 @@ router.post('/launch', authenticate, async (req, res) => {
         const video = videos[i];
         // Patch in cached meta_video_id so second adset skips re-upload
         const videoWithCache = { ...video, meta_video_id: metaVideoCache.get(video.id) || video.meta_video_id };
+        // Frame.io signed URLs expire — re-resolve a fresh link at launch time
+        // for frame-imported videos that still need a Meta upload.
+        const lc = safeObj(video.launch_config);
+        if (!videoWithCache.meta_video_id && lc.frame_file_id) {
+          try {
+            const fresh = await frameV4FreshLink(lc.frame_file_id);
+            if (fresh.videoUrl) {
+              videoWithCache.video_url = fresh.videoUrl;
+              await pgQuery(`UPDATE video_ads SET video_url = $1, updated_at = NOW() WHERE id = $2`, [fresh.videoUrl, video.id]).catch(() => {});
+            }
+          } catch (e) {
+            console.warn(`[VideoAdsLauncher] fresh Frame link failed for ${video.id} (using stored URL): ${e.message}`);
+          }
+        }
         const page = selectedPages[pageIdx % selectedPages.length];
         pageIdx++;
 

@@ -2383,4 +2383,9 @@ router.post('/admin-frameio-cleanup', adminOrSuperAdmin, async (req, res) => {
   }
 });
 
+// Shared with the video ads launcher: Frame.io v4 fetch (IMS OAuth) and the
+// account id, so importing from a next.frame.io (v4) folder reuses this
+// file's token refresh machinery instead of duplicating it.
+export { frameioFetchV4, FRAMEIO_ACCOUNT_ID };
+
 export default router;
