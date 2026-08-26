@@ -378,29 +378,44 @@ async function frameV4FreshLink(fileId) {
 
 async function importFromFrameV4(folderOrFileId, frameUrl) {
   if (!FRAMEIO_ACCOUNT_ID) throw new Error('FRAMEIO_ACCOUNT_ID not configured');
-  // Try folder children first (the operator connects FOLDERS); fall back to a
-  // single file when the children call rejects the id.
-  let items = null;
-  try {
-    const resp = await frameioFetchV4(`/accounts/${FRAMEIO_ACCOUNT_ID}/folders/${folderOrFileId}/children?page_size=100`);
-    items = Array.isArray(resp?.data) ? resp.data : (Array.isArray(resp) ? resp : null);
-  } catch { items = null; }
-
-  const fileIds = [];
-  if (items) {
+  // The editing folder holds ONE SUBFOLDER PER BRIEF (named with the full
+  // brief naming convention), with the delivered videos inside — so the walk
+  // recurses (bounded), and each file remembers the nearest brief-folder
+  // name: that name becomes the imported video's identity, which the {name}
+  // launch token turns into the ad's name.
+  const listChildren = async (id, kind) => {
+    const path = kind === 'stack'
+      ? `/accounts/${FRAMEIO_ACCOUNT_ID}/version_stacks/${id}/children?page_size=100`
+      : `/accounts/${FRAMEIO_ACCOUNT_ID}/folders/${id}/children?page_size=100`;
+    const resp = await frameioFetchV4(path);
+    return Array.isArray(resp?.data) ? resp.data : (Array.isArray(resp) ? resp : []);
+  };
+  const BRIEF_RX = /^PL\s*-\s*B\d+/i;
+  const fileIds = [];   // [{ id, briefName }]
+  const walk = async (id, depth, briefName, kind) => {
+    if (depth > 3 || fileIds.length >= 200) return;
+    let items;
+    try { items = await listChildren(id, kind); } catch { return; }
     for (const it of items) {
-      if (it.type === 'file' || it.media_type?.startsWith('video') || /\.(mp4|mov|webm|avi|mkv)$/i.test(it.name || '')) {
-        if (it.type !== 'folder') fileIds.push(it.id);
+      if (it.type === 'folder') {
+        await walk(it.id, depth + 1, BRIEF_RX.test(it.name || '') ? it.name : briefName, 'folder');
+      } else if (it.type === 'version_stack') {
+        await walk(it.id, depth + 1, briefName, 'stack');
+      } else {
+        fileIds.push({ id: it.id, briefName });
       }
     }
-  } else {
-    fileIds.push(folderOrFileId); // single file URL
-  }
+  };
+
+  let isFolder = true;
+  try { await listChildren(folderOrFileId, 'folder'); } catch { isFolder = false; }
+  if (isFolder) await walk(folderOrFileId, 0, null, 'folder');
+  else fileIds.push({ id: folderOrFileId, briefName: null }); // single file URL
   if (!fileIds.length) return { videos: [], count: 0, message: 'No files found in Frame.io folder' };
 
   const videos = [];
   const skipped = [];
-  for (const fid of fileIds) {
+  for (const { id: fid, briefName } of fileIds) {
     let meta;
     try { meta = await frameV4FreshLink(fid); }
     catch (e) { skipped.push({ id: fid, reason: e.message }); continue; }
@@ -416,7 +431,9 @@ async function importFromFrameV4(folderOrFileId, frameUrl) {
     const row = await pgQuery(
       `INSERT INTO video_ads (id, filename, original_name, file_size, content_type, source, source_url, video_url, thumbnail_url, status, launch_config)
        VALUES ($1,$2,$3,$4,$5,'frame',$6,$7,$8,'uploaded',$9::jsonb) RETURNING *`,
-      [id, meta.name || 'frame_video.mp4', meta.name, meta.fileSize || 0, meta.mediaType || 'video/mp4', frameUrl, meta.videoUrl, meta.thumbUrl, JSON.stringify({ frame_file_id: fid })]
+      // original_name = the brief folder's naming convention when present —
+      // it is the identity the {name} launch token puts on the Meta ad.
+      [id, meta.name || 'frame_video.mp4', briefName || meta.name, meta.fileSize || 0, meta.mediaType || 'video/mp4', frameUrl, meta.videoUrl, meta.thumbUrl, JSON.stringify({ frame_file_id: fid, brief_name: briefName || null })]
     );
     videos.push(row[0]);
   }
