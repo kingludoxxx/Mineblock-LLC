@@ -11320,9 +11320,10 @@ RULES:
         INSERT INTO spy_creatives
           (product_id, product_name, image_url, aspect_ratio, status, pipeline,
            angle, reference_name, source_label, image_engine,
-           composer_source, composer_prompt, generation_task_id, im_number, creator)
+           composer_source, composer_prompt, generation_task_id, im_number, creator,
+           product_image_index)
         VALUES ($1, $2, $3, $4, 'composer', 'standard', $5, 'Described', 'composer-describe',
-                $6, 'describe', $7, $8, $9, $10)
+                $6, 'describe', $7, $8, $9, $10, $11)
         ON CONFLICT (generation_task_id) WHERE generation_task_id IS NOT NULL DO NOTHING
         RETURNING id, status, aspect_ratio, angle, image_url, im_number
       `, [
@@ -11336,6 +11337,11 @@ RULES:
         taskId,
         imNumber,
         DEFAULT_CREATOR,
+        // Persist WHICH shot was used. The rotation fix picked the index but
+        // never recorded it, so the column kept its DEFAULT 0 while the card
+        // actually rendered shot 2 — meaning the one query that can audit
+        // rotation across a batch reported the opposite of the truth.
+        productImageIndex,
       ]);
 
       storeTaskResult(taskId, {
