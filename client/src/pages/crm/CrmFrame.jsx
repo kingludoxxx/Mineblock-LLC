@@ -37,12 +37,20 @@ export default function CrmFrame({ path = '/app', title = 'CRM' }) {
   // never to "no CRM at all".
   const plainSrc = `${CRM_ORIGIN}${path}`;
   const [ssoSrc, setSsoSrc] = useState(null);
-  const src = ssoSrc || plainSrc;
+  const [ssoFailed, setSsoFailed] = useState(false);
+  // HOLD the frame until the ticket answer is in. Rendering plainSrc while the
+  // ticket was still in flight put the CRM's own login on screen for the first
+  // seconds of every visit — the operator saw a second sign-in that the SSO
+  // exists to remove. The plain URL is now strictly the FALLBACK for a failed
+  // mint, never the placeholder for a pending one.
+  const src = ssoSrc || (ssoFailed ? plainSrc : null);
   const [state, setState] = useState('loading'); // loading | ok | blocked
   const timer = useRef(null);
 
   useEffect(() => {
     let cancelled = false;
+    setSsoSrc(null);
+    setSsoFailed(false);
     (async () => {
       try {
         const r = await api.get('/crm-sso/ticket');
@@ -51,10 +59,13 @@ export default function CrmFrame({ path = '/app', title = 'CRM' }) {
           setSsoSrc(
             `${CRM_ORIGIN}/api/sso?t=${encodeURIComponent(ticket)}&next=${encodeURIComponent(path)}`,
           );
+        } else if (!cancelled) {
+          setSsoFailed(true);
         }
       } catch {
-        // Not configured, or the CRM has no matching user — the plain URL
-        // already renders, so there is nothing to recover from here.
+        // Not configured, or the CRM has no matching user — degrade to the
+        // CRM's own login rather than showing nothing at all.
+        if (!cancelled) setSsoFailed(true);
       }
     })();
     return () => { cancelled = true; };
@@ -71,6 +82,7 @@ export default function CrmFrame({ path = '/app', title = 'CRM' }) {
 
   useEffect(() => {
     clearTimeout(timer.current);
+    if (!src) return undefined; // nothing loading yet — don't count toward "blocked"
     // setState runs inside the timeout callback, never synchronously here.
     timer.current = setTimeout(
       () => setState((s) => (s === 'loading' ? 'blocked' : s)),
@@ -84,7 +96,7 @@ export default function CrmFrame({ path = '/app', title = 'CRM' }) {
       <div className="flex items-center justify-between px-1 pb-2">
         <h1 className="text-lg font-medium text-text-primary">{title}</h1>
         <a
-          href={src}
+          href={src || plainSrc}
           target="_blank"
           rel="noreferrer"
           className="flex items-center gap-1.5 text-xs text-text-faint hover:text-text-muted"
@@ -105,13 +117,19 @@ export default function CrmFrame({ path = '/app', title = 'CRM' }) {
         </div>
       )}
 
-      <iframe
-        key={src}
-        src={src}
-        title={title}
-        onLoad={() => setState('ok')}
-        className="min-h-0 w-full flex-1 rounded-lg border border-border-subtle bg-white"
-      />
+      {src ? (
+        <iframe
+          key={src}
+          src={src}
+          title={title}
+          onLoad={() => setState('ok')}
+          className="min-h-0 w-full flex-1 rounded-lg border border-border-subtle bg-white"
+        />
+      ) : (
+        <div className="flex min-h-0 w-full flex-1 items-center justify-center rounded-lg border border-border-subtle bg-white/[0.02] text-sm text-text-faint">
+          Signing you in…
+        </div>
+      )}
     </div>
   );
 }

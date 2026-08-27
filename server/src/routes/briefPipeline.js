@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { authenticate } from '../middleware/auth.js';
-import { scoreBrief, ungroundedHookClaims } from '../services/briefScore.js';
+import { scoreBrief, specificityScore, lengthParityScore, DEFAULT_WEIGHTS, ungroundedHookClaims, nearDuplicateHookIdx } from '../services/briefScore.js';
 import {
   getAutopilotConfig, saveAutopilotConfig, runAutopilotBatch, reportToSlack,
 } from '../services/autopilot.js';
@@ -20,7 +20,8 @@ import { fileURLToPath } from 'url';
 import {
   resolveAdAccountNames, getAdAccounts, getPages, getPixels, getCampaigns, getAdSets,
   getCustomAudiences, createAdSet, createFlexibleAdCreative, createAd,
-  uploadAdImage, uploadAdVideo, uploadAdImageFromUrl, isMetaAdsConfigured, getAllAdAccountIds
+  uploadAdImage, uploadAdVideo, uploadAdImageFromUrl, isMetaAdsConfigured, getAllAdAccountIds,
+  createCampaign, deleteCampaign, waitForVideoReady, getVideoThumbnail,
 } from '../services/metaAdsApi.js';
 import { uploadBuffer, isR2Configured } from '../services/r2.js';
 import { extractFreshVideoUrl, adLibraryUrl } from '../services/freshVideoUrl.js';
@@ -3316,6 +3317,11 @@ function stripOnScreenText(transcript) {
   let out = transcript;
   // Drop the whole [ON-SCREEN TEXT] block up to the next [SECTION] marker.
   out = out.replace(/\[ON[- ]?SCREEN\s*TEXT\]\s*[\s\S]*?(?=\n\s*\[[A-Z][^\]]*\]|$)/i, '');
+  // Drop the transcriber's ANALYSIS blocks too — [SELLING MESSAGE] and [BRAND]
+  // are scraper metadata, not spoken words (see videoTranscribe.js assembly).
+  // Leaving them in inflated the length-parity baseline by ~330 chars on
+  // B0179: a body at ~100% of the real spoken script measured as 71%.
+  out = out.replace(/\[(?:SELLING\s*MESSAGE|BRAND)\]\s*[\s\S]*?(?=\n\s*\[[A-Z][^\]]*\]|$)/gi, '');
   // Remove remaining section markers so the parser reads plain script.
   out = out.replace(/^\s*\[(AUDIO(?:\s*\/\s*VOICEOVER)?|VOICEOVER(?:\s+TRANSCRIPT)?|AD COPY)\]\s*/gim, '');
   return out.replace(/\n{3,}/g, '\n\n').trim();
@@ -4611,6 +4617,36 @@ async function executeGenerationJob({
             generated.key_changes_from_original = generated.key_adaptations || generated.key_changes_from_original || '';
           }
 
+          // BODY COVERAGE ENFORCEMENT — the body-side counterpart of the hook
+          // enforcement below. B0179 (2026-08-15): the clone dropped the source
+          // beats whose facts didn't map to our product ("organic, safe for
+          // kids") instead of adapting them, duplicated another beat to fill
+          // the hole, and shipped at 71% of source length. The parity scorer
+          // can only FLAG that after the fact; nothing forced a repair. One
+          // targeted retry, accepted only if it genuinely closes the gap.
+          try {
+            const srcLen = (spokenScript || '').trim().length;
+            const bodyLen = String(generated.body || '').length;
+            if (srcLen >= 400 && bodyLen < srcLen * 0.8) {
+              console.log(`[BriefPipeline] clone body covers ${Math.round((bodyLen / srcLen) * 100)}% of source — beat-coverage retry`);
+              const covSys = 'You repair cloned ad scripts. You restore dropped beats faithfully, adapting facts to the new product. You never pad, never invent claims, and never change beats that are already correct.';
+              const covUser = `# SOURCE SPOKEN SCRIPT (${srcLen} chars)\n${spokenScript.trim()}\n\n# OUR CLONED BODY (${bodyLen} chars — too short: it dropped beats)\n${generated.body}\n\n# TASK\nRebuild OUR body so it covers EVERY beat of the source, in order.\nRules:\n1. A source beat whose facts do not map to our product must be ADAPTED — swap in our product's equivalent facts drawn from our current body's own claims. Never omit a beat, and never invent a claim our body does not already make.\n2. If our body says the same beat twice, keep one strong version and delete the echo.\n3. A joke or aside survives only if its context still makes sense after the product swap; otherwise drop it and cover that beat straight.\n4. Do not pad. Target ${Math.round(srcLen * 0.9)} to ${Math.round(srcLen * 1.1)} characters. No dashes or em dashes.\n5. Keep the narrator, POV and voice of our current body.\nReturn ONLY JSON: {"body":"..."}`;
+              const cov = await callClaude(covSys, covUser, 6000, { opus: true, timeoutMs: 180000 });
+              const newBody = String(cov?.body || '').trim();
+              // accept only a genuine improvement inside sane bounds — a
+              // rejected retry keeps the original body and the scorer's flag
+              if (newBody.length > bodyLen && newBody.length >= srcLen * 0.75 && newBody.length <= srcLen * 1.4) {
+                generated.body = newBody;
+                stripDashesFromBrief(generated);
+                console.log(`[BriefPipeline] beat-coverage retry accepted: ${bodyLen} -> ${newBody.length} chars (${Math.round((newBody.length / srcLen) * 100)}% of source)`);
+              } else {
+                console.warn(`[BriefPipeline] beat-coverage retry rejected (${newBody.length} chars vs source ${srcLen}) — keeping original body`);
+              }
+            }
+          } catch (covErr) {
+            console.warn(`[BriefPipeline] beat-coverage retry skipped: ${covErr.message}`);
+          }
+
           // Clone scoring: measure fidelity, not novelty. Clones replicate proven winners
           // so high scores reflect successful structural replication, not creative originality.
           // Hook-body blend is validated AFTER the brief row is inserted (off the
@@ -4947,6 +4983,10 @@ async function executeGenerationJob({
               hooks.forEach((h, i) => {
                 if ((!mechPrecedent && SPEC_HOOK_RX.test(String(h.text))) || ungroundedHookClaims(h.text, gen.body).length) offending.add(i);
               });
+              // Echoes die like lies: near-duplicate hooks (the later of each
+              // pair) join the drop set. DUPLICATE_HOOK cost 4 of 5 briefs on
+              // 2026-08-14 — 3 distinct hooks beat 5 where two are echoes.
+              for (const i of nearDuplicateHookIdx(hooks, { singleDoor })) offending.add(i);
               if (offending.size && hooks.length - offending.size >= 3) {
                 const droppedTexts = [...offending].map(i => `"${String(hooks[i].text).slice(0, 60)}"`);
                 hooks = hooks.filter((_, i) => !offending.has(i)).map((h, i) => ({ ...h, id: `H${i + 1}` }));
@@ -4967,7 +5007,12 @@ async function executeGenerationJob({
             // arithmetic on the finished text.
             const scored = scoreBrief({
               body: gen.body,
-              sourceText: rawScript,
+              // Parity must be judged against what the generator was ASKED to
+              // clone — the spoken script — not the raw transcript with its
+              // on-screen overlays. Measured on the 2026-08-14 batch: one brief
+              // read 47% against raw while being 118% against spoken, i.e.
+              // penalized for a baseline it was never targeting.
+              sourceText: spokenScript || rawScript,
               validator: {
                 architecture: gen.hook_architecture || null,
                 hookCount: hooks.length,
@@ -5184,24 +5229,90 @@ router.get('/generated/:id', authenticate, async (req, res) => {
   }
 });
 
+// POST /generated/:id/rescore — recompute the body-derived score components
+// against the CURRENT scorer and re-weight the overall. Exists so a scorer fix
+// can correct already-generated briefs instead of stranding stale numbers in
+// the Kanban. Validator-derived components (blend, integrity, parity) are kept
+// as stored: they came from signals that no longer exist on the row.
+router.post('/generated/:id/rescore', authenticate, async (req, res) => {
+  if (!validateUuid(req, res)) return;
+  try {
+    const rows = await pgQuery(
+      `SELECT g.id, g.body, g.overall_score, g.scores_json, r.transcript
+         FROM brief_pipeline_generated g
+         LEFT JOIN brief_pipeline_winners w ON w.id = g.winner_id
+         LEFT JOIN brief_pipeline_references r ON r.id = w.reference_id
+        WHERE g.id = $1`,
+      [req.params.id]
+    );
+    if (!rows.length) return res.status(404).json({ success: false, error: { message: 'Brief not found' } });
+    const brief = rows[0];
+    const prev = parseJsonb(brief.scores_json);
+    if (!prev?.scored || !prev.components) {
+      return res.status(409).json({ success: false, error: { message: 'Brief has no stored score to rescore' } });
+    }
+    const weights = prev.weights || DEFAULT_WEIGHTS;
+    const components = { ...prev.components, specificity: specificityScore(brief.body) };
+    // Length parity is recomputed against the CURRENT spoken-script extraction
+    // when the reference transcript is still on file — the stored value was
+    // measured against a baseline that included [SELLING MESSAGE]/[BRAND]
+    // scraper metadata, ~330 chars nobody ever spoke.
+    let parityPct = null;
+    if (brief.transcript) {
+      const spoken = stripOnScreenText(brief.transcript);
+      if (spoken && spoken.length) {
+        components.lengthParity = lengthParityScore(String(brief.body || '').length, spoken.length);
+        parityPct = Math.round((String(brief.body || '').length / spoken.length) * 100);
+      }
+    }
+    const present = Object.entries(components).filter(([, v]) => typeof v === 'number');
+    const totalWeight = present.reduce((s, [k]) => s + (weights[k] ?? 0), 0);
+    if (!present.length || totalWeight <= 0) {
+      return res.status(409).json({ success: false, error: { message: 'No weighted component present after rescore' } });
+    }
+    const overall = Math.round(present.reduce((s, [k, v]) => s + v * ((weights[k] ?? 0) / totalWeight), 0) * 10) / 10;
+    const flags = (prev.flags || []).filter(f => f !== 'LOW_SPECIFICITY' && !/^LENGTH_\d+PCT/.test(f));
+    if (components.specificity !== null && components.specificity < 5) flags.push('LOW_SPECIFICITY');
+    if (parityPct !== null && typeof components.lengthParity === 'number' && components.lengthParity < 6) {
+      flags.push(`LENGTH_${parityPct}PCT_OF_SOURCE`);
+    }
+    const next = { ...prev, overall, components, flags, rescoredAt: new Date().toISOString() };
+    await pgQuery(
+      `UPDATE brief_pipeline_generated SET overall_score = $1, scores_json = $2::jsonb WHERE id = $3`,
+      [overall, JSON.stringify(next), brief.id]
+    );
+    res.json({ success: true, brief: { id: brief.id, overall_score: overall, was: prev.overall, components, flags } });
+  } catch (err) {
+    console.error('[BriefPipeline] POST /generated/:id/rescore error:', err.message);
+    res.status(500).json({ success: false, error: { message: err.message } });
+  }
+});
+
 // PATCH /generated/:id — update status (approve/reject)
 router.patch('/generated/:id', authenticate, async (req, res) => {
   if (!validateUuid(req, res)) return;
   try {
     await ensureTables();
     const reqBody = req.body || {};
-    const { status: newStatus, hooks, body: briefBody, highlighted_text: ht } = reqBody;
+    const { status: newStatus, hooks, body: briefBody, highlighted_text: ht, video_url: videoUrl } = reqBody;
 
     let contentUpdated = false;
     let contentResult = null;
 
-    // If content edit (hooks/body/highlighted_text) - handle this BEFORE status change
-    if (hooks !== undefined || briefBody !== undefined || ht !== undefined) {
+    // If content edit (hooks/body/highlighted_text/video_url) - handle this BEFORE status change
+    if (hooks !== undefined || briefBody !== undefined || ht !== undefined || videoUrl !== undefined) {
       const setClauses = [];
       const params = [];
       let idx = 1;
       if (hooks !== undefined) { setClauses.push(`hooks = $${idx++}`); params.push(JSON.stringify(hooks)); }
       if (briefBody !== undefined) { setClauses.push(`body = $${idx++}`); params.push(briefBody); }
+      if (videoUrl !== undefined) {
+        const vu = String(videoUrl || '').trim();
+        if (vu && !/^https?:\/\//.test(vu)) {
+          return res.status(400).json({ success: false, error: { message: 'video_url must be a full http(s) URL (or empty to clear)' } });
+        }
+        setClauses.push(`video_url = $${idx++}`); params.push(vu || null);
+      }
       if (ht !== undefined) {
         // Accept array or stringified array; normalize to JSON. Cast to jsonb
         // so older TEXT-shaped rows still accept the value cleanly.
@@ -6097,9 +6208,12 @@ router.post('/launch-templates', authenticate, async (req, res) => {
         attribution_window, include_audiences, exclude_audiences,
         countries, age_min, age_max, gender, ad_format, utm_parameters,
         landing_page_url, translation_languages, product_id, is_default, created_by,
-        schedule_enabled, schedule_date, schedule_time
+        schedule_enabled, schedule_date, schedule_time,
+        adset_grouping, campaign_mode, campaign_objective, campaign_name_pattern,
+        campaign_budget_mode, campaign_daily_budget, special_ad_categories
       ) VALUES (
-        $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35
+        $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,
+        $36,$37,$38,$39,$40,$41,$42
       ) RETURNING *`,
       [
         t.name, t.ad_account_id, t.ad_account_name, t.page_mode || 'single',
@@ -6118,7 +6232,12 @@ router.post('/launch-templates', authenticate, async (req, res) => {
         t.landing_page_url || null,
         JSON.stringify(ensureArr(t.translation_languages)),
         t.product_id || null, t.is_default || false, req.user?.id || null,
-        t.schedule_enabled || false, t.schedule_date || null, t.schedule_time || '00:00'
+        t.schedule_enabled || false, t.schedule_date || null, t.schedule_time || '00:00',
+        t.adset_grouping || 'per_angle', t.campaign_mode || 'existing',
+        t.campaign_objective || 'OUTCOME_SALES',
+        t.campaign_name_pattern || '{date} - {product} - {angle} - {batch}',
+        t.campaign_budget_mode || 'ABO', t.campaign_daily_budget ?? null,
+        JSON.stringify(ensureArr(t.special_ad_categories))
       ]
     );
     res.json({ success: true, data: rows[0] });
@@ -6146,7 +6265,15 @@ router.put('/launch-templates/:id', authenticate, async (req, res) => {
         attribution_window=$19, include_audiences=$20, exclude_audiences=$21,
         countries=$22, age_min=$23, age_max=$24, gender=$25, ad_format=$26, utm_parameters=$27,
         landing_page_url=$28, translation_languages=$29, product_id=$30, is_default=$31,
-        schedule_enabled=$32, schedule_date=$33, schedule_time=$34, updated_at=NOW()
+        schedule_enabled=$32, schedule_date=$33, schedule_time=$34,
+        adset_grouping=COALESCE($36, adset_grouping),
+        campaign_mode=COALESCE($37, campaign_mode),
+        campaign_objective=COALESCE($38, campaign_objective),
+        campaign_name_pattern=COALESCE($39, campaign_name_pattern),
+        campaign_budget_mode=COALESCE($40, campaign_budget_mode),
+        campaign_daily_budget=$41,
+        special_ad_categories=COALESCE($42, special_ad_categories),
+        updated_at=NOW()
       WHERE id=$35 RETURNING *`,
       [
         t.name, t.ad_account_id, t.ad_account_name, t.page_mode || 'single',
@@ -6164,7 +6291,11 @@ router.put('/launch-templates/:id', authenticate, async (req, res) => {
         JSON.stringify(ensureArr(t.translation_languages)),
         t.product_id || null, t.is_default || false,
         t.schedule_enabled || false, t.schedule_date || null, t.schedule_time || '00:00',
-        req.params.id
+        req.params.id,
+        t.adset_grouping || null, t.campaign_mode || null, t.campaign_objective || null,
+        t.campaign_name_pattern || null, t.campaign_budget_mode || null,
+        t.campaign_daily_budget ?? null,
+        t.special_ad_categories !== undefined ? JSON.stringify(ensureArr(t.special_ad_categories)) : null,
       ]
     );
     if (!rows.length) return res.status(404).json({ success: false, error: { message: 'Template not found' } });
@@ -6337,16 +6468,15 @@ router.post('/launch', authenticate, async (req, res) => {
       return res.status(400).json({ success: false, error: { message: 'brief_ids and template_id are required' } });
     }
 
-    // Load template
     const templates = await pgQuery('SELECT * FROM launch_templates WHERE id = $1', [template_id]);
     if (!templates.length) return res.status(404).json({ success: false, error: { message: 'Template not found' } });
     const template = templates[0];
 
-    if (!template.campaign_id) {
-      return res.status(400).json({ success: false, error: { message: 'Template has no campaign configured. Please edit the template and select a campaign.' } });
+    const createNewCampaign = template.campaign_mode === 'create_new';
+    if (!template.campaign_id && !createNewCampaign) {
+      return res.status(400).json({ success: false, error: { message: 'Template has no campaign configured. Select a campaign on the template, or set it to create a new campaign per launch.' } });
     }
 
-    // Load copy set if provided
     let copySet = null;
     if (copy_set_id) {
       const cs = await pgQuery('SELECT * FROM brief_copy_sets WHERE id = $1', [copy_set_id]);
@@ -6354,171 +6484,241 @@ router.post('/launch', authenticate, async (req, res) => {
       copySet = cs[0];
     }
 
-    // Load briefs
+    const safeArr = (v) => { if (Array.isArray(v)) return v; if (typeof v === 'string') { try { let p = JSON.parse(v); if (typeof p === 'string') p = JSON.parse(p); return Array.isArray(p) ? p : []; } catch { return []; } } return []; };
+
+    // LANDING-PAGE GUARD. The old chain fell back to template.utm_parameters —
+    // a tracking QUERY STRING, not a URL — and then to an example.com
+    // placeholder. Money never spends against either; refuse instead.
+    const resolvedLink = String(copySet?.landing_page_url || '').trim()
+      || String(template.landing_page_url || '').trim()
+      || String(process.env.SHOPIFY_STORE_URL || '').trim();
+    if (!/^https?:\/\//.test(resolvedLink) || /example\.com/.test(resolvedLink)) {
+      return res.status(400).json({ success: false, error: { message: 'No landing page URL configured: set one on the copy set or the template. Refusing to launch ads without a destination.' } });
+    }
+
+    const selectedPages = safeArr(template.page_ids).filter(p => p.selected !== false);
+    if (!selectedPages.length || !selectedPages[0]?.id) {
+      return res.status(400).json({ success: false, error: { message: 'No Facebook pages configured in launch template.' } });
+    }
+
+    // ATOMIC LOCK + SELECT: flips eligible briefs to 'launching' and returns
+    // exactly the rows flipped — closes the double-click race and never
+    // touches briefs that are already launched/rejected.
     const briefs = await pgQuery(
-      `SELECT * FROM brief_pipeline_generated WHERE id = ANY($1) AND status IN ('approved', 'ready_to_launch')`,
+      `UPDATE brief_pipeline_generated SET status = 'launching'
+        WHERE id = ANY($1) AND status IN ('approved', 'ready_to_launch')
+        RETURNING *`,
       [brief_ids]
     );
     if (!briefs.length) {
-      return res.status(400).json({ success: false, error: { message: 'No launchable briefs found' } });
+      return res.status(400).json({ success: false, error: { message: 'No launchable briefs found (must be approved or ready to launch, and not already launching)' } });
     }
-    // Fix double-encoded JSONB fields before use
     for (const b of briefs) {
       b.hooks = parseJsonb(b.hooks);
-      b.win_analysis = parseJsonb(b.win_analysis);
-      b.scores_json = parseJsonb(b.scores_json);
     }
+    const lockedIds = briefs.map(b => b.id);
+    const resetLocked = () => pgQuery(
+      `UPDATE brief_pipeline_generated SET status = 'ready_to_launch' WHERE id = ANY($1) AND status = 'launching'`,
+      [lockedIds]
+    ).catch(() => {});
 
-    // Mark briefs as launching
-    await pgQuery(
-      `UPDATE brief_pipeline_generated SET status = 'launching' WHERE id = ANY($1)`,
-      [brief_ids]
-    );
-
-    // Date format: DD-MM (e.g., "08-04" for April 8)
     const now = new Date();
     const dateStr = `${String(now.getDate()).padStart(2, '0')}-${String(now.getMonth() + 1).padStart(2, '0')}`;
     const batchNum = Math.floor(Date.now() / 1000) % 10000;
-    const results = [];
 
-    // Round-robin page selection
-    const selectedPages = (template.page_ids || []).filter(p => p.selected !== false);
-    let pageIdx = 0;
+    const normalizedCountries = (() => {
+      const raw = safeArr(template.countries);
+      const codes = raw.map(c => {
+        if (typeof c === 'string') return c.trim().toUpperCase();
+        if (c && typeof c === 'object') return (c.code || c.id || c.value || '').toString().trim().toUpperCase();
+        return '';
+      }).filter(c => /^[A-Z]{2}$/.test(c));
+      return codes.length ? codes : ['US'];
+    })();
 
-    // Create ad set for this batch
-    let adsetId = null;
-    let adsetName = '';
-    {
-      adsetName = buildLaunchName(template.adset_name_pattern, {
+    // NEW CAMPAIGN PER LAUNCH — same contract as the statics/video launchers.
+    let launchCampaignId = template.campaign_id;
+    let launchCampaignName = template.campaign_name || null;
+    if (createNewCampaign) {
+      launchCampaignName = buildLaunchName(template.campaign_name_pattern || '{date} - {product} - {angle} - {batch}', {
         date: dateStr,
+        product: briefs[0]?.product_code || '',
         angle: briefs[0]?.angle || 'General',
         batch: batchNum,
-        product: briefs[0]?.product_code || '',
-      });
-
+      }).replace(/\{\w+\}/g, '').replace(/\s+-\s+-\s+/g, ' - ').replace(/(^\s*-\s*)|(\s*-\s*$)/g, '').trim();
       try {
-        adsetId = await createAdSet(template.ad_account_id, {
-          name: adsetName,
-          campaignId: template.campaign_id,
-          dailyBudget: template.daily_budget,
-          optimizationGoal: template.optimization_goal,
+        launchCampaignId = await createCampaign(template.ad_account_id, {
+          name: launchCampaignName,
+          objective: template.campaign_objective || 'OUTCOME_SALES',
+          budgetMode: template.campaign_budget_mode || 'ABO',
+          dailyBudget: template.campaign_daily_budget,
           bidStrategy: template.bid_strategy,
-          targetRoas: template.target_roas,
-          pixelId: template.pixel_id,
-          conversionEvent: template.conversion_event,
-          conversionLocation: template.conversion_location,
-          targeting: {
-            countries: template.countries || ['US'],
-            age_min: template.age_min,
-            age_max: template.age_max,
-            gender: template.gender,
-            include_audiences: template.include_audiences || [],
-            exclude_audiences: template.exclude_audiences || [],
-          },
-          attributionWindow: template.attribution_window,
-          pageId: selectedPages[0]?.id,
+          specialAdCategories: safeArr(template.special_ad_categories),
           status: 'ACTIVE',
-          startTime: template.schedule_enabled && template.schedule_date
-            ? `${template.schedule_date}T${template.schedule_time || '00:00'}:00`
-            : undefined,
         });
       } catch (err) {
-        await pgQuery(
-          `UPDATE brief_pipeline_generated SET status = 'launch_failed', launch_error = $1 WHERE id = ANY($2)`,
-          [`Ad set creation failed: ${err.message}`, brief_ids]
-        );
-        return res.status(500).json({ success: false, error: { message: `Ad set creation failed: ${err.message}` } });
+        await resetLocked();
+        return res.status(500).json({ success: false, error: { message: `Campaign creation failed: ${err.message}` } });
       }
     }
 
-    // Launch each brief as an ad
-    for (let i = 0; i < briefs.length; i++) {
-      const brief = briefs[i];
-      const launchId = crypto.randomUUID();
+    // ONE ad set for the whole batch (this launcher has always been
+    // single-ad-set; that also matches the retargeting format).
+    const adsetName = buildLaunchName(template.adset_name_pattern || '{date} - {angle} - {batch}', {
+      date: dateStr,
+      angle: briefs[0]?.angle || 'General',
+      batch: batchNum,
+      product: briefs[0]?.product_code || '',
+    }).replace(/\{\w+\}/g, '').replace(/\s+-\s+-\s+/g, ' - ').replace(/(^\s*-\s*)|(\s*-\s*$)/g, '').trim();
 
-      // Pick page (round-robin)
-      const page = selectedPages.length ? selectedPages[pageIdx % selectedPages.length] : null;
-      pageIdx++;
-
-      const adName = buildLaunchName(template.ad_name_pattern, {
-        date: dateStr,
-        angle: brief.angle || 'General',
-        num: i + 1,
-        batch: batchNum,
-        product: brief.product_code || '',
+    let adsetId = null;
+    try {
+      adsetId = await createAdSet(template.ad_account_id, {
+        name: adsetName,
+        campaignId: launchCampaignId,
+        dailyBudget: template.daily_budget,
+        optimizationGoal: template.optimization_goal,
+        bidStrategy: template.bid_strategy,
+        targetRoas: template.target_roas,
+        pixelId: template.pixel_id,
+        conversionEvent: template.conversion_event,
+        conversionLocation: template.conversion_location,
+        targeting: {
+          countries: normalizedCountries,
+          age_min: template.age_min,
+          age_max: template.age_max,
+          gender: template.gender,
+          include_audiences: safeArr(template.include_audiences),
+          exclude_audiences: safeArr(template.exclude_audiences),
+        },
+        attributionWindow: template.attribution_window,
+        pageId: selectedPages[0]?.id,
+        status: 'ACTIVE',
+        startTime: template.schedule_enabled && template.schedule_date
+          ? `${template.schedule_date}T${template.schedule_time || '00:00'}:00`
+          : undefined,
       });
-
-      try {
-        await pgQuery(
-          `INSERT INTO brief_launches (id, brief_id, template_id, copy_set_id, ad_account_id, meta_campaign_id, meta_adset_id, ad_name, adset_name, page_id, page_name, batch_number, status)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'uploading')`,
-          [launchId, brief.id, template_id, copy_set_id || null, template.ad_account_id, template.campaign_id, adsetId, adName, adsetName, page?.id, page?.name, batchNum]
-        );
-
-        // Determine ad copy.
-        // readJsonArray, not a raw .length check: a double-encoded row is a
-        // STRING, whose .length is its character count — truthy — so the old
-        // code shipped the literal '["Our Summer Sale..."]', brackets and all,
-        // as the Meta ad body. Rows written before the jsonb fix still look
-        // like that, so normalise on read as well as writing correctly.
-        const csPrimary = readJsonArray(copySet?.primary_texts);
-        const csHeadlines = readJsonArray(copySet?.headlines);
-        const csDescriptions = readJsonArray(copySet?.descriptions);
-        const primaryTexts = csPrimary.length
-          ? csPrimary
-          : [brief.body || brief.hooks?.[0]?.text || 'Check this out'];
-        const headlines = csHeadlines.length
-          ? csHeadlines
-          : (brief.hooks || []).map(h => h.text).slice(0, 3);
-        const descriptions = csDescriptions.length
-          ? csDescriptions
-          : [''];
-        const cta = copySet?.cta_button || 'SHOP_NOW';
-        const link = copySet?.landing_page_url || template.utm_parameters || '';
-
-        // Create ad creative
-        const creativeId = await createFlexibleAdCreative(template.ad_account_id, {
-          name: adName,
-          primaryTexts,
-          headlines: headlines.length ? headlines : ['Shop Now'],
-          descriptions,
-          cta,
-          link: link || process.env.SHOPIFY_STORE_URL || 'https://example.com',
-          pageId: page?.id || selectedPages[0]?.id,
-          utmParameters: template.utm_parameters,
-        });
-
-        // Create the ad
-        const metaAdId = await createAd(template.ad_account_id, {
-          name: adName,
-          adsetId,
-          creativeId,
-          status: 'ACTIVE',
-        });
-
-        // Update records
-        await pgQuery(
-          `UPDATE brief_launches SET status='launched', meta_ad_id=$1, meta_creative_id=$2, launched_at=NOW() WHERE id=$3`,
-          [metaAdId, creativeId, launchId]
-        );
-        await pgQuery(
-          `UPDATE brief_pipeline_generated SET status='launched', launched_at=NOW(),
-           meta_ad_ids = COALESCE(meta_ad_ids, '[]'::jsonb) || $1::jsonb
-           WHERE id=$2`,
-          [JSON.stringify([metaAdId]), brief.id]
-        );
-
-        results.push({ brief_id: brief.id, status: 'launched', meta_ad_id: metaAdId, ad_name: adName });
-      } catch (err) {
-        await pgQuery(`UPDATE brief_launches SET status='failed', error_message=$1 WHERE id=$2`, [err.message, launchId]);
-        await pgQuery(`UPDATE brief_pipeline_generated SET status='launch_failed', launch_error=$1 WHERE id=$2`, [err.message, brief.id]);
-        results.push({ brief_id: brief.id, status: 'failed', error: err.message });
+    } catch (err) {
+      await resetLocked();
+      if (createNewCampaign && launchCampaignId) {
+        try { await deleteCampaign(launchCampaignId); } catch (e) { console.warn('[BriefLaunch] empty new campaign cleanup failed:', e.message); }
       }
+      return res.status(500).json({ success: false, error: { message: `Ad set creation failed: ${err.message}` } });
     }
 
-    res.json({ success: true, data: { results, adset_id: adsetId } });
+    // RESPOND NOW, PROCESS IN BACKGROUND. A VSL launch waits minutes for
+    // Meta-side video processing; run synchronously it blows through the
+    // ~100s edge timeout and the operator sees a dead request while the
+    // server keeps spending — the historical "launcher got stuck". The
+    // Kanban already polls brief statuses, so results surface live.
+    res.json({
+      success: true,
+      data: {
+        background: true,
+        adset_id: adsetId,
+        adset_name: adsetName,
+        campaign_id: launchCampaignId,
+        campaign_name: launchCampaignName,
+        campaign_created: !!createNewCampaign,
+        briefs_queued: briefs.length,
+        results: [],
+      },
+    });
+
+    (async () => {
+      let pageIdx = 0;
+      for (let i = 0; i < briefs.length; i++) {
+        const brief = briefs[i];
+        const launchId = crypto.randomUUID();
+        const page = selectedPages[pageIdx % selectedPages.length];
+        pageIdx++;
+
+        const adName = buildLaunchName(template.ad_name_pattern || '{date} - {angle} {num}', {
+          date: dateStr,
+          angle: brief.angle || 'General',
+          num: i + 1,
+          batch: batchNum,
+          product: brief.product_code || '',
+          name: (brief.naming_convention || '').trim() || `${brief.angle || 'General'} ${i + 1}`,
+        });
+
+        try {
+          await pgQuery(
+            `INSERT INTO brief_launches (id, brief_id, template_id, copy_set_id, ad_account_id, meta_campaign_id, meta_adset_id, ad_name, adset_name, page_id, page_name, batch_number, status)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'uploading')`,
+            [launchId, brief.id, template_id, copy_set_id || null, template.ad_account_id, launchCampaignId, adsetId, adName, adsetName, page?.id, page?.name, batchNum]
+          );
+
+          const csPrimary = readJsonArray(copySet?.primary_texts);
+          const csHeadlines = readJsonArray(copySet?.headlines);
+          const csDescriptions = readJsonArray(copySet?.descriptions);
+          const primaryTexts = csPrimary.length ? csPrimary : [brief.body || brief.hooks?.[0]?.text || 'Check this out'];
+          const headlines = csHeadlines.length ? csHeadlines : (brief.hooks || []).map(h => h.text).filter(Boolean).slice(0, 3);
+          const descriptions = csDescriptions.length ? csDescriptions : [''];
+          const cta = copySet?.cta_button || 'SHOP_NOW';
+
+          // VSL PATH: a brief with a video_url launches as a VIDEO ad.
+          // waitForVideoReady's budget is 10 minutes — 5-minute VSLs need
+          // real processing time — and each poll is individually abortable,
+          // so a hung Meta socket can no longer strand the launch.
+          let videoId = null;
+          let videoThumb = null;
+          if (String(brief.video_url || '').trim()) {
+            videoId = await uploadAdVideo(template.ad_account_id, String(brief.video_url).trim(), adName);
+            await waitForVideoReady(videoId, 600000);
+            videoThumb = await getVideoThumbnail(videoId);
+          }
+
+          const creativeId = await createFlexibleAdCreative(template.ad_account_id, {
+            name: adName,
+            primaryTexts,
+            headlines: headlines.length ? headlines : ['Shop Now'],
+            descriptions,
+            cta,
+            link: resolvedLink,
+            pageId: page?.id || selectedPages[0]?.id,
+            ...(videoId ? { videoId, imageUrl: videoThumb || undefined } : {}),
+          });
+
+          const metaAdId = await createAd(template.ad_account_id, {
+            name: adName, adsetId, creativeId, status: 'ACTIVE',
+          });
+
+          // THE AD IS LIVE FROM HERE — bookkeeping failures must not mark it failed.
+          await pgQuery(
+            `UPDATE brief_launches SET status='launched', meta_ad_id=$1, meta_creative_id=$2, launched_at=NOW() WHERE id=$3`,
+            [metaAdId, creativeId, launchId]
+          ).catch((e) => console.error(`[BriefLaunch] LAUNCHED ad ${metaAdId} but launch-row update failed: ${e.message}`));
+          await pgQuery(
+            `UPDATE brief_pipeline_generated SET status='launched', launched_at=NOW(),
+             meta_ad_ids = COALESCE(meta_ad_ids, '[]'::jsonb) || $1::jsonb
+             WHERE id=$2`,
+            [JSON.stringify([metaAdId]), brief.id]
+          ).catch((e) => console.error(`[BriefLaunch] LAUNCHED ad ${metaAdId} but brief-status update failed for ${brief.id}: ${e.message}`));
+          console.log(`[BriefLaunch] launched "${adName}" (${videoId ? 'video' : 'link'}) -> ad ${metaAdId}`);
+        } catch (err) {
+          console.error(`[BriefLaunch] brief ${brief.id} failed:`, err.message);
+          await pgQuery(`UPDATE brief_launches SET status='failed', error_message=$1 WHERE id=$2`, [err.message, launchId]).catch(() => {});
+          await pgQuery(`UPDATE brief_pipeline_generated SET status='launch_failed', launch_error=$1 WHERE id=$2`, [err.message, brief.id]).catch(() => {});
+        }
+      }
+      // Safety net: nothing may end the batch still 'launching'.
+      await resetLocked();
+    })().catch(async (e) => {
+      console.error('[BriefLaunch] background batch crashed:', e);
+      await resetLocked();
+    });
   } catch (err) {
     console.error('[BriefPipeline] Launch error:', err);
+    // Reset anything this request may have locked — read from req.body, the
+    // destructured const is out of scope in some failure orders.
+    const ids = req.body?.brief_ids;
+    if (ids?.length) {
+      await pgQuery(
+        `UPDATE brief_pipeline_generated SET status = 'ready_to_launch' WHERE id = ANY($1) AND status = 'launching'`,
+        [ids]
+      ).catch(() => {});
+    }
     res.status(500).json({ success: false, error: { message: err.message } });
   }
 });
@@ -6563,8 +6763,30 @@ router.get('/launch-history', authenticate, async (req, res) => {
 // "Followed" in the new Brand Spy workflow == any brand the user added
 // to brand_spy.brands (status='ACTIVE'). The older spy_brand_follows
 // table is unused here — entries in brand_spy.brands ARE the follow set.
+// Cached against the newest scrape across all brands. The tier CTE below has no
+// brand filter — it aggregates every ad in brand_spy.ads (46k+) on every page
+// open, and the video test has to detoast raw_snapshot for each row that is not
+// already display_format VIDEO. Measured 2.56 s, and the League runs it BEFORE
+// it can fetch any ads, so it sets the floor for the whole page.
+//
+// The counts only move when a scrape lands, so they are memoised on
+// max(last_scraped_at): a completed scrape invalidates the entry and a stale
+// board can never be served. Caching rather than narrowing the video test on
+// purpose — dropping the raw_snapshot branch would be faster still, but it
+// would silently undercount ads whose video only exists inside the snapshot,
+// and this board is what briefs get built from.
+let leagueBrandsCache = null; // { key, payload }
+
 router.get('/league/brands', authenticate, async (_req, res) => {
   try {
+    const stamp = await pgQuery(
+      `SELECT COALESCE(MAX(last_scraped_at), 'epoch') AS k FROM brand_spy.brands`,
+    );
+    const cacheKey = String(stamp[0]?.k ?? 'none');
+    if (leagueBrandsCache && leagueBrandsCache.key === cacheKey) {
+      return res.json(leagueBrandsCache.payload);
+    }
+
     const rows = await pgQuery(`
       WITH tier_counts AS (
         SELECT
@@ -6578,7 +6800,7 @@ router.get('/league/brands', authenticate, async (_req, res) => {
         FROM brand_spy.ads a
         WHERE a.is_active = TRUE
           AND a.tier IN ('BANGER','CHAMP','A','B','C')
-          AND (a.display_format ILIKE 'video%'
+          AND (a.display_format = 'VIDEO'
                OR (a.raw_snapshot->'videos'->0->>'video_hd_url') IS NOT NULL
                OR (a.raw_snapshot->'videos'->0->>'video_sd_url') IS NOT NULL)
         GROUP BY a.brand_id
@@ -6611,7 +6833,9 @@ router.get('/league/brands', authenticate, async (_req, res) => {
         C:      Number(r.c_count)      || 0,
       },
     }));
-    res.json({ success: true, brands });
+    const payload = { success: true, brands };
+    leagueBrandsCache = { key: cacheKey, payload };
+    res.json(payload);
   } catch (err) {
     console.error('[BriefPipeline] GET /league/brands error:', err.message);
     res.status(500).json({ success: false, error: { message: err.message } });
@@ -6650,6 +6874,10 @@ router.get('/league/ads', authenticate, async (req, res) => {
     const days = Number.isFinite(daysRaw) && daysRaw > 0 ? Math.min(365, daysRaw) : null;
 
     const params = [brandId, tiers, limit, offset];
+    // Style filter — reads the persistent brand_spy.ads.style tag (A-series #2).
+    let styleWhere = '';
+    const styleQ = String(req.query.style || '').toUpperCase();
+    if (/^[A-Z_]{3,12}$/.test(styleQ)) { params.push(styleQ); styleWhere = `AND a.style = $${params.length}`; }
     let recencyWhere = '';
     if (days) {
       params.push(days);
@@ -6674,6 +6902,7 @@ router.get('/league/ads', authenticate, async (req, res) => {
         a.display_format,
         a.active_days,
         a.start_date,
+        a.style,
         a.is_active,
         a.transcript,
         a.transcript_at,
@@ -6700,6 +6929,7 @@ router.get('/league/ads', authenticate, async (req, res) => {
         AND (a.display_format ILIKE 'video%'
              OR (a.raw_snapshot->'videos'->0->>'video_hd_url') IS NOT NULL
              OR (a.raw_snapshot->'videos'->0->>'video_sd_url') IS NOT NULL)
+      ${styleWhere}
       ${recencyWhere}
       ${orderBy}
       LIMIT $3 OFFSET $4
@@ -6714,6 +6944,7 @@ router.get('/league/ads', authenticate, async (req, res) => {
       tierScore: r.tier_score,
       currentRank: r.current_rank,
       startDate: r.start_date ? new Date(r.start_date).toISOString() : null,
+      style: r.style || null,
       headline: r.headline,
       bodyText: r.body_text,
       displayFormat: r.display_format,
@@ -6797,6 +7028,18 @@ async function repairReferenceVideo(ref) {
       await pgQuery(`UPDATE brief_pipeline_references SET video_url = $1, updated_at = NOW() WHERE id = $2`, [r2Url, ref.id]);
       return { status: 'repaired', videoUrl: r2Url, via: 'stored-or-brandspy' };
     } catch (e) { console.warn(`[BriefPipeline] ref ${ref.id} mirror of live candidate failed: ${e.message}`); }
+  }
+  // OWNED ads never take the Ad Library route.
+  //
+  // The transcribe flow already refuses this for references carrying a
+  // meta_ad_id: "Playwright fallback REMOVED — it grabbed wrong videos from FB
+  // Ad Library 'related ads' panel". yt-dlp reads the same page and has the
+  // same failure mode, and repair had no equivalent guard — so repairing one of
+  // our own iteration references could silently attach a COMPETITOR's creative
+  // and we would iterate on it believing it was ours. A missing video is
+  // recoverable; a wrong video that looks right is not.
+  if (ref.meta_ad_id) {
+    return { status: 'owned-no-meta-video' };
   }
   if (ref.ad_archive_id) {
     const fresh = await extractFreshVideoUrl(adLibraryUrl(ref.ad_archive_id));
@@ -6917,6 +7160,23 @@ router.put('/autopilot/settings', authenticate, async (req, res) => {
 // What the tool has learned from the operator's reviews — the same track
 // record the triage pass reads. Surfaced so learning is inspectable: a system
 // that adapts invisibly loses trust the first time it behaves unexpectedly.
+// A-series #1, decision-free slice: mark a brief's real-world outcome. This
+// column is the seed of the performance loop — Meta API or manual marking
+// later, the storage is the same, and the learning endpoint reads it now.
+router.post('/generated/:id/outcome', authenticate, async (req, res) => {
+  try {
+    const o = req.body?.outcome;
+    if (o !== 'won' && o !== 'lost' && o !== null) {
+      return res.status(400).json({ success: false, error: { message: "outcome must be 'won', 'lost' or null" } });
+    }
+    const rows = await pgQuery(`UPDATE brief_pipeline_generated SET outcome = $1 WHERE id = $2 RETURNING id, outcome`, [o, req.params.id]);
+    if (!rows.length) return res.status(404).json({ success: false, error: { message: 'brief not found' } });
+    res.json({ success: true, brief: rows[0] });
+  } catch (err) {
+    res.status(500).json({ success: false, error: { message: err.message } });
+  }
+});
+
 router.get('/autopilot/learning', authenticate, async (_req, res) => {
   try {
     res.json({ success: true, trackRecord: await computeTrackRecord() });
@@ -7196,7 +7456,7 @@ router.post('/references/:id/repair-video', authenticate, async (req, res) => {
       return res.status(503).json({ success: false, error: { message: 'R2 not configured on this environment' } });
     }
     const rows = await pgQuery(`
-      SELECT r.id, r.video_url, r.ad_archive_id,
+      SELECT r.id, r.video_url, r.ad_archive_id, r.meta_ad_id,
              a.raw_snapshot->'videos'->0->>'video_hd_url' AS fresh_hd,
              a.raw_snapshot->'videos'->0->>'video_sd_url' AS fresh_sd
       FROM brief_pipeline_references r
@@ -7213,6 +7473,8 @@ router.post('/references/:id/repair-video', authenticate, async (req, res) => {
       success: false,
       error: { message: result.status === 'unrecoverable'
         ? 'Video is unrecoverable — the ad is no longer live in the FB Ad Library and no stored copy exists.'
+        : result.status === 'owned-no-meta-video'
+        ? 'This is one of your own ads and Meta returned no video for it. We deliberately do not pull from the FB Ad Library here, because that page can return a neighbouring ad\u2019s video. Re-sync the ad from Meta, or open it in Ads Manager.'
         : `Repair failed: ${result.status}` },
     });
   } catch (err) {

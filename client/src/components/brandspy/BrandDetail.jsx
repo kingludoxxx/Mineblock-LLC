@@ -10,6 +10,7 @@ import {
   Video as VideoIcon, Image as ImageIcon, Columns as CarouselIcon,
 } from 'lucide-react';
 import AggregationsTab from './AggregationsTab';
+import LandingPagesTable from './LandingPagesTable';
 import IntelDrawer from './IntelDrawer';
 
 // ---------------------------------------------------------------------------
@@ -567,31 +568,11 @@ function AdCard({ ad, brand, onOpenIntel }) {
           </>
         )}
 
-        {/* Active indicator only — format badge removed per request.
-            Visual format cue is the play overlay (videos) or its absence (images). */}
-        {!playing && isAdActive(ad) && (
-          <div className="absolute top-2 left-2 z-20 pointer-events-none flex items-center">
-            <span className="relative flex items-center justify-center" title="Active">
-              <span className="absolute w-3 h-3 rounded-full bg-emerald-400 opacity-60 animate-ping" />
-              <span className="relative w-2.5 h-2.5 rounded-full bg-emerald-400 ring-2 ring-black/40" />
-            </span>
-          </div>
-        )}
-        {/* Tier badge — top right */}
-        {/* Tier badge — only shown for ads currently active. A tier on an
-            OFF ad is stale data left over from a previous successful scrape;
-            scoreBrand never re-tiers inactive ads (they get tier=null), so
-            anything non-null on an OFF ad is from before the last reset. */}
-        {ad.tier && ad.isActive && !playing && (
-          <div className="absolute top-2 right-2 z-20 pointer-events-none">
-            <span
-              className={`inline-flex items-center gap-1 whitespace-nowrap text-[9px] font-bold px-1.5 py-0.5 rounded-md border backdrop-blur-sm ${TIER_COLORS[ad.tier] ?? ''}`}
-              title={TIER_TOOLTIPS[ad.tier]}>
-              {TIER_ICONS[ad.tier] && <span aria-hidden>{TIER_ICONS[ad.tier]}</span>}
-              {ad.tier}
-            </span>
-          </div>
-        )}
+        {/* No overlays on the creative. The green active dot and the tier
+            badge both sat on top of the ad image; the same information is
+            already on the row above (status dot + date) and in the tier
+            filters, so on the grid they were decoration covering the thing
+            you actually came to look at. */}
       </div>
 
       {/* ── Footer — Facebook-style link-preview card
@@ -941,6 +922,10 @@ export default function BrandDetail({ apiBaseUrl, brandId, onBack }) {
   // visit — expanded it was the tallest thing on the page and pushed the
   // creatives down a full band. Collapsed by default, one click to open.
   const [intelOpen, setIntelOpen] = useState(false);
+  // Media mix + the four counters are opt-in — see the effects below.
+  const [statsOpen, setStatsOpen] = useState(false);
+  // Set by the Landing Pages "View ads" action — filters the grid to one URL.
+  const [landingUrl, setLandingUrl] = useState(null);
   const openAd = useCallback((ad) => {
     if (!ad?.id) return;
     setModalAd(ad);
@@ -1007,12 +992,25 @@ export default function BrandDetail({ apiBaseUrl, brandId, onBack }) {
   }, [apiBaseUrl, brandId]);
 
   useEffect(() => {
-    if (activeTab === 'overview' && !intelFetched && !intelLoading) {
+    // Gated on intelOpen. The panel is collapsed by default, so this fired on
+    // every page open for a card nobody was looking at — and when a scrape has
+    // landed the cached payload is stale, so it regenerates through Claude
+    // Haiku (~7-8 s) against the same contended database the grid is waiting
+    // on. Fetch it when the user actually opens the panel.
+    if (activeTab === 'overview' && intelOpen && !intelFetched && !intelLoading) {
       loadIntel();
     }
-  }, [activeTab, intelFetched, intelLoading, loadIntel]);
+  }, [activeTab, intelOpen, intelFetched, intelLoading, loadIntel]);
 
   // ---- Brand-wide media-mix counts (for the Overview Media-Mix card) ----
+  // Gated behind statsOpen. Both this and the aggregation counters below have
+  // to read every ad row in the brand, and on a 10k-ad brand they take minutes
+  // — measured 244 s for format-counts and >300 s for aggregation-counts. They
+  // used to fire on every page open, where they saturated a small Postgres and
+  // starved the ads query that actually renders the page, so the GRID sat on
+  // skeletons behind two queries nobody had asked for. Worse, each one times
+  // out at the edge but keeps running server-side, so every reload stacked
+  // another multi-minute query on the same database.
   useEffect(() => {
     if (activeTab !== 'overview' || !brandId) return;
     let cancelled = false;
@@ -1023,18 +1021,9 @@ export default function BrandDetail({ apiBaseUrl, brandId, onBack }) {
     return () => { cancelled = true; };
   }, [apiBaseUrl, brandId, activeTab]);
 
-  // ---- Aggregation totals for the 4 mini stat boxes (Hooks/Ad copy/etc.) ----
-  // Single combined endpoint replaces 4 parallel /aggregations calls — same
-  // result, ~75% less server work, ~3× faster to populate the mini-stat row.
-  useEffect(() => {
-    if (activeTab !== 'overview' || !brandId) return;
-    let cancelled = false;
-    authFetch(`${apiBaseUrl}/brands/${brandId}/aggregation-counts`)
-      .then((r) => (r.ok ? r.json() : { hooks: 0, adcopy: 0, headlines: 0, landing: 0 }))
-      .then((d) => { if (!cancelled) setAggCounts(d); })
-      .catch(() => { if (!cancelled) setAggCounts({ hooks: 0, adcopy: 0, headlines: 0, landing: 0 }); });
-    return () => { cancelled = true; };
-  }, [apiBaseUrl, brandId, activeTab]);
+  // The four content counters (Hooks/Ad copy/Headlines/LPs) were removed from
+  // the Overview: they cost a >300 s full-corpus scan for numbers nobody acted
+  // on, and the tabs above already open the real lists.
 
   // ---- Open ad detail modal by ID (used by aggregation tabs) ----
   // Aggregation rows only carry an adId, so fetch the ad before opening the
@@ -1114,7 +1103,10 @@ export default function BrandDetail({ apiBaseUrl, brandId, onBack }) {
   );
 
   return (
-    <div className="flex flex-col h-full overflow-hidden">
+    // bg-bg-card (#111113) — the same black as the sidebar. The page was
+    // sitting on the darker base colour, which read as a different, harsher
+    // surface than the rest of the app.
+    <div className="flex flex-col h-full overflow-hidden bg-bg-card">
       <div className="flex-1 overflow-y-auto flex flex-col min-h-0">
 
         {/* ============================================================
@@ -1278,8 +1270,11 @@ export default function BrandDetail({ apiBaseUrl, brandId, onBack }) {
               const tf = TIME_FILTERS.find((f) => f.value === timeFilter);
               const label = tf?.value === 'all' ? null : tf?.label;
               return (
-                <p className="text-[14px] text-text-muted leading-snug">
-                  <span className="text-xl font-bold text-text-primary tabular-nums">{total.toLocaleString()}</span>
+                // Sized to sit with the Media mix card below it rather than
+                // read as a page heading — it is a caption for the grid, not a
+                // title.
+                <p className="text-[13px] text-text-muted leading-snug">
+                  <span className="text-[15px] font-semibold text-text-primary tabular-nums">{total.toLocaleString()}</span>
                   {' '}<span className="text-text-primary font-semibold">ads</span>{' '}
                   {label
                     ? <>were launched in the <span className="text-text-primary font-semibold">last {label}</span></>
@@ -1301,33 +1296,10 @@ export default function BrandDetail({ apiBaseUrl, brandId, onBack }) {
                 right column, so the band between the filters and the first
                 creative was as tall as the intel list — the single biggest
                 source of dead space on the page. */}
+            {/* Always visible: format-counts no longer reads raw_snapshot, so
+                it is cheap enough to load with the page as the reference does. */}
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
-              <div className="space-y-3">
-                <MediaMixBar counts={formatCounts} />
-
-                <div className="rounded-xl border border-border-subtle bg-bg-card p-4">
-                  <div className="grid grid-cols-4 gap-2">
-                    {[
-                      { label: 'Hooks',     value: aggCounts?.hooks,     tabId: 'hooks'     },
-                      { label: 'Ad copy',   value: aggCounts?.adcopy,    tabId: 'adcopy'    },
-                      { label: 'Headlines', value: aggCounts?.headlines, tabId: 'headlines' },
-                      { label: 'LPs',       value: aggCounts?.landing,   tabId: 'landing'   },
-                    ].map(({ label, value, tabId }) => (
-                      <button key={label}
-                        onClick={() => setActiveTab(tabId)}
-                        className="text-center group hover:bg-white/[0.02] rounded-md py-1 transition-colors">
-                        <p className="text-[20px] font-bold text-text-primary tabular-nums leading-none">
-                          {value == null ? '—' : (value >= 100 ? '99+' : value)}
-                        </p>
-                        <p className="text-[11px] text-text-muted mt-1.5 group-hover:text-text-primary transition-colors">
-                          {label}
-                        </p>
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              </div>
-
+              <MediaMixBar counts={formatCounts} />
             </div>
 
             {/* AI Brand Intel — collapsed by default. */}
@@ -1504,7 +1476,12 @@ export default function BrandDetail({ apiBaseUrl, brandId, onBack }) {
                 </div>
               ) : (
                 <table className="min-w-[1300px] w-full border-collapse">
-                  <thead className="sticky top-[45px] z-10 bg-bg-elevated">
+                  {/* top-0, not a hardcoded offset. The toolbar above is a
+                      flex sibling OUTSIDE this scroll container, so an offset
+                      pushed the header down INTO the rows — and because that
+                      toolbar wraps, the overlap moved as the filters rewrapped,
+                      which is why it read as a bar sliding over row #1. */}
+                  <thead className="sticky top-0 z-10 bg-bg-elevated">
                     <tr>
                       {col('num')     && <th style={{ width: 42  }} className="px-2 py-2.5 text-right text-[10px] uppercase tracking-wider text-text-faint font-normal">#</th>}
                       {col('ad')      && <th style={{ width: 280 }} className="px-3 py-2.5 text-left text-[10px] uppercase tracking-wider text-text-faint font-normal">AD</th>}
@@ -1557,7 +1534,11 @@ export default function BrandDetail({ apiBaseUrl, brandId, onBack }) {
           <AggregationsTab apiBaseUrl={apiBaseUrl} brandId={brandId} type="headlines" onOpenAd={openAdById} />
         )}
         {activeTab === 'landing' && (
-          <AggregationsTab apiBaseUrl={apiBaseUrl} brandId={brandId} type="landing" onOpenAd={openAdById} />
+          <LandingPagesTable
+            apiBaseUrl={apiBaseUrl}
+            brandId={brandId}
+            onViewAds={(url) => { setLandingUrl(url); setActiveTab('overview'); }}
+          />
         )}
 
       </div>

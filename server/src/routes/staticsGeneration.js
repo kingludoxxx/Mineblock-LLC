@@ -218,6 +218,7 @@ import sharp from 'sharp';
 import {
   isMetaAdsConfigured, createAdSet, createFlexibleAdCreative, createPlacementAwareAdCreative,
   createAd, uploadAdImageFromUrl, diagnoseMetaApp, switchAppToLiveMode,
+  createCampaign, deleteCampaign,
 } from '../services/metaAdsApi.js';
 import { sendSlackAlert } from '../utils/slackAlert.js';
 
@@ -6274,6 +6275,37 @@ function buildLaunchName(pattern, vars) {
 // Inline handler extracted into _doLaunch so a CRON_SECRET-gated /admin-launch
 // route (registered before the router-level authenticate gate) can reuse the
 // exact same launch logic without duplicating ~370 lines.
+// Smoke test for the create_new campaign path: creates a PAUSED campaign with
+// the template's settings, then deletes it immediately. Proves credentials,
+// objective, budget mode and account wiring with zero spend and no residue.
+router.post('/launch-campaign-smoke', authenticate, async (req, res) => {
+  try {
+    if (!isMetaAdsConfigured()) {
+      return res.status(400).json({ success: false, error: { message: 'Meta Ads API not configured' } });
+    }
+    const templates = await pgQuery('SELECT * FROM launch_templates WHERE id = $1', [req.body?.template_id]);
+    if (!templates.length) return res.status(404).json({ success: false, error: { message: 'Template not found' } });
+    const t = templates[0];
+    if (!t.ad_account_id) return res.status(400).json({ success: false, error: { message: 'Template has no ad account' } });
+    const safeArrLocal = (v) => { if (Array.isArray(v)) return v; if (typeof v === 'string') { try { const p = JSON.parse(v); return Array.isArray(p) ? p : []; } catch { return []; } } return []; };
+    const campaignId = await createCampaign(t.ad_account_id, {
+      name: `SMOKE TEST (auto-deleted) ${Date.now()}`,
+      objective: t.campaign_objective || 'OUTCOME_SALES',
+      budgetMode: t.campaign_budget_mode || 'ABO',
+      dailyBudget: t.campaign_daily_budget,
+      bidStrategy: t.bid_strategy,
+      specialAdCategories: safeArrLocal(t.special_ad_categories),
+      status: 'PAUSED',
+    });
+    let deleted = false;
+    try { deleted = await deleteCampaign(campaignId); }
+    catch (e) { return res.json({ success: true, campaign_id: campaignId, deleted: false, warning: `created but delete failed: ${e.message} — delete it manually in Ads Manager` }); }
+    res.json({ success: true, campaign_id: campaignId, deleted });
+  } catch (err) {
+    res.status(500).json({ success: false, error: { message: err.message } });
+  }
+});
+
 router.post('/launch', authenticate, (req, res) => _doLaunch(req, res));
 
 async function _doLaunch(req, res) {
@@ -6298,8 +6330,9 @@ async function _doLaunch(req, res) {
       // here with a clear app-level message instead.
       return res.status(400).json({ success: false, error: { message: 'Template has no ad account configured. Please edit the template and select an Ad Account.' } });
     }
-    if (!template.campaign_id) {
-      return res.status(400).json({ success: false, error: { message: 'Template has no campaign configured. Please edit the template and select a campaign.' } });
+    const createNewCampaign = template.campaign_mode === 'create_new';
+    if (!template.campaign_id && !createNewCampaign) {
+      return res.status(400).json({ success: false, error: { message: 'Template has no campaign configured. Please edit the template and select a campaign, or set the template to create a new campaign per launch.' } });
     }
 
     let copySet = null;
@@ -6309,18 +6342,42 @@ async function _doLaunch(req, res) {
       copySet = cs[0];
     }
 
+    // Recover rows stranded in 'launching' by a mid-launch deploy/restart —
+    // nothing else in the codebase ever resets them (audit 2026-08-26). Runs
+    // BEFORE the lock below so a stranded id in THIS request becomes
+    // launchable again on this attempt, not the next one. Safe against
+    // concurrent launches because the lock refreshes updated_at, keeping
+    // in-flight rows inside the 30-minute window (spy_creatives has no
+    // updated_at trigger — the refresh must be explicit).
+    await pgQuery(
+      `UPDATE spy_creatives SET status = 'ready', review_notes = 'Recovered from interrupted launch', updated_at = NOW()
+        WHERE status = 'launching' AND updated_at < NOW() - INTERVAL '30 minutes'`
+    ).catch(() => {});
+
+    // ATOMIC LOCK + SELECT: one statement flips eligible rows to 'launching'
+    // and returns exactly the rows it flipped. Closes the double-click race
+    // (two requests can no longer both select the same rows before either
+    // locks) and keeps launched/rejected ids untouched. updated_at = NOW()
+    // shields these rows from the recovery sweep for 30 minutes.
     const creatives = await pgQuery(
-      `SELECT * FROM spy_creatives WHERE id = ANY($1) AND status IN ('approved', 'ready')`,
+      `UPDATE spy_creatives SET status = 'launching', updated_at = NOW()
+        WHERE id = ANY($1) AND status IN ('approved', 'ready')
+        RETURNING *`,
       [creative_ids]
     );
     if (!creatives.length) {
-      return res.status(400).json({ success: false, error: { message: 'No launchable creatives found (must be approved or ready)' } });
+      return res.status(400).json({ success: false, error: { message: 'No launchable creatives found (must be approved or ready, and not already launching)' } });
     }
 
-    await pgQuery(
-      `UPDATE spy_creatives SET status = 'launching' WHERE id = ANY($1)`,
-      [creative_ids]
-    );
+    // LANDING-PAGE GUARD: the old chain ended in an 'https://example.com'
+    // placeholder, which silently launched ACTIVE paid ads pointing at
+    // example.com when no copy set / template URL / env var was present.
+    // Money must never spend against a placeholder — refuse instead.
+    const resolvedLink = String(copySet?.landing_page_url || '').trim() || String(template.landing_page_url || '').trim() || String(process.env.SHOPIFY_STORE_URL || '').trim();
+    if (!/^https?:\/\//.test(resolvedLink) || /example\.com/.test(resolvedLink)) {
+      await pgQuery(`UPDATE spy_creatives SET status = 'ready' WHERE id = ANY($1) AND status = 'launching'`, [creative_ids]).catch(() => {});
+      return res.status(400).json({ success: false, error: { message: 'No landing page URL configured: set one on the copy set or the template (or SHOPIFY_STORE_URL env). Refusing to launch ads without a destination.' } });
+    }
 
     const now = new Date();
     const dateStr = `${String(now.getDate()).padStart(2, '0')}/${String(now.getMonth() + 1).padStart(2, '0')}`;
@@ -6332,7 +6389,7 @@ async function _doLaunch(req, res) {
 
     const selectedPages = safeArr(template.page_ids).filter(p => p.selected !== false);
     if (!selectedPages.length || !selectedPages[0]?.id) {
-      await pgQuery(`UPDATE spy_creatives SET status = 'ready' WHERE id = ANY($1)`, [creative_ids]);
+      await pgQuery(`UPDATE spy_creatives SET status = 'ready' WHERE id = ANY($1) AND status = 'launching'`, [creative_ids]);
       return res.status(400).json({ success: false, error: { message: 'No Facebook pages configured in launch template. Edit the template and select at least one page.' } });
     }
 
@@ -6347,12 +6404,49 @@ async function _doLaunch(req, res) {
     // Each bucket gets its own adsetId, adsetName, and runs the per-creative
     // launch loop scoped to that bucket only.
     const creativesByAngle = new Map();
-    for (const c of creatives) {
-      const angleKey = (c.angle || 'General').toString().trim() || 'General';
-      if (!creativesByAngle.has(angleKey)) creativesByAngle.set(angleKey, []);
-      creativesByAngle.get(angleKey).push(c);
+    if (template.adset_grouping === 'single') {
+      // RETARGETING FORMAT (operator spec 2026-08-15): ONE ad set holding
+      // every ad in the launch. The bucket key is the uniform angle when the
+      // box is uniform, else 'Mixed' — it feeds the {angle} naming token.
+      const distinct = [...new Set(creatives.map(c => (c.angle || 'General').toString().trim() || 'General'))];
+      creativesByAngle.set(distinct.length === 1 ? distinct[0] : 'Mixed', creatives.slice());
+    } else {
+      for (const c of creatives) {
+        const angleKey = (c.angle || 'General').toString().trim() || 'General';
+        if (!creativesByAngle.has(angleKey)) creativesByAngle.set(angleKey, []);
+        creativesByAngle.get(angleKey).push(c);
+      }
     }
-    console.log(`[launch] grouping ${creatives.length} creatives into ${creativesByAngle.size} ad set(s) by angle: ${Array.from(creativesByAngle.keys()).join(', ')}`);
+    console.log(`[launch] grouping ${creatives.length} creatives into ${creativesByAngle.size} ad set(s) (${template.adset_grouping === 'single' ? 'single/retargeting' : 'by angle'}): ${Array.from(creativesByAngle.keys()).join(', ')}`);
+
+    // NEW CAMPAIGN PER LAUNCH — template.campaign_mode='create_new' creates the
+    // campaign now and every ad set below lands inside it. On total failure of
+    // all ad sets the campaign is deleted again (no empty shells in the account).
+    let launchCampaignId = template.campaign_id;
+    let launchCampaignName = template.campaign_name || null;
+    if (createNewCampaign) {
+      const firstAngle = creativesByAngle.keys().next().value || 'General';
+      launchCampaignName = buildLaunchName(template.campaign_name_pattern || '{date} - {product} - {angle} - {batch}', {
+        date: dateStr,
+        product: creatives[0]?.product_name || '',
+        angle: creativesByAngle.size === 1 ? firstAngle : 'Mixed',
+        batch: batchNum,
+      }).replace(/\{\w+\}/g, '').replace(/\s+-\s+-\s+/g, ' - ').replace(/(^\s*-\s*)|(\s*-\s*$)/g, '').trim();
+      try {
+        launchCampaignId = await createCampaign(template.ad_account_id, {
+          name: launchCampaignName,
+          objective: template.campaign_objective || 'OUTCOME_SALES',
+          budgetMode: template.campaign_budget_mode || 'ABO',
+          dailyBudget: template.campaign_daily_budget,
+          bidStrategy: template.bid_strategy,
+          specialAdCategories: safeArr(template.special_ad_categories),
+          status: 'ACTIVE',
+        });
+      } catch (err) {
+        await pgQuery(`UPDATE spy_creatives SET status = 'ready' WHERE id = ANY($1) AND status = 'launching'`, [creative_ids]);
+        return res.status(500).json({ success: false, error: { message: `Campaign creation failed: ${err.message}` } });
+      }
+    }
 
     // Product rows for naming: ad_code ("PL") lives on the profile, not on the
     // creative. Loaded once per launch rather than per ad.
@@ -6379,6 +6473,10 @@ async function _doLaunch(req, res) {
     const createdAdsets = []; // [{ angle, adsetId, adsetName }]
     let pageIdx = 0;
     const processedGroupIds = new Set();
+    // Ids whose image already shipped inside another creative's placement-aware
+    // ad (group sibling or legacy ratio variant). Without this, selecting a
+    // parent AND its ratio variant in one batch launched the same image twice.
+    const absorbedIds = new Set();
 
     // Pre-fetch all legacy variants in one query (audit N+1 fix). Build a Map
     // keyed by parent_creative_id so the per-creative loop is a cheap lookup
@@ -6389,7 +6487,7 @@ async function _doLaunch(req, res) {
         `SELECT id, parent_creative_id, aspect_ratio, image_url, meta_image_hash
            FROM spy_creatives
           WHERE parent_creative_id = ANY($1::uuid[])
-            AND status IN ('approved', 'ready')
+            AND status IN ('approved', 'ready', 'launching')
             AND image_url IS NOT NULL`,
         [creative_ids]
       );
@@ -6406,19 +6504,24 @@ async function _doLaunch(req, res) {
     let bucketIdx = 0;
     for (const [angleKey, bucketCreatives] of creativesByAngle.entries()) {
       bucketIdx++;
-      const bucketBatchNum = (batchNum + bucketIdx) % 10000;
+      // Single-bucket launches (the common case + retargeting) keep the same
+      // batch number as the campaign name; only extra buckets offset it.
+      const bucketBatchNum = creativesByAngle.size === 1 ? batchNum : (batchNum + bucketIdx) % 10000;
       let adsetId = null;
+      // tidyName also strips unresolved {tokens}: {name}/{num} exist only
+      // per-AD, and left in an AD SET pattern they reached Meta as literal text.
       const adsetName = tidyName(buildLaunchName(template.adset_name_pattern || '{date} - {code} - {angle} - {creator}', {
         ...namingVars(bucketCreatives[0] || {}, productById.get(bucketCreatives[0]?.product_id) || {}, { angle: angleKey }),
         date: dateStr,
         batch: bucketBatchNum,
         num: '',
+        product: bucketCreatives[0]?.product_name || '',
       }));
 
       try {
         adsetId = await createAdSet(template.ad_account_id, {
           name: adsetName,
-          campaignId: template.campaign_id,
+          campaignId: launchCampaignId,
           dailyBudget: template.daily_budget,
           optimizationGoal: template.optimization_goal,
           bidStrategy: template.bid_strategy,
@@ -6460,7 +6563,14 @@ async function _doLaunch(req, res) {
         results.push({ creative_id: creative.id, status: 'skipped', reason: 'Handled as part of group launch' });
         continue;
       }
-      if (creative.group_id) processedGroupIds.add(creative.group_id);
+      if (absorbedIds.has(creative.id)) {
+        results.push({ creative_id: creative.id, status: 'skipped', reason: 'Ratio variant already included in another launched ad' });
+        continue;
+      }
+      // NOTE: the group is marked processed on SUCCESS (below), not here —
+      // marking it before the try meant a failed leader silently skipped
+      // every sibling with 'Handled as part of group launch' for a launch
+      // that never happened.
 
       const page = selectedPages.length ? selectedPages[pageIdx % selectedPages.length] : null;
       pageIdx++;
@@ -6471,6 +6581,20 @@ async function _doLaunch(req, res) {
         date: dateStr,
         num: i + 1,
         batch: bucketBatchNum,
+        product: creative.product_name || '',
+        // {name}: the creative's own identity — lets a retargeting template
+        // keep each ad's own naming convention inside the single ad set.
+        // Chain: the name it launched under before (retargeting = relaunching
+        // a proven ad) > a meaningful label > the house convention. Editor
+        // artifacts like 'auto-save'/'composer-describe' are NOT names.
+        name: (() => {
+          const prior = safeArr(creative.meta_ad_ids);
+          const priorName = prior.length ? prior[prior.length - 1]?.ad_name : null;
+          if (priorName) return priorName;
+          const label = String(creative.source_label || '').trim();
+          if (label && !/^(auto[- ]?save|composer([- ]describe)?|upload(ed)?|untitled)$/i.test(label)) return label;
+          return `${dateStr} - ${creative.angle || angleKey || 'General'} ${i + 1}`;
+        })(),
       }));
 
       try {
@@ -6488,7 +6612,7 @@ async function _doLaunch(req, res) {
 
         if (creative.group_id) {
           const siblings = await pgQuery(
-            "SELECT id, aspect_ratio, image_url, meta_image_hash FROM spy_creatives WHERE group_id = $1 AND id != $2 AND status IN ('approved', 'ready') AND image_url IS NOT NULL",
+            "SELECT id, aspect_ratio, image_url, meta_image_hash FROM spy_creatives WHERE group_id = $1 AND id != $2 AND status IN ('approved', 'ready', 'launching') AND image_url IS NOT NULL",
             [creative.group_id, creative.id]
           ).catch(() => []);
           for (const s of siblings) {
@@ -6555,7 +6679,7 @@ async function _doLaunch(req, res) {
         const cta  = copySet?.cta_button || genCopy.cta || 'SHOP_NOW';
         // SHOPIFY_STORE_URL is a REQUIRED per-brand env var (Mineblock: https://mineblock.co,
         // Puure: https://trypuure.co, etc.). Placeholder catches missing config.
-        const link = copySet?.landing_page_url || template.landing_page_url || process.env.SHOPIFY_STORE_URL || 'https://example.com';
+        const link = resolvedLink;
 
         const existingMeta = safeArr(creative.meta_ad_ids);
 
@@ -6581,6 +6705,12 @@ async function _doLaunch(req, res) {
         const metaAdId = await createAd(template.ad_account_id, {
           name: adName, adsetId, creativeId: metaCreativeId, status: 'ACTIVE',
         });
+        // THE AD IS LIVE FROM THIS LINE ON. Everything below is bookkeeping:
+        // mark the group and absorbed variants NOW, so a transient DB error in
+        // the record-keeping can never cause a second live ad from the same
+        // group (the pre-fix ordering did exactly that).
+        if (creative.group_id) processedGroupIds.add(creative.group_id);
+        for (const r of uploadedRatios) { if (r.id !== creative.id) absorbedIds.add(r.id); }
 
         const primaryMetaAdId = metaAdId;
         const primaryImageHash = uploadedRatios.find(r => r.id === creative.id)?.imageHash || uploadedRatios[0]?.imageHash;
@@ -6590,7 +6720,7 @@ async function _doLaunch(req, res) {
           ad_id: metaAdId,
           creative_id: metaCreativeId,
           adset_id: adsetId,
-          campaign_id: template.campaign_id,
+          campaign_id: launchCampaignId,
           page_id: page?.id || selectedPages[0]?.id,
           ad_name: adName,
           aspect_ratios: uploadedRatios.map(r => r.ratio),
@@ -6602,13 +6732,17 @@ async function _doLaunch(req, res) {
         await pgQuery(
           `INSERT INTO statics_launches (creative_id, template_id, copy_set_id, ad_account_id, meta_campaign_id, meta_adset_id, meta_ad_id, meta_creative_id, meta_image_hash, ad_name, adset_name, page_id, page_name, batch_number, status, launched_at)
            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,'launched',NOW())`,
-          [creative.id, template_id, copy_set_id || null, template.ad_account_id, template.campaign_id, adsetId, metaAdId, metaCreativeId, primaryImageHash, adName, adsetName, page?.id || null, page?.name || null, bucketBatchNum]
+          [creative.id, template_id, copy_set_id || null, template.ad_account_id, launchCampaignId, adsetId, metaAdId, metaCreativeId, primaryImageHash, adName, adsetName, page?.id || null, page?.name || null, bucketBatchNum]
         ).catch(err => console.warn('[staticsGeneration] Failed to log launch:', err.message));
 
         await pgQuery(
           `UPDATE spy_creatives SET status = 'launched', meta_ad_ids = $1, meta_image_hash = $2, updated_at = NOW() WHERE id = $3`,
           [JSON.stringify(existingMeta), primaryImageHash, creative.id]
-        );
+        ).catch((e) => {
+          // The Meta ad exists; a bookkeeping failure must not flip this
+          // creative into the failed path (it would read as relaunchable).
+          console.error(`[launch] LAUNCHED ad ${metaAdId} but status update failed for ${creative.id}: ${e.message}`);
+        });
 
         // Sibling ratio variants share the launched status (they're part of
         // the same Meta ad now, not separate ads as before).
@@ -6649,10 +6783,20 @@ async function _doLaunch(req, res) {
       [creative_ids]
     ).catch(() => {});
 
+    // A freshly created campaign with zero surviving ad sets is an empty shell
+    // in the ad account — delete it so a failed launch leaves no residue.
+    if (createNewCampaign && launchCampaignId && !createdAdsets.length) {
+      try { await deleteCampaign(launchCampaignId); launchCampaignId = null; launchCampaignName = null; }
+      catch (e) { console.warn('[launch] empty new campaign cleanup failed:', e.message); }
+    }
+
     res.json({
       success: true,
       data: {
         results,
+        campaign_id: launchCampaignId,
+        campaign_name: launchCampaignName,
+        campaign_created: !!(createNewCampaign && launchCampaignId),
         adsets: createdAdsets, // [{ angle, adsetId, adsetName }, ...]
         // Back-compat: keep adset_id / adset_name pointing at the first one
         adset_id: createdAdsets[0]?.adsetId || null,

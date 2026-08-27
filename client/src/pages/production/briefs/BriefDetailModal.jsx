@@ -216,6 +216,7 @@ export default function BriefDetailModal({
   })();
   const [editableHooks, setEditableHooks] = useState([]);
   const [editableBody, setEditableBody] = useState('');
+  const [editableVideoUrl, setEditableVideoUrl] = useState('');
   const [editableHighlighted, setEditableHighlighted] = useState([]);
   const [hasChanges, setHasChanges] = useState(false);
   const [aiPrompt, setAiPrompt] = useState('');
@@ -233,6 +234,7 @@ export default function BriefDetailModal({
     })();
     setEditableHooks(parsedHooks);
     setEditableBody(brief.body || '');
+    setEditableVideoUrl(brief.video_url || '');
     setEditableHighlighted(parseHighlighted(brief.highlighted_text));
     setHasChanges(false);
     setAiHistory([]);
@@ -308,6 +310,7 @@ export default function BriefDetailModal({
         hooks: editableHooks,
         body: editableBody,
         highlighted_text: trimmedHighlights,
+        video_url: editableVideoUrl.trim(),
       });
       setHasChanges(false);
     } finally {
@@ -376,6 +379,16 @@ export default function BriefDetailModal({
                 <SectionLabel>Source Reference</SectionLabel>
                 <ReferenceMedia reference={brief.reference} />
               </section>
+            )}
+            {!brief.reference && (
+              <div className="glass-card border border-white/[0.04] rounded-lg bg-white/[0.02] px-3 py-2.5">
+                <div className="text-[10px] font-mono uppercase tracking-wider text-zinc-500">
+                  Manual script · no League reference
+                </div>
+                <div className="text-[11px] text-zinc-600 mt-1 leading-snug">
+                  This brief was generated from a pasted script, so there is no source video or brand to show.
+                </div>
+              </div>
             )}
 
             {(originalRawScript || originalHooks.length > 0 || originalBody) && (
@@ -490,6 +503,20 @@ export default function BriefDetailModal({
             )}
 
             {/* Body */}
+            <section>
+              <SectionLabel>Final Video (VSL)</SectionLabel>
+              <input
+                type="url"
+                value={editableVideoUrl}
+                onChange={(e) => { setEditableVideoUrl(e.target.value); setHasChanges(true); }}
+                placeholder="https://… — the editor's finished video; launches as a video ad"
+                className="w-full bg-white/[0.03] border border-white/[0.06] rounded-lg px-3 py-2 text-xs text-white placeholder:text-zinc-600 focus:ring-1 focus:ring-[#c9a84c]/30 focus:border-[#c9a84c]/20"
+              />
+              <p className="mt-1 text-[10px] text-zinc-600">
+                {editableVideoUrl.trim() ? 'Will launch as a VIDEO ad (VSL supported, up to ~5 min).' : 'No video attached — a launch ships a link ad using the landing page image.'}
+              </p>
+            </section>
+
             {(editableBody || brief.body) && (
               <section>
                 <SectionLabel>Body</SectionLabel>

@@ -211,7 +211,7 @@ function TemplateSelector({ templates, selectedId, onSelect, loading }) {
             >
               <div className="font-medium">{t.name}</div>
               <div className="text-[10px] text-zinc-500 font-mono mt-0.5">
-                {t.campaign_id ? 'Campaign configured' : 'No campaign'} · {t.ad_account_id || 'No account'}
+                {t.campaign_id ? 'Campaign configured' : t.campaign_mode === 'create_new' ? 'New campaign per launch' : 'No campaign'} · {t.ad_account_id || 'No account'}
               </div>
             </button>
           ))}
@@ -900,7 +900,7 @@ export default function AdsLauncherPage() {
               {selectedTemplate && (
                 <div className="mt-3 grid grid-cols-2 gap-2 text-[10px] font-mono text-zinc-500">
                   <div>Account: <span className="text-zinc-400">{selectedTemplate.ad_account_id || '—'}</span></div>
-                  <div>Campaign: <span className="text-zinc-400">{selectedTemplate.campaign_id ? 'Configured' : 'None'}</span></div>
+                  <div>Campaign: <span className="text-zinc-400">{selectedTemplate.campaign_id ? 'Configured' : selectedTemplate.campaign_mode === 'create_new' ? 'New per launch' : 'None'}</span></div>
                   <div>Budget: <span className="text-zinc-400">{selectedTemplate.daily_budget ? `$${selectedTemplate.daily_budget}/day` : '—'}</span></div>
                   <div>Optimization: <span className="text-zinc-400">{selectedTemplate.optimization_goal || '—'}</span></div>
                   <div>Countries: <span className="text-zinc-400">{(() => { try { const c = typeof selectedTemplate.countries === 'string' ? JSON.parse(selectedTemplate.countries) : selectedTemplate.countries; return Array.isArray(c) ? c.join(', ') : '—'; } catch { return '—'; } })()}</span></div>
@@ -990,7 +990,7 @@ export default function AdsLauncherPage() {
               </div>
               <div className="flex items-center justify-between py-2 border-b border-white/[0.05]">
                 <span className="text-xs text-zinc-400">Campaign</span>
-                <span className="text-sm text-white font-medium">{selectedTemplate?.campaign_id ? 'Configured' : 'Not set'}</span>
+                <span className="text-sm text-white font-medium">{selectedTemplate?.campaign_id ? 'Configured' : selectedTemplate?.campaign_mode === 'create_new' ? 'New per launch' : 'Not set'}</span>
               </div>
               <div className="flex items-center justify-between py-2 border-b border-white/[0.05]">
                 <span className="text-xs text-zinc-400">Ad Copy</span>
@@ -1013,10 +1013,16 @@ export default function AdsLauncherPage() {
             </div>
 
             {/* Validation warnings */}
-            {!selectedTemplate?.campaign_id && (
+            {!selectedTemplate?.campaign_id && selectedTemplate?.campaign_mode !== 'create_new' && (
               <div className="mt-3 flex items-center gap-2 text-xs text-amber-400 bg-amber-500/10 border border-amber-500/20 rounded-lg px-3 py-2">
                 <AlertCircle className="w-3.5 h-3.5 flex-shrink-0" />
                 Template has no campaign configured. Launch will fail.
+              </div>
+            )}
+            {selectedTemplate?.campaign_mode === 'create_new' && (
+              <div className="mt-3 flex items-center gap-2 text-xs text-emerald-400 bg-emerald-500/10 border border-emerald-500/20 rounded-lg px-3 py-2">
+                <AlertCircle className="w-3.5 h-3.5 flex-shrink-0" />
+                This template creates a new campaign for this launch.
               </div>
             )}
             {!adCopy.primary_text && (

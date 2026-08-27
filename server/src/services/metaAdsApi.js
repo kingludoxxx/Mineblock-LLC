@@ -435,6 +435,84 @@ export async function getCustomAudiences(adAccountId) {
 /**
  * Create an ad set under a campaign
  */
+/**
+ * Create a campaign. Used by launch flows whose template says
+ * campaign_mode='create_new' — the campaign is created first, then ad sets go
+ * inside it. ABO campaigns carry no budget (budgets live on the ad sets, and
+ * createAdSet's CBO probe will correctly see no campaign budget); CBO
+ * campaigns get daily_budget here and ad sets skip theirs.
+ */
+export async function createCampaign(adAccountId, params) {
+  const {
+    name, objective = 'OUTCOME_SALES', status = 'ACTIVE',
+    budgetMode = 'ABO', dailyBudget, bidStrategy,
+    specialAdCategories = [],
+  } = params;
+  if (!name) throw new Error('createCampaign: name is required');
+
+  const VALID_OBJECTIVES = new Set([
+    'OUTCOME_SALES', 'OUTCOME_LEADS', 'OUTCOME_TRAFFIC', 'OUTCOME_AWARENESS',
+    'OUTCOME_ENGAGEMENT', 'OUTCOME_APP_PROMOTION',
+  ]);
+  let resolvedObjective = String(objective || '').toUpperCase();
+  if (!VALID_OBJECTIVES.has(resolvedObjective)) {
+    console.warn(`[createCampaign] Invalid objective "${objective}", falling back to OUTCOME_SALES`);
+    resolvedObjective = 'OUTCOME_SALES';
+  }
+
+  const body = {
+    access_token: META_ACCESS_TOKEN,
+    name,
+    objective: resolvedObjective,
+    status,
+    buying_type: 'AUCTION',
+    // Meta requires the field even when empty.
+    special_ad_categories: Array.isArray(specialAdCategories) ? specialAdCategories : [],
+  };
+  if (budgetMode !== 'CBO') {
+    // Meta rejects budget-less (ABO) campaigns without this field
+    // (error_subcode 4834011). False = ad sets keep their own budgets.
+    body.is_adset_budget_sharing_enabled = false;
+  }
+  if (budgetMode === 'CBO') {
+    const budgetNum = typeof dailyBudget === 'string' ? parseFloat(dailyBudget) : dailyBudget;
+    if (isNaN(budgetNum) || budgetNum <= 0) throw new Error(`createCampaign: CBO needs a valid campaign daily budget, got: ${dailyBudget}`);
+    body.daily_budget = Math.round(budgetNum * 100); // cents
+    if (bidStrategy) body.bid_strategy = bidStrategy;
+  }
+
+  const res = await fetch(`${META_GRAPH_URL}/${adAccountId}/campaigns`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    signal: AbortSignal.timeout(META_API_TIMEOUT),
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    const err = await res.text();
+    console.error('[createCampaign] Meta error:', err.slice(0, 1000));
+    throw new Error(`Meta campaign create error ${res.status}: ${err.slice(0, 500)}`);
+  }
+  const data = await res.json();
+  console.log(`[createCampaign] created ${data.id} "${name}" (${resolvedObjective}, ${budgetMode})`);
+  return data.id;
+}
+
+/**
+ * Delete a campaign (used to clean up verification campaigns and to roll back
+ * a create_new launch whose ad sets all failed).
+ */
+export async function deleteCampaign(campaignId) {
+  const res = await fetch(`${META_GRAPH_URL}/${campaignId}?access_token=${META_ACCESS_TOKEN}`, {
+    method: 'DELETE',
+    signal: AbortSignal.timeout(META_API_TIMEOUT),
+  });
+  if (!res.ok) {
+    const err = await res.text();
+    throw new Error(`Meta campaign delete error ${res.status}: ${err.slice(0, 300)}`);
+  }
+  return true;
+}
+
 export async function createAdSet(adAccountId, params) {
   const {
     name, campaignId, dailyBudget, optimizationGoal = 'OFFSITE_CONVERSIONS',
@@ -572,25 +650,38 @@ export async function createFlexibleAdCreative(adAccountId, params) {
   // Reference kept for log/traceability only.
   void utmParameters;
 
-  // Use standard (non-dynamic) creative with object_story_spec + link_data
-  // This allows multiple ads per adset without is_dynamic_creative
+  // Use standard (non-dynamic) creative with object_story_spec.
+  // VIDEO path: when a videoId is supplied the creative is a video ad
+  // (video_data) — this is how brief VSL launches ship. LINK path otherwise.
+  // An empty image_hash is OMITTED, not sent as '' — Meta rejects the empty
+  // string but happily scrapes the landing page's og:image when the key is
+  // absent, which is exactly what a text-only brief launch needs.
+  let storySpec;
+  if (videoId) {
+    const videoData = {
+      video_id: videoId,
+      message: primaryTexts[0] || '',
+      title: headlines[0] || '',
+      call_to_action: { type: cta, value: { link } },
+    };
+    // Meta requires a thumbnail for video ads with CTA links.
+    if (params.imageUrl) videoData.image_url = params.imageUrl;
+    storySpec = { page_id: pageId, video_data: videoData };
+  } else {
+    const linkData = {
+      link,
+      message: primaryTexts[0] || '',
+      name: headlines[0] || '',
+      description: descriptions[0] || '',
+      call_to_action: { type: cta, value: { link } },
+    };
+    if (imageHashes[0]) linkData.image_hash = imageHashes[0];
+    storySpec = { page_id: pageId, link_data: linkData };
+  }
   const body = {
     access_token: META_ACCESS_TOKEN,
     name,
-    object_story_spec: {
-      page_id: pageId,
-      link_data: {
-        link,
-        message: primaryTexts[0] || '',
-        image_hash: imageHashes[0] || '',
-        name: headlines[0] || '',
-        description: descriptions[0] || '',
-        call_to_action: {
-          type: cta,
-          value: { link },
-        },
-      },
-    },
+    object_story_spec: storySpec,
     // HARDCODED default tracking template for ALL launched ads.
     // Meta dynamic placeholders — must be sent literally.
     url_tags: DEFAULT_URL_TAGS,
@@ -772,10 +863,42 @@ export async function uploadAdImageFromUrl(adAccountId, imageUrl) {
 /**
  * Wait for a video to finish processing on Meta
  */
-export async function waitForVideoReady(videoId, maxWaitMs = 120000) {
+// Default raised 120s → 10 min: a 5-minute VSL routinely needs several
+// minutes of Meta-side processing, and the old budget timed launches out
+// ("stuck" launches reported by the operator). Every poll carries its own
+// abort signal — a hung socket used to hang the whole launch forever.
+/**
+ * Meta auto-generates thumbnails while processing a video. Returns the
+ * preferred thumbnail URI (or the first one), null when none exist yet —
+ * callers fall back to a static image. Lets VSL launches ship with a real
+ * video frame as the thumbnail without any operator input.
+ */
+export async function getVideoThumbnail(videoId) {
+  try {
+    const res = await fetch(`${META_GRAPH_URL}/${videoId}/thumbnails?access_token=${META_ACCESS_TOKEN}`, {
+      signal: AbortSignal.timeout(15000),
+    });
+    if (!res.ok) return null;
+    const data = await res.json();
+    const thumbs = data.data || [];
+    const preferred = thumbs.find(t => t.is_preferred) || thumbs[0];
+    return preferred?.uri || null;
+  } catch { return null; }
+}
+
+export async function waitForVideoReady(videoId, maxWaitMs = 600000) {
   const start = Date.now();
   while (Date.now() - start < maxWaitMs) {
-    const res = await fetch(`${META_GRAPH_URL}/${videoId}?fields=status&access_token=${META_ACCESS_TOKEN}`);
+    let res;
+    try {
+      res = await fetch(`${META_GRAPH_URL}/${videoId}?fields=status&access_token=${META_ACCESS_TOKEN}`, {
+        signal: AbortSignal.timeout(15000),
+      });
+    } catch (e) {
+      // transient network failure — keep waiting, don't kill the launch
+      await new Promise(r => setTimeout(r, 5000));
+      continue;
+    }
     if (!res.ok) throw new Error(`Video status check failed: ${res.status}`);
     const data = await res.json();
 

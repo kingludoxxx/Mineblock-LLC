@@ -124,6 +124,9 @@ export function namingVars(creative = {}, product = {}, extra = {}) {
  */
 export function tidyName(s) {
   return String(s || '')
+    // Unresolved tokens first: {name} and {num} exist only per-AD, so an AD SET
+    // pattern containing them otherwise reached Meta as the literal "{name}".
+    .replace(/\{\w+\}/g, '')
     .replace(/\s*-\s*-\s*/g, ' - ')
     .replace(/^\s*-\s*/, '')
     .replace(/\s*-\s*$/, '')

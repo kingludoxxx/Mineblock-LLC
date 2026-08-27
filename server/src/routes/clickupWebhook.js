@@ -1926,15 +1926,42 @@ router.get('/frameio-oauth-start', (req, res) => {
   if (!FRAMEIO_CLIENT_ID || !FRAMEIO_CLIENT_SECRET) {
     return res.status(500).json({ error: 'FRAMEIO_CLIENT_ID / FRAMEIO_CLIENT_SECRET not set on Render' });
   }
+  // ?store=puure — authorize THROUGH this (whitelisted) service but store the
+  // tokens into the PUURE database. Adobe's app whitelists only one redirect
+  // URI (this service's), so the fork can't run its own flow; sharing a live
+  // refresh token across services is also off the table (IMS rotation makes
+  // shared tokens mutually destructive). The state parameter carries the
+  // destination instead.
+  const storeTarget = req.query.store === 'puure' ? ':puure' : '';
   const params = new URLSearchParams({
     client_id: FRAMEIO_CLIENT_ID,
     redirect_uri: FRAMEIO_REDIRECT_URI,
     response_type: 'code',
     scope: FRAMEIO_SCOPES,
-    state: 'frameio-v4-init',
+    state: 'frameio-v4-init' + storeTarget,
   });
   res.redirect(`${ADOBE_IMS_AUTHORIZE}?${params.toString()}`);
 });
+
+// Store a token set into the PUURE database (used when this service completes
+// an OAuth flow on the fork's behalf — see ?store=puure above).
+async function savePuureTokensCrossDb(tokens) {
+  const conn = process.env.PUURE_DATABASE_URL;
+  if (!conn) throw new Error('PUURE_DATABASE_URL not set on this service');
+  const { default: pg } = await import('pg');
+  const client = new pg.Client({ connectionString: conn, ssl: /localhost|127\.0\.0\.1/.test(conn) ? false : { rejectUnauthorized: false } });
+  await client.connect();
+  try {
+    await client.query(
+      `INSERT INTO system_settings (key, value, description, updated_at)
+       VALUES ('frameio_oauth', $1::jsonb, 'Frame.io v4 OAuth tokens (Adobe IMS)', NOW())
+       ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()`,
+      [JSON.stringify(tokens)]
+    );
+  } finally {
+    await client.end().catch(() => {});
+  }
+}
 
 // Step 2: Adobe redirects back here with ?code=... — exchange for tokens.
 router.get('/frameio-oauth-callback', async (req, res) => {
@@ -1964,12 +1991,18 @@ router.get('/frameio-oauth-callback', async (req, res) => {
     if (!tok.refresh_token) {
       throw new Error('IMS did not return refresh_token — check that `offline_access` scope was granted');
     }
-    await saveV4Tokens({
+    const tokenSet = {
       access_token: tok.access_token,
       refresh_token: tok.refresh_token,
       expires_at: Date.now() + (tok.expires_in || 86400) * 1000 - 60_000,
       token_type: tok.token_type || 'Bearer',
-    });
+    };
+    if (String(req.query.state || '').endsWith(':puure')) {
+      await savePuureTokensCrossDb(tokenSet);
+      logger.info('[frameio-oauth-callback] Frame.io v4 OAuth tokens stored for PUURE (cross-db)');
+      return res.send('<h1>Frame.io v4 authorized for PUURE ✅</h1><p>Tokens stored in the Puure dashboard. You can close this tab.</p>');
+    }
+    await saveV4Tokens(tokenSet);
     logger.info('[frameio-oauth-callback] Frame.io v4 OAuth tokens stored — integration unblocked');
     res.send('<h1>Frame.io v4 authorized ✅</h1><p>Tokens stored. You can close this tab.</p>');
   } catch (err) {
@@ -2382,5 +2415,10 @@ router.post('/admin-frameio-cleanup', adminOrSuperAdmin, async (req, res) => {
     res.status(500).json({ success: false, error: err.message, partial_report: report });
   }
 });
+
+// Shared with the video ads launcher: Frame.io v4 fetch (IMS OAuth) and the
+// account id, so importing from a next.frame.io (v4) folder reuses this
+// file's token refresh machinery instead of duplicating it.
+export { frameioFetchV4, FRAMEIO_ACCOUNT_ID };
 
 export default router;

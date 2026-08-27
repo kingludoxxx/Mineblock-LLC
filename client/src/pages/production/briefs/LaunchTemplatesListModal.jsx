@@ -76,7 +76,9 @@ function buildDuplicatePayload(template) {
 function templateIncompleteReasons(template) {
   const reasons = [];
   if (!template.ad_account_id) reasons.push('No ad account');
-  if (!template.campaign_id) reasons.push('No campaign');
+  // create_new templates make their own campaign at launch time — a null
+  // campaign_id is their normal, launchable state.
+  if (!template.campaign_id && template.campaign_mode !== 'create_new') reasons.push('No campaign');
   // pages can be stored as array OR JSON-stringified array (postgres JSONB
   // mood); normalize before checking length
   let pageIds = template.page_ids;
@@ -94,7 +96,8 @@ function templateIncompleteReasons(template) {
 function TemplateCard({ template, onEdit, onDuplicate, onDelete, busy }) {
   const accountTag = template.ad_account_name || template.ad_account_id || '—';
   const budgetTag = template.daily_budget != null ? `$${Number(template.daily_budget).toFixed(2)}/day` : '—';
-  const budgetType = template.bid_strategy?.includes('ROAS') ? 'ROAS' : 'CBO';
+  const budgetType = template.bid_strategy?.includes('ROAS') ? 'ROAS'
+    : (template.campaign_budget_mode === 'CBO' ? 'CBO' : 'ABO');
   const incompleteReasons = templateIncompleteReasons(template);
   // Countries — handle string-vs-array
   let countries = template.countries;

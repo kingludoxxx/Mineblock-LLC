@@ -6,9 +6,10 @@ import {
   uploadAdVideo, waitForVideoReady, createAd, createAdSet,
   createFlexibleAdCreative, getDefaultAdAccountId, isMetaAdsConfigured,
   getAdAccounts, getPages, getPixels, getCampaigns, getAdSets,
-  getCustomAudiences, DEFAULT_URL_TAGS,
+  getCustomAudiences, DEFAULT_URL_TAGS, createCampaign, deleteCampaign,
 } from '../services/metaAdsApi.js';
 import crypto from 'crypto';
+import { frameioFetchV4, FRAMEIO_ACCOUNT_ID } from './clickupWebhook.js';
 
 const router = Router();
 router.use(authenticate, requirePermission('video-ads-launcher', 'access'));
@@ -357,6 +358,116 @@ router.post('/upload', authenticate, async (req, res) => {
 
 // ── Frame.io import ──────────────────────────────────────────────────────
 
+// Resolve a fresh signed download URL for a V4 file. Media links expire, so
+// this is called BOTH at import time and again at LAUNCH time — a video
+// imported today must still upload to Meta next week.
+async function frameV4FreshLink(fileId) {
+  // 429-aware: Frame rate-limits bursts hard; a folder of 200 files makes
+  // 200 of these calls. Exponential backoff, then give up loudly.
+  let resp;
+  for (let attempt = 0; ; attempt++) {
+    try {
+      resp = await frameioFetchV4(`/accounts/${FRAMEIO_ACCOUNT_ID}/files/${fileId}?include=media_links.original,media_links.high_quality,media_links.thumbnail`);
+      break;
+    } catch (e) {
+      if (attempt < 3 && /429|Too Many/i.test(e.message)) {
+        await new Promise(r => setTimeout(r, [2000, 5000, 12000][attempt]));
+        continue;
+      }
+      throw e;
+    }
+  }
+  const d = resp?.data || resp || {};
+  const ml = d.media_links || {};
+  const pick = (x) => x?.download_url || x?.url || null;
+  return {
+    name: d.name || null,
+    fileSize: d.file_size ?? null,
+    mediaType: d.media_type || null,
+    videoUrl: pick(ml.original) || pick(ml.high_quality),
+    thumbUrl: pick(ml.thumbnail),
+    rawKeys: Object.keys(ml),
+  };
+}
+
+async function importFromFrameV4(folderOrFileId, frameUrl) {
+  if (!FRAMEIO_ACCOUNT_ID) throw new Error('FRAMEIO_ACCOUNT_ID not configured');
+  // The editing folder holds ONE SUBFOLDER PER BRIEF (named with the full
+  // brief naming convention), with the delivered videos inside — so the walk
+  // recurses (bounded), and each file remembers the nearest brief-folder
+  // name: that name becomes the imported video's identity, which the {name}
+  // launch token turns into the ad's name.
+  const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+  // One retry with backoff: 50 brief subfolders means ~100 rapid API calls,
+  // and Frame rate-limits bursts. A swallowed 429 here looked like an empty
+  // folder — every failure is now recorded in walkErrors instead.
+  const walkErrors = [];
+  const listChildren = async (id, kind) => {
+    const path = kind === 'stack'
+      ? `/accounts/${FRAMEIO_ACCOUNT_ID}/version_stacks/${id}/children?page_size=100`
+      : `/accounts/${FRAMEIO_ACCOUNT_ID}/folders/${id}/children?page_size=100`;
+    try {
+      const resp = await frameioFetchV4(path);
+      return Array.isArray(resp?.data) ? resp.data : (Array.isArray(resp) ? resp : []);
+    } catch (e1) {
+      await sleep(1200);
+      const resp = await frameioFetchV4(path);
+      return Array.isArray(resp?.data) ? resp.data : (Array.isArray(resp) ? resp : []);
+    }
+  };
+  const BRIEF_RX = /^PL\s*-\s*B\d+/i;
+  const fileIds = [];   // [{ id, briefName }]
+  const walk = async (id, depth, briefName, kind) => {
+    if (depth > 3 || fileIds.length >= 200) return;
+    let items;
+    try { items = await listChildren(id, kind); }
+    catch (e) { walkErrors.push({ id, error: e.message }); return; }
+    for (const it of items) {
+      await sleep(120); // stay under Frame's burst limit across ~100 calls
+      if (it.type === 'folder') {
+        await walk(it.id, depth + 1, BRIEF_RX.test(it.name || '') ? it.name : briefName, 'folder');
+      } else if (it.type === 'version_stack') {
+        await walk(it.id, depth + 1, briefName, 'stack');
+      } else {
+        fileIds.push({ id: it.id, name: it.name, briefName });
+      }
+    }
+  };
+
+  let rootIsFolder = true;
+  try { await listChildren(folderOrFileId, 'folder'); } catch { rootIsFolder = false; }
+  if (rootIsFolder) await walk(folderOrFileId, 0, null, 'folder');
+  else fileIds.push({ id: folderOrFileId, briefName: null }); // single file URL
+  if (!fileIds.length) return { videos: [], count: 0, message: 'No files found in Frame.io folder', walk_errors: walkErrors };
+
+  const videos = [];
+  const skipped = [];
+  for (const { id: fid, briefName } of fileIds) {
+    await sleep(250); // pace the file-detail calls under Frame's rate limit
+    let meta;
+    try { meta = await frameV4FreshLink(fid); }
+    catch (e) { skipped.push({ id: fid, reason: e.message }); continue; }
+    const isVideo = (meta.mediaType || '').startsWith('video') || /\.(mp4|mov|webm|avi|mkv)$/i.test(meta.name || '');
+    if (!isVideo) { continue; }
+    if (!meta.videoUrl) { skipped.push({ id: fid, name: meta.name, reason: `no media link (got: ${meta.rawKeys.join(',') || 'none'})` }); continue; }
+
+    // Skip re-imports of the same Frame file (same folder synced twice).
+    const dupe = await pgQuery(`SELECT id FROM video_ads WHERE launch_config->>'frame_file_id' = $1 AND status != 'failed' LIMIT 1`, [fid]);
+    if (dupe.length) { skipped.push({ id: fid, name: meta.name, reason: 'already imported' }); continue; }
+
+    const id = crypto.randomUUID();
+    const row = await pgQuery(
+      `INSERT INTO video_ads (id, filename, original_name, file_size, content_type, source, source_url, video_url, thumbnail_url, status, launch_config)
+       VALUES ($1,$2,$3,$4,$5,'frame',$6,$7,$8,'uploaded',$9::jsonb) RETURNING *`,
+      // original_name = the brief folder's naming convention when present —
+      // it is the identity the {name} launch token puts on the Meta ad.
+      [id, meta.name || 'frame_video.mp4', briefName || meta.name, meta.fileSize || 0, meta.mediaType || 'video/mp4', frameUrl, meta.videoUrl, meta.thumbUrl, JSON.stringify({ frame_file_id: fid, brief_name: briefName || null })]
+    );
+    videos.push(row[0]);
+  }
+  return { videos, count: videos.length, skipped, walk_errors: walkErrors };
+}
+
 router.post('/import-frame', authenticate, async (req, res) => {
   try {
     await ensureTables();
@@ -367,9 +478,12 @@ router.post('/import-frame', authenticate, async (req, res) => {
 
     // Extract asset ID from Frame.io URL patterns
     // Patterns: next.frame.io/project/.../asset_id, app.frame.io/...
-    const FRAME_TOKEN = process.env.FRAME_IO_TOKEN || '';
-    if (!FRAME_TOKEN) {
-      return res.status(400).json({ success: false, error: { message: 'Frame.io token not configured (FRAME_IO_TOKEN env var)' } });
+    // Accept both historical env names; V4 URLs (next.frame.io) don't need
+    // this token at all — they authenticate via the IMS OAuth machinery.
+    const FRAME_TOKEN = process.env.FRAME_IO_TOKEN || process.env.FRAMEIO_TOKEN || '';
+    const isV4Url = /(^|\.)next\.frame\.io$/.test((() => { try { return new URL(frame_url).hostname; } catch { return ''; } })());
+    if (!FRAME_TOKEN && !isV4Url) {
+      return res.status(400).json({ success: false, error: { message: 'Frame.io token not configured (FRAMEIO_TOKEN env var)' } });
     }
 
     // Parse the Frame.io URL to extract the folder/asset ID
@@ -446,6 +560,19 @@ router.post('/import-frame', authenticate, async (req, res) => {
 
     if (!assetId) {
       return res.status(400).json({ success: false, error: { message: 'Could not extract asset ID from Frame.io URL. Supported formats: next.frame.io/project/.../assetId, app.frame.io/reviews/..., app.frame.io/presentations/...' } });
+    }
+
+    // V4 FIRST for next.frame.io URLs. The operator's editing folders live in
+    // Frame.io V4 (Adobe IMS OAuth) — the V2 API does not know V4 asset ids at
+    // all, so a next.frame.io folder URL used to dead-end with a V2 404.
+    if (urlObj.hostname === 'next.frame.io') {
+      try {
+        const out = await importFromFrameV4(assetId, frame_url);
+        return res.json({ success: true, data: out });
+      } catch (v4err) {
+        console.error('[VideoAdsLauncher] V4 import failed:', v4err.message);
+        return res.status(500).json({ success: false, error: { message: `Frame.io v4 import failed: ${v4err.message}` } });
+      }
     }
 
     // Fetch asset data from Frame.io API v2
@@ -675,7 +802,8 @@ router.post('/launch', authenticate, async (req, res) => {
     if (!templates.length) return res.status(404).json({ success: false, error: { message: 'Template not found' } });
     const template = templates[0];
 
-    if (!template.campaign_id) {
+    const createNewCampaign = template.campaign_mode === 'create_new';
+    if (!template.campaign_id && !createNewCampaign) {
       return res.status(400).json({ success: false, error: { message: 'Template has no campaign configured' } });
     }
 
@@ -707,21 +835,62 @@ router.post('/launch', authenticate, async (req, res) => {
 
     const normalizedCountries = normalizeCountries(template);
 
+    // LANDING-PAGE GUARD: never launch ACTIVE paid ads whose link falls
+    // through to a placeholder (the old chain ended at example.com).
+    const resolvedLandingUrl = (ad_copy?.landing_page_url || '').trim() || template.landing_page_url || process.env.SHOPIFY_STORE_URL || '';
+    if (!/^https?:\/\//.test(resolvedLandingUrl) || /example\.com/.test(resolvedLandingUrl)) {
+      await pgQuery(`UPDATE video_ads SET status = 'ready', updated_at = NOW() WHERE id = ANY($1)`, [launchableIds]);
+      return res.status(400).json({ success: false, error: { message: 'No landing page URL configured: set it in the ad copy or on the template (or SHOPIFY_STORE_URL env). Refusing to launch ads without a destination.' } });
+    }
+
+    // Single-grouping templates are the retargeting format: exactly ONE ad
+    // set holding every ad. Clamp adset_count so a stray spinner value can't
+    // multiply a $50/day ad set N times.
+    const effectiveAdsets = template.adset_grouping === 'single' ? 1 : numAdsets;
+
+    // NEW CAMPAIGN PER LAUNCH — mirrors the statics launcher: create the
+    // campaign first, every ad set below lands inside it; if all ad sets die
+    // the empty campaign is deleted again further down.
+    let launchCampaignId = template.campaign_id;
+    let launchCampaignName = template.campaign_name || null;
+    if (createNewCampaign) {
+      launchCampaignName = buildLaunchName(template.campaign_name_pattern || '{date} - {product} - {angle} - {batch}', {
+        date: dateStr,
+        product: '',
+        angle: videos[0]?.angle || 'General',
+        batch: batchNum,
+      }).replace(/\s+-\s+-\s+/g, ' - ').trim();
+      try {
+        launchCampaignId = await createCampaign(template.ad_account_id, {
+          name: launchCampaignName,
+          objective: template.campaign_objective || 'OUTCOME_SALES',
+          budgetMode: template.campaign_budget_mode || 'ABO',
+          dailyBudget: template.campaign_daily_budget,
+          bidStrategy: template.bid_strategy,
+          specialAdCategories: safeArr(template.special_ad_categories),
+          status: 'ACTIVE',
+        });
+      } catch (err) {
+        await pgQuery(`UPDATE video_ads SET status = 'ready', updated_at = NOW() WHERE id = ANY($1)`, [launchableIds]);
+        return res.status(500).json({ success: false, error: { message: `Campaign creation failed: ${err.message}` } });
+      }
+    }
+
     // Create all adsets
     const adsets = [];
-    for (let a = 0; a < numAdsets; a++) {
+    for (let a = 0; a < effectiveAdsets; a++) {
       const adsetName = buildLaunchName(template.adset_name_pattern || '{date} - Video Batch {batch}', {
         date: dateStr,
         angle: videos[0]?.angle || 'General',
         batch: batchNum,
         product: '',
-        num: numAdsets > 1 ? `${a + 1}` : '01',
-      }) + (numAdsets > 1 ? ` #${a + 1}` : '');
+        num: effectiveAdsets > 1 ? `${a + 1}` : '01',
+      }) + (effectiveAdsets > 1 ? ` #${a + 1}` : '');
 
       try {
         const adsetId = await createAdSet(template.ad_account_id, {
           name: adsetName,
-          campaignId: template.campaign_id,
+          campaignId: launchCampaignId,
           dailyBudget: template.daily_budget,
           optimizationGoal: template.optimization_goal,
           bidStrategy: template.bid_strategy,
@@ -749,6 +918,9 @@ router.post('/launch', authenticate, async (req, res) => {
         // If first adset fails, abort everything
         if (a === 0) {
           await pgQuery(`UPDATE video_ads SET status = 'ready', updated_at = NOW() WHERE id = ANY($1)`, [launchableIds]);
+          if (createNewCampaign && launchCampaignId) {
+            try { await deleteCampaign(launchCampaignId); } catch (e) { console.warn('[VideoAdsLauncher] empty new campaign cleanup failed:', e.message); }
+          }
           return res.status(500).json({ success: false, error: { message: `Ad set creation failed: ${err.message}` } });
         }
         // If subsequent adset fails, continue with what we have
@@ -769,6 +941,20 @@ router.post('/launch', authenticate, async (req, res) => {
         const video = videos[i];
         // Patch in cached meta_video_id so second adset skips re-upload
         const videoWithCache = { ...video, meta_video_id: metaVideoCache.get(video.id) || video.meta_video_id };
+        // Frame.io signed URLs expire — re-resolve a fresh link at launch time
+        // for frame-imported videos that still need a Meta upload.
+        const lc = safeObj(video.launch_config);
+        if (!videoWithCache.meta_video_id && lc.frame_file_id) {
+          try {
+            const fresh = await frameV4FreshLink(lc.frame_file_id);
+            if (fresh.videoUrl) {
+              videoWithCache.video_url = fresh.videoUrl;
+              await pgQuery(`UPDATE video_ads SET video_url = $1, updated_at = NOW() WHERE id = $2`, [fresh.videoUrl, video.id]).catch(() => {});
+            }
+          } catch (e) {
+            console.warn(`[VideoAdsLauncher] fresh Frame link failed for ${video.id} (using stored URL): ${e.message}`);
+          }
+        }
         const page = selectedPages[pageIdx % selectedPages.length];
         pageIdx++;
 
@@ -778,11 +964,14 @@ router.post('/launch', authenticate, async (req, res) => {
           num: i + 1,
           batch: batchNum,
           product: '',
+          // {name}: the video's own identity, so a retargeting template can
+          // keep each ad's own naming convention inside the single ad set.
+          name: (video.original_name || video.filename || '').replace(/\.[a-z0-9]{2,4}$/i, '') || `Video ${i + 1}`,
         }) + (adsets.length > 1 ? ` [AS${adsets.indexOf(adset) + 1}]` : '');
 
         const result = await launchVideoToAdset({
           video: videoWithCache,
-          template,
+          template: { ...template, campaign_id: launchCampaignId },
           adsetId: adset.id,
           adsetName: adset.name,
           page,
@@ -824,20 +1013,27 @@ router.post('/launch', authenticate, async (req, res) => {
       success: true,
       data: {
         results: allResults,
+        campaign_id: launchCampaignId,
+        campaign_name: launchCampaignName,
+        campaign_created: !!createNewCampaign,
         adsets: adsets.map(a => ({ id: a.id, name: a.name })),
         adset_count: adsets.length,
-        failed_adsets: numAdsets - adsets.length,
+        failed_adsets: effectiveAdsets - adsets.length,
         batch_status: allLaunched ? 'launched' : allResults.some(r => r.status === 'launched') ? 'partial' : 'failed',
       }
     });
   } catch (err) {
     console.error('[VideoAdsLauncher] POST /launch error:', err);
-    // CRITICAL: reset any videos stuck in 'launching' from this batch
-    if (video_ids?.length) {
+    // CRITICAL: reset any videos stuck in 'launching' from this batch.
+    // (Must read req.body — video_ids is const-scoped INSIDE the try, so
+    // referencing it here threw ReferenceError and made this whole block
+    // dead code, stranding videos in 'launching'.)
+    const stuckIds = req.body?.video_ids;
+    if (stuckIds?.length) {
       try {
         await pgQuery(
           `UPDATE video_ads SET status = 'ready', updated_at = NOW() WHERE id = ANY($1) AND status = 'launching'`,
-          [video_ids]
+          [stuckIds]
         );
       } catch (resetErr) {
         console.error('[VideoAdsLauncher] Failed to reset stuck videos:', resetErr.message);

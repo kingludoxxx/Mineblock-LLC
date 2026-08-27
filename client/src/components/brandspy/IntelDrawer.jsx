@@ -11,7 +11,7 @@
 import authFetch from '../../services/authFetch';
 import { useEffect, useRef, useState } from 'react';
 import {
-  X, ExternalLink, Copy, Download, Play, FileText, Loader2,
+  X, ExternalLink, Copy, Download, Play, Pause, Volume2, VolumeX, Maximize2, FileText, Loader2,
 } from 'lucide-react';
 
 // ---------------------------------------------------------------------------
@@ -369,6 +369,47 @@ export default function IntelDrawer({
     return () => document.removeEventListener('brand-spy:seek-video', handler);
   }, []);
 
+  // Lets "View transcript" jump to the panel when the text is already loaded.
+  const transcriptRef = useRef(null);
+
+  // Custom player controls. The native `controls` bar auto-hides and never
+  // appeared reliably in the modal, so there was no timeline to drag — the
+  // reference keeps a bar visible at all times, so we render our own.
+  const [paused, setPaused]           = useState(true);
+  const [muted, setMuted]             = useState(false);
+  const [currentTime, setCurrentTime] = useState(0);
+  const [duration, setDuration]       = useState(0);
+
+  const fmtClock = (sec) => {
+    if (!Number.isFinite(sec) || sec < 0) return '0:00';
+    const m = Math.floor(sec / 60);
+    const r = Math.floor(sec % 60);
+    return `${m}:${String(r).padStart(2, '0')}`;
+  };
+  const togglePlay = () => {
+    const v = videoRef.current;
+    if (!v) return;
+    if (v.paused) v.play().catch(() => {}); else v.pause();
+  };
+  const seekTo = (e) => {
+    const v = videoRef.current;
+    if (!v) return;
+    const t = Number(e.target.value);
+    v.currentTime = t;
+    setCurrentTime(t);
+  };
+  const toggleMute = () => {
+    const v = videoRef.current;
+    if (!v) return;
+    v.muted = !v.muted;
+    setMuted(v.muted);
+  };
+  const goFullscreen = () => {
+    const v = videoRef.current;
+    if (!v) return;
+    (v.requestFullscreen || v.webkitRequestFullscreen || (() => {})).call(v);
+  };
+
   async function handleTranscribe() {
     if (!ad?.id) return;
     // In pageMode the page owns both the state and the fetch — just toggle
@@ -556,12 +597,64 @@ export default function IntelDrawer({
                     ref={videoRef}
                     src={freshVideoUrl || ad.videoUrl}
                     poster={ad.thumbnailUrl ?? undefined}
-                    controls
-                    className="block w-full"
-                    style={{ maxHeight: '70vh', background: '#000' }}
-                    onPlay={() => setVideoStarted(true)}
+                    preload="metadata"
+                    className="block w-full cursor-pointer"
+                    // 52vh, not 70vh. At 70vh the element ran to ~589px inside a
+                    // modal that also carries a header, body copy and a footer,
+                    // so the control bar landed below the viewport — measured at
+                    // y=823 on a 764px screen. The bar was rendering correctly
+                    // the whole time; it was simply off-screen. preload=metadata
+                    // also gives us the real duration before playback, so the
+                    // timeline is scrubbable immediately.
+                    style={{ maxHeight: '52vh', background: '#000' }}
+                    onClick={togglePlay}
+                    onPlay={() => { setVideoStarted(true); setPaused(false); }}
+                    onPause={() => setPaused(true)}
+                    onTimeUpdate={() => setCurrentTime(videoRef.current?.currentTime ?? 0)}
+                    onLoadedMetadata={() => setDuration(videoRef.current?.duration ?? 0)}
                     onError={() => { if (!freshAttemptedRef.current) tryRefreshVideoUrl(); }}
                   />
+
+                  {/* Duration badge, top-left — as in the reference. */}
+                  {duration > 0 && (
+                    <div className="absolute top-3 left-3 z-20 px-2 py-0.5 rounded-md text-[11px] font-medium text-white pointer-events-none"
+                      style={{ background: 'rgba(0,0,0,0.65)' }}>
+                      {fmtClock(duration)}
+                    </div>
+                  )}
+
+                  {/* Always-visible control bar. */}
+                  <div
+                    className="absolute bottom-0 left-0 right-0 z-20 px-3 pt-8 pb-2.5 flex flex-col gap-2"
+                    style={{ background: 'linear-gradient(to top, rgba(0,0,0,0.9) 0%, rgba(0,0,0,0.35) 65%, transparent 100%)' }}
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    <input
+                      type="range"
+                      min={0}
+                      max={duration || 100}
+                      step={0.1}
+                      value={currentTime}
+                      onChange={seekTo}
+                      className="w-full h-1 cursor-pointer rounded-full appearance-none bg-white/25"
+                      style={{ accentColor: '#fff' }}
+                    />
+                    <div className="flex items-center gap-3">
+                      <button onClick={togglePlay} className="text-white hover:text-white/75 transition-colors shrink-0">
+                        {paused ? <Play className="w-4 h-4" fill="white" /> : <Pause className="w-4 h-4" fill="white" />}
+                      </button>
+                      <span className="text-[11px] text-white/75 font-mono tabular-nums leading-none">
+                        {fmtClock(currentTime)} / {fmtClock(duration)}
+                      </span>
+                      <div className="flex-1" />
+                      <button onClick={toggleMute} className="text-white/75 hover:text-white transition-colors shrink-0">
+                        {muted ? <VolumeX className="w-4 h-4" /> : <Volume2 className="w-4 h-4" />}
+                      </button>
+                      <button onClick={goFullscreen} className="text-white/75 hover:text-white transition-colors shrink-0">
+                        <Maximize2 className="w-4 h-4" />
+                      </button>
+                    </div>
+                  </div>
                   {refreshingVideo && (
                     <div className="absolute inset-0 flex items-center justify-center bg-black/60 z-10 pointer-events-none">
                       <div className="flex items-center gap-2 text-xs text-white bg-zinc-900/80 border border-white/10 rounded-full px-3 py-1.5">
@@ -617,9 +710,13 @@ export default function IntelDrawer({
                       </>
                     )}
                   </button>
-                  {/* Play-button overlay — visible until the user starts
-                      the video so they have a clear "this is playable"
-                      affordance. Native controls take over after play. */}
+                  {/* Play-button overlay — a clear "this is playable" cue
+                      before playback starts.
+                      Stops short of the bottom (bottom-16) instead of
+                      inset-0: as a full-bleed button it covered the control
+                      bar and, rendering after it, painted over the timeline
+                      and swallowed its clicks — so there was no scrubber to
+                      drag until the video was already playing. */}
                   {!videoStarted && (
                     <button
                       type="button"
@@ -630,7 +727,7 @@ export default function IntelDrawer({
                           setVideoStarted(true);
                         }
                       }}
-                      className="absolute inset-0 flex items-center justify-center transition-opacity hover:bg-black/15"
+                      className="absolute inset-x-0 top-0 bottom-16 z-10 flex items-center justify-center transition-opacity hover:bg-black/15"
                       title="Play video"
                     >
                       <div
@@ -674,51 +771,6 @@ export default function IntelDrawer({
               )}
             </div>
 
-            {/* Transcript panel below the creative — modal-only. The
-                pageMode route renders the transcript in a dedicated
-                right-side Video Script panel instead, so we skip this
-                block to avoid showing the same content twice. */}
-            {!pageMode && ad.videoUrl && (transcript || transcriptError) && (
-              <div
-                className="mx-5 mt-3 rounded-xl px-4 py-3"
-                style={{ background: '#1a1a1c', border: '1px solid #2a2a2a' }}
-              >
-                <div className="flex items-center justify-between mb-2">
-                  <div className="flex items-center gap-2">
-                    <FileText className="w-3.5 h-3.5 text-orange-400" />
-                    <span className="text-xs font-semibold uppercase tracking-wider text-zinc-300">
-                      Transcript
-                    </span>
-                    {transcriptCached && (
-                      <span className="text-[10px] uppercase tracking-wider text-zinc-500">
-                        Cached
-                      </span>
-                    )}
-                  </div>
-                  {transcript && (
-                    <button
-                      onClick={copyTranscript}
-                      className="flex items-center gap-1 text-[11px] text-zinc-400 hover:text-zinc-200 transition-colors"
-                      title="Copy transcript"
-                    >
-                      <Copy className="w-3 h-3" /> Copy
-                    </button>
-                  )}
-                </div>
-                {transcriptError ? (
-                  <p className="text-xs text-rose-400 leading-relaxed">
-                    {transcriptError}
-                  </p>
-                ) : (
-                  <p
-                    className="text-sm text-zinc-200 leading-relaxed whitespace-pre-wrap"
-                    style={{ maxHeight: '24vh', overflowY: 'auto' }}
-                  >
-                    {transcript}
-                  </p>
-                )}
-              </div>
-            )}
 
             {/* Ad destination bar */}
             {(ad.linkUrl || ad.ctaText) && (
@@ -788,9 +840,11 @@ export default function IntelDrawer({
             </div>
 
             <div className="px-5 pb-5 space-y-3 flex-1">
-              {/* Atria-style "Atria AI" card — only in pageMode. Triggers the
-                  right-side Video Script panel. Disabled when the ad has no
-                  video URL (e.g. image / DCO with page-logo fallback). */}
+              {/* Page route only. In the modal the Transcribe pill sits on the
+                  player itself (as in the reference), so this card was a
+                  second control for the same action taking the top slot of the
+                  signal column. Removing it lets RANK/TIER/STATUS/ACTIVE start
+                  the column with no leading gap. */}
               {pageMode && (
                 <div
                   className="rounded-xl p-3.5 flex flex-col gap-2.5"
@@ -808,6 +862,14 @@ export default function IntelDrawer({
                     type="button"
                     onClick={() => {
                       if (!ad.videoUrl) return;
+                      // Already transcribed? The text is rendered further down
+                      // this column, below the fold — re-fetching it changed
+                      // nothing on screen, so the button read as broken. Jump
+                      // to it instead; only fetch when we don't have it yet.
+                      if (transcript) {
+                        transcriptRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                        return;
+                      }
                       handleTranscribe();
                     }}
                     disabled={!ad.videoUrl || transcribing}
@@ -967,16 +1029,10 @@ export default function IntelDrawer({
                 </div>
               </div>
 
-              {/* CHARTS — placeholder */}
-              <div>
-                <p className="text-[10px] uppercase tracking-wider mb-2 font-medium" style={{ color: '#6b7280' }}>
-                  Charts
-                </p>
-                <div className="rounded-xl py-8 flex items-center justify-center text-xs"
-                  style={{ background: '#1e1e20', border: '1px solid #2a2a2a', color: '#4b5563' }}>
-                  Coming soon
-                </div>
-              </div>
+              {/* No CHARTS placeholder. An empty "Coming soon" block cost ~150px
+                  of the signal column and pushed "View on Meta Ad Library"
+                  below the fold — a stub should not outrank a working button.
+                  Reinstate it when there is a chart to draw. */}
 
               {/* TECH STACK */}
               {techStack.length > 0 && (
@@ -1019,6 +1075,52 @@ export default function IntelDrawer({
                   No Ad Library ID
                 </div>
               )}
+                {/* Transcript — lives in the signal column, under the Meta
+                    button, where there was dead space. pageMode renders it in
+                    its own side panel instead, so skip it there. */}
+              {!pageMode && ad.videoUrl && (transcript || transcriptError) && (
+                <div
+                  ref={transcriptRef}
+                  className="mt-3 rounded-xl px-4 py-3"
+                  style={{ background: '#1a1a1c', border: '1px solid #2a2a2a' }}
+                >
+                  <div className="flex items-center justify-between mb-2">
+                    <div className="flex items-center gap-2">
+                      <FileText className="w-3.5 h-3.5 text-orange-400" />
+                      <span className="text-xs font-semibold uppercase tracking-wider text-zinc-300">
+                        Transcript
+                      </span>
+                      {transcriptCached && (
+                        <span className="text-[10px] uppercase tracking-wider text-zinc-500">
+                          Cached
+                        </span>
+                      )}
+                    </div>
+                    {transcript && (
+                      <button
+                        onClick={copyTranscript}
+                        className="flex items-center gap-1 text-[11px] text-zinc-400 hover:text-zinc-200 transition-colors"
+                        title="Copy transcript"
+                      >
+                        <Copy className="w-3 h-3" /> Copy
+                      </button>
+                    )}
+                  </div>
+                  {transcriptError ? (
+                    <p className="text-xs text-rose-400 leading-relaxed">
+                      {transcriptError}
+                    </p>
+                  ) : (
+                    <p
+                      className="text-sm text-zinc-200 leading-relaxed whitespace-pre-wrap"
+                      style={{ maxHeight: '24vh', overflowY: 'auto' }}
+                    >
+                      {transcript}
+                    </p>
+                  )}
+                </div>
+              )}
+
             </div>
           </div>
     </div>

@@ -36,6 +36,7 @@ export const DEFAULT_CONFIG = {
   brands: [],               // domains; empty = every followed brand
   tiers: ['BANGER', 'CHAMP', 'A'],
   maxAgeDays: null,         // null = no recency limit
+  dedup: 'family',          // 'family' = ad-id + headline family; 'ad' = ad-id only (+ same-script transcript guard)
   maxPerSourceAd: 1,        // diversity: never two briefs off one ad in a run
   maxPerBrand: 2,           // diversity: spread across brands
   productId: 37,            // Puure
@@ -55,6 +56,15 @@ export const DEFAULT_CONFIG = {
   // This is what turns selection from "filters + tier score" into judgement —
   // tier score measures how well an ad works for ITS product, not for ours
   // ("Today Only: Extra 20% Off" outranked story ads on tier alone).
+  // Directed angle: when set, every queued job generates under this angle and
+  // the triage rates fit FOR that angle specifically. This is what lets an
+  // operator request ("5 briefs, The Surgeon's Secret") run through the full
+  // selection brain instead of the triage-less manual queue — the gap that let
+  // two thin offer ads into the 2026-08-14 batch.
+  angle: null,
+  // Style-directed selection reads the persistent brand_spy.ads.style tag —
+  // 'give me promos' becomes a WHERE clause, with triage still ranking within.
+  style: null,
   fitTriage: true,
   minFit: 6,          // below this: skipped, with the model's reason attached
   triagePool: 30,     // top candidates triaged per run (one batched Haiku call)
@@ -137,11 +147,31 @@ export async function selectCandidates(cfg) {
     params.push(cfg.brands);
     brandClause = `AND b.domain = ANY($${params.length}::text[])`;
   }
+  let styleClause = '';
+  if (cfg.style && /^[A-Z_]{3,12}$/.test(String(cfg.style).toUpperCase())) {
+    params.push(String(cfg.style).toUpperCase());
+    styleClause = `AND a.style = $${params.length}`;
+  }
   let ageClause = '';
   if (cfg.maxAgeDays) {
     params.push(Number(cfg.maxAgeDays));
     ageClause = `AND a.start_date IS NOT NULL AND a.start_date >= NOW() - ($${params.length} * INTERVAL '1 day')`;
   }
+  // CONTENT-LEVEL dedup, not just ad-id. Brands run the same creative under
+  // many ad ids: "Firm Body or Money Back!" had been briefed SEVEN times via
+  // seven different archive ids before this guard existed. Headline is the
+  // cheap proxy for "same creative family" — but it also excludes a genuinely
+  // NEW video that reuses an old headline (2026-08-15: every recent seranova
+  // ad sat in an already-briefed family, so a "brief their newest ads" run
+  // found zero candidates). cfg.dedup='ad' relaxes this to ad-id only; the
+  // transcript-similarity guard in runAutopilotBatch then catches the actual
+  // same-script re-uploads that the headline clause was protecting against.
+  const familyClause = cfg.dedup === 'ad' ? '' : `
+      AND NOT EXISTS (
+        SELECT 1 FROM brief_pipeline_references r2
+         WHERE r2.headline IS NOT NULL AND a.headline IS NOT NULL
+           AND LOWER(TRIM(r2.headline)) = LOWER(TRIM(a.headline))
+      )`;
   params.push(Number(cfg.minTranscriptChars) || 0);
   const minChars = `$${params.length}`;
 
@@ -157,6 +187,7 @@ export async function selectCandidates(cfg) {
     WHERE a.is_active = TRUE
       AND a.tier = ANY($1::text[])
       ${brandClause}
+      ${styleClause}
       ${ageClause}
       AND (
         a.raw_snapshot->'videos'->0->>'video_hd_url' IS NOT NULL
@@ -169,19 +200,7 @@ export async function selectCandidates(cfg) {
         SELECT 1 FROM brief_pipeline_references r
          WHERE r.ad_archive_id = a.ad_archive_id::text
       )
-      -- CONTENT-LEVEL dedup, not just ad-id. Brands run the same creative under
-      -- many ad ids: "Firm Body or Money Back!" had been briefed SEVEN times via
-      -- seven different archive ids before this guard existed. Ad-id dedup is
-      -- necessary but blind to that. Headline is the cheap, good-enough proxy
-      -- for "same creative family" — it can rarely exclude a genuinely new
-      -- video that reuses an old headline, and that trade is deliberate: a
-      -- missed candidate costs nothing, a duplicate brief costs review time and
-      -- an editor's day.
-      AND NOT EXISTS (
-        SELECT 1 FROM brief_pipeline_references r2
-         WHERE r2.headline IS NOT NULL AND a.headline IS NOT NULL
-           AND LOWER(TRIM(r2.headline)) = LOWER(TRIM(a.headline))
-      )
+      ${familyClause}
     ORDER BY a.tier_score DESC NULLS LAST, a.start_date DESC NULLS LAST
     LIMIT 200
   `, params);
@@ -196,6 +215,25 @@ export async function selectCandidates(cfg) {
  * reason a nightly run produced nothing.
  */
 export async function triageFit(candidates, cfg) {
+  // CHUNKED: one batched call silently overflowed max_tokens at pool=100,
+  // parseTriage returned null, and the run fell back to tier ordering with
+  // nothing saying so. Chunks of 25 keep every call inside its budget, and a
+  // failed chunk degrades only ITS 25 candidates.
+  const CHUNK = 25;
+  if (!process.env.ANTHROPIC_API_KEY || !candidates.length) return null;
+  const merged = new Map();
+  let chunksOk = 0;
+  const chunksTotal = Math.ceil(candidates.length / CHUNK);
+  for (let off = 0; off < candidates.length; off += CHUNK) {
+    const part = candidates.slice(off, off + CHUNK);
+    const fits = await triageFitChunk(part, cfg);
+    if (fits) { chunksOk++; for (const [i, r] of fits) merged.set(off + i, r); }
+  }
+  if (!merged.size) return null;
+  return { fits: merged, chunksOk, chunksTotal };
+}
+
+async function triageFitChunk(candidates, cfg) {
   const key = process.env.ANTHROPIC_API_KEY;
   if (!key || !candidates.length) return null;
 
@@ -219,7 +257,7 @@ export async function triageFit(candidates, cfg) {
   catch (e) { console.warn('[autopilot] track record unavailable:', e.message); }
 
   const list = candidates.map((c, i) =>
-    `${i}. [${c.brand_domain} | ${c.tier}] headline: ${String(c.headline || '(none)').slice(0, 90)}\n   copy: ${String(c.body_text || '').replace(/\s+/g, ' ').slice(0, 260)}${c.transcript ? `\n   transcript: ${String(c.transcript).replace(/\s+/g, ' ').slice(0, 340)}` : ''}`
+    `${i}. [${c.brand_domain} | ${c.tier} | substance: ${(String(c.transcript || '').length || String(c.body_text || '').length)} chars] headline: ${String(c.headline || '(none)').slice(0, 90)}\n   copy: ${String(c.body_text || '').replace(/\s+/g, ' ').slice(0, 260)}${c.transcript ? `\n   transcript: ${String(c.transcript).replace(/\s+/g, ' ').slice(0, 340)}` : ''}`
   ).join('\n');
 
   const body = {
@@ -228,11 +266,12 @@ export async function triageFit(candidates, cfg) {
     system: 'You are a senior direct response strategist choosing which competitor ads are worth cloning for a specific product. You judge transferability of the PSYCHOLOGY, not the quality of the ad for its own product. Return only JSON.',
     messages: [{ role: 'user', content:
 `OUR PRODUCT: ${productLine}
-OUR ANGLES: ${angleNames.join(' | ') || '(none defined)'}\n${track}
+OUR ANGLES: ${angleNames.join(' | ') || '(none defined)'}${cfg.angle ? `\nOPERATOR-DIRECTED ANGLE: every brief will be generated under "${cfg.angle}" — rate FIT FOR THAT ANGLE. For a narrative or authority angle, a bare offer card cannot carry it. For a PROMO or OFFER angle the reverse holds: a well-built offer ad IS the right raw material — judge its offer CRAFT (urgency devices, price anchoring, gift stacking, a reason-why for the deal) and ignore the generic substance rule below.` : ''}\n${track}
 
 For each candidate ad below, rate FIT 0-10: how well would this ad's structure and psychology clone onto OUR product?
 High fit: same audience (women 40+), an emotional or bodily problem analogous to sagging/firmness, a narrative or authority structure that survives a product swap.
 Low fit: bare discount/offer ads with no transferable structure, unrelated audiences or problems (pest control, supplements for stamina), pure brand spots.
+HARD RULE ON SUBSTANCE: an ad under ~600 chars whose copy is only an offer or a discount CANNOT score above 5, whatever its tier — UNLESS the operator-directed angle is itself a promo/offer angle, in which case judge offer craft instead: for a promo clone, the source's craft IS the substance.
 
 CANDIDATES:
 ${list}
@@ -287,6 +326,7 @@ export function applyDiversityCap(candidates, cfg) {
   const perBrand = new Map();
   const seenAds = new Set();
   const seenHeadlines = new Set();
+  const perAngle = new Map();
   const maxPerBrand = Number(cfg.maxPerBrand) || Infinity;
   const target = Number(cfg.briefsPerRun) || DEFAULT_CONFIG.briefsPerRun;
 
@@ -312,6 +352,16 @@ export function applyDiversityCap(candidates, cfg) {
     }
     // Same rule within the batch: one run queued two "Use This On Wrinkles…"
     // ads side by side — different ad ids, same creative. One per family.
+    // Portfolio: a batch is a spread, not five of one argument — cap two
+    // picks per triage-assigned angle.
+    if (c.fitAngle) {
+      const nA = perAngle.get(c.fitAngle) || 0;
+      if (nA >= 2) {
+        skipped.push({ ad: c.id, brand: c.brand_domain, headline: c.headline, reason: 'portfolio: angle "' + c.fitAngle + '" already covered twice' });
+        continue;
+      }
+      perAngle.set(c.fitAngle, nA + 1);
+    }
     const headKey = String(c.headline || '').trim().toLowerCase();
     if (headKey && seenHeadlines.has(headKey)) {
       skipped.push({ ad: c.id, brand: c.brand_domain, headline: c.headline, reason: 'same headline as another ad in this batch' });
@@ -336,7 +386,8 @@ export function formatReport({ picked, skipped, generated, failures, dryRun, sta
   const lines = [];
   lines.push(`*Autopilot Mode*${dryRun ? ' _(dry run — nothing generated)_' : ''} — ${secs}s`);
   lines.push(`Selected *${picked.length}*, generated *${generated.length}*, failed *${failures.length}*, skipped *${skipped.length}*`);
-  if (triaged) lines.push(`_Candidates ranked by reference-fit (Haiku triage), not tier score._`);
+  if (triaged) lines.push(`_Ranked by reference-fit (${triaged})._`);
+  else lines.push('⚠ _Fit triage UNAVAILABLE — this batch was TIER-SORTED. Selection quality degraded._');
   const withFit = picked.filter(p => typeof p.fit === 'number');
   if (withFit.length) lines.push('*Picked* ' + withFit.map(p => `${p.brand_domain} ${p.fit}/10`).join(' · '));
   if (generated.length) {
@@ -383,19 +434,55 @@ export async function runAutopilotBatch({ dryRun = true, overrides = {} } = {}) 
 
   let candidates = await selectCandidates(cfg);
   const considered = candidates.length;
-  let triaged = false;
+  const preSkipped = [];
+  // dedup='ad' dropped the headline-family clause, so catch the case it was
+  // guarding: the SAME SCRIPT re-uploaded under a new ad id. Compare each
+  // candidate transcript against every already-briefed transcript of the same
+  // brand; >=0.85 token overlap = same creative, skip with a named reason.
+  if (cfg.dedup === 'ad' && candidates.length) {
+    const domains = [...new Set(candidates.map(c => String(c.brand_domain || '').toLowerCase()).filter(Boolean))];
+    const refRows = await pgQuery(
+      `SELECT LOWER(brand_name) AS brand, transcript FROM brief_pipeline_references
+        WHERE transcript IS NOT NULL AND length(transcript) > 200 AND LOWER(brand_name) = ANY($1::text[])`,
+      [domains]
+    );
+    const tok = t => new Set(String(t || '').toLowerCase().replace(/[^a-z0-9\s]/g, ' ').split(/\s+/).filter(w => w.length > 2));
+    const byBrand = new Map();
+    for (const r of refRows) {
+      if (!byBrand.has(r.brand)) byBrand.set(r.brand, []);
+      byBrand.get(r.brand).push(tok(r.transcript));
+    }
+    candidates = candidates.filter(c => {
+      const mine = tok(c.transcript);
+      if (!mine.size) return true;
+      for (const theirs of (byBrand.get(String(c.brand_domain || '').toLowerCase()) || [])) {
+        let inter = 0;
+        for (const w of mine) if (theirs.has(w)) inter++;
+        if (inter / Math.min(mine.size, theirs.size) >= 0.85) {
+          preSkipped.push({ ad: c.id, brand: c.brand_domain, headline: c.headline, reason: 'same script as an already briefed ad (new ad id, same creative)' });
+          return false;
+        }
+      }
+      return true;
+    });
+  }
+  let triaged = null;   // 'n/m chunks' when ranked; null = tier fallback
   if (cfg.fitTriage !== false && candidates.length) {
     const pool = candidates.slice(0, Number(cfg.triagePool) || 30);
-    const fits = await triageFit(pool, cfg);
-    if (fits) {
-      triaged = true;
-      for (const [i, r] of fits) Object.assign(pool[i], { fit: r.fit, fitAngle: r.angle, fitWhy: r.why });
+    const t = await triageFit(pool, cfg);
+    if (t) {
+      triaged = t.chunksOk + '/' + t.chunksTotal + ' chunks';
+      for (const [i, r] of t.fits) Object.assign(pool[i], { fit: r.fit, fitAngle: r.angle, fitWhy: r.why });
       // judged order: fit first, tier as the tiebreak; unrated sink to the back
       candidates = pool.slice().sort((a, b) => (b.fit ?? -1) - (a.fit ?? -1) || (b.tier_score ?? 0) - (a.tier_score ?? 0));
     }
     // fits === null -> tier ordering stands; the run must never die on triage
   }
+  // A directed angle supplies the argument, so the bar for the source's
+  // structure rises: minFit at least 7 on directed runs.
+  if (cfg.angle) cfg.minFit = Math.max(Number(cfg.minFit) || 6, 7);   // cfg is const — mutate the property, don't reassign
   const { picked, skipped } = applyDiversityCap(candidates, cfg);
+  skipped.push(...preSkipped);
   const generated = [];
   const failures = [];
 
@@ -418,7 +505,7 @@ export async function runAutopilotBatch({ dryRun = true, overrides = {} } = {}) 
            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
            RETURNING id`,
           [String(c.id), String(c.ad_archive_id), String(c.brand_id), c.brand_domain,
-           c.tier, c.headline, cfg.productId, cfg.productCode, null, 'claude',
+           c.tier, c.headline, cfg.productId, cfg.productCode, cfg.angle || null, 'claude',
            // the triage verdict rides with the job so "does fit predict the
            // operator's approval?" stays a one-query question forever
            c.fit ?? null, c.fitAngle ?? null, c.fitWhy ?? null]

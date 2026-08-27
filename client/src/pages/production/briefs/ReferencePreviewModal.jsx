@@ -36,9 +36,22 @@ export default function ReferencePreviewModal({ reference, open, onClose, onUseA
   // Repaired-URL state, keyed by reference id (same reset-on-change pattern).
   const [repairedFor, setRepairedFor] = useState(null);   // { id, url }
   const [repairingFor, setRepairingFor] = useState(null); // id while repair in flight
+  const [recoverErrorFor, setRecoverErrorFor]   = useState(null);
+  const [transcribingFor, setTranscribingFor]   = useState(null);
+  const [transcribeErrorFor, setTranscribeErrorFor] = useState(null);
+  const [localTranscriptFor, setLocalTranscriptFor] = useState(null);
   const videoError = videoErrorFor === refKey && refKey !== null;
   const repairedUrl = repairedFor?.id === refKey ? repairedFor.url : null;
   const repairing = repairingFor === refKey && refKey !== null;
+  const transcribing  = transcribingFor === refKey && refKey !== null;
+  const recoverError  = recoverErrorFor?.id === refKey ? recoverErrorFor.msg : null;
+  const transcribeError = transcribeErrorFor?.id === refKey ? transcribeErrorFor.msg : null;
+  const localTranscript = localTranscriptFor?.id === refKey ? localTranscriptFor.text : null;
+  // Ad Library permalink — the reference stores the archive id, so we can always
+  // link back to the live ad even when no video is recoverable.
+  const adLibraryUrl = reference?.adArchiveId
+    ? `https://www.facebook.com/ads/library/?id=${reference.adArchiveId}`
+    : null;
 
   // Stored fbcdn URLs expire ~2-4 weeks after scrape. On playback failure,
   // ask the server to recover the video (fresh Ad Library extraction → R2)
@@ -64,6 +77,47 @@ export default function ReferencePreviewModal({ reference, open, onClose, onUseA
       setVideoErrorFor(refKey);
     } finally {
       setRepairingFor(null);
+    }
+  }
+
+  // Recover a video for a reference that has NO stored URL at all.
+  // handleVideoError only fires when an existing URL fails to play, so a
+  // reference imported without one was a dead end reading "No direct video URL
+  // stored for this ad." — even though the server can often rebuild it from the
+  // ad_archive_id or a linked brand-spy ad.
+  async function handleRecoverVideo() {
+    if (repairing) return;
+    setRepairingFor(refKey);
+    setRecoverErrorFor(null);
+    try {
+      const { data } = await api.post(`/brief-pipeline/references/${refKey}/repair-video`, {}, { timeout: 120000 });
+      if (data?.videoUrl) {
+        setRepairedFor({ id: refKey, url: data.videoUrl });
+        setVideoErrorFor(null);
+      } else {
+        setRecoverErrorFor({ id: refKey, msg: 'No recoverable video found for this ad.' });
+      }
+    } catch (err) {
+      setRecoverErrorFor({ id: refKey, msg: err?.response?.data?.error?.message || 'Recovery failed.' });
+    } finally {
+      setRepairingFor(null);
+    }
+  }
+
+  // META references carry their transcript from the import job; if that never
+  // ran there was no way to ask for one from here.
+  async function handleTranscribe() {
+    if (transcribing) return;
+    setTranscribingFor(refKey);
+    setTranscribeErrorFor(null);
+    try {
+      const { data } = await api.post(`/brief-pipeline/references/${refKey}/retry-transcribe`, {}, { timeout: 180000 });
+      if (data?.transcript) setLocalTranscriptFor({ id: refKey, text: data.transcript });
+      else setTranscribeErrorFor({ id: refKey, msg: 'Transcription returned nothing.' });
+    } catch (err) {
+      setTranscribeErrorFor({ id: refKey, msg: err?.response?.data?.error?.message || 'Transcription failed.' });
+    } finally {
+      setTranscribingFor(null);
     }
   }
 
@@ -203,16 +257,46 @@ export default function ReferencePreviewModal({ reference, open, onClose, onUseA
                     Try opening in a new tab for better compatibility.
                   </div>
                 )}
-                {reference.videoUrl && (
-                  <a
-                    href={reference.videoUrl}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="inline-flex items-center gap-1.5 px-3 py-1.5 text-[11px] font-mono rounded bg-blue-500/15 border border-blue-500/30 text-blue-300 hover:text-blue-200 hover:bg-blue-500/20 hover:border-blue-500/50 transition-colors"
-                  >
-                    <Play className="w-3 h-3" />
-                    Play in New Tab
-                  </a>
+                <div className="flex items-center justify-center gap-2 flex-wrap">
+                  {reference.videoUrl && (
+                    <a
+                      href={reference.videoUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 text-[11px] font-mono rounded bg-blue-500/15 border border-blue-500/30 text-blue-300 hover:text-blue-200 hover:bg-blue-500/20 hover:border-blue-500/50 transition-colors"
+                    >
+                      <Play className="w-3 h-3" />
+                      Play in New Tab
+                    </a>
+                  )}
+                  {/* No stored URL: the server can often rebuild one from the
+                      ad_archive_id or a linked brand-spy ad, so offer that
+                      instead of ending on a flat statement of the problem. */}
+                  {!reference.videoUrl && (
+                    <button
+                      type="button"
+                      onClick={handleRecoverVideo}
+                      disabled={repairing}
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 text-[11px] font-mono rounded bg-emerald-500/15 border border-emerald-500/30 text-emerald-300 hover:bg-emerald-500/20 disabled:opacity-50 transition-colors"
+                    >
+                      {repairing ? <Loader2 className="w-3 h-3 animate-spin" /> : <Play className="w-3 h-3" />}
+                      {repairing ? 'Recovering…' : 'Recover video'}
+                    </button>
+                  )}
+                  {adLibraryUrl && (
+                    <a
+                      href={adLibraryUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 text-[11px] font-mono rounded bg-white/[0.04] border border-white/[0.1] text-zinc-300 hover:text-white hover:bg-white/[0.07] transition-colors"
+                    >
+                      <Eye className="w-3 h-3" />
+                      View ad
+                    </a>
+                  )}
+                </div>
+                {recoverError && (
+                  <p className="text-[11px] text-rose-400 mt-2">{recoverError}</p>
                 )}
               </div>
             )}
@@ -231,9 +315,23 @@ export default function ReferencePreviewModal({ reference, open, onClose, onUseA
                   {reference.transcript}
                 </p>
               </div>
+            ) : localTranscript ? (
+              <div className="bg-white/[0.02] border border-white/[0.06] rounded-lg p-4">
+                <p className="text-xs text-zinc-300 whitespace-pre-wrap leading-relaxed">{localTranscript}</p>
+              </div>
             ) : (
               <div className="text-xs text-zinc-500 bg-white/[0.01] border border-dashed border-white/[0.06] rounded-lg p-4 text-center">
-                No transcript yet for this reference.
+                <p className="mb-3">No transcript yet for this reference.</p>
+                <button
+                  type="button"
+                  onClick={handleTranscribe}
+                  disabled={transcribing}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 text-[11px] font-mono rounded bg-orange-500/15 border border-orange-500/30 text-orange-300 hover:bg-orange-500/20 disabled:opacity-50 transition-colors"
+                >
+                  {transcribing ? <Loader2 className="w-3 h-3 animate-spin" /> : <FileText className="w-3 h-3" />}
+                  {transcribing ? 'Transcribing…' : 'Transcribe'}
+                </button>
+                {transcribeError && <p className="text-[11px] text-rose-400 mt-2">{transcribeError}</p>}
               </div>
             )}
           </div>
