@@ -39,6 +39,7 @@ import {
 import { auditStaticImage } from '../services/staticsQualityAudit.js';
 import { generateCopySets, renderCopyForImage, totalWords } from '../services/staticsCopywriter.js';
 import { generateCutout } from '../services/productCutout.js';
+import { namingVars, tidyName, claimImNumber, syncCounter, DEFAULT_CREATOR } from '../services/staticNaming.js';
 import { STATICS_FORMATS, getFormat, capFor, resolveFormat } from '../config/staticsFormats.js';
 import { pgQuery } from '../db/pg.js';
 import { authenticate } from '../middleware/auth.js';
@@ -6353,6 +6354,18 @@ async function _doLaunch(req, res) {
     }
     console.log(`[launch] grouping ${creatives.length} creatives into ${creativesByAngle.size} ad set(s) by angle: ${Array.from(creativesByAngle.keys()).join(', ')}`);
 
+    // Product rows for naming: ad_code ("PL") lives on the profile, not on the
+    // creative. Loaded once per launch rather than per ad.
+    const productById = new Map();
+    for (const pid of new Set(creatives.map(c => c.product_id).filter(Boolean))) {
+      try {
+        const rows = await pgQuery('SELECT id, name, short_name, ad_code FROM product_profiles WHERE id = $1', [pid]);
+        if (rows.length) productById.set(pid, rows[0]);
+      } catch (e) {
+        console.warn(`[launch] could not load product ${pid} for naming: ${e.message}`);
+      }
+    }
+
     const normalizedCountries = (() => {
       const raw = safeArr(template.countries);
       const codes = raw.map(c => {
@@ -6395,12 +6408,12 @@ async function _doLaunch(req, res) {
       bucketIdx++;
       const bucketBatchNum = (batchNum + bucketIdx) % 10000;
       let adsetId = null;
-      const adsetName = buildLaunchName(template.adset_name_pattern || '{date} - Batch {batch}', {
+      const adsetName = tidyName(buildLaunchName(template.adset_name_pattern || '{date} - {code} - {angle} - {creator}', {
+        ...namingVars(bucketCreatives[0] || {}, productById.get(bucketCreatives[0]?.product_id) || {}, { angle: angleKey }),
         date: dateStr,
-        angle: angleKey,
         batch: bucketBatchNum,
-        product: bucketCreatives[0]?.product_name || '',
-      });
+        num: '',
+      }));
 
       try {
         adsetId = await createAdSet(template.ad_account_id, {
@@ -6452,13 +6465,13 @@ async function _doLaunch(req, res) {
       const page = selectedPages.length ? selectedPages[pageIdx % selectedPages.length] : null;
       pageIdx++;
 
-      const adName = buildLaunchName(template.ad_name_pattern || '{date} - {angle} {num}', {
+      // PL - IM001 - Promo - CLAUDE
+      const adName = tidyName(buildLaunchName(template.ad_name_pattern || '{code} - {im} - {angle} - {creator}', {
+        ...namingVars(creative, productById.get(creative.product_id) || {}, { angle: creative.angle || angleKey || 'General' }),
         date: dateStr,
-        angle: creative.angle || angleKey || 'General',
         num: i + 1,
         batch: bucketBatchNum,
-        product: creative.product_name || '',
-      });
+      }));
 
       try {
         if (!creative.image_url && !creative.meta_image_hash) {
@@ -10772,6 +10785,108 @@ router.post('/products/:id/cutout', authenticate, async (req, res) => {
   });
 });
 
+// POST /naming/backfill — give existing cards their IM numbers.
+//
+// Cards created before the naming convention have im_number NULL, so they would
+// launch as "PL - Promo - CLAUDE" with no identity. Numbers are assigned in
+// creation order so IM001 is genuinely the oldest card, and the per-product
+// counter is then moved above the highest assigned value — otherwise the next
+// generated card would restart at 1 and collide.
+//
+// Idempotent: a card that already has a number keeps it.
+router.post('/naming/backfill', authenticate, async (req, res) => {
+  const productId = parseInt(req.body?.product_id, 10);
+  if (!Number.isFinite(productId)) {
+    return res.status(400).json({ success: false, error: { message: 'product_id is required' } });
+  }
+  const dryRun = req.body?.dry_run === true;
+
+  // Parents only. A ratio child shares its parent's identity via
+  // parent_im_number and must not consume a number of its own.
+  const rows = await pgQuery(
+    `SELECT id, angle, aspect_ratio, created_at, parent_creative_id
+       FROM spy_creatives
+      WHERE product_id = $1 AND im_number IS NULL
+        AND parent_creative_id IS NULL
+        AND COALESCE(is_reference, false) = false
+      ORDER BY created_at ASC`,
+    [productId],
+  );
+
+  const assigned = [];
+  for (const row of rows) {
+    if (dryRun) { assigned.push({ id: row.id, angle: row.angle, im_number: null }); continue; }
+    const n = await claimImNumber(productId);
+    if (n == null) { assigned.push({ id: row.id, angle: row.angle, error: 'counter unavailable' }); continue; }
+    await pgQuery(
+      `UPDATE spy_creatives SET im_number = $1, creator = COALESCE(creator, $2) WHERE id = $3`,
+      [n, DEFAULT_CREATOR, row.id],
+    );
+    assigned.push({ id: row.id, angle: row.angle, im_number: n });
+  }
+
+  // Children inherit their parent's number so every ratio of one card reads the
+  // same IM in reporting.
+  let children = 0;
+  if (!dryRun) {
+    const kids = await pgQuery(
+      `UPDATE spy_creatives c
+          SET parent_im_number = p.im_number,
+              creator = COALESCE(c.creator, p.creator, $2)
+         FROM spy_creatives p
+        WHERE c.parent_creative_id = p.id
+          AND c.product_id = $1
+          AND p.im_number IS NOT NULL
+          AND c.parent_im_number IS DISTINCT FROM p.im_number
+        RETURNING c.id`,
+      [productId, DEFAULT_CREATOR],
+    );
+    children = kids.length;
+    await syncCounter(productId);
+  }
+
+  res.json({ success: true, data: { product_id: productId, dry_run: dryRun, assigned: assigned.length, children_linked: children, rows: assigned.slice(0, 50) } });
+});
+
+// GET /naming/preview — what will these creatives actually be called?
+// Answers the question without launching, so a wrong pattern is caught before
+// it reaches Meta and before it pollutes the ad_name join key.
+router.get('/naming/preview', authenticate, async (req, res) => {
+  const templateId = req.query.template_id;
+  let template = { ad_name_pattern: '{code} - {im} - {angle} - {creator}', adset_name_pattern: '{date} - {code} - {angle} - {creator}' };
+  if (templateId) {
+    const t = await pgQuery('SELECT * FROM launch_templates WHERE id = $1', [templateId]);
+    if (t.length) template = t[0];
+  }
+  const status = String(req.query.status || 'ready');
+  const creatives = await pgQuery(
+    `SELECT * FROM spy_creatives WHERE status = $1 AND COALESCE(is_reference, false) = false ORDER BY angle, im_number NULLS LAST LIMIT 60`,
+    [status],
+  );
+  const products = new Map();
+  for (const pid of new Set(creatives.map(c => c.product_id).filter(Boolean))) {
+    const r = await pgQuery('SELECT id, name, short_name, ad_code FROM product_profiles WHERE id = $1', [pid]);
+    if (r.length) products.set(pid, r[0]);
+  }
+  const d = new Date();
+  const dateStr = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  const out = creatives.map((c, i) => ({
+    id: c.id,
+    angle: c.angle,
+    ratio: c.aspect_ratio,
+    im_number: c.im_number ?? c.parent_im_number ?? null,
+    ad_name: tidyName(buildLaunchName(template.ad_name_pattern || '{code} - {im} - {angle} - {creator}', {
+      ...namingVars(c, products.get(c.product_id) || {}), date: dateStr, num: i + 1, batch: 1,
+    })),
+  }));
+  const adsets = [...new Set(creatives.map(c => c.angle || 'General'))].map(angle => tidyName(
+    buildLaunchName(template.adset_name_pattern || '{date} - {code} - {angle} - {creator}', {
+      ...namingVars(creatives.find(c => (c.angle || 'General') === angle) || {}, products.get(creatives[0]?.product_id) || {}, { angle }),
+      date: dateStr, batch: 1, num: '',
+    })));
+  res.json({ success: true, data: { adset_names: adsets, ads: out, unnamed: out.filter(o => !o.im_number).length } });
+});
+
 // GET /formats — the canonical layout registry, so the UI can offer formats
 // instead of the operator pasting prose into a brief.
 router.get('/formats', authenticate, (req, res) => {
@@ -11052,15 +11167,20 @@ RULES:
           )
         : await persistAnyUrlToR2(resultUrl, 'statics-composer');
 
+      // Claim the card's IM number BEFORE the insert. Atomic per product, so
+      // the three concurrent generations in a batch cannot race for the same
+      // number (see claimImNumber — MAX+1 would).
+      const imNumber = await claimImNumber(b.product_id);
+
       const inserted = await pgQuery(`
         INSERT INTO spy_creatives
           (product_id, product_name, image_url, aspect_ratio, status, pipeline,
            angle, reference_name, source_label, image_engine,
-           composer_source, composer_prompt, generation_task_id)
+           composer_source, composer_prompt, generation_task_id, im_number, creator)
         VALUES ($1, $2, $3, $4, 'composer', 'standard', $5, 'Described', 'composer-describe',
-                $6, 'describe', $7, $8)
+                $6, 'describe', $7, $8, $9, $10)
         ON CONFLICT (generation_task_id) WHERE generation_task_id IS NOT NULL DO NOTHING
-        RETURNING id, status, aspect_ratio, angle, image_url
+        RETURNING id, status, aspect_ratio, angle, image_url, im_number
       `, [
         parseInt(b.product_id, 10),
         prod.name || null,
@@ -11070,6 +11190,8 @@ RULES:
         engine.name,
         brief,
         taskId,
+        imNumber,
+        DEFAULT_CREATOR,
       ]);
 
       storeTaskResult(taskId, {
