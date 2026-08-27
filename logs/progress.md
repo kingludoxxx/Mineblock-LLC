@@ -4920,3 +4920,56 @@ DECISIONS:
     winner button) — operator's call.
 STATUS: COMPLETE — awaiting operator review of B0154-B0156
 ---
+
+---
+TIMESTAMP: 2026-08-27 02:35
+TASK: Launch template Ad Format does not persist
+BUILT: Root cause was NOT the write path. The live row already held
+  ad_format='SINGLE_IMAGE' and the server PUT/UPDATE includes the column
+  correctly. The fault was the read-back mapping in
+  client/src/pages/production/briefs/LaunchTemplateEditor.jsx. The DB stores an
+  uppercase token; the <select> options are Title Case labels. The load path
+  used .replace(/_/g,' ').replace(/\b\w/g, c => c.toUpperCase()), which
+  uppercases each word's first letter but never lowercases the rest, so
+  'SINGLE_IMAGE' -> 'SINGLE IMAGE', not 'Single Image'. Only 'FLEXIBLE'
+  survived, because it was special-cased ahead of the regex. A controlled
+  native <select> whose value matches no <option> renders the FIRST option —
+  "Flexible Ads". Replaced both directions with an explicit label<->token table
+  (AD_FORMAT_TO_DB / AD_FORMAT_FROM_DB + adFormatToDb/adFormatFromDb) so they
+  are exact inverses, with unknown values falling back to a real option.
+TESTED: Unit-executed both mappers over all 4 labels, all 4 tokens, and the
+  edge cases null/undefined/''/'junk'/7/{}/'single image'/'Single-Image'/
+  'FLEXIBLE_ADS'/whitespace — every output is a member of AD_FORMATS and every
+  round trip is lossless. Live API: PUT each of FLEXIBLE, SINGLE_VIDEO,
+  CAROUSEL, SINGLE_IMAGE to template 44ede7fa (Retargeting) and read each back
+  by GET — all 4 persisted with zero drift across the other 33 PUT columns.
+  Failure paths exercised live: bogus ad_format -> 200 (column is plain TEXT,
+  no CHECK); nonexistent id -> 404; unauthenticated PUT -> 401. Client build
+  clean (vite). Post-deploy, extracted the MINIFIED mapper functions verbatim
+  out of the served bundle and executed them — all pass — and confirmed the
+  bundle wires them in as adFormat:DX(n.ad_format) / ad_format:EX(i.adFormat),
+  with the old /\b\w/g ad_format transform absent (the 4 remaining uses of that
+  regex are unrelated status/action badges).
+OUTPUT: Before: DB 'SINGLE_IMAGE' -> UI rendered "Flexible Ads". After: DB
+  'SINGLE_IMAGE' -> UI renders "Single Image". Deploy dep-da7o1gc9v7es73f44op0
+  on commit 0b3ac15 reached status=live in 97s. Template restored to its
+  pre-task value 'SINGLE_IMAGE' with no drift.
+DECISIONS:
+  - DECISION MADE: did NOT use `git add -A`. Another session was mid-edit in
+    staticsGeneration.js + an untracked staticNaming.js + migration 099;
+    committing that would have shipped a half-finished feature.
+  - DECISION MADE: aborted `git merge feature/statics-pipeline-v2` into main.
+    It conflicted on two competing ad-NAMING implementations (main's {name}
+    retargeting chain + campaign-creation fields vs the branch's {code}/{im}
+    IM-numbering). ad_name is the Triple Whale join key — not this task's call
+    to adjudicate. Applied the same 3-line ad_format fix directly to main
+    instead, touching no other field and no server file. The naming branch was
+    later merged by its own session (e9f3d78); the ad_format fix survived that
+    resolution intact.
+  - OPEN: DEFAULT_FORM.adFormat is 'Single Video' while the DB default and the
+    load fallback are both Flexible — a NEW template opens on "Single Video".
+    Left alone deliberately: out of scope for the reported bug. Operator's call.
+  - OPEN: ad_format has no CHECK constraint; an arbitrary string can be PUT via
+    the API. The UI can no longer produce one. Left alone.
+STATUS: COMPLETE
+---
