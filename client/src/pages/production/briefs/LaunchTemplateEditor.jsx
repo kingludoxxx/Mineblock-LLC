@@ -74,7 +74,7 @@ const TRANSLATION_LANGUAGES = [
   'Portuguese', 'Polish', 'Swedish', 'Danish', 'Romanian',
 ];
 
-const NAMING_VARIABLES = ['{date}', '{angle}', '{batch}', '{num}', '{product}', '{name}'];
+const NAMING_VARIABLES = ['{code}', '{im}', '{angle}', '{creator}', '{date}', '{ratio}', '{batch}', '{num}', '{product}', '{name}'];
 
 // Safe-array parser — JSONB columns can arrive as either an array (already
 // parsed) or a string (postgres-side JSON) depending on the driver mood.
@@ -104,8 +104,11 @@ const DEFAULT_FORM = {
   campaignBudgetMode: 'ABO',             // budgets on ad sets (ABO) or campaign (CBO)
   campaignDailyBudget: '',
   adsetGrouping: 'per_angle',            // 'per_angle' | 'single' (retargeting)
-  adSetNamePattern: '{date} - {angle} - Batch {batch}',
-  adNamePattern: '{angle} - {num}',
+  // PL - IM001 - Promo - CLAUDE. The ad name is the Triple Whale join key and
+  // the handle the iterations flow uses to resolve a Meta winner back to a card,
+  // so {im} carries the identity and belongs in every ad name.
+  adSetNamePattern: '{date} - {code} - {angle} - {creator}',
+  adNamePattern: '{code} - {im} - {angle} - {creator}',
   conversionLocation: 'WEBSITE',
   conversionEvent: 'PURCHASE',
   dailyBudget: '',
@@ -195,11 +198,15 @@ function resolvePattern(pattern, vars = {}) {
   const pad = (n) => String(n).padStart(2, '0');
   const defaults = {
     date: `${pad(today.getMonth() + 1)}${pad(today.getDate())}`,
-    angle: 'Dad Bod',
+    angle: 'Promo',
     name: 'Ad Name',
     batch: '1',
     num: '01',
     product: 'Product',
+    code: 'PL',
+    im: 'IM001',
+    creator: 'CLAUDE',
+    ratio: '4x5',
     ...vars,
   };
   return pattern.replace(/\{(\w+)\}/g, (_, k) => defaults[k] ?? `{${k}}`);
