@@ -37,6 +37,36 @@ const ATTRIBUTION_WINDOWS = [
 
 const AD_FORMATS = ['Flexible Ads', 'Single Image', 'Single Video', 'Carousel'];
 
+// Ad format is stored in the DB as an uppercase token ('FLEXIBLE',
+// 'SINGLE_IMAGE', ...) but the <select> options are the Title Case labels
+// above. The two mappings below MUST be exact inverses, and the value handed
+// to the <select> MUST be one of AD_FORMATS — a controlled native <select>
+// whose value matches no <option> silently renders the FIRST option, which is
+// how a saved 'SINGLE_IMAGE' used to reappear as 'Flexible Ads'.
+const AD_FORMAT_TO_DB = {
+  'Flexible Ads': 'FLEXIBLE',
+  'Single Image': 'SINGLE_IMAGE',
+  'Single Video': 'SINGLE_VIDEO',
+  Carousel: 'CAROUSEL',
+};
+// Reverse lookup, keyed by the normalised DB token so legacy/odd spellings
+// ('single image', 'Single-Image', 'FLEXIBLE_ADS') still resolve to a label.
+const AD_FORMAT_FROM_DB = Object.fromEntries(
+  Object.entries(AD_FORMAT_TO_DB).map(([label, token]) => [token, label])
+);
+
+function adFormatToDb(label) {
+  // Exact label first; anything else is normalised through adFormatFromDb so a
+  // stale/odd in-memory value can never silently downgrade to 'FLEXIBLE'.
+  return AD_FORMAT_TO_DB[label] || AD_FORMAT_TO_DB[adFormatFromDb(label)];
+}
+
+function adFormatFromDb(value) {
+  if (!value) return AD_FORMATS[0];
+  const token = String(value).trim().toUpperCase().replace(/[\s-]+/g, '_');
+  return AD_FORMAT_FROM_DB[token] || AD_FORMAT_FROM_DB[token.replace(/_ADS?$/, '')] || AD_FORMATS[0];
+}
+
 const GENDERS = ['All', 'Male', 'Female'];
 
 const TRANSLATION_LANGUAGES = [
@@ -44,7 +74,7 @@ const TRANSLATION_LANGUAGES = [
   'Portuguese', 'Polish', 'Swedish', 'Danish', 'Romanian',
 ];
 
-const NAMING_VARIABLES = ['{date}', '{angle}', '{batch}', '{num}', '{product}'];
+const NAMING_VARIABLES = ['{code}', '{im}', '{angle}', '{creator}', '{date}', '{ratio}', '{batch}', '{num}', '{product}'];
 
 // Safe-array parser — JSONB columns can arrive as either an array (already
 // parsed) or a string (postgres-side JSON) depending on the driver mood.
@@ -68,8 +98,11 @@ const DEFAULT_FORM = {
   selectedPages: [],
   pixelId: '',
   campaignId: '',
-  adSetNamePattern: '{date} - {angle} - Batch {batch}',
-  adNamePattern: '{angle} - {num}',
+  // PL - IM001 - Promo - CLAUDE. The ad name is the Triple Whale join key and
+  // the handle the iterations flow uses to resolve a Meta winner back to a card,
+  // so {im} carries the identity and belongs in every ad name.
+  adSetNamePattern: '{date} - {code} - {angle} - {creator}',
+  adNamePattern: '{code} - {im} - {angle} - {creator}',
   conversionLocation: 'WEBSITE',
   conversionEvent: 'PURCHASE',
   dailyBudget: '',
@@ -159,10 +192,14 @@ function resolvePattern(pattern, vars = {}) {
   const pad = (n) => String(n).padStart(2, '0');
   const defaults = {
     date: `${pad(today.getMonth() + 1)}${pad(today.getDate())}`,
-    angle: 'Dad Bod',
+    angle: 'Promo',
     batch: '1',
     num: '01',
     product: 'Product',
+    code: 'PL',
+    im: 'IM001',
+    creator: 'CLAUDE',
+    ratio: '4x5',
     ...vars,
   };
   return pattern.replace(/\{(\w+)\}/g, (_, k) => defaults[k] ?? `{${k}}`);
@@ -263,7 +300,7 @@ export default function LaunchTemplateEditor({ open, onClose, template, onSaved 
         ageMin: template.age_min ?? 18,
         ageMax: template.age_max ?? 65,
         gender: template.gender ? template.gender.charAt(0).toUpperCase() + template.gender.slice(1) : 'All',
-        adFormat: template.ad_format === 'FLEXIBLE' ? 'Flexible Ads' : (template.ad_format || 'Flexible Ads').replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase()),
+        adFormat: adFormatFromDb(template.ad_format),
         utmParams: template.utm_parameters || DEFAULT_FORM.utmParams,
         landingPageUrl: template.landing_page_url || '',
         translationLanguages: safeArr(template.translation_languages),
@@ -449,7 +486,7 @@ export default function LaunchTemplateEditor({ open, onClose, template, onSaved 
         age_min: form.ageMin ?? 18,
         age_max: form.ageMax ?? 65,
         gender: form.gender.toLowerCase(),
-        ad_format: form.adFormat === 'Flexible Ads' ? 'FLEXIBLE' : form.adFormat.toUpperCase().replace(/ /g, '_'),
+        ad_format: adFormatToDb(form.adFormat),
         utm_parameters: form.utmParams,
         landing_page_url: form.landingPageUrl || null,
         translation_languages: form.translationLanguages,
