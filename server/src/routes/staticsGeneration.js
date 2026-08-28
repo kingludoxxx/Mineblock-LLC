@@ -459,6 +459,28 @@ router.post('/repair-missing-ratios', authenticate, async (req, res) => {
     const ALL_RATIOS = ['1:1', '4:5', '9:16'];
     const dryRun = req.body?.dry_run === true;
 
+  // Adopt orphans first. Cards written before the product_id fix carry a
+  // product_name but no product_id, which makes them invisible to the
+  // per-product query below — they would stay unnumbered forever and launch
+  // without their "PL" prefix. Matched on product_name so a card is only ever
+  // adopted by the product it already claims to belong to.
+  let adopted = 0;
+  if (req.body?.adopt_orphans === true && !dryRun) {
+    const prod = await pgQuery('SELECT name FROM product_profiles WHERE id = $1', [productId]);
+    const pname = prod[0]?.name;
+    if (pname) {
+      const rows = await pgQuery(
+        `UPDATE spy_creatives SET product_id = $1
+          WHERE product_id IS NULL AND product_name = $2
+            AND COALESCE(is_reference, false) = false
+          RETURNING id`,
+        [productId, pname],
+      );
+      adopted = rows.length;
+      if (adopted) console.log(`[naming/backfill] adopted ${adopted} orphaned card(s) into product ${productId}`);
+    }
+  }
+
     // Find candidate parents — anything that landed in Review or Ready and
     // could plausibly have a complete 3-ratio set. Exclude launched (live
     // ads — can't safely change image_hash) and rejected (operator dismissed).
@@ -3583,7 +3605,14 @@ router.post('/generate', authenticate, async (req, res) => {
                   ON CONFLICT (generation_task_id) WHERE generation_task_id IS NOT NULL DO NOTHING
                   RETURNING id`,
                 [
-                  product?.id || null,
+                  // product?.id OR the explicit top-level product_id. The queue
+                  // sends BOTH — a product_payload that carries `name` but no
+                  // `id`, plus product_id beside it — so reading only the nested
+                  // object dropped the association on every queued card. A card
+                  // with no product_id is invisible to the IM backfill, cannot
+                  // resolve its "PL" naming prefix, and cannot be audited
+                  // against its product's banned phrases.
+                  product?.id || req.body.product_id || null,
                   product?.name || null,
                   angle_data?.name || angle || null,
                   parentTask.ratio || '1:1',
@@ -3628,7 +3657,7 @@ router.post('/generate', authenticate, async (req, res) => {
                         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23)
                         ON CONFLICT (generation_task_id) WHERE generation_task_id IS NOT NULL DO NOTHING`,
                       [
-                        product?.id || null,
+                        product?.id || req.body.product_id || null,
                         product?.name || null,
                         angle_data?.name || angle || null,
                         ct.ratio,
@@ -3675,7 +3704,7 @@ router.post('/generate', authenticate, async (req, res) => {
 
       logGenerationEvent({
         template_id: template_id || null,
-        product_id: product?.id || null,
+        product_id: product?.id || req.body.product_id || null,
         product_name: product?.name || null,
         angle: angle_data?.name || angle || null,
         provider: 'nanobanana',
@@ -3692,7 +3721,7 @@ router.post('/generate', authenticate, async (req, res) => {
       storeTaskResult(earlyTaskId, { status: 'error', error: err.message });
       logGenerationEvent({
         template_id: req.body.template_id || null,
-        product_id: req.body.product?.id || null,
+        product_id: req.body.product?.id || req.body.product_id || null,
         product_name: req.body.product?.name || null,
         angle: req.body.angle_data?.name || req.body.angle || null,
         provider: 'nanobanana',
@@ -11121,7 +11150,7 @@ router.post('/naming/backfill', authenticate, async (req, res) => {
     await syncCounter(productId);
   }
 
-  res.json({ success: true, data: { product_id: productId, dry_run: dryRun, assigned: assigned.length, children_linked: children, rows: assigned.slice(0, 50) } });
+  res.json({ success: true, data: { product_id: productId, dry_run: dryRun, adopted, assigned: assigned.length, children_linked: children, rows: assigned.slice(0, 50) } });
 });
 
 // GET /naming/preview — what will these creatives actually be called?
