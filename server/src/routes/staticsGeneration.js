@@ -459,28 +459,6 @@ router.post('/repair-missing-ratios', authenticate, async (req, res) => {
     const ALL_RATIOS = ['1:1', '4:5', '9:16'];
     const dryRun = req.body?.dry_run === true;
 
-  // Adopt orphans first. Cards written before the product_id fix carry a
-  // product_name but no product_id, which makes them invisible to the
-  // per-product query below — they would stay unnumbered forever and launch
-  // without their "PL" prefix. Matched on product_name so a card is only ever
-  // adopted by the product it already claims to belong to.
-  let adopted = 0;
-  if (req.body?.adopt_orphans === true && !dryRun) {
-    const prod = await pgQuery('SELECT name FROM product_profiles WHERE id = $1', [productId]);
-    const pname = prod[0]?.name;
-    if (pname) {
-      const rows = await pgQuery(
-        `UPDATE spy_creatives SET product_id = $1
-          WHERE product_id IS NULL AND product_name = $2
-            AND COALESCE(is_reference, false) = false
-          RETURNING id`,
-        [productId, pname],
-      );
-      adopted = rows.length;
-      if (adopted) console.log(`[naming/backfill] adopted ${adopted} orphaned card(s) into product ${productId}`);
-    }
-  }
-
     // Find candidate parents — anything that landed in Review or Ready and
     // could plausibly have a complete 3-ratio set. Exclude launched (live
     // ads — can't safely change image_hash) and rejected (operator dismissed).
@@ -11105,6 +11083,28 @@ router.post('/naming/backfill', authenticate, async (req, res) => {
     return res.status(400).json({ success: false, error: { message: 'product_id is required' } });
   }
   const dryRun = req.body?.dry_run === true;
+
+  // Adopt orphans first. Cards written before the product_id fix carry a
+  // product_name but no product_id, which makes them invisible to the
+  // per-product query below — they would stay unnumbered forever and launch
+  // without their "PL" prefix. Matched on product_name so a card is only ever
+  // adopted by the product it already claims to belong to.
+  let adopted = 0;
+  if (req.body?.adopt_orphans === true && !dryRun) {
+    const prod = await pgQuery('SELECT name FROM product_profiles WHERE id = $1', [productId]);
+    const pname = prod[0]?.name;
+    if (pname) {
+      const rows = await pgQuery(
+        `UPDATE spy_creatives SET product_id = $1
+          WHERE product_id IS NULL AND product_name = $2
+            AND COALESCE(is_reference, false) = false
+          RETURNING id`,
+        [productId, pname],
+      );
+      adopted = rows.length;
+      if (adopted) console.log(`[naming/backfill] adopted ${adopted} orphaned card(s) into product ${productId}`);
+    }
+  }
 
   // Parents only. A ratio child shares its parent's identity via
   // parent_im_number and must not consume a number of its own.
