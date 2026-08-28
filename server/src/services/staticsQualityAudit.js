@@ -182,6 +182,7 @@ Return ONLY raw JSON, no markdown fence, in EXACTLY this shape:
 {
   "transcript": "every word of visible text in IMAGE 2, in reading order, separated by | between distinct blocks (this is the only long field — keep every other string under 25 words)",
   "word_count": 0,
+  "product_label_words": 0,
   "banned_phrases_found": ["the exact rendered text that matches a banned phrase"],
   "spelling_or_grammar_errors": ["the exact broken text, e.g. 'A SURGERY RESULTS.'"],
   "duplicated_text": ["text that appears more than once and should not, e.g. a row label repeated"],
@@ -213,10 +214,22 @@ RULES FOR THE OFFER:
 - If a term is not shown at all, use null. null means "absent"; it must never
   mean "probably the usual value".
 
-RULES FOR COUNTING:
-- word_count counts EVERY visible word: headline, sub-line, table cells, row
-  labels, badge text, price, brand wordmark, attribution — all of it. A number
-  like "$20,000" is one word. "8mm" is one word.
+RULES FOR COUNTING — this distinction is the whole point:
+- word_count counts only the AD COPY: text laid OVER the image as part of the
+  advertisement. Headline, sub-line, table cells, row labels, badges, price,
+  CTA, attribution, brand wordmark placed as a logo. A number like "$20,000"
+  is one word. "8mm" is one word.
+- product_label_words counts text that is PHYSICALLY PRINTED ON THE PRODUCT or
+  its packaging inside the photograph — the box, the label, the device itself.
+  That text is part of the product, not something the designer wrote, and a
+  copy budget must not charge the ad for it.
+- If a product box in the scene reads "BREAST LIFT DEVICE / CLINICALLY PROVEN /
+  10 MINUTES DAILY", every one of those words is product_label_words, NOT
+  word_count. Counting them made correct ads look 2x over budget and produced
+  a warning on output that was fine.
+- When you genuinely cannot tell whether a word is overlay or packaging, count
+  it as product_label_words. A missed overlay word costs little; a false
+  over-budget warning trains the operator to ignore the audit.
 RULES FOR PRODUCT FIDELITY — do this as a deliberate sweep, not an impression:
 - FIRST scan the whole ad and list EVERY place the product is drawn, into
   product_depictions. Ads often show it twice: a clean hero shot AND a second
