@@ -35,6 +35,7 @@ import {
   buildLayoutAnalysisPrompt,
   mapProductRowToFlatProfile,
   renderAngleVariantBlock,
+  countTextWords,
 } from '../utils/staticsPrompts.js';
 import { auditStaticImage } from '../services/staticsQualityAudit.js';
 import { generateCopySets, renderCopyForImage, totalWords } from '../services/staticsCopywriter.js';
@@ -5186,6 +5187,29 @@ router.patch('/creatives/:id/angle', authenticate, async (req, res) => {
       [newAngle, req.params.id]
     );
     if (rows.length === 0) return res.status(404).json({ success: false, error: { message: 'Creative not found' } });
+    // Vision QC on the REFERENCE path.
+    //
+    // The audit previously ran only on Composer cards, so the path that
+    // produces most cards — and that produced a card rendering a competitor's
+    // "90% OFF" and an invented "HOLIDAY20" — was never checked at all. Fired
+    // after the response for the same reason as the Composer path: QC annotates
+    // a card, it must never delay or fail a generation that already succeeded.
+    if (rows[0]?.id && !rows[0]?.parent_creative_id) {
+      const row = rows[0];
+      (async () => {
+        const prods = row.product_id
+          ? await pgQuery('SELECT * FROM product_profiles WHERE id = $1', [row.product_id]).catch(() => [])
+          : [];
+        await auditCreativeAndPersist(row.id, {
+          imageUrl: row.image_url,
+          productRow: prods[0] || null,
+          angleName: row.angle,
+          approvedCopy: approvedCopyOf(row),
+          creativeRow: row,
+        });
+      })().catch(e => console.error('[staticsQC] post-generate audit failed:', e.message));
+    }
+
     res.json({ success: true, data: rows[0] });
   } catch (err) {
     console.error('[staticsGeneration] /creatives/:id/angle error:', err);
@@ -11180,6 +11204,21 @@ router.post('/composer/copy-preview', authenticate, async (req, res) => {
  * Returns the audit result; never throws.
  */
 /**
+ * How much text the REFERENCE carried. The natural budget for an adaptation:
+ * an ad copying a 30-word reference is not "over budget" at 28 words, and the
+ * flat 20-word default said otherwise on every reference card.
+ * Returns 0 when there is no analysis to read, so the caller keeps its default.
+ */
+function referenceWordCount(row) {
+  try {
+    let a = row?.claude_analysis;
+    if (typeof a === 'string') a = JSON.parse(a);
+    const orig = a?.original_text;
+    return orig && typeof orig === 'object' ? countTextWords(orig) : 0;
+  } catch { return 0; }
+}
+
+/**
  * The copy a card was APPROVED to carry, whichever path produced it.
  *
  * adapted_text is the reference path (what enforceOfferClaims validated);
@@ -11195,7 +11234,7 @@ function approvedCopyOf(row) {
   return parse(row?.adapted_text) || parse(row?.generated_copy) || null;
 }
 
-async function auditCreativeAndPersist(creativeId, { imageUrl, productRow, angleName, requestedFormat, prefixNote = null, approvedCopy = null } = {}) {
+async function auditCreativeAndPersist(creativeId, { imageUrl, productRow, angleName, requestedFormat, prefixNote = null, approvedCopy = null, creativeRow = null } = {}) {
   try {
     // Same richest-match rule as renderAngleVariantBlock — an empty stub sharing
     // a name would otherwise audit against an empty banned list.
@@ -11203,12 +11242,24 @@ async function auditCreativeAndPersist(creativeId, { imageUrl, productRow, angle
     // Score against the FORMAT's cap. A flat 20 flagged every checklist and
     // diagram in the 20-card audit while type-led cards passed untouched.
     const fmt = resolveFormat(requestedFormat);
+    // Word cap. A format supplies its own. A REFERENCE-adapted card has no
+    // format, and the flat 20-word default flagged every good one — three
+    // correct promo cards came back at 28-37 words purely because a promo
+    // legitimately carries headline + discount + price + code + urgency.
+    // A check that fires on good output gets ignored, so derive the budget from
+    // the thing the card is actually copying: the reference's own word count,
+    // with the same 1.5x tolerance enforceTextShape already allows.
+    let wordCap = fmt ? fmt.cap : undefined;
+    if (!fmt) {
+      const refWords = referenceWordCount(creativeRow);
+      if (refWords > 0) wordCap = Math.max(20, Math.ceil(refWords * 1.5));
+    }
     const res = await auditStaticImage({
       imageUrl,
       referenceProductImage: productRow ? productImageAtIndex(productRow, 0) : null,
       angle,
       requestedFormat,
-      wordCap: fmt ? fmt.cap : undefined,
+      wordCap,
       // The offer check compares the RENDERED discount/code/price against the
       // copy that was approved. Without this the audit sees "90% OFF" and has
       // no way to know the approved copy said 60%.
@@ -11238,7 +11289,7 @@ router.post('/creatives/:id/audit', authenticate, async (req, res) => {
   const prods = c.product_id ? await pgQuery('SELECT * FROM product_profiles WHERE id = $1', [c.product_id]) : [];
   const out = await auditCreativeAndPersist(c.id, {
     imageUrl: c.image_url, productRow: prods[0] || null, angleName: c.angle,
-    approvedCopy: approvedCopyOf(c),
+    approvedCopy: approvedCopyOf(c), creativeRow: c,
   });
   res.json({ success: true, data: { id: c.id, angle: c.angle, ...out } });
 });
@@ -11254,7 +11305,7 @@ router.post('/creatives/audit-batch', authenticate, async (req, res) => {
     const prods = c.product_id ? await pgQuery('SELECT * FROM product_profiles WHERE id = $1', [c.product_id]) : [];
     const out = await auditCreativeAndPersist(c.id, {
       imageUrl: c.image_url, productRow: prods[0] || null, angleName: c.angle,
-      approvedCopy: approvedCopyOf(c),
+      approvedCopy: approvedCopyOf(c), creativeRow: c,
     });
     results.push({ id, angle: c.angle, ok: out.ok, warning: out.warning, report: out.report });
   }
