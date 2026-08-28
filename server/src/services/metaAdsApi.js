@@ -923,7 +923,10 @@ export async function waitForVideoReady(videoId, maxWaitMs = 1200000) {
     if (videoStatus === 'error' || phase === 'error') {
       throw new Error(`Video processing failed on Meta (status: ${videoStatus || phase})`);
     }
-    await new Promise(r => setTimeout(r, 3000));
+    // 15s, not 3s: the 3s loop alone burned the app-level request budget on
+    // long VSLs ("(#4) Application request limit reached", 2026-08-28) and
+    // took every other Meta call down with it.
+    await new Promise(r => setTimeout(r, 15000));
   }
   throw new Error('Video processing timed out');
 }
