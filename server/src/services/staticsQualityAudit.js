@@ -52,6 +52,98 @@ async function fetchAsBase64(url, timeoutMs = 60000) {
   }
 }
 
+// ── Offer verification ──────────────────────────────────────────────────────
+//
+// Every other guard in this pipeline runs on TEXT, before anything is drawn:
+// enforceTextShape, enforceOfferClaims, enforceCopySet. They guarantee the
+// INSTRUCTION is clean. None of them can see the OUTPUT.
+//
+// On a controlled A/B — one reference, one approved copy set, two engines —
+// NanoBanana rendered "90% OFF" and "HOLIDAY20" while the approved copy said
+// 60% and WELCOME10. Both numbers came from the COMPETITOR's reference ad. The
+// copy check passed; the renderer ignored it. A card like that promises a
+// discount that does not exist and a code that does not work.
+//
+// So the offer has to be re-read off the finished pixels and compared with what
+// was approved. This is the only check in the system that can catch it.
+
+const PCT_RE   = /(\d{1,3})\s*%/g;
+const CODE_RE  = /\b(?:use\s+)?(?:code|coupon|promo\s*code)\s*[:\-—]?\s*["“']?([A-Za-z0-9][A-Za-z0-9_-]{2,19})["”']?/gi;
+const PRICE_RE = /\$\s?(\d[\d,]*(?:\.\d{2})?)/g;
+
+/**
+ * Pull every offer term out of a blob of approved copy.
+ *
+ * Flattens an object to its STRING VALUES rather than JSON.stringify-ing it.
+ * Stringify escapes the quotes in `USE CODE "WELCOME10"` to `\"WELCOME10\"`,
+ * and the backslash breaks the code regex — so the approved code was found
+ * NOWHERE and every rendered code got reported as unauthorised. A check that
+ * fires on correct output is worse than no check: it trains you to ignore it.
+ */
+function flattenStrings(v, out = []) {
+  if (typeof v === 'string') out.push(v);
+  else if (Array.isArray(v)) v.forEach(x => flattenStrings(x, out));
+  else if (v && typeof v === 'object') Object.values(v).forEach(x => flattenStrings(x, out));
+  else if (typeof v === 'number') out.push(String(v));
+  return out;
+}
+
+export function extractOfferTerms(input) {
+  const text = typeof input === 'string' ? input : flattenStrings(input).join(' | ');
+  const grab = (re, idx = 1) => {
+    const out = new Set();
+    let m; re.lastIndex = 0;
+    while ((m = re.exec(text)) !== null) out.add(String(m[idx]).toUpperCase().replace(/,/g, ''));
+    return out;
+  };
+  return { percents: grab(PCT_RE), codes: grab(CODE_RE), prices: grab(PRICE_RE) };
+}
+
+/**
+ * Compare what the image RENDERED against what was APPROVED.
+ *
+ * Returns a list of problems, each naming BOTH values — "image says X, approved
+ * says Y" — because a mismatch is only actionable if you can see the gap.
+ *
+ * Deliberately silent when the audit could not read an offer term: absence of a
+ * reading is not evidence of a mismatch, and a false accusation here would send
+ * someone hunting a compliance problem that does not exist.
+ */
+export function compareOffer(approvedCopy, rendered = {}, extra = {}) {
+  const problems = [];
+  if (!approvedCopy) return problems;             // nothing to compare against
+  const approved = extractOfferTerms(approvedCopy);
+  const allowedPrices = new Set(approved.prices);
+  for (const p of extractOfferTerms(extra.productPrice || '').prices) allowedPrices.add(p);
+
+  const rPct = String(rendered.discount_percent ?? '').match(/(\d{1,3})\s*%/);
+  if (rPct) {
+    const got = rPct[1];
+    if (approved.percents.size > 0 && !approved.percents.has(got)) {
+      problems.push(`offer mismatch: image says ${got}% off, approved copy says ${[...approved.percents].join('/')}%`);
+    } else if (approved.percents.size === 0) {
+      problems.push(`image shows ${got}% off but the approved copy claims no discount`);
+    }
+  }
+
+  const rCode = String(rendered.promo_code ?? '').trim().toUpperCase().replace(/^["'“]|["'”]$/g, '');
+  if (rCode && rCode !== 'NONE' && rCode !== 'NULL') {
+    if (!approved.codes.has(rCode)) {
+      const known = approved.codes.size ? [...approved.codes].join(', ') : 'none';
+      problems.push(`unauthorised code rendered: "${rCode}" (approved: ${known})`);
+    }
+  }
+
+  const rPrice = String(rendered.price ?? '').match(/\$\s?(\d[\d,]*(?:\.\d{2})?)/);
+  if (rPrice) {
+    const got = rPrice[1].replace(/,/g, '').toUpperCase();
+    if (allowedPrices.size > 0 && !allowedPrices.has(got)) {
+      problems.push(`price mismatch: image says $${got}, approved ${[...allowedPrices].map(x => '$' + x).join('/')}`);
+    }
+  }
+  return problems;
+}
+
 function buildPrompt({ bannedPhrases, wordCap, angleName, requestedFormat }) {
   const banned = bannedPhrases.length
     ? bannedPhrases.map(p => `  - "${p}"`).join('\n')
@@ -102,9 +194,24 @@ Return ONLY raw JSON, no markdown fence, in EXACTLY this shape:
     "matches_reference": true,
     "problem": "null, or the worst mismatch across product_depictions"
   },
+  "offer_rendered": {
+    "discount_percent": "the discount as rendered, e.g. \"60% OFF\", or null if the ad shows none",
+    "promo_code": "the code as rendered, e.g. \"WELCOME10\", or null",
+    "price": "the headline price as rendered, e.g. \"$99\", or null",
+    "urgency_claim": "any deadline/scarcity claim as rendered, e.g. \"FINAL HOURS\", or null"
+  },
   "text_illegible_or_garbled": false,
   "verdict_notes": "one short sentence on the single worst problem, or 'clean'"
 }
+
+RULES FOR THE OFFER:
+- Read discount_percent, promo_code, price and urgency_claim off the PIXELS.
+  Report exactly what is drawn, character for character. Do NOT normalise, do
+  NOT correct an odd-looking number, and do NOT infer what it "should" say.
+  These are compared against the approved copy, so a helpful correction here
+  destroys the only signal that can catch a false advertised discount.
+- If a term is not shown at all, use null. null means "absent"; it must never
+  mean "probably the usual value".
 
 RULES FOR COUNTING:
 - word_count counts EVERY visible word: headline, sub-line, table cells, row
@@ -146,6 +253,8 @@ export async function auditStaticImage({
   angle = null,
   wordCap = DEFAULT_WORD_CAP,
   requestedFormat = '',
+  approvedCopy = null,
+  productPrice = '',
 } = {}) {
   if (!process.env.ANTHROPIC_API_KEY) {
     return { ok: null, skipped: true, report: null, warning: 'QC not run: ANTHROPIC_API_KEY missing' };
@@ -207,14 +316,14 @@ export async function auditStaticImage({
     return { ok: null, skipped: true, report: null, warning: `QC not run: ${err.message}`.slice(0, 200) };
   }
 
-  return { ...summarise(report, wordCap), report, skipped: false };
+  return { ...summarise(report, wordCap, { approvedCopy, productPrice }), report, skipped: false };
 }
 
 /**
  * Turn a raw report into { ok, warning }. Split out from the network call so it
  * is testable against fixtures without spending an API call.
  */
-export function summarise(report = {}, wordCap = DEFAULT_WORD_CAP) {
+export function summarise(report = {}, wordCap = DEFAULT_WORD_CAP, offerCtx = null) {
   const problems = [];
 
   const wc = Number(report.word_count);
@@ -242,6 +351,13 @@ export function summarise(report = {}, wordCap = DEFAULT_WORD_CAP) {
   }
 
   if (report.text_illegible_or_garbled === true) problems.push('garbled text');
+
+  // Offer verification. Runs only when the caller supplied the approved copy —
+  // without it there is nothing to compare against, and inventing a baseline
+  // would produce confident nonsense.
+  if (offerCtx && offerCtx.approvedCopy) {
+    problems.push(...compareOffer(offerCtx.approvedCopy, report.offer_rendered || {}, offerCtx));
+  }
 
   return { ok: problems.length === 0, warning: problems.length ? problems.join(' · ').slice(0, 500) : null };
 }
