@@ -558,6 +558,11 @@ export async function createAdSet(adAccountId, params) {
       ...(targeting.gender && targeting.gender !== 'all' ? { genders: [targeting.gender === 'male' ? 1 : 2] } : {}),
       ...(targeting.include_audiences?.length ? { custom_audiences: targeting.include_audiences.map(a => ({ id: a.id || a })) } : {}),
       ...(targeting.exclude_audiences?.length ? { excluded_custom_audiences: targeting.exclude_audiences.map(a => ({ id: a.id || a })) } : {}),
+      // Meta now REQUIRES an explicit Advantage Audience choice on new ad
+      // sets (error_subcode 1870227 "Advantage Audience Flag Required").
+      // 0 = use exactly the manual targeting defined above, no AI expansion —
+      // the operator's gender/geo constraints must be honored literally.
+      targeting_automation: { advantage_audience: 0 },
     },
     destination_type: conversionLocation || 'WEBSITE',
     ...(pixelId ? {
