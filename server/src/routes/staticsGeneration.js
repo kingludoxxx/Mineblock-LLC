@@ -11179,7 +11179,23 @@ router.post('/composer/copy-preview', authenticate, async (req, res) => {
  * audit that could not execute must not be indistinguishable from a pass.
  * Returns the audit result; never throws.
  */
-async function auditCreativeAndPersist(creativeId, { imageUrl, productRow, angleName, requestedFormat, prefixNote = null } = {}) {
+/**
+ * The copy a card was APPROVED to carry, whichever path produced it.
+ *
+ * adapted_text is the reference path (what enforceOfferClaims validated);
+ * generated_copy is the copy-set path. Both arrive as jsonb, which this
+ * codebase sometimes hands back as a string.
+ */
+function approvedCopyOf(row) {
+  const parse = (v) => {
+    if (!v) return null;
+    if (typeof v !== 'string') return v;
+    try { const p = JSON.parse(v); return typeof p === 'string' ? JSON.parse(p) : p; } catch { return v; }
+  };
+  return parse(row?.adapted_text) || parse(row?.generated_copy) || null;
+}
+
+async function auditCreativeAndPersist(creativeId, { imageUrl, productRow, angleName, requestedFormat, prefixNote = null, approvedCopy = null } = {}) {
   try {
     // Same richest-match rule as renderAngleVariantBlock — an empty stub sharing
     // a name would otherwise audit against an empty banned list.
@@ -11193,6 +11209,11 @@ async function auditCreativeAndPersist(creativeId, { imageUrl, productRow, angle
       angle,
       requestedFormat,
       wordCap: fmt ? fmt.cap : undefined,
+      // The offer check compares the RENDERED discount/code/price against the
+      // copy that was approved. Without this the audit sees "90% OFF" and has
+      // no way to know the approved copy said 60%.
+      approvedCopy,
+      productPrice: productRow?.price || '',
     });
     const warning = [prefixNote, res.warning].filter(Boolean).join(' · ') || null;
     await pgQuery('UPDATE spy_creatives SET quality_warning = $1 WHERE id = $2', [warning, creativeId]);
@@ -11217,6 +11238,7 @@ router.post('/creatives/:id/audit', authenticate, async (req, res) => {
   const prods = c.product_id ? await pgQuery('SELECT * FROM product_profiles WHERE id = $1', [c.product_id]) : [];
   const out = await auditCreativeAndPersist(c.id, {
     imageUrl: c.image_url, productRow: prods[0] || null, angleName: c.angle,
+    approvedCopy: approvedCopyOf(c),
   });
   res.json({ success: true, data: { id: c.id, angle: c.angle, ...out } });
 });
@@ -11232,6 +11254,7 @@ router.post('/creatives/audit-batch', authenticate, async (req, res) => {
     const prods = c.product_id ? await pgQuery('SELECT * FROM product_profiles WHERE id = $1', [c.product_id]) : [];
     const out = await auditCreativeAndPersist(c.id, {
       imageUrl: c.image_url, productRow: prods[0] || null, angleName: c.angle,
+      approvedCopy: approvedCopyOf(c),
     });
     results.push({ id, angle: c.angle, ok: out.ok, warning: out.warning, report: out.report });
   }
@@ -11472,6 +11495,7 @@ RULES:
           angleName: b.angle,
           requestedFormat: fmt ? fmt.id : ((brief.match(/VISUAL FORMAT FOR THIS ONE:\s*(.+)/) || [])[1] || ''),
           prefixNote: copyNote,
+          approvedCopy: authoredCopy,
         }).catch(e => console.error('[staticsQC] post-describe audit failed:', e.message));
       }
     } catch (err) {

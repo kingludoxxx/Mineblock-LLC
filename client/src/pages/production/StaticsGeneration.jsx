@@ -108,7 +108,7 @@ function normalizeServerQueueRow(row) {
     product_payload: row.product_payload || null,
     angle_data: row.angle_data || null,
     custom_angle: row.custom_angle || null,
-    image_engine: row.image_engine || 'nanobanana',
+    image_engine: row.image_engine || 'openai',
     // Progress + result surface for the queue panel.
     refsTotal,
     refsDone,
@@ -1003,7 +1003,11 @@ function StaticsSettingsInline() {
 // ---------------------------------------------------------------------------
 
 // LocalStorage key for the image-engine pill (survives refresh / new session).
-const IMAGE_ENGINE_LS_KEY = 'mb.statics.imageEngine.v1';
+// v2, deliberately: a stored v1 value of 'nanobanana' would survive this change
+// and the operator would keep generating on the engine we are moving off. Bumping
+// the key resets everyone to the new default once, while any explicit choice made
+// from here on still persists.
+const IMAGE_ENGINE_LS_KEY = 'mb.statics.imageEngine.v2';
 
 export default function StaticsGeneration() {
   // Top-level tab
@@ -1013,8 +1017,19 @@ export default function StaticsGeneration() {
   // this in the body; the backend persists it on each saved creative so
   // refines / variants reuse the same engine. Defaults to NanoBanana.
   const [imageEngine, setImageEngine] = useState(() => {
-    try { return localStorage.getItem(IMAGE_ENGINE_LS_KEY) || 'nanobanana'; }
-    catch { return 'nanobanana'; }
+    // OpenAI, not NanoBanana. The server's DEFAULT_ENGINE has been 'openai'
+    // since the spelling regression, but this client always sends an engine
+    // explicitly, so the server default was never reached from the UI — every
+    // card generated here ran on NanoBanana regardless.
+    //
+    // The cost was not only typography. On a controlled A/B against one
+    // reference and one approved copy set, NanoBanana rendered "90% OFF" and
+    // "HOLIDAY20" — the COMPETITOR's discount and an invented code — while the
+    // approved copy said 60% and WELCOME10. OpenAI rendered the approved copy
+    // exactly. A renderer that substitutes offer terms is a false-advertising
+    // risk, not a quality preference.
+    try { return localStorage.getItem(IMAGE_ENGINE_LS_KEY) || 'openai'; }
+    catch { return 'openai'; }
   });
   const [availableEngines, setAvailableEngines] = useState([]);
   useEffect(() => {
@@ -1882,7 +1897,7 @@ export default function StaticsGeneration() {
       angle: !customAngle ? (marketingAngle || null) : null,
       angle_data: !customAngle && selectedAngleData ? selectedAngleData : null,
       custom_angle: customAngle || null,
-      image_engine: imageEngine || 'nanobanana',
+      image_engine: imageEngine || 'openai',
     };
 
     mutationInFlight.current = true;
@@ -1944,7 +1959,7 @@ export default function StaticsGeneration() {
       angle: !customAngle ? (marketingAngle || null) : null,
       angle_data: !customAngle && selectedAngleData ? selectedAngleData : null,
       custom_angle: customAngle || null,
-      image_engine: imageEngine || 'nanobanana',
+      image_engine: imageEngine || 'openai',
     };
     mutationInFlight.current = true;
     try {
@@ -2812,7 +2827,7 @@ export default function StaticsGeneration() {
                       angle: angleObj?.name || null,
                       angle_data: angleObj || null,
                       custom_angle: null,
-                      image_engine: imageEngine || 'nanobanana',
+                      image_engine: imageEngine || 'openai',
                     }));
                     const inserted = await enqueueItems(items);
                     if (inserted) {
@@ -2843,7 +2858,7 @@ export default function StaticsGeneration() {
                         angle: !customAngle ? (marketingAngle || null) : null,
                         angle_data: !customAngle && selectedAngleData ? selectedAngleData : null,
                         custom_angle: customAngle || null,
-                        image_engine: imageEngine || 'nanobanana',
+                        image_engine: imageEngine || 'openai',
                       };
                     }).filter(Boolean);
                     if (items.length === 0) {
