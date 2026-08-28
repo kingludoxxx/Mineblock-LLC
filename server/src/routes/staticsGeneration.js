@@ -8657,6 +8657,69 @@ function leagueOrderBy(mode) {
 //   1. spy_brand_follows JOIN brand_pages  (formally followed)
 //   2. brand_spy.brands WHERE status='ACTIVE' LIMIT 100  (fallback)
 // The `followed` flag in the response tells the UI which source was used.
+/**
+ * Say WHICH filter emptied the candidate pool.
+ *
+ * "No candidates matched this brand's filters" is true and useless: the operator
+ * is looking at a badge promising 14 imports and a button that returns nothing,
+ * with four filters in play and no indication which one is responsible.
+ * sculpiflex.com was tier-filtered to BANGER while its ads are CHAMP and A —
+ * findable in ten seconds with this message, ten minutes without it.
+ *
+ * Relaxes one filter at a time and reports the first that opens the pool.
+ * Read-only and best-effort: a diagnostic must never turn an empty result into
+ * a failed request.
+ */
+async function explainEmptyCandidates(brandId, config) {
+  const GENERIC = 'No candidates matched this brand\u2019s filters.';
+  try {
+    const tiers = await pgQuery(
+      `SELECT a.tier, COUNT(*)::INTEGER AS n
+         FROM brand_spy.ads a
+        WHERE a.brand_id = $1 AND ${config.include_inactive ? 'TRUE' : 'a.is_active = TRUE'}
+        GROUP BY a.tier ORDER BY n DESC`,
+      [brandId],
+    );
+    const available = tiers.filter(t => t.tier).map(t => `${t.tier} (${t.n})`);
+    const total = tiers.reduce((n, t) => n + t.n, 0);
+
+    if (total === 0) {
+      return config.include_inactive
+        ? 'This brand has no ads in the library yet — run a Brand Spy scrape first.'
+        : 'This brand has no ACTIVE ads. Turn on "include inactive" to import ads that have stopped running.';
+    }
+
+    // Tier is the most common culprit and the easiest to state precisely.
+    const want = Array.isArray(config.tier_filter) ? config.tier_filter : [];
+    if (want.length) {
+      const have = new Set(tiers.map(t => t.tier));
+      if (!want.some(t => have.has(t))) {
+        return `No ads match tier ${want.join('/')}. This brand's tiers are: ${available.join(', ')}. `
+             + 'Widen the tier filter to import them.';
+      }
+    }
+
+    // Tier is satisfiable, so it is the format or the copy-length cap.
+    const fmt = await pgQuery(
+      `SELECT COUNT(*)::INTEGER AS n FROM brand_spy.ads a
+        WHERE a.brand_id = $1 AND ${config.include_inactive ? 'TRUE' : 'a.is_active = TRUE'}
+          AND ${leagueFormatPredicate(config.format_filter)}`,
+      [brandId],
+    );
+    if ((fmt[0]?.n || 0) === 0) {
+      return `No ads match the ${config.format_filter} format filter. `
+           + 'Try ALL_STATIC — most brands run carousel/dco creatives, not plain images.';
+    }
+    if (config.max_copy_length) {
+      return `Nothing passed the ${config.max_copy_length}-character copy limit. Raise or clear it.`;
+    }
+    return GENERIC;
+  } catch (err) {
+    console.warn(`[league/sync] could not explain empty result for ${brandId}: ${err.message}`);
+    return GENERIC;
+  }
+}
+
 router.get('/league/brand-configs', authenticate, async (_req, res) => {
   try {
     const followedSql = `
@@ -8672,8 +8735,26 @@ router.get('/league/brand-configs', authenticate, async (_req, res) => {
           SELECT COUNT(*) FROM brand_spy.ads a
           WHERE a.brand_id = b.id
         ), 0)::INTEGER AS total_ads,
+        COALESCE((
+          SELECT COUNT(*) FROM brand_spy.ads a
+           WHERE a.brand_id = b.id
+             AND (COALESCE(c.include_inactive, FALSE) OR a.is_active = TRUE)
+             AND CASE UPPER(COALESCE(c.format_filter, 'IMAGE'))
+                   WHEN 'IMAGE'    THEN a.display_format ILIKE 'image%'
+                   WHEN 'CAROUSEL' THEN a.display_format ILIKE 'carousel%'
+                   ELSE a.display_format IS NOT NULL AND a.display_format NOT ILIKE 'video%'
+                 END
+             AND (c.tier_filter IS NULL OR cardinality(c.tier_filter) = 0 OR a.tier = ANY(c.tier_filter))
+             AND (c.max_copy_length IS NULL
+                  OR COALESCE(length(a.headline),0) + COALESCE(length(a.body_text),0)
+                     + COALESCE(length(a.caption),0) <= c.max_copy_length)
+        ), 0)::INTEGER AS matching_count,
         c.top_pct, c.tier_filter, c.max_copy_length,
-        c.auto_sync_enabled, c.auto_sync_interval_hours, c.last_synced_at
+        c.auto_sync_enabled, c.auto_sync_interval_hours, c.last_synced_at,
+        -- Selected so the modal shows what is STORED. Without these three,
+        -- mergeBrandConfig fell back to defaults and a brand set to
+        -- ALL_STATIC still displayed as IMAGE.
+        c.sort_mode, c.format_filter, c.include_inactive
       FROM brand_spy.brands b
       LEFT JOIN league_brand_configs c ON c.brand_id = b.id
       WHERE EXISTS (
@@ -8701,8 +8782,26 @@ router.get('/league/brand-configs', authenticate, async (_req, res) => {
             SELECT COUNT(*) FROM brand_spy.ads a
             WHERE a.brand_id = b.id
           ), 0)::INTEGER AS total_ads,
+          COALESCE((
+            SELECT COUNT(*) FROM brand_spy.ads a
+             WHERE a.brand_id = b.id
+               AND (COALESCE(c.include_inactive, FALSE) OR a.is_active = TRUE)
+               AND CASE UPPER(COALESCE(c.format_filter, 'IMAGE'))
+                     WHEN 'IMAGE'    THEN a.display_format ILIKE 'image%'
+                     WHEN 'CAROUSEL' THEN a.display_format ILIKE 'carousel%'
+                     ELSE a.display_format IS NOT NULL AND a.display_format NOT ILIKE 'video%'
+                   END
+               AND (c.tier_filter IS NULL OR cardinality(c.tier_filter) = 0 OR a.tier = ANY(c.tier_filter))
+               AND (c.max_copy_length IS NULL
+                    OR COALESCE(length(a.headline),0) + COALESCE(length(a.body_text),0)
+                       + COALESCE(length(a.caption),0) <= c.max_copy_length)
+          ), 0)::INTEGER AS matching_count,
           c.top_pct, c.tier_filter, c.max_copy_length,
-          c.auto_sync_enabled, c.auto_sync_interval_hours, c.last_synced_at
+          c.auto_sync_enabled, c.auto_sync_interval_hours, c.last_synced_at,
+          -- Selected so the modal shows what is STORED. Without these three,
+          -- mergeBrandConfig fell back to defaults and a brand set to
+          -- ALL_STATIC still displayed as IMAGE.
+          c.sort_mode, c.format_filter, c.include_inactive
         FROM brand_spy.brands b
         LEFT JOIN league_brand_configs c ON c.brand_id = b.id
         WHERE b.status = 'ACTIVE'
@@ -8713,14 +8812,23 @@ router.get('/league/brand-configs', authenticate, async (_req, res) => {
 
     const data = rows.map(r => {
       const config = mergeBrandConfig(r);
-      const projected = Math.max(1, Math.ceil(r.active_image_count * (config.top_pct / 100)));
+      // Project from the ads that actually MATCH this brand's filters, not from
+      // every active image ad. The old maths counted the unfiltered pool, so a
+      // brand with 134 active images and a BANGER-only filter advertised
+      // "will import ~14" while the import query matched zero — it promised
+      // ads it was structurally unable to deliver.
+      const matching = Number.isFinite(Number(r.matching_count)) ? Number(r.matching_count) : 0;
+      const projected = matching > 0
+        ? Math.max(1, Math.ceil(matching * (config.top_pct / 100)))
+        : 0;
       return {
         id: r.id,
         name: r.name,
         domain: r.domain,
         active_image_count: r.active_image_count,
+        matching_count: matching,
         total_ads: r.total_ads,
-        projected_import_count: r.active_image_count > 0 ? projected : 0,
+        projected_import_count: projected,
         config,
       };
     });
@@ -9023,7 +9131,7 @@ router.post('/league/brand-configs/:brandId/sync', authenticate, async (req, res
         rejected_image_reasons: rejectedImages.slice(0, 10),
         note: rejectedImages.length > 0
           ? 'Every candidate image was rejected as a non-creative (page avatar / placeholder) — the scrape resolved thumbnails to the wrong media.'
-          : 'No candidates matched this brand\u2019s filters.',
+          : await explainEmptyCandidates(brandId, config),
       } });
     }
 
