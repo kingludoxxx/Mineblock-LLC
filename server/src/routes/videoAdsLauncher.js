@@ -7,6 +7,7 @@ import {
   createFlexibleAdCreative, getDefaultAdAccountId, isMetaAdsConfigured,
   getAdAccounts, getPages, getPixels, getCampaigns, getAdSets,
   getCustomAudiences, DEFAULT_URL_TAGS, createCampaign, deleteCampaign,
+  getVideoThumbnail,
 } from '../services/metaAdsApi.js';
 import crypto from 'crypto';
 import { frameioFetchV4, FRAMEIO_ACCOUNT_ID } from './clickupWebhook.js';
@@ -724,8 +725,13 @@ async function launchVideoToAdset({ video, template, adsetId, adsetName, page, a
         value: { link },
       },
     };
-    // Meta requires a thumbnail (image_url) for video ads with CTA links
-    if (video.thumbnail_url) videoData.image_url = video.thumbnail_url;
+    // Meta requires a thumbnail (image_url) for video ads with CTA links.
+    // Prefer Meta's own auto-generated thumbnail: the stored Frame.io link is
+    // a SIGNED URL that expires — one launch already failed with Meta unable
+    // to fetch it. The Frame link is only the fallback for a thumb-less video.
+    const metaThumb = await getVideoThumbnail(metaVideoId).catch(() => null);
+    if (metaThumb) videoData.image_url = metaThumb;
+    else if (video.thumbnail_url) videoData.image_url = video.thumbnail_url;
 
     const creativeBody = {
       access_token: process.env.META_ACCESS_TOKEN,

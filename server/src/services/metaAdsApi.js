@@ -891,7 +891,7 @@ export async function getVideoThumbnail(videoId) {
   } catch { return null; }
 }
 
-export async function waitForVideoReady(videoId, maxWaitMs = 600000) {
+export async function waitForVideoReady(videoId, maxWaitMs = 1200000) {
   const start = Date.now();
   while (Date.now() - start < maxWaitMs) {
     let res;
@@ -904,7 +904,13 @@ export async function waitForVideoReady(videoId, maxWaitMs = 600000) {
       await new Promise(r => setTimeout(r, 5000));
       continue;
     }
-    if (!res.ok) throw new Error(`Video status check failed: ${res.status}`);
+    // Meta returns transient 403/404/5xx on a freshly-created video while the
+    // object propagates — killed 2 of 4 VSL launches on 2026-08-28. Any
+    // non-OK status is retried within the budget, never treated as fatal.
+    if (!res.ok) {
+      await new Promise(r => setTimeout(r, 8000));
+      continue;
+    }
     const data = await res.json();
 
     // Meta returns status in different formats depending on API version:
