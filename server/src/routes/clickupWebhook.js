@@ -45,7 +45,10 @@ const PL_FRAMEIO_EDITING_FOLDER    = process.env.FRAMEIO_PUURE_EDITING_FOLDER   
 // Product P1 (Pulse Pro) shares the PL | Video Creatives list with Puure, but its
 // editing folders go to their own Frame.io parent ("P1 Puulse Pro Ads"). Routed by
 // the card's Product relationship, not by list — see taskIsP1().
-const P1_FRAMEIO_EDITING_FOLDER    = process.env.FRAMEIO_P1_EDITING_FOLDER || 'b664289d-226b-47c2-a826-5b1377d52b4d';
+// "P1  Puulse Pro Ads" FOLDER inside the "Reevo Health" Frame.io project.
+// (b664289d is the PROJECT id; the folder create needs the FOLDER id below.)
+const P1_FRAMEIO_PROJECT_ID        = process.env.FRAMEIO_P1_PROJECT_ID || 'b664289d-226b-47c2-a826-5b1377d52b4d';
+const P1_FRAMEIO_EDITING_FOLDER    = process.env.FRAMEIO_P1_EDITING_FOLDER || '10abecc4-31ee-413c-ba12-c7cdddef63cd';
 const P1_PRODUCT_ID                = process.env.CLICKUP_P1_PRODUCT_ID || '123yxuahe91';
 const FRAMEIO_API = 'https://api.frame.io/v2';
 
@@ -919,10 +922,14 @@ async function handleEditingStatusChange(task, taskListId) {
   let projectId = FRAMEIO_PROJECT_ID;
   if (taskListId === VIDEO_ADS_LIST)         parentFolderId = FRAMEIO_EDITING_FOLDER;
   else if (taskListId === STATIC_ADS_LIST)   parentFolderId = FRAMEIO_STATIC_EDITING_FOLDER;
-  else if (taskListId === PL_VIDEO_LIST) {   // PL pipeline → Puure Frame.io project
-    // P1 (Pulse Pro) shares the PL list but gets its own parent folder.
-    parentFolderId = taskIsP1(task) ? P1_FRAMEIO_EDITING_FOLDER : PL_FRAMEIO_EDITING_FOLDER;
-    projectId = PL_FRAMEIO_PROJECT_ID;
+  else if (taskListId === PL_VIDEO_LIST) {   // PL pipeline
+    if (taskIsP1(task)) {                     // P1 → Reevo Health project / "P1 Puulse Pro Ads"
+      parentFolderId = P1_FRAMEIO_EDITING_FOLDER;
+      projectId = P1_FRAMEIO_PROJECT_ID;
+    } else {                                  // Puure → Puure project
+      parentFolderId = PL_FRAMEIO_EDITING_FOLDER;
+      projectId = PL_FRAMEIO_PROJECT_ID;
+    }
   }
   else {
     logger.info(`[handleEditingStatusChange] Skipping ${taskId} — not a pipeline list (list=${taskListId})`);
@@ -1915,8 +1922,8 @@ router.get('/create-frame-folder/:taskId', async (req, res) => {
     let projectId = FRAMEIO_PROJECT_ID;
     if (taskListId === STATIC_ADS_LIST) parentFolderId = FRAMEIO_STATIC_EDITING_FOLDER;
     if (taskListId === PL_VIDEO_LIST) {
-      parentFolderId = taskIsP1(task) ? P1_FRAMEIO_EDITING_FOLDER : PL_FRAMEIO_EDITING_FOLDER;
-      projectId = PL_FRAMEIO_PROJECT_ID;
+      if (taskIsP1(task)) { parentFolderId = P1_FRAMEIO_EDITING_FOLDER; projectId = P1_FRAMEIO_PROJECT_ID; }
+      else { parentFolderId = PL_FRAMEIO_EDITING_FOLDER; projectId = PL_FRAMEIO_PROJECT_ID; }
     }
 
     // Create the folder directly in the correct editing folder
