@@ -42,6 +42,11 @@ const FRAMEIO_EDITING_FOLDER       = process.env.FRAMEIO_MB_EDITING_FOLDER      
 const FRAMEIO_STATIC_EDITING_FOLDER = process.env.FRAMEIO_MB_STATIC_EDITING_FOLDER || '';
 const PL_FRAMEIO_PROJECT_ID        = process.env.FRAMEIO_PUURE_PROJECT_ID        || '';
 const PL_FRAMEIO_EDITING_FOLDER    = process.env.FRAMEIO_PUURE_EDITING_FOLDER    || '';
+// Product P1 (Pulse Pro) shares the PL | Video Creatives list with Puure, but its
+// editing folders go to their own Frame.io parent ("P1 Puulse Pro Ads"). Routed by
+// the card's Product relationship, not by list — see taskIsP1().
+const P1_FRAMEIO_EDITING_FOLDER    = process.env.FRAMEIO_P1_EDITING_FOLDER || 'b664289d-226b-47c2-a826-5b1377d52b4d';
+const P1_PRODUCT_ID                = process.env.CLICKUP_P1_PRODUCT_ID || '123yxuahe91';
 const FRAMEIO_API = 'https://api.frame.io/v2';
 
 // List IDs — per-brand env vars. Each instance sets only its own.
@@ -83,7 +88,17 @@ const FIELD_IDS = {
   // Type or Creator fields exist on that list (creativeType is always "IMG")
   productStatic: '11a3ee08-50c8-4c19-b8cc-7c50eaabbe65',
   avatarStatic: 'a007dc5d-2422-4fc4-b3ca-e9e53489e76b',
+  // PL | Video Creatives "Product" relationship field (routes P1 frame folders)
+  productPL: '08dfcdf9-6333-469d-bd92-8b034fa2edbc',
 };
+
+// True when a PL card's Product relationship points at the P1 (Pulse Pro) product.
+// Matches by task id (rename-safe) with a name fallback.
+function taskIsP1(task) {
+  const f = task.custom_fields?.find((x) => x.id === FIELD_IDS.productPL);
+  if (!f || !Array.isArray(f.value)) return false;
+  return f.value.some((t) => t.id === P1_PRODUCT_ID || String(t.name || '').trim() === 'P1');
+}
 
 // Dropdown index → label mappings
 const ANGLE_MAP = {
@@ -897,8 +912,9 @@ async function handleEditingStatusChange(task, taskListId) {
   let projectId = FRAMEIO_PROJECT_ID;
   if (taskListId === VIDEO_ADS_LIST)         parentFolderId = FRAMEIO_EDITING_FOLDER;
   else if (taskListId === STATIC_ADS_LIST)   parentFolderId = FRAMEIO_STATIC_EDITING_FOLDER;
-  else if (taskListId === PL_VIDEO_LIST) {   // Puure pipeline → Puure Frame.io project
-    parentFolderId = PL_FRAMEIO_EDITING_FOLDER;
+  else if (taskListId === PL_VIDEO_LIST) {   // PL pipeline → Puure Frame.io project
+    // P1 (Pulse Pro) shares the PL list but gets its own parent folder.
+    parentFolderId = taskIsP1(task) ? P1_FRAMEIO_EDITING_FOLDER : PL_FRAMEIO_EDITING_FOLDER;
     projectId = PL_FRAMEIO_PROJECT_ID;
   }
   else {
@@ -1892,7 +1908,7 @@ router.get('/create-frame-folder/:taskId', async (req, res) => {
     let projectId = FRAMEIO_PROJECT_ID;
     if (taskListId === STATIC_ADS_LIST) parentFolderId = FRAMEIO_STATIC_EDITING_FOLDER;
     if (taskListId === PL_VIDEO_LIST) {
-      parentFolderId = PL_FRAMEIO_EDITING_FOLDER;
+      parentFolderId = taskIsP1(task) ? P1_FRAMEIO_EDITING_FOLDER : PL_FRAMEIO_EDITING_FOLDER;
       projectId = PL_FRAMEIO_PROJECT_ID;
     }
 
