@@ -858,6 +858,13 @@ function generatePlNamingConvention(task, briefNumber, weekLabel, existingName) 
 
 async function reconcilePlName(task, { assignNumberIfMissing = false } = {}) {
   try {
+    // P1 (Pulse Pro) cards carry their own naming (set at creation) and their own
+    // avatar/angle dropdowns; the PL reconciler would overwrite them with a "PL -"
+    // prefix and NA slots, so leave P1 cards untouched.
+    if (taskIsP1(task)) {
+      logger.info(`[reconcilePlName] Skipping ${task.id} — P1 product card (own naming)`);
+      return;
+    }
     const name = task.name || '';
 
     // Brief number: field → parse from name → optionally allocate the next one
