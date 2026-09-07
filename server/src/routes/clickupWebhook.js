@@ -1,4 +1,4 @@
-import { Router } from 'express';
+import express, { Router } from 'express';
 import logger from '../utils/logger.js';
 import { pgQuery } from '../db/pg.js';
 import sendSlackAlert from '../utils/slackAlert.js';
@@ -2291,6 +2291,87 @@ router.get('/frameio-v4-explore', async (req, res) => {
 //   3. Delete the now-empty stray project
 //
 // Accepts ?dry=1 query param to just report what WOULD happen without touching data.
+
+// PUT /api/v1/clickup-webhook/admin-frameio-upload/:folderId?filename=NAME.mp4
+// Uploads a video into a Frame.io v4 folder. Body = raw file bytes. Same admin
+// gating as the other Frame.io admin routes (x-admin-secret OR SuperAdmin JWT).
+// Credentials never leave the server: the stored OAuth token creates the file
+// and the route pushes the bytes to Frame's upload URLs part by part.
+router.put(
+  '/admin-frameio-upload/:folderId',
+  adminOrSuperAdmin,
+  express.raw({ type: () => true, limit: '500mb' }),
+  async (req, res) => {
+    const { folderId } = req.params;
+    const filename = String(req.query.filename || 'upload.mp4');
+    const bytes = req.body;
+    if (!folderId) return res.status(400).json({ error: 'folderId required' });
+    if (!Buffer.isBuffer(bytes) || bytes.length === 0) {
+      return res.status(400).json({ error: 'raw file body required' });
+    }
+    try {
+      const created = await frameioFetchV4(
+        `/accounts/${FRAMEIO_ACCOUNT_ID}/folders/${folderId}/files/local_upload`,
+        {
+          method: 'POST',
+          body: JSON.stringify({ data: { name: filename, file_size: bytes.length } }),
+        },
+      ).catch(async (err) => {
+        // Older accounts use the plain /files creation shape — try it before failing
+        logger.warn(`[admin-frameio-upload] local_upload failed (${err.message}); trying /files`);
+        return frameioFetchV4(
+          `/accounts/${FRAMEIO_ACCOUNT_ID}/folders/${folderId}/files`,
+          {
+            method: 'POST',
+            body: JSON.stringify({ data: { name: filename, file_size: bytes.length } }),
+          },
+        );
+      });
+      const fileData = created?.data || created;
+      const uploadUrls = fileData?.upload_urls || fileData?.uploadUrls || [];
+      if (!uploadUrls.length) {
+        return res.status(502).json({
+          error: 'no upload_urls in Frame.io response',
+          response_keys: fileData ? Object.keys(fileData) : null,
+          file_id: fileData?.id || null,
+        });
+      }
+      let offset = 0;
+      const partResults = [];
+      for (const part of uploadUrls) {
+        const size = part.size || bytes.length - offset;
+        const chunk = bytes.subarray(offset, offset + size);
+        const putRes = await fetch(part.url, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'video/mp4', 'x-amz-acl': 'private' },
+          body: chunk,
+        });
+        partResults.push(putRes.status);
+        if (!putRes.ok) {
+          const text = await putRes.text();
+          return res.status(502).json({
+            error: `part upload failed (${putRes.status})`,
+            detail: text.slice(0, 300),
+            parts: partResults,
+          });
+        }
+        offset += size;
+      }
+      logger.info(`[admin-frameio-upload] Uploaded "${filename}" (${bytes.length} B, ${uploadUrls.length} parts) to folder ${folderId}`);
+      return res.json({
+        success: true,
+        file_id: fileData?.id || null,
+        name: filename,
+        bytes: bytes.length,
+        parts: partResults,
+      });
+    } catch (err) {
+      logger.error(`[admin-frameio-upload] FAILED: ${err.message}`);
+      return res.status(500).json({ error: err.message });
+    }
+  },
+);
+
 // DELETE /api/v1/clickup-webhook/admin-frameio-folder/:folderId
 // Deletes a single Frame.io folder by ID (v4). Used to clean up orphaned
 // folders after their ClickUp task gets deleted. Same admin gating as
