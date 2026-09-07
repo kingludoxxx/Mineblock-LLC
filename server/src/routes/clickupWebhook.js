@@ -2372,6 +2372,27 @@ router.put(
   },
 );
 
+
+// PATCH /api/v1/clickup-webhook/admin-frameio-rename-folder/:folderId?name=NEW
+// Renames a Frame.io v4 folder (pl-frame-rename only touches files). Same admin
+// gating as the other Frame.io admin routes.
+router.patch('/admin-frameio-rename-folder/:folderId', adminOrSuperAdmin, async (req, res) => {
+  const { folderId } = req.params;
+  const name = String(req.query.name || req.body?.name || '').trim();
+  if (!folderId || !name) return res.status(400).json({ error: 'folderId and name required' });
+  try {
+    const out = await frameioFetchV4(`/accounts/${FRAMEIO_ACCOUNT_ID}/folders/${folderId}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ data: { name } }),
+    });
+    logger.info(`[admin-frameio-rename-folder] ${folderId} -> "${name}"`);
+    return res.json({ success: true, folder_id: folderId, name, data: out?.data || null });
+  } catch (err) {
+    logger.error(`[admin-frameio-rename-folder] FAILED ${folderId}: ${err.message}`);
+    return res.status(500).json({ error: err.message });
+  }
+});
+
 // DELETE /api/v1/clickup-webhook/admin-frameio-folder/:folderId
 // Deletes a single Frame.io folder by ID (v4). Used to clean up orphaned
 // folders after their ClickUp task gets deleted. Same admin gating as
