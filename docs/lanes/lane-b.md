@@ -1,4 +1,4 @@
-# Lane handoff — lane-b (CI + fleet)   last session 2026-09-10 (B3)   base commit 84323b4 → b1ff265
+# Lane handoff — lane-b (CI + fleet)   last session 2026-09-10 (B3)   base commit 84323b4 → 3084e54
 
 Branch `day1/lane-ci-fleet`, worktree `/Users/ludo/wt-lane-ci-fleet`.
 Proof packs: `briefs/out/PROOF-LANE-B.md` (sessions B and B2),
