@@ -109,6 +109,13 @@ export function shopifyApiVersion() {
   return v;
 }
 
+// ── Triple Whale ────────────────────────────────────────────────────────
+
+/** Triple Whale shop id; NO literal default — unset = feature dormant (one warning). */
+export function tripleWhaleShopId() {
+  return readString('TRIPLEWHALE_SHOP_ID', { unsetMessage: 'not set — Triple Whale queries are dormant on this deployment' });
+}
+
 // ── Whop ────────────────────────────────────────────────────────────────
 
 /** Whop company id (`biz_…`); unset → null (one warning). */
@@ -134,12 +141,15 @@ export function snapshot() {
     whop: {
       companyId: whopCompanyId(),
     },
+    tripleWhale: {
+      shopId: tripleWhaleShopId(),
+    },
   };
 }
 
 const storeConfig = {
   setStoreConfigSource, resetWarnings,
-  storeCode, brand, shopifyStoreDomain, shopifyApiVersion, SHOPIFY_API_VERSION_DEFAULT, whopCompanyId,
+  storeCode, brand, shopifyStoreDomain, shopifyApiVersion, SHOPIFY_API_VERSION_DEFAULT, whopCompanyId, tripleWhaleShopId,
   snapshot,
 };
 export default storeConfig;

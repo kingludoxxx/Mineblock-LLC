@@ -23,6 +23,7 @@
 //     prompt against the parent image.
 
 import { Router } from 'express';
+import storeConfig from '../config/storeConfig.js';
 import {
   enforceTextShape,
   describeShapeReport,
@@ -9341,7 +9342,7 @@ async function triggerTWSync({ awaitResult = false } = {}) {
 // sync worker.
 // ═════════════════════════════════════════════════════════════════════════
 const _TW_API_KEY = process.env.TRIPLEWHALE_API_KEY || '';
-const _TW_SHOP_ID = process.env.TRIPLEWHALE_SHOP_ID || '17cca0-2.myshopify.com';
+// Triple Whale shop id: storeConfig.tripleWhaleShopId() at call time (unset = dormant).
 const _TW_SQL_URL = 'https://api.triplewhale.com/api/v2/orcabase/api/sql';
 const _TW_ATTRIBUTION_DEFAULT = process.env.TW_ATTRIBUTION_MODEL || 'lastPlatformClick';
 // Defaults aligned to TW UI's Triple Attribution + Meta view (the operator's
@@ -9363,11 +9364,13 @@ let _twKnownAccountCols = null; // { idCol, nameCol, idOnly? } | false | null
 
 async function _twQuery(sql, startDate, endDate, attributionModel) {
   if (!_TW_API_KEY) throw new Error('TRIPLEWHALE_API_KEY not configured');
+  const twShopId = storeConfig.tripleWhaleShopId();
+  if (!twShopId) throw new Error('TRIPLEWHALE_SHOP_ID not configured — Triple Whale is dormant on this deployment');
   const res = await fetch(_TW_SQL_URL, {
     method: 'POST',
     headers: { 'x-api-key': _TW_API_KEY, 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      shopId: _TW_SHOP_ID,
+      shopId: twShopId,
       query: sql.trim(),
       period: { startDate, endDate },
       attributionModel,

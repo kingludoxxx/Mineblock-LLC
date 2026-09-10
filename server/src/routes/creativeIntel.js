@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import storeConfig from '../config/storeConfig.js';
 import { authenticate } from '../middleware/auth.js';
 import { requirePermission } from '../middleware/rbac.js';
 import { pgQuery } from '../db/pg.js';
@@ -10,7 +11,7 @@ router.use(authenticate, requirePermission('creative-intelligence', 'access'));
 // ── Config ──────────────────────────────────────────────────────────
 const CLICKUP_TOKEN  = process.env.CLICKUP_API_TOKEN  || '';
 const TW_API_KEY     = process.env.TRIPLEWHALE_API_KEY || '';
-const TW_SHOP_ID     = process.env.TRIPLEWHALE_SHOP_ID || '17cca0-2.myshopify.com';
+// Triple Whale shop id: storeConfig.tripleWhaleShopId() at call time (unset = dormant).
 const CLICKUP_BASE   = 'https://api.clickup.com/api/v2';
 const TW_SQL_URL     = 'https://api.triplewhale.com/api/v2/orcabase/api/sql';
 
@@ -249,6 +250,8 @@ async function fetchClickUpTasks(listId) {
  */
 async function fetchTripleWhaleData(startDate, endDate) {
   if (!TW_API_KEY) return [];
+  const twShopId = storeConfig.tripleWhaleShopId();
+  if (!twShopId) return []; // dormant: storeConfig warned once
 
   const query = `
     SELECT
@@ -271,7 +274,7 @@ async function fetchTripleWhaleData(startDate, endDate) {
       'Content-Type': 'application/json',
     },
     body: JSON.stringify({
-      shopId: TW_SHOP_ID,
+      shopId: twShopId,
       query: query.trim(),
       period: { startDate, endDate },
     }),

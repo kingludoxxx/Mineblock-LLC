@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import storeConfig from '../config/storeConfig.js';
 import crypto from 'crypto';
 import { authenticate } from '../middleware/auth.js';
 import { requirePermission } from '../middleware/rbac.js';
@@ -164,7 +165,7 @@ router.use(authenticate, requirePermission('creative-analysis', 'access'));
 
 // ── Config ──────────────────────────────────────────────────────────
 const TW_API_KEY  = process.env.TRIPLEWHALE_API_KEY || '';
-const TW_SHOP_ID  = process.env.TRIPLEWHALE_SHOP_ID || '17cca0-2.myshopify.com';
+// Triple Whale shop id: storeConfig.tripleWhaleShopId() at call time (unset = dormant).
 const TW_SQL_URL  = 'https://api.triplewhale.com/api/v2/orcabase/api/sql';
 const CRON_SECRET = process.env.CRON_SECRET || '';
 // Triple Whale attribution model — must match what TW dashboard shows
@@ -593,6 +594,11 @@ async function fetchTripleWhaleAds(startDate, endDate) {
     twLastSyncError = 'TRIPLEWHALE_API_KEY not configured on server';
     return [];
   }
+  const twShopId = storeConfig.tripleWhaleShopId();
+  if (!twShopId) {
+    twLastSyncError = 'TRIPLEWHALE_SHOP_ID not configured on server';
+    return [];
+  }
 
   // Revenue/purchase columns — use configured columns first, then fallbacks (deduplicated)
   const uniqueRevCols = [...new Set([TW_REVENUE_COL, 'order_revenue', 'channel_reported_conversion_value'])];
@@ -607,7 +613,7 @@ async function fetchTripleWhaleAds(startDate, endDate) {
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
-        shopId: TW_SHOP_ID,
+        shopId: twShopId,
         query: sql.trim(),
         period: { startDate, endDate },
         attributionModel: TW_ATTRIBUTION_MODEL,
@@ -2543,6 +2549,10 @@ router.get('/creative-daily', authenticate, async (req, res) => {
     if (!TW_API_KEY) {
       return res.status(500).json({ success: false, error: { message: 'Triple Whale API key not configured' } });
     }
+    const twShopId = storeConfig.tripleWhaleShopId();
+    if (!twShopId) {
+      return res.status(500).json({ success: false, error: { message: 'TRIPLEWHALE_SHOP_ID not configured' } });
+    }
 
     // Check server-side cache
     const dailyCacheKey = `${creative_id}|${startDate}|${endDate}`;
@@ -2559,7 +2569,7 @@ router.get('/creative-daily', authenticate, async (req, res) => {
       const r = await fetch(TW_SQL_URL, {
         method: 'POST',
         headers: { 'x-api-key': TW_API_KEY, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ shopId: TW_SHOP_ID, query: sql.trim(), period: { startDate, endDate }, attributionModel: TW_ATTRIBUTION_MODEL }),
+        body: JSON.stringify({ shopId: twShopId, query: sql.trim(), period: { startDate, endDate }, attributionModel: TW_ATTRIBUTION_MODEL }),
         signal: AbortSignal.timeout(30000),
       });
       if (!r.ok) {
@@ -3283,6 +3293,8 @@ router.get('/meta-lookup/:creativeId', authenticate, async (req, res) => {
  */
 export async function fetchDailyAdSpend(startDate, endDate) {
   if (!TW_API_KEY) return [];
+  const twShopId = storeConfig.tripleWhaleShopId();
+  if (!twShopId) return []; // dormant: storeConfig warned once
   try {
     // Use the revenue column previously discovered by fetchTripleWhaleAds
     // (cached in twKnownRevCol). Falls back to the configured TW_REVENUE_COL
@@ -3294,7 +3306,7 @@ export async function fetchDailyAdSpend(startDate, endDate) {
       method: 'POST',
       headers: { 'x-api-key': TW_API_KEY, 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        shopId: TW_SHOP_ID,
+        shopId: twShopId,
         query: `SELECT event_date, SUM(spend) as total_spend, SUM(${revRef}) as total_revenue FROM pixel_joined_tvf WHERE event_date BETWEEN @startDate AND @endDate GROUP BY event_date ORDER BY event_date`,
         period: { startDate, endDate },
         attributionModel: TW_ATTRIBUTION_MODEL,
@@ -3307,7 +3319,7 @@ export async function fetchDailyAdSpend(startDate, endDate) {
         method: 'POST',
         headers: { 'x-api-key': TW_API_KEY, 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          shopId: TW_SHOP_ID,
+          shopId: twShopId,
           query: `SELECT event_date, SUM(spend) as total_spend FROM pixel_joined_tvf WHERE event_date BETWEEN @startDate AND @endDate GROUP BY event_date ORDER BY event_date`,
           period: { startDate, endDate },
           attributionModel: TW_ATTRIBUTION_MODEL,

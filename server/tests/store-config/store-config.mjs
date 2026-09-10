@@ -138,3 +138,15 @@ test('snapshot() carries shopify.apiVersion and whop.companyId', () => {
   assert.equal(s.shopify.apiVersion, '2024-01');
   assert.equal(s.whop.companyId, 'biz_test');
 });
+
+// ── item 3: Triple Whale shop id ────────────────────────────────────────────
+test('tripleWhaleShopId(): NO literal default; unset → null + ONE warning; set → value', () => {
+  clearEnv();
+  const w = captureWarnings(() => { assert.equal(sc.tripleWhaleShopId(), null); sc.tripleWhaleShopId(); });
+  assert.equal(w.length, 1, String(w));
+  assert.match(w[0], /TRIPLEWHALE_SHOP_ID/);
+  assert.match(w[0], /dormant/);
+  process.env.TRIPLEWHALE_SHOP_ID = 'zz-store.myshopify.com';
+  assert.equal(sc.tripleWhaleShopId(), 'zz-store.myshopify.com');
+  assert.equal(sc.snapshot().tripleWhale.shopId, 'zz-store.myshopify.com');
+});

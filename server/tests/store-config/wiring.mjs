@@ -28,6 +28,16 @@ test('shopifyWebhook.js reads store domain / API version from storeConfig', () =
   assert.doesNotMatch(s, /17cca0-2|'2024-01'/);
 });
 
+// item 3
+for (const f of ['config/env.js', 'routes/adsControlCenter.js', 'routes/adsReporting.js', 'routes/creativeAnalysis.js', 'routes/creativeIntel.js', 'routes/staticsGeneration.js']) {
+  test(`${f}: Triple Whale shop id has no literal default and comes from storeConfig`, () => {
+    const s = src(f);
+    assert.doesNotMatch(s, /TRIPLEWHALE_SHOP_ID\s*\|\|/, 'legacy `TRIPLEWHALE_SHOP_ID || literal` read survives');
+    assert.doesNotMatch(s, /17cca0-2/);
+    if (f !== 'config/env.js') assert.match(s, /storeConfig\.tripleWhaleShopId\(\)/);
+  });
+}
+
 // A1 over the whole tree (allowed: tests and docs)
 test('A1: git grep over server/src is empty', () => {
   let out = '';

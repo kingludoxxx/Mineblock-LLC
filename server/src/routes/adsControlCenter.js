@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { authenticate } from '../middleware/auth.js';
 import { requirePermission } from '../middleware/rbac.js';
 import { pgQuery } from '../db/pg.js';
+import storeConfig from '../config/storeConfig.js';
 
 const router = Router();
 router.use(authenticate, requirePermission('ads-control-center', 'access'));
@@ -11,7 +12,7 @@ const META_ACCESS_TOKEN = process.env.META_ACCESS_TOKEN || '';
 const META_AD_ACCOUNT_IDS = (process.env.META_AD_ACCOUNT_IDS || '').split(',').filter(Boolean);
 const META_GRAPH_URL = 'https://graph.facebook.com/v21.0';
 const TW_API_KEY = process.env.TRIPLEWHALE_API_KEY || '';
-const TW_SHOP_ID = process.env.TRIPLEWHALE_SHOP_ID || '17cca0-2.myshopify.com';
+// Triple Whale shop id: storeConfig.tripleWhaleShopId() at call time (unset = dormant).
 const TW_SQL_URL = 'https://api.triplewhale.com/api/v2/orcabase/api/sql';
 const SLACK_BOT_TOKEN = process.env.SLACK_BOT_TOKEN || '';
 const SLACK_PNL_CHANNEL = 'C0AF724MJPR';
@@ -131,6 +132,8 @@ async function fetchTWAdPerformance(startDate, endDate) {
     console.error('[Ads Control] TRIPLEWHALE_API_KEY not set');
     return [];
   }
+  const twShopId = storeConfig.tripleWhaleShopId();
+  if (!twShopId) return []; // dormant: storeConfig warned once
 
   const revenueColumns = ['order_revenue', 'pixel_revenue', 'revenue'];
   const purchaseColumns = [
@@ -146,7 +149,7 @@ async function fetchTWAdPerformance(startDate, endDate) {
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
-        shopId: TW_SHOP_ID,
+        shopId: twShopId,
         query: sql.trim(),
         period: { startDate, endDate },
       }),
