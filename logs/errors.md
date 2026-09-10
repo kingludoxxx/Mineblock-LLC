@@ -104,3 +104,19 @@ ATTEMPTED: Whop credentials supplied by operator and verified live (checkout min
 FIX TRIED: n/a
 STATUS: FIXED (Whop). Stripe half remains parked by operator choice; code dormant until keys exist.
 ---
+
+---
+TIMESTAMP: 2026-09-10 17:40
+TASK: Lane F — A5 existing tests (server/tests/brief-pipeline/golden.mjs)
+ERROR: EMAIL/PASSWORD (or PUURE_EMAIL/PUURE_PASSWORD) required   (exit 2)
+ATTEMPTED: node server/tests/brief-pipeline/golden.mjs on the Lane F branch and on the untouched baseline edc1030 (git archive) — identical.
+FIX TRIED: none; the test drives a live login. Lanes may not call live services.
+STATUS: BLOCKED (by design; not a Lane F regression)
+---
+TIMESTAMP: 2026-09-10 17:40
+TASK: Lane F — A5 existing tests (6 files failing before and after)
+ERROR: funnel-settings/commerce.mjs, orders/orders-extras.mjs, money-path/shopify-order-create.mjs: column "last_failed_payment_id" does not exist · orders/order-edit.mjs: database "puure_orderedit" does not exist · money-path/upsell-page.mjs: database "puure_upsell" does not exist · page-types/page-types.mjs: database "puure_pagetypes" does not exist
+ATTEMPTED: ran each on the Lane F branch and on baseline edc1030 (git archive + same node_modules): identical first error line on both (table in PROOF-LANE-F.md).
+FIX TRIED: none — environmental/pre-existing (hardcoded /Users/ludo/Mineblock-LLC/node_modules in the tests, databases created by another harness, a column from a migration not in this tree). Not touched: outside the lane.
+STATUS: BLOCKED (pre-existing; for the lead / Lane B runner)
+---
