@@ -14,9 +14,12 @@
 // sessions row is gone (logout, "log out other devices", an admin revoke) or the user is inactive. Cost: one extra
 // query per hub-SSO request. The alternative (a 60 s cache TTL) would leave a removed operator inside a store for up
 // to a minute, which is the window the plan's A4 line exists to close.
-// KNOWN LIMIT: after the SPA rotates the token through POST /auth/refresh, the new access token is minted by
-// authController, which this lane may not touch (LANE-E-SSO.md), so it carries no mark and returns to the cached
-// path. Closing that needs one line in authController's refresh handler — the lead's call.
+// THE MARK SURVIVES A REFRESH (Lane H1 closed Lane E2's KNOWN LIMIT). The rotation in authController.refresh used to
+// mint an unmarked token, so ~15 minutes after a hop the session fell back to the cached path and a revoke stopped
+// biting. It cannot read the mark off the ACCESS token: that cookie's maxAge is 15 minutes, so by the time the SPA
+// refreshes the browser has usually dropped it. So the mark is also signed into the REFRESH token here, where
+// authController.refresh reads it back VERIFIED (not peeked) and carries it onto the token it mints, with the sid of
+// the NEW session row. See tests/hub-sso/refresh-claims.mjs.
 // Any change to authController's cookie options must be repeated here; tests/hub-sso/hub-sso.mjs asserts the attributes.
 import crypto from 'crypto';
 import pool from '../config/db.js';
@@ -68,7 +71,9 @@ export const loadRoles = async (userId, client = pool) => {
 export const issueSession = async (res, user, { ip, userAgent, roles }) => {
   const userRoles = roles ?? await loadRoles(user.id);
   const tokenId = crypto.randomUUID();
-  const refreshToken = signRefreshToken({ userId: user.id, tokenId });
+  // hub_sso on the REFRESH token as well: it is the only credential the SPA still holds when the 15-minute
+  // access cookie has expired, so it is what tells authController.refresh to keep marking the rotated token.
+  const refreshToken = signRefreshToken({ userId: user.id, tokenId, hub_sso: true });
   // The session row FIRST: its id goes into the access token, which is what makes the session revocable per request.
   const session = await createSession(user.id, refreshToken, ip, userAgent || '');
   const accessToken = signAccessToken({ userId: user.id, email: user.email, roles: userRoles, hub_sso: true, sid: session.id });
