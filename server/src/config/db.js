@@ -1,12 +1,13 @@
 import pg from 'pg';
 import env from './env.js';
+import { dbSslEnabled } from './dbSsl.js';
 import logger from '../utils/logger.js';
 
 const { Pool } = pg;
 
 const pool = new Pool({
   connectionString: env.DATABASE_URL,
-  ssl: env.DATABASE_URL?.includes('render.com') || env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false,
+  ssl: dbSslEnabled() ? { rejectUnauthorized: false } : false,
   max: 20,
   idleTimeoutMillis: 30000,
   connectionTimeoutMillis: 5000,

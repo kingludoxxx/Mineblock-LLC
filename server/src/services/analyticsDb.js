@@ -28,6 +28,7 @@
 // "a report can reject a settlement".
 import postgres from 'postgres';
 import env from '../config/env.js';
+import { dbSslEnabled } from '../config/dbSsl.js';
 
 // Below the shared pool's 15s statement_timeout on purpose: analytics should
 // give up first, and give up cleanly.
@@ -42,10 +43,7 @@ function getPool() {
       max: ANALYTICS_POOL_MAX,
       idle_timeout: 10,
       connect_timeout: 10,
-      ssl:
-        env.DATABASE_URL?.includes('render.com') || env.NODE_ENV === 'production'
-          ? 'require'
-          : false,
+      ssl: dbSslEnabled() ? 'require' : false,
       connection: {
         // SERVER-SIDE. Postgres cancels the query and frees the connection —
         // the whole point of not reusing the shared handle.
