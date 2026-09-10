@@ -12,7 +12,7 @@ All three goals are delivered, committed and green. Nothing is half-applied.
 | S0b-5 runner | `server/tests/run-all.mjs`, `server/tests/QUARANTINE.md`, `package.json` scripts `test` / `test:smoke` |
 | S0b-5 CI | `.github/workflows/ci.yml` (dashboard), `docs/crm-ci.yml` (for the CRM repo, not committable from here) |
 | S0b-7 fleet | `scripts/fleet.mjs`, `scripts/fleet.services.json` |
-| tests | `server/tests/fleet/runner.mjs`, `fleet-cli.mjs`, `fleet-render.mjs`, `ci.mjs` — 152 assertions |
+| tests | `server/tests/fleet/runner.mjs`, `fleet-cli.mjs`, `fleet-render.mjs`, `ci.mjs` — 160 assertions |
 
 ## What is proven
 
@@ -38,8 +38,9 @@ All three goals are delivered, committed and green. Nothing is half-applied.
 5. **There is no test anywhere for product profiles**, although `server/src/routes/productProfiles.js` exists and migration 017 depends on the table. The brief asked smoke to cover product-profile CRUD; it cannot.
 6. **All four `orders/*` scripts are unrunnable** (three by absolute-path imports, one by a real failing assertion), so "orders list" has no smoke coverage either. Smoke substitutes the nearest real coverage and the gap is recorded.
 7. **One genuine pre-existing red:** `orders/post-purchase-ui.mjs`, `FAIL U8 the dunning page is in the sidebar under orders:access` (32 passed, 1 failed) on a clean `edc1030`. It is a `client/` sidebar assertion, outside this lane's file ownership. It is quarantined; that quarantine entry is the only thing keeping `npm test` from arriving red.
-8. **`ai-media/dialog-dom.mjs` leaves `client/.tmp-aimedia-dom/` behind** on every run — an untracked directory inside `client/`. Left in place (this lane may not touch `client/`); it should be cleaned up or gitignored.
-9. **Render says `puure-crm` is still live on `1466078`** — the pill-colour leak commit from the 2026-09-10 incident, finished `2026-09-09T15:53:14Z`. The rollback recorded as "pending Ludo's typed authorisation" has not happened. Not this lane's call; flagging it because `fleet status` made it visible.
+8. **`ai-media/dialog-dom.mjs` runs close to the default timeout.** Observed at 36.8 s, 53.6 s, 53.7 s and 58 s on this Mac against a 120 s default. It drives a real browser, so a slower or loaded runner could cross the line and report `TIMEOUT`. The fix is one header comment (`// test-timeout: 300s`) in a file this lane does not own; it is not in the smoke suite, so CI is not exposed today.
+9. **`ai-media/dialog-dom.mjs` leaves `client/.tmp-aimedia-dom/` behind** on every run — an untracked directory inside `client/`. Left in place (this lane may not touch `client/`); it should be cleaned up or gitignored.
+10. **Render says `puure-crm` is still live on `1466078`** — the pill-colour leak commit from the 2026-09-10 incident, finished `2026-09-09T15:53:14Z`. The rollback recorded as "pending Ludo's typed authorisation" has not happened. Not this lane's call; flagging it because `fleet status` made it visible.
 
 ## Open questions for the lead
 
