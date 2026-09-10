@@ -140,6 +140,53 @@ export function metaApiVersion() {
   return v;
 }
 
+const AD_ACCOUNT_ID_RE = /^act_\d+$/;
+
+/**
+ * Meta ad accounts this store owns, from env META_AD_ACCOUNTS_JSON:
+ *   [{ "id": "act_<digits>", "name": "<display name>" }, …]
+ * Unset or malformed (bad JSON, not an array, an entry without an act_ id or
+ * a string name) → [] with one warning. Names are DISPLAY data; the ids that
+ * gate API calls still come from META_AD_ACCOUNT_IDS in each module.
+ */
+export function adAccounts() {
+  const rawJson = raw('META_AD_ACCOUNTS_JSON');
+  if (rawJson === undefined) {
+    warnOnce('META_AD_ACCOUNTS_JSON', 'not set — ad accounts will display by raw id');
+    return [];
+  }
+  let parsed;
+  try { parsed = JSON.parse(rawJson); } catch (e) {
+    warnOnce('META_AD_ACCOUNTS_JSON', `is not valid JSON (${e.message}) — ad accounts ignored`);
+    return [];
+  }
+  if (!Array.isArray(parsed)) {
+    warnOnce('META_AD_ACCOUNTS_JSON', 'must be a JSON array of {id, name} — ad accounts ignored');
+    return [];
+  }
+  const out = [];
+  for (const entry of parsed) {
+    const id = entry && typeof entry.id === 'string' ? entry.id : null;
+    const name = entry && typeof entry.name === 'string' ? entry.name : null;
+    if (!id || !AD_ACCOUNT_ID_RE.test(id) || !name) {
+      warnOnce('META_AD_ACCOUNTS_JSON', `entry ${JSON.stringify(entry).slice(0, 60)} is not {id: "act_<digits>", name: string} — ad accounts ignored`);
+      return [];
+    }
+    out.push({ id, name });
+  }
+  return out;
+}
+
+/** `{ act_<id>: name }` for display lookups. */
+export function adAccountNames() {
+  return Object.fromEntries(adAccounts().map((a) => [a.id, a.name]));
+}
+
+/** Display name for an ad account id; the id itself when unknown. */
+export function adAccountName(id) {
+  return adAccountNames()[id] || id;
+}
+
 /** `https://graph.facebook.com/<version>` — the base every Graph call is built on. */
 export function metaGraphUrl() {
   return `https://graph.facebook.com/${metaApiVersion()}`;
@@ -224,6 +271,7 @@ export function snapshot() {
     },
     meta: {
       apiVersion: metaApiVersion(),
+      adAccounts: adAccounts(),
     },
     timezone: timezone(),
   };
@@ -232,7 +280,7 @@ export function snapshot() {
 const storeConfig = {
   setStoreConfigSource, resetWarnings,
   storeCode, brand, shopifyStoreDomain, shopifyStoreUrl, shopifyApiVersion, SHOPIFY_API_VERSION_DEFAULT, whopCompanyId, tripleWhaleShopId,
-  metaApiVersion, metaGraphUrl, META_API_VERSION_DEFAULT, frameioToken,
+  metaApiVersion, metaGraphUrl, META_API_VERSION_DEFAULT, adAccounts, adAccountNames, adAccountName, frameioToken,
   timezone, TIMEZONE_DEFAULT,
   snapshot,
 };

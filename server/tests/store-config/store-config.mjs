@@ -220,3 +220,31 @@ test('shopifyStoreUrl(): unset → null + one warning; set → value; snapshot c
   assert.equal(sc.shopifyStoreUrl(), 'https://zz.example');
   assert.equal(sc.snapshot().shopify.storeUrl, 'https://zz.example');
 });
+
+// ── item 9: Meta ad accounts from META_AD_ACCOUNTS_JSON ─────────────────────
+test('adAccounts(): unset → [] + one warning; malformed JSON → [] + one warning; wrong shape → [] + one warning', () => {
+  clearEnv();
+  let w = captureWarnings(() => { assert.deepEqual(sc.adAccounts(), []); sc.adAccounts(); });
+  assert.equal(w.length, 1, String(w)); assert.match(w[0], /META_AD_ACCOUNTS_JSON/);
+  clearEnv(); process.env.META_AD_ACCOUNTS_JSON = '{not json';
+  w = captureWarnings(() => { assert.deepEqual(sc.adAccounts(), []); sc.adAccounts(); });
+  assert.equal(w.length, 1, String(w)); assert.match(w[0], /META_AD_ACCOUNTS_JSON/);
+  clearEnv(); process.env.META_AD_ACCOUNTS_JSON = '{"id":"act_1","name":"x"}'; // object, not array
+  w = captureWarnings(() => { assert.deepEqual(sc.adAccounts(), []); });
+  assert.equal(w.length, 1, String(w));
+  clearEnv(); process.env.META_AD_ACCOUNTS_JSON = '[{"id":"1","name":"x"}]'; // id must be act_<digits>
+  w = captureWarnings(() => { assert.deepEqual(sc.adAccounts(), []); });
+  assert.equal(w.length, 1, String(w)); assert.match(w[0], /act_/);
+});
+test('adAccounts(): valid → [{id,name}] verbatim; adAccountNames() map; adAccountName() falls back to the id; snapshot carries them', () => {
+  clearEnv();
+  process.env.META_AD_ACCOUNTS_JSON = '[{"id":"act_11","name":"Store X8"},{"id":"act_22","name":"Store CC 4"}]';
+  const w = captureWarnings(() => {
+    assert.deepEqual(sc.adAccounts(), [{ id: 'act_11', name: 'Store X8' }, { id: 'act_22', name: 'Store CC 4' }]);
+    assert.deepEqual(sc.adAccountNames(), { act_11: 'Store X8', act_22: 'Store CC 4' });
+    assert.equal(sc.adAccountName('act_22'), 'Store CC 4');
+    assert.equal(sc.adAccountName('act_99'), 'act_99');
+  });
+  assert.equal(w.length, 0, String(w));
+  assert.deepEqual(sc.snapshot().meta.adAccounts, [{ id: 'act_11', name: 'Store X8' }, { id: 'act_22', name: 'Store CC 4' }]);
+});

@@ -15,12 +15,9 @@ const metaGraphUrl = () => storeConfig.metaGraphUrl();
 const SLACK_BOT_TOKEN = process.env.SLACK_BOT_TOKEN || '';
 const SLACK_CHANNEL = process.env.SLACK_REJECTION_CHANNEL || '';
 
-// Only active accounts
-const ACCOUNT_NAMES = {
-  'act_1363888491879561': 'Luvora CC',
-  'act_1417689703203647': 'Luvora CC 2',
-  'act_642819725560039': 'Luvora CC 3',
-};
+// Ad-account display names: storeConfig.adAccountNames() at call time from
+// env META_AD_ACCOUNTS_JSON ([{id, name}]); no account or brand literal here.
+const accountNames = () => storeConfig.adAccountNames();
 
 // ── DB Table ────────────────────────────────────────────────────────
 let tableReady = false;
@@ -70,7 +67,7 @@ async function checkSiblingAds(briefNumber, sourceAccountId, sourceAccountName) 
   let sibRejections = 0;
   try {
     for (const accountId of META_AD_ACCOUNT_IDS) {
-      const accountName = ACCOUNT_NAMES[accountId] || accountId;
+      const accountName = accountNames()[accountId] || accountId;
       const filter = encodeURIComponent(JSON.stringify([{ field: 'name', operator: 'CONTAIN', value: briefNumber }]));
       const url = `${metaGraphUrl()}/${accountId}/ads?fields=id,name,effective_status,configured_status&filtering=${filter}&limit=50&access_token=${META_ACCESS_TOKEN}`;
       const resp = await fetch(url);
@@ -377,7 +374,7 @@ async function checkRejectedAds() {
     const accountId = accounts[i];
     if (i > 0) await sleep(10_000);
 
-    const accountName = ACCOUNT_NAMES[accountId] || accountId;
+    const accountName = accountNames()[accountId] || accountId;
     const result = await processAdsForAccount(accountId, accountName);
 
     if (result.rateLimit) {
@@ -403,7 +400,7 @@ async function checkRejectedAds() {
         const accountId = rateLimitedAccounts[i];
         if (i > 0) await sleep(10_000);
 
-        const accountName = ACCOUNT_NAMES[accountId] || accountId;
+        const accountName = accountNames()[accountId] || accountId;
         const result = await processAdsForAccount(accountId, accountName);
 
         if (result.rateLimit) {
@@ -419,7 +416,7 @@ async function checkRejectedAds() {
     }
 
     if (rateLimitedAccounts.length > 0) {
-      const names = rateLimitedAccounts.map(id => ACCOUNT_NAMES[id] || id).join(', ');
+      const names = rateLimitedAccounts.map(id => accountNames()[id] || id).join(', ');
       console.error(`[Ad Rejection] FAILED after all retries: ${names}`);
     }
   }
@@ -441,7 +438,7 @@ async function sendDailySummary() {
     const accountId = META_AD_ACCOUNT_IDS[i];
     if (i > 0) await sleep(5000);
 
-    const accountName = ACCOUNT_NAMES[accountId] || accountId;
+    const accountName = accountNames()[accountId] || accountId;
 
     try {
       const data = await fetchAdsForAccount(accountId);
@@ -498,7 +495,7 @@ router.get('/status', authenticate, async (req, res) => {
         slackConfigured: !!(SLACK_BOT_TOKEN && SLACK_CHANNEL),
         metaConfigured: !!(META_ACCESS_TOKEN && META_AD_ACCOUNT_IDS.length),
         accountCount: META_AD_ACCOUNT_IDS.length,
-        accounts: META_AD_ACCOUNT_IDS.map(id => ({ id, name: ACCOUNT_NAMES[id] || id })),
+        accounts: META_AD_ACCOUNT_IDS.map(id => ({ id, name: accountNames()[id] || id })),
       },
     });
   } catch (err) {
@@ -522,7 +519,7 @@ router.get('/debug-ad/:adId', authenticate, async (req, res) => {
     // Check if the account is monitored
     const accountId = data.account_id ? `act_${data.account_id}` : null;
     const isMonitored = accountId && META_AD_ACCOUNT_IDS.includes(accountId);
-    const accountName = accountId ? ACCOUNT_NAMES[accountId] || 'UNKNOWN' : 'N/A';
+    const accountName = accountId ? accountNames()[accountId] || 'UNKNOWN' : 'N/A';
 
     res.json({
       success: true,
@@ -549,7 +546,7 @@ router.get('/search-by-name/:name', authenticate, async (req, res) => {
     await ensureTable();
 
     for (const accountId of META_AD_ACCOUNT_IDS) {
-      const accountName = ACCOUNT_NAMES[accountId] || accountId;
+      const accountName = accountNames()[accountId] || accountId;
       // Use filtering to find ads with the name pattern
       const filter = encodeURIComponent(JSON.stringify([{ field: 'name', operator: 'CONTAIN', value: name }]));
       const url = `${metaGraphUrl()}/${accountId}/ads?fields=id,name,effective_status,configured_status,updated_time,created_time&filtering=${filter}&limit=100&access_token=${META_ACCESS_TOKEN}`;

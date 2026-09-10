@@ -101,6 +101,15 @@ test('adLauncher.js has no store-URL literal fallback and reads storeConfig.shop
   assert.match(s, /storeConfig\.shopifyStoreUrl\(\)/);
 });
 
+// item 9
+for (const f of ['routes/adsControlCenter.js', 'routes/adRejectionMonitor.js', 'routes/metaWebhook.js']) {
+  test(`${f}: ad-account map comes from storeConfig; no act_<id> or brand-named account literal`, () => {
+    const s = src(f);
+    assert.doesNotMatch(s, /act_[0-9]+|Luvora/);
+    assert.match(s, /storeConfig\.adAccountNames\(\)/);
+  });
+}
+
 // A1 over the whole tree (allowed: tests and docs)
 test('A1: git grep over server/src is empty', () => {
   let out = '';

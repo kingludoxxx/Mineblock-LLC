@@ -18,15 +18,9 @@ const TW_SQL_URL = 'https://api.triplewhale.com/api/v2/orcabase/api/sql';
 const SLACK_BOT_TOKEN = process.env.SLACK_BOT_TOKEN || '';
 const SLACK_PNL_CHANNEL = 'C0AF724MJPR';
 
-const ACCOUNT_NAMES = {
-  'act_938489175321542': 'Mineblock X8',
-  'act_1972517213693373': 'Mineblock CC 4',
-  'act_1238893338181787': 'Mineblock CC 5',
-  'act_25781501541499027': 'Mineblock X6',
-  'act_1363888491879561': 'Luvora CC',
-  'act_1417689703203647': 'Luvora CC 2',
-  'act_642819725560039': 'Luvora CC 3',
-};
+// Ad-account display names: storeConfig.adAccountNames() at call time from
+// env META_AD_ACCOUNTS_JSON ([{id, name}]); no account or brand literal here.
+const accountNames = () => storeConfig.adAccountNames();
 
 // ── Helpers ─────────────────────────────────────────────────────────────
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -303,7 +297,7 @@ async function findAdByName(adName) {
           adsetBudget: ad.adset?.daily_budget ? Number(ad.adset.daily_budget) : null,
           campaignName: ad.campaign?.name || null,
           accountId,
-          accountName: ACCOUNT_NAMES[accountId] || accountId,
+          accountName: accountNames()[accountId] || accountId,
         };
       }
     } catch (err) {

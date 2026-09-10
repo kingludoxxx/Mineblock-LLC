@@ -12,11 +12,9 @@ const META_WEBHOOK_VERIFY_TOKEN = process.env.META_WEBHOOK_VERIFY_TOKEN || '';
 const SLACK_BOT_TOKEN = process.env.SLACK_BOT_TOKEN || '';
 const SLACK_CHANNEL = process.env.SLACK_REJECTION_CHANNEL || '';
 
-const ACCOUNT_NAMES = {
-  'act_1363888491879561': 'Luvora CC',
-  'act_1417689703203647': 'Luvora CC 2',
-  'act_642819725560039': 'Luvora CC 3',
-};
+// Ad-account display names: storeConfig.adAccountNames() at call time from
+// env META_AD_ACCOUNTS_JSON ([{id, name}]); no account or brand literal here.
+const accountNames = () => storeConfig.adAccountNames();
 
 // ── DB ──────────────────────────────────────────────────────────────
 let tableReady = false;
@@ -58,8 +56,8 @@ async function checkSiblingAdsWebhook(briefNumber) {
   if (!briefNumber) return 0;
   let count = 0;
   try {
-    for (const accountId of Object.keys(ACCOUNT_NAMES)) {
-      const accountName = ACCOUNT_NAMES[accountId];
+    for (const accountId of Object.keys(accountNames())) {
+      const accountName = accountNames()[accountId];
       const filter = encodeURIComponent(JSON.stringify([{ field: 'name', operator: 'CONTAIN', value: briefNumber }]));
       const url = `${metaGraphUrl()}/${accountId}/ads?fields=id,name,effective_status,configured_status&filtering=${filter}&limit=50&access_token=${META_ACCESS_TOKEN}`;
       const resp = await fetch(url);
@@ -205,7 +203,7 @@ async function processRejectedAdIds(adIds, accountId) {
       }
 
       const resolvedAccountId = accountId || (ad.account_id ? `act_${ad.account_id}` : 'unknown');
-      const accountName = ACCOUNT_NAMES[resolvedAccountId] || resolvedAccountId;
+      const accountName = accountNames()[resolvedAccountId] || resolvedAccountId;
       const adName = ad.name || 'Unknown';
 
       // FIX #3: Handle re-rejections and status escalations
@@ -240,7 +238,7 @@ async function fetchAndNotifyAccount(accountId) {
       return;
     }
 
-    const accountName = ACCOUNT_NAMES[accountId] || accountId;
+    const accountName = accountNames()[accountId] || accountId;
 
     for (const ad of (data.data || [])) {
       // FIX #1: Only skip ARCHIVED, not paused
