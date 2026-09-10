@@ -53,8 +53,36 @@ const hubMod = async (rel) => import(pathToFileURL(join(HUB, rel)).href);
 const { runMigrations } = await hubMod('src/migrate.js');
 const { createApp } = await hubMod('src/app.js');
 const { seedFromJson } = await hubMod('src/seed.js');
-const { encryptMfaSecret } = await hubMod('src/mfa.js');
+const { encryptMfaSecret, TOTP_STEP_SECONDS, TOTP_WINDOW } = await hubMod('src/mfa.js');
 const { authenticator } = await hubMod('node_modules/otplib/index.js');
+
+// ── fresh TOTP step per login (test-side step override, no sleeping in the normal case) ──────
+// store-hub `main` 16ac1e5 (D3, review P1-1) makes a TOTP time step single-use: repo/users.js
+// consumeTotpStep moves users.mfa_last_step FORWARD ONLY, so a SECOND login by the same user
+// inside the same 30-second step is refused with the same 401 a wrong code gets. This suite logs
+// the operator in twice (E1 and E7) seconds apart, i.e. inside one step, so it was minting a code
+// for a step its own earlier login had already spent — 16/3, and the two E7 lines after the 401
+// were consequences, not findings. Fix is in the TEST: each login mints its code for a step this
+// user has not spent yet. The hub verifies with +-TOTP_WINDOW steps of tolerance (src/mfa.js), so
+// a code minted one step ahead verifies against the hub's real clock and then claims a strictly
+// higher mfa_last_step. No server code is stubbed and nothing sleeps for the two-login case.
+const STEP_MS = TOTP_STEP_SECONDS * 1000;
+const spentStep = new Map();                       // secret -> the step this run has already spent on it
+async function freshTotp(secret) {
+  const now = Math.floor(Date.now() / STEP_MS);
+  const last = spentStep.get(secret);
+  let step = last === undefined ? now : Math.max(now, last + 1);
+  // Failure path: more logins in one step than the hub's tolerance can cover (>TOTP_WINDOW ahead).
+  // A code that far ahead would simply 401, so wait for the wall clock to reach the usable window
+  // instead of minting a code the hub cannot verify.
+  while (step - Math.floor(Date.now() / STEP_MS) > TOTP_WINDOW) {
+    const waitMs = (step - TOTP_WINDOW) * STEP_MS - Date.now() + 250;
+    console.log(`      (totp: step ${step} is beyond the hub's +-${TOTP_WINDOW}-step window, waiting ${Math.max(0, waitMs)}ms)`);
+    await new Promise((r) => setTimeout(r, Math.max(0, waitMs)));
+  }
+  spentStep.set(secret, step);
+  return authenticator.clone({ epoch: step * STEP_MS }).generate(secret);
+}
 const hubKey = crypto.randomBytes(32);
 { const p = new pg.Pool({ connectionString: HUB_DB }); await p.query('DROP SCHEMA public CASCADE; CREATE SCHEMA public;'); await runMigrations({ pool: p, dir: join(HUB, 'migrations'), log: () => {} }); await p.end(); }
 const hubApp = await createApp({ databaseUrl: HUB_DB, secretsKey: hubKey.toString('base64'), secretsKeyVersion: 1, platformEnvKeys: [], cookieSecure: false });
@@ -87,7 +115,7 @@ async function hub(method, path, body, extraHeaders = {}) {
 {
   const r0 = await hub('POST', '/hub/auth/login', { email: OPERATOR, password: PASSWORD });
   ok(r0.status === 401 && r0.json?.mfa_required === true, 'E1 hub: password without TOTP -> 401 mfa_required', r0.status + ' ' + r0.text);
-  const r1 = await hub('POST', '/hub/auth/login', { email: OPERATOR, password: PASSWORD, totp: authenticator.generate(totpSecret) });
+  const r1 = await hub('POST', '/hub/auth/login', { email: OPERATOR, password: PASSWORD, totp: await freshTotp(totpSecret) });
   ok(r1.status === 200 && jar.has('hub_session'), 'E1 hub: password + TOTP -> session', r1.status + ' ' + r1.text);
 }
 // 2. operator sets the store's HUB_SSO_SECRET? No: an operator is below owner. The OWNER path is the secret write; here the seed
@@ -101,7 +129,7 @@ async function hub(method, path, body, extraHeaders = {}) {
   const { rows: [ou] } = await hubPool.query('SELECT id FROM users WHERE email=$1', [OWNER]);
   await hubPool.query('UPDATE users SET mfa_secret=$2, mfa_enrolled_at=now() WHERE id=$1', [ou.id, encryptMfaSecret(hubKey, ownerSecret, ou.id)]);
   const operatorJar = new Map(jar); jar.clear();
-  ok((await hub('POST', '/hub/auth/login', { email: OWNER, password: OPW, totp: authenticator.generate(ownerSecret) })).status === 200, 'E2 hub: owner logs in');
+  ok((await hub('POST', '/hub/auth/login', { email: OWNER, password: OPW, totp: await freshTotp(ownerSecret) })).status === 200, 'E2 hub: owner logs in');
   ok((await hub('PUT', `/hub/stores/${STORE}/secrets/HUB_SSO_SECRET`, { value: SECRET })).status === 200, 'E2 hub: owner sets HUB_SSO_SECRET (write-only)');
   ok((await hub('PUT', `/hub/stores/${STORE}/flags/hub_sso_enabled`, { value: true })).status === 200, 'E2 hub: owner turns hub_sso_enabled on');
   const list = await hub('GET', `/hub/stores/${STORE}/secrets`);
@@ -139,7 +167,7 @@ let ticket;
   const { rows: [u] } = await hubPool.query('SELECT id FROM users WHERE email=$1', [OPERATOR]);
   await hubPool.query('UPDATE users SET mfa_secret=$2, mfa_enrolled_at=now() WHERE id=$1', [u.id, encryptMfaSecret(hubKey, totpSecret, u.id)]);
   jar.clear();
-  ok((await hub('POST', '/hub/auth/login', { email: OPERATOR, password: PASSWORD, totp: authenticator.generate(totpSecret) })).status === 200, 'E7 hub: re-login after the role grant');
+  ok((await hub('POST', '/hub/auth/login', { email: OPERATOR, password: PASSWORD, totp: await freshTotp(totpSecret) })).status === 200, 'E7 hub: re-login after the role grant');
   await hub('PUT', '/hub/stores/OTH/secrets/HUB_SSO_SECRET', { value: SECRET }); // same secret on purpose: audience must still refuse
   await hub('PUT', '/hub/stores/OTH/flags/hub_sso_enabled', { value: true });
   const r = await hub('POST', '/hub/stores/OTH/ticket', {});
