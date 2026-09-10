@@ -54,8 +54,12 @@ import funnelCommerceRoutes from './funnelCommerce.js';
 import orderEditRoutes from './orderEdit.js';
 import dunningRoutes from './dunning.js';
 import funnelThemesRoutes from './funnelThemes.js';
+import storeConfigRoutes from './storeConfig.js';
 
 const mountRoutes = (app) => {
+  // STORE CONFIG (Lane F): GET /api/v1/store-config (session, non-secret) and
+  // GET /api/v1/brand (public). Values are read from env at request time.
+  app.use('/api/v1', storeConfigRoutes);
   app.use('/api/v1/users', userRoutes);
   app.use('/api/v1/team', teamRoutes);
   app.use('/api/v1/departments', departmentRoutes);
