@@ -84,6 +84,16 @@ test('clickupWebhook.js and videoAdsLauncher.js read the Frame.io token through 
   }
 });
 
+// item 7
+test('REPORT_TZ is read in exactly ONE place (storeConfig); reportTz.js and funnelMetrics.js delegate', () => {
+  let out = '';
+  try { out = execFileSync('git', ['grep', '-n', 'process.env.REPORT_TZ', '--', 'server/src'], { cwd: REPO, encoding: 'utf8' }); } catch (e) { if (e.status !== 1) throw e; }
+  const files = [...new Set(out.trim().split('\n').filter(Boolean).map((l) => l.split(':')[0]))];
+  assert.deepEqual(files, [], out);
+  assert.match(src('services/reportTz.js'), /storeConfig\.timezone\(\)/);
+  assert.match(src('services/funnelMetrics.js'), /storeConfig\.timezone\(\)/);
+});
+
 // A1 over the whole tree (allowed: tests and docs)
 test('A1: git grep over server/src is empty', () => {
   let out = '';

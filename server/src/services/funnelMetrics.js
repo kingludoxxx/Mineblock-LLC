@@ -121,6 +121,7 @@
 //    "Pageviews by country": Puure captures no geo header anywhere (see
 //    liveViewQueries.js), so a per-country pageview number would be invented.
 //    DIM_METRICS refuses `pageviews` on it.
+import storeConfig from '../config/storeConfig.js';
 import { analyticsQuery } from './analyticsDb.js';
 import { parseWindow } from './funnelAnalytics.js';
 import { resolveCosts, buildRateIndex, round2 } from './funnelCosts.js';
@@ -165,13 +166,9 @@ export const MAX_WINDOW_DAYS = 400;
  * everywhere — the check below is defence in depth, not the control.
  */
 function resolveReportTz() {
-  const want = String(process.env.REPORT_TZ || 'Europe/Madrid').trim();
-  try {
-    new Intl.DateTimeFormat('en-US', { timeZone: want });
-    return want;
-  } catch {
-    throw new Error(`REPORT_TZ '${want.slice(0, 60)}' is not a valid IANA timezone`);
-  }
+  // ONE read site: config/storeConfig.js timezone() (validates; throws on an
+  // invalid zone with the same message this function always raised).
+  return storeConfig.timezone();
 }
 export const REPORT_TZ = resolveReportTz();
 /** Kept as the wire name the client reads. */

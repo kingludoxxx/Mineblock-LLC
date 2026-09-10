@@ -205,6 +205,7 @@
 //   clicked, and publishes `untracked_campaigns` plus a `cost_note` whenever
 //   the two sets differ.
 import { analyticsQuery } from './analyticsDb.js';
+import storeConfig from '../config/storeConfig.js';
 import { parseWindow } from './funnelAnalytics.js';
 import { funnelSpendByDay } from './funnelSpend.js';
 
@@ -221,7 +222,7 @@ const ATTRIBUTION_TTL_DAYS = 90;
  * offset. Env-overridable for a future account on another timezone — but see
  * the alignment assumption in the header before changing it.
  */
-export const REPORT_TZ = process.env.REPORT_TZ || 'Europe/Madrid';
+export const REPORT_TZ = storeConfig.timezone(); // ONE read site: config/storeConfig.js
 
 export const MARKETING_DIMENSIONS = Object.freeze(['campaign', 'source', 'referrer', 'landing_page']);
 export const ROAS_DIMENSIONS = Object.freeze([

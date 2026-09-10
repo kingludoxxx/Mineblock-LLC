@@ -166,6 +166,26 @@ export function whopCompanyId() {
   return readString('WHOP_COMPANY_ID', { unsetMessage: 'not set — Whop company-scoped calls are dormant on this deployment' });
 }
 
+// ── Reporting timezone ──────────────────────────────────────────────────
+
+/** The ONE place the report timezone defaults. */
+export const TIMEZONE_DEFAULT = 'Europe/Madrid';
+
+/**
+ * IANA report timezone (REPORT_TZ). Validated against Intl: an invalid zone
+ * THROWS naming the key — this string reaches Postgres `AT TIME ZONE` and
+ * Intl, and a silent default would mis-bucket money, so it fails closed hard.
+ */
+export function timezone() {
+  const want = raw('REPORT_TZ') ?? TIMEZONE_DEFAULT;
+  try {
+    new Intl.DateTimeFormat('en-US', { timeZone: want });
+    return want;
+  } catch {
+    throw new Error(`REPORT_TZ '${want.slice(0, 60)}' is not a valid IANA timezone`);
+  }
+}
+
 // ── Snapshot ────────────────────────────────────────────────────────────
 
 /**
@@ -190,6 +210,7 @@ export function snapshot() {
     meta: {
       apiVersion: metaApiVersion(),
     },
+    timezone: timezone(),
   };
 }
 
@@ -197,6 +218,7 @@ const storeConfig = {
   setStoreConfigSource, resetWarnings,
   storeCode, brand, shopifyStoreDomain, shopifyApiVersion, SHOPIFY_API_VERSION_DEFAULT, whopCompanyId, tripleWhaleShopId,
   metaApiVersion, metaGraphUrl, META_API_VERSION_DEFAULT, frameioToken,
+  timezone, TIMEZONE_DEFAULT,
   snapshot,
 };
 export default storeConfig;

@@ -191,3 +191,14 @@ test('frameioToken(): FRAME_IO_TOKEN / FRAMEIO_API_TOKEN still work, each with O
   w = captureWarnings(() => { assert.equal(sc.frameioToken(), 'tok-canonical'); });
   assert.equal(w.length, 0, String(w));
 });
+
+// ── item 7: report timezone — the ONE read site ─────────────────────────────
+test('timezone(): REPORT_TZ default Europe/Madrid; set → value; invalid IANA → throws naming the key (fail closed)', () => {
+  clearEnv();
+  assert.equal(sc.timezone(), 'Europe/Madrid');
+  process.env.REPORT_TZ = ' America/New_York ';
+  assert.equal(sc.timezone(), 'America/New_York');
+  assert.equal(sc.snapshot().timezone, 'America/New_York');
+  process.env.REPORT_TZ = 'Mars/Olympus';
+  assert.throws(() => sc.timezone(), /REPORT_TZ 'Mars\/Olympus' is not a valid IANA timezone/);
+});
