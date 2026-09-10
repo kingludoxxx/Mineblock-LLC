@@ -23,11 +23,13 @@
  * LOCK    pg_advisory_lock serialises runners; two cannot interleave.
  * OUTPUT  Database WARNINGs raised by a migration are printed (`WARNING (database): …`).
  *
- * CLI     node server/migrations/run.js [--dry-run] [--strict] [--dir <path>] [--mark-applied a.sql,b.sql]
+ * CLI     node server/migrations/run.js [--dry-run [--allow-pending]] [--strict] [--dir <path>] [--mark-applied a.sql,b.sql]
  * ENV     DATABASE_URL (required) · MIGRATIONS_DIR (= --dir) · STRICT_MIGRATIONS=1 (= --strict)
  *         MIGRATE_SSL=0|1 (default auto: off for localhost/127.0.0.1/sslmode=disable, on otherwise)
- * EXIT    0 clean · 1 any error or refusal; a dry run also exits 1 on a checksum
- *         mismatch, a rename, or (STRICT) an orphan
+ * EXIT    0 clean · 1 any error or refusal. A dry run exits 1 when the database is
+ *         NOT current: pending files (unless --allow-pending, the pre-apply
+ *         rehearsal), a checksum mismatch, a rename, or (STRICT) an orphan —
+ *         so a preflight gate can trust `npm run migrate:dry-run`'s exit code.
  *
  * LIBRARY server.js and admin routes import { checkPending } for a READ-ONLY
  *         report. Nothing outside this file writes the ledger.
@@ -329,12 +331,16 @@ function describeTarget(url) {
   catch { return '<unparseable DATABASE_URL>'; }
 }
 
-const USAGE = `usage: node server/migrations/run.js [--dry-run] [--strict] [--dir <migrationsDir>] [--mark-applied a.sql,b.sql]
+const USAGE = `usage: node server/migrations/run.js [--dry-run [--allow-pending]] [--strict] [--dir <migrationsDir>] [--mark-applied a.sql,b.sql]
+  --dry-run        report only, no writes; exit 1 unless the database is current
+  --allow-pending  (dry-run only) pending files do not fail the dry run — the pre-apply rehearsal
+  --strict         orphan ledger rows refuse instead of warn (= STRICT_MIGRATIONS=1)
   env: DATABASE_URL (required), MIGRATIONS_DIR, STRICT_MIGRATIONS=1 (= --strict), MIGRATE_SSL=0|1`;
 
 function parseArgs(argv) {
   const opts = {
     dryRun: false,
+    allowPending: false,
     strict: process.env.STRICT_MIGRATIONS === '1',
     dir: process.env.MIGRATIONS_DIR ? path.resolve(process.env.MIGRATIONS_DIR) : DEFAULT_DIR,
     markApplied: null,
@@ -343,6 +349,7 @@ function parseArgs(argv) {
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--dry-run') opts.dryRun = true;
+    else if (a === '--allow-pending') opts.allowPending = true;
     else if (a === '--strict') opts.strict = true;
     else if (a === '--dir') opts.dir = path.resolve(argv[++i] ?? '');
     else if (a.startsWith('--dir=')) opts.dir = path.resolve(a.slice('--dir='.length));
@@ -350,6 +357,7 @@ function parseArgs(argv) {
     else if (a === '--help' || a === '-h') opts.help = true;
     else throw new MigrationError(`Unknown argument: ${a}\n${USAGE}`);
   }
+  if (opts.allowPending && !opts.dryRun) throw new MigrationError(`--allow-pending only applies to --dry-run (a real run applies pending files)\n${USAGE}`);
   return opts;
 }
 
@@ -391,8 +399,10 @@ async function main(argv) {
     }
     const report = await migrate(client, { dir: opts.dir, dryRun: opts.dryRun, strict: opts.strict });
     if (!opts.dryRun) return 0; // a real run throws on every refusal; reaching here means it applied cleanly
-    const refuse = report.mismatches.length || report.renames.length || (opts.strict && report.orphans.length);
-    return refuse ? 1 : 0;
+    const notCurrent = report.mismatches.length || report.renames.length || (opts.strict && report.orphans.length)
+      || (report.pending.length && !opts.allowPending);
+    if (report.pending.length && !opts.allowPending) console.log(`DRY RUN exit 1: ${report.pending.length} pending file(s) — the database is not current (pass --allow-pending for a pre-apply rehearsal)`);
+    return notCurrent ? 1 : 0;
   } catch (err) {
     console.error(err instanceof MigrationError ? `Migration failed: ${err.message}` : `Migration failed: ${err.stack || err.message}`);
     return 1;

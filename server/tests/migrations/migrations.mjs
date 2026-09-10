@@ -4,7 +4,7 @@
 // against databases this file creates on the local Postgres 16 server
 // (host 127.0.0.1, port 5433, user postgres, trust). Nothing here talks to a
 // live service. Databases created: lane_migrations, lane_migrations_legacy,
-// lane_migrations_068, lane_a2_ca, lane_a2_mbcopy (TEMPLATE mineblock_copy, only if it exists).
+// lane_migrations_068, lane_a2_dry, lane_a2_ca, lane_a2_mbcopy (TEMPLATE mineblock_copy, only if it exists).
 //
 // Acceptance lines (brief LANE-A-MIGRATIONS.md):
 //   A1 empty DB migrates 001→N with 0 errors, in the order of order.json
@@ -353,6 +353,20 @@ console.log('\n── A6 failure paths ──');
   const f11 = runMigrate({ DATABASE_URL: DB1, MIGRATIONS_DIR: d6, STRICT_MIGRATIONS: '1' }, ['--dry-run']);
   ok(f11.code !== 0 && /099_static_ad_naming\.sql/.test(f11.out),
     'A6.11 STRICT_MIGRATIONS=1 --dry-run with an orphan → exits non-zero, names it', tail(f11.out, 500));
+
+  // A6.12–A6.15 (review P2-2): a preflight gate must be able to trust --dry-run's
+  // exit code as "is this database current". Pending files → non-zero, unless the
+  // caller says --allow-pending (the pre-apply rehearsal case). Never writes.
+  const DB6 = dbUrl('lane_a2_dry');
+  await recreate('lane_a2_dry');
+  const f12 = runMigrate({ DATABASE_URL: DB6 }, ['--dry-run']);
+  ok(f12.code !== 0 && /pending:\s*[1-9]\d*/.test(f12.out), 'A6.12 --dry-run with pending files exits NON-zero (reports the count)', tail(f12.out, 300));
+  const f13 = runMigrate({ DATABASE_URL: DB6 }, ['--dry-run', '--allow-pending']);
+  ok(f13.code === 0 && /pending:\s*[1-9]\d*/.test(f13.out), 'A6.13 --dry-run --allow-pending (rehearsal) exits 0 with the same pending files', tail(f13.out, 300));
+  ok((await ledger(DB6)) === null, 'A6.14 neither dry-run created the ledger table (no writes)');
+  const f15 = runMigrate({ DATABASE_URL: DB6 }, ['--allow-pending']);
+  ok(f15.code !== 0 && /allow-pending/.test(f15.out) && /dry-run/.test(f15.out) && (await ledger(DB6)) === null,
+    'A6.15 --allow-pending without --dry-run is refused (names both flags), nothing applied', tail(f15.out, 300));
 
   ok(snapshot(await ledger(DB1)) === before, 'A6.8 none of the failure paths wrote to the ledger');
   for (const d of [d1, d2, d3, d4, d5, d6]) rmSync(d, { recursive: true, force: true });
