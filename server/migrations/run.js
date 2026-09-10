@@ -21,6 +21,7 @@
  *         visible WARNING, and a refusal under STRICT.
  * STRICT  --strict or STRICT_MIGRATIONS=1: orphans refuse instead of warn.
  * LOCK    pg_advisory_lock serialises runners; two cannot interleave.
+ * OUTPUT  Database WARNINGs raised by a migration are printed (`WARNING (database): …`).
  *
  * CLI     node server/migrations/run.js [--dry-run] [--strict] [--dir <path>] [--mark-applied a.sql,b.sql]
  * ENV     DATABASE_URL (required) · MIGRATIONS_DIR (= --dir) · STRICT_MIGRATIONS=1 (= --strict)
@@ -377,6 +378,11 @@ async function main(argv) {
     await pool.end();
     return 1;
   }
+  // A migration's RAISE WARNING (e.g. 122 declining to reshape a table with rows)
+  // must reach the deploy log. NOTICEs (IF NOT EXISTS "skipping" chatter) are not printed.
+  client.on('notice', (n) => {
+    if (['WARNING', 'ERROR', 'FATAL', 'PANIC'].includes(n.severity)) console.log(`${n.severity} (database): ${n.message}`);
+  });
   try {
     if (opts.markApplied) {
       const r = await markApplied(client, opts.markApplied, { dir: opts.dir, dryRun: opts.dryRun });

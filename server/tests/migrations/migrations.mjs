@@ -4,7 +4,7 @@
 // against databases this file creates on the local Postgres 16 server
 // (host 127.0.0.1, port 5433, user postgres, trust). Nothing here talks to a
 // live service. Databases created: lane_migrations, lane_migrations_legacy,
-// lane_migrations_068, lane_migrations_mbcopy (only if mineblock_copy exists).
+// lane_migrations_068, lane_a2_ca, lane_a2_mbcopy (TEMPLATE mineblock_copy, only if it exists).
 //
 // Acceptance lines (brief LANE-A-MIGRATIONS.md):
 //   A1 empty DB migrates 001→N with 0 errors, in the order of order.json
@@ -362,12 +362,13 @@ console.log('\n── A6 failure paths ──');
 // A7 — copy of a live database (mineblock_copy) → 0 pending, 0 mismatches
 // ═══════════════════════════════════════════════════════════════════════════
 console.log('\n── A7 live-copy dry run ──');
+let DB7 = null;
 if (await dbExists('mineblock_copy')) {
   const admin = postgres(ADMIN_URL, { ssl: false, onnotice: () => {} });
-  await admin.unsafe('DROP DATABASE IF EXISTS lane_migrations_mbcopy');
-  await admin.unsafe('CREATE DATABASE lane_migrations_mbcopy TEMPLATE mineblock_copy');
+  await admin.unsafe('DROP DATABASE IF EXISTS lane_a2_mbcopy');
+  await admin.unsafe('CREATE DATABASE lane_a2_mbcopy TEMPLATE mineblock_copy');
   await admin.end();
-  const DB7 = dbUrl('lane_migrations_mbcopy');
+  DB7 = dbUrl('lane_a2_mbcopy');
   const pre = runMigrate({ DATABASE_URL: DB7 }, ['--dry-run']);
   console.log('      pre-apply dry-run:\n      ' + tail(pre.out, 900).split('\n').join('\n      '));
   const ap = runMigrate({ DATABASE_URL: DB7 });
@@ -376,6 +377,99 @@ if (await dbExists('mineblock_copy')) {
   ok(dr.code === 0 && /pending:\s*0\b/.test(dr.out) && /mismatches:\s*0\b/.test(dr.out), 'A7.2 --dry-run on the live copy: 0 pending, 0 mismatches', tail(dr.out, 600));
 } else {
   skipped('A7 live-copy dry run', 'precondition unmet: database mineblock_copy does not exist on 127.0.0.1:5433 (no restored dump)');
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// A8 — review P1-2: a FRESH database ends with creative_analysis in the LIVE
+// shape (mineblock_copy's information_schema), and the route can insert into it
+// ═══════════════════════════════════════════════════════════════════════════
+console.log('\n── A8 fresh creative_analysis == live shape (P1-2) ──');
+async function shape(url) {
+  const sql = postgres(url, { ssl: false, onnotice: () => {} });
+  try {
+    return await sql`SELECT column_name, data_type, character_maximum_length, numeric_precision, numeric_scale, is_nullable, column_default
+                       FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'creative_analysis' ORDER BY column_name`;
+  } finally { await sql.end(); }
+}
+const shapeLines = (rows) => rows.map((r) => [r.column_name, r.data_type, r.character_maximum_length, r.numeric_precision, r.numeric_scale, r.is_nullable, r.column_default].map((v) => v ?? '-').join('|'));
+const shapeDiff = (fresh, live) => [
+  ...fresh.filter((l) => !live.includes(l)).map((l) => `fresh-only: ${l}`),
+  ...live.filter((l) => !fresh.includes(l)).map((l) => `live-only:  ${l}`),
+];
+async function uniques(url) {
+  const sql = postgres(url, { ssl: false, onnotice: () => {} });
+  try { return (await sql`SELECT pg_get_constraintdef(oid) AS d FROM pg_constraint WHERE conrelid = 'public.creative_analysis'::regclass AND contype = 'u'`).map((r) => r.d); }
+  finally { await sql.end(); }
+}
+const caRoute = readFileSync(join(REPO, 'server/src/routes/creativeAnalysis.js'), 'utf8');
+const insertMatch = caRoute.match(/INSERT INTO creative_analysis\s*\(([^)]*)\)\s*VALUES\s*\(((?:[^()]|\([^()]*\))*)\)/); // value list may contain NOW()
+ok(!!insertMatch, 'A8.0 the route INSERT column list extracted from creativeAnalysis.js');
+async function routeInsert(url) {
+  // The route's own INSERT (columns + placeholders verbatim from the source), with a
+  // 25-char synthetic creative_id like the naming-agnostic sync produces. Rolled back.
+  const sql = postgres(url, { ssl: false, onnotice: () => {} });
+  const params = ['A8 synthetic ad', 'AUTO-' + 'x'.repeat(20), 'H1', 'video', 'avatar', 'angle', 'format', 'editor', '2026-W37',
+    1.5, 3, 2, 100, 10, 2, 0.75, 15, 1.5, 0.15, 10, true, 'act_1', 'acct'];
+  let id, err;
+  try {
+    await sql.begin(async (tx) => {
+      const r = await tx.unsafe(`INSERT INTO creative_analysis (${insertMatch[1]}) VALUES (${insertMatch[2]}) RETURNING id`, params);
+      id = r[0].id;
+      throw new Error('ROLLBACK_A8');
+    });
+  } catch (e) { if (e.message !== 'ROLLBACK_A8') err = e; }
+  finally { await sql.end(); }
+  return { id, err };
+}
+const freshShape = shapeLines(await shape(DB1));
+if (await dbExists('mineblock_copy')) {
+  const liveShape = shapeLines(await shape(dbUrl('mineblock_copy')));
+  const d81 = shapeDiff(freshShape, liveShape);
+  ok(d81.length === 0 && freshShape.length === liveShape.length,
+    `A8.1 fresh DB creative_analysis == mineblock_copy on (name, type, length, precision, scale, nullability, default) (${freshShape.length} vs ${liveShape.length} columns)`, d81.join('\n'));
+  if (DB7) {
+    const copyShape = shapeLines(await shape(DB7));
+    ok(shapeDiff(copyShape, liveShape).length === 0, 'A8.4 the full run (incl. 122) is a NO-OP on the live copy: its shape still == mineblock_copy', shapeDiff(copyShape, liveShape).join('\n'));
+  }
+} else {
+  skipped('A8.1 fresh == mineblock_copy shape', 'precondition unmet: database mineblock_copy does not exist');
+  skipped('A8.4 122 no-op on the live copy', 'precondition unmet: database mineblock_copy does not exist');
+}
+const u1 = await uniques(DB1);
+ok(u1.some((d) => /\(creative_id, hook_id, week\)/.test(d)) && !u1.some((d) => /\(creative_id, hook_id\)/.test(d)),
+  "A8.2 fresh has the route's UNIQUE (creative_id, hook_id, week) (its ON CONFLICT target) and not the 016 pair", u1.join(' ; '));
+const ins = await routeInsert(DB1);
+ok(!ins.err && typeof ins.id === 'number', "A8.3 the route's INSERT (23 columns, 25-char creative_id) succeeds on the fresh DB and RETURNING id is an integer", ins.err ? ins.err.message : `id=${JSON.stringify(ins.id)}`);
+{
+  // A8.5 idempotent: apply 122 a second time on the fresh DB → no error, shape unchanged
+  const f122 = manifest.find((f) => /^122_/.test(f));
+  const sql = postgres(DB1, { ssl: false, onnotice: () => {} });
+  let err = null;
+  try { if (!f122) throw new Error('no 122_* file in order.json'); await sql.unsafe(readFileSync(join(MIG_DIR, f122), 'utf8')); } catch (e) { err = e; }
+  await sql.end();
+  ok(!err && shapeLines(await shape(DB1)).join('\n') === freshShape.join('\n'), 'A8.5 122 applied a second time: no error, shape unchanged (idempotent)', err?.message);
+}
+{
+  // A8.6 failure path: a NON-EMPTY table that still has the 016 shape (uuid id) is
+  // neither fresh nor live. 122 must keep its rows, add what the route needs, and
+  // say so with a WARNING that run.js prints; it must not fail the run.
+  const DB8 = dbUrl('lane_a2_ca');
+  await recreate('lane_a2_ca');
+  const sql = postgres(DB8, { ssl: false, onnotice: () => {} });
+  await sql.unsafe('CREATE EXTENSION IF NOT EXISTS "uuid-ossp"');
+  await sql.unsafe(readFileSync(join(MIG_DIR, '016_create_creative_analysis.sql'), 'utf8'));
+  await sql.unsafe(`INSERT INTO creative_analysis (ad_name, creative_id, hook_id, creative_type) VALUES ('pre-existing', 'IM001', 'H1', 'video')`);
+  await sql.end();
+  const r86 = runMigrate({ DATABASE_URL: DB8 });
+  const s86 = await shape(DB8);
+  const idType = s86.find((r) => r.column_name === 'id')?.data_type;
+  const sql2 = postgres(DB8, { ssl: false, onnotice: () => {} });
+  const rows = await sql2`SELECT count(*)::int AS n FROM creative_analysis`;
+  await sql2.end();
+  ok(r86.code === 0 && /WARNING[^\n]*122_creative_analysis_fresh_shape[^\n]*\bid\b/.test(r86.out),
+    'A8.6 non-empty uuid-shaped creative_analysis: the run exits 0 and run.js PRINTS the migration\'s WARNING naming 122 and the id divergence', tail(r86.out, 700));
+  ok(idType === 'uuid' && rows[0].n === 1 && s86.some((r) => r.column_name === 'type') && s86.find((r) => r.column_name === 'creative_id')?.data_type === 'text',
+    `A8.7 …its row survived (${rows[0].n}), id stayed ${idType}, and the route's needs (type column, TEXT creative_id) were still added`);
 }
 
 console.log(`\n${pass} passed, ${fail} failed, ${skip} skipped`);

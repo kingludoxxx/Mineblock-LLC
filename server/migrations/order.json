@@ -106,6 +106,7 @@
     "096_product_cutouts.sql",
     "097_launcher_campaign_and_grouping.sql",
     "098_brief_video_url.sql",
-    "099_static_ad_naming.sql"
+    "099_static_ad_naming.sql",
+    "122_creative_analysis_fresh_shape.sql"
   ]
 }
