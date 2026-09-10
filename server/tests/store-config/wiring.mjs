@@ -75,6 +75,15 @@ test('the Meta Graph host+version literal exists in exactly ONE place (storeConf
   assert.deepEqual(files.filter((f) => !f.endsWith('staticsGeneration.js')), [], out);
 });
 
+// item 6
+test('clickupWebhook.js and videoAdsLauncher.js read the Frame.io token through storeConfig only', () => {
+  for (const f of ['routes/clickupWebhook.js', 'routes/videoAdsLauncher.js']) {
+    const s = src(f);
+    assert.doesNotMatch(s, /process\.env\.FRAME_?IO_(API_)?TOKEN/, `${f} reads a Frame.io token env directly`);
+    assert.match(s, /storeConfig\.frameioToken\(\)/, f);
+  }
+});
+
 // A1 over the whole tree (allowed: tests and docs)
 test('A1: git grep over server/src is empty', () => {
   let out = '';

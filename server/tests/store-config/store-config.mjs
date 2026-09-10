@@ -165,3 +165,29 @@ test('metaApiVersion(): the ONE default is v21.0; malformed → default + one wa
   assert.equal(w.length, 1, String(w));
   assert.match(w[0], /META_API_VERSION/);
 });
+
+// ── item 6: Frame.io token — ONE read, legacy names accepted for one release ─
+test('frameioToken(): FRAMEIO_TOKEN is canonical; unset → "" with one warning; never in snapshot', () => {
+  clearEnv();
+  const w = captureWarnings(() => { assert.equal(sc.frameioToken(), ''); sc.frameioToken(); });
+  assert.equal(w.length, 1, String(w));
+  assert.match(w[0], /FRAMEIO_TOKEN/);
+  process.env.FRAMEIO_TOKEN = 'tok-canonical';
+  assert.equal(sc.frameioToken(), 'tok-canonical');
+  assert.ok(!JSON.stringify(sc.snapshot()).includes('tok-canonical'));
+});
+test('frameioToken(): FRAME_IO_TOKEN / FRAMEIO_API_TOKEN still work, each with ONE deprecation warning; canonical wins', () => {
+  clearEnv();
+  process.env.FRAME_IO_TOKEN = 'tok-legacy-1';
+  let w = captureWarnings(() => { assert.equal(sc.frameioToken(), 'tok-legacy-1'); sc.frameioToken(); });
+  assert.equal(w.length, 1, String(w));
+  assert.match(w[0], /FRAME_IO_TOKEN.*deprecated/i);
+  clearEnv();
+  process.env.FRAMEIO_API_TOKEN = 'tok-legacy-2';
+  w = captureWarnings(() => { assert.equal(sc.frameioToken(), 'tok-legacy-2'); });
+  assert.equal(w.length, 1, String(w));
+  assert.match(w[0], /FRAMEIO_API_TOKEN.*deprecated/i);
+  process.env.FRAMEIO_TOKEN = 'tok-canonical';
+  w = captureWarnings(() => { assert.equal(sc.frameioToken(), 'tok-canonical'); });
+  assert.equal(w.length, 0, String(w));
+});

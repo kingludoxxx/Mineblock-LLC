@@ -131,6 +131,27 @@ export function metaGraphUrl() {
   return `https://graph.facebook.com/${metaApiVersion()}`;
 }
 
+// ── Frame.io (SECRET — never in snapshot) ───────────────────────────────
+
+/**
+ * Frame.io API token. Canonical env: FRAMEIO_TOKEN. The two historical names
+ * (FRAME_IO_TOKEN, FRAMEIO_API_TOKEN) are honoured for ONE release with a
+ * deprecation warning each; unset → '' with one warning (integration dormant).
+ */
+export function frameioToken() {
+  const canonical = raw('FRAMEIO_TOKEN');
+  if (canonical !== undefined) return canonical;
+  for (const legacy of ['FRAME_IO_TOKEN', 'FRAMEIO_API_TOKEN']) {
+    const v = raw(legacy);
+    if (v !== undefined) {
+      warnOnce(legacy, 'is DEPRECATED — rename it to FRAMEIO_TOKEN (still honoured this release)');
+      return v;
+    }
+  }
+  warnOnce('FRAMEIO_TOKEN', 'not set — Frame.io integration is dormant on this deployment');
+  return '';
+}
+
 // ── Triple Whale ────────────────────────────────────────────────────────
 
 /** Triple Whale shop id; NO literal default — unset = feature dormant (one warning). */
@@ -175,7 +196,7 @@ export function snapshot() {
 const storeConfig = {
   setStoreConfigSource, resetWarnings,
   storeCode, brand, shopifyStoreDomain, shopifyApiVersion, SHOPIFY_API_VERSION_DEFAULT, whopCompanyId, tripleWhaleShopId,
-  metaApiVersion, metaGraphUrl, META_API_VERSION_DEFAULT,
+  metaApiVersion, metaGraphUrl, META_API_VERSION_DEFAULT, frameioToken,
   snapshot,
 };
 export default storeConfig;

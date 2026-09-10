@@ -482,7 +482,7 @@ router.post('/import-frame', authenticate, async (req, res) => {
     // Patterns: next.frame.io/project/.../asset_id, app.frame.io/...
     // Accept both historical env names; V4 URLs (next.frame.io) don't need
     // this token at all — they authenticate via the IMS OAuth machinery.
-    const FRAME_TOKEN = process.env.FRAME_IO_TOKEN || process.env.FRAMEIO_TOKEN || '';
+    const FRAME_TOKEN = storeConfig.frameioToken(); // FRAMEIO_TOKEN (legacy FRAME_IO_TOKEN honoured one release)
     const isV4Url = /(^|\.)next\.frame\.io$/.test((() => { try { return new URL(frame_url).hostname; } catch { return ''; } })());
     if (!FRAME_TOKEN && !isV4Url) {
       return res.status(400).json({ success: false, error: { message: 'Frame.io token not configured (FRAMEIO_TOKEN env var)' } });

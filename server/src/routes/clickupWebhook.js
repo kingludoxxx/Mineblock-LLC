@@ -1,4 +1,5 @@
 import express, { Router } from 'express';
+import storeConfig from '../config/storeConfig.js';
 import logger from '../utils/logger.js';
 import { pgQuery } from '../db/pg.js';
 import sendSlackAlert from '../utils/slackAlert.js';
@@ -36,7 +37,8 @@ const TEAM_ID = process.env.CLICKUP_TEAM_ID || '';
 // Puure defaults:
 //   FRAMEIO_PUURE_PROJECT_ID='b38fbf28-9004-422d-902b-8cb4abed214b'
 //   FRAMEIO_PUURE_EDITING_FOLDER='51ec2ac5-4e55-4281-bfaa-26776fc81d10'
-const FRAMEIO_TOKEN = process.env.FRAMEIO_TOKEN || '';
+// Frame.io token: storeConfig.frameioToken() at call time (FRAMEIO_TOKEN; legacy names honoured one release).
+const frameioToken = () => storeConfig.frameioToken();
 const FRAMEIO_PROJECT_ID           = process.env.FRAMEIO_MB_PROJECT_ID           || '';
 const FRAMEIO_EDITING_FOLDER       = process.env.FRAMEIO_MB_EDITING_FOLDER       || '';
 const FRAMEIO_STATIC_EDITING_FOLDER = process.env.FRAMEIO_MB_STATIC_EDITING_FOLDER || '';
@@ -391,14 +393,14 @@ async function getV4AccessToken() {
 }
 
 async function frameioFetch(url, options = {}, baseUrl = FRAMEIO_API) {
-  if (!FRAMEIO_TOKEN) {
+  if (!frameioToken()) {
     logger.warn('[ClickUp Webhook] FRAMEIO_TOKEN not set — skipping Frame.io integration');
     return null;
   }
   const res = await fetch(`${baseUrl}${url}`, {
     ...options,
     headers: {
-      Authorization: `Bearer ${FRAMEIO_TOKEN}`,
+      Authorization: `Bearer ${frameioToken()}`,
       'Content-Type': 'application/json',
       ...options.headers,
     },
@@ -1192,9 +1194,9 @@ router.post('/register', async (req, res) => {
 
 // GET /api/v1/clickup-webhook/frame-diagnose — check Frame.io token and project access
 router.get('/frame-diagnose', async (req, res) => {
-  const results = { token_set: !!FRAMEIO_TOKEN, project_id: FRAMEIO_PROJECT_ID };
+  const results = { token_set: !!frameioToken(), project_id: FRAMEIO_PROJECT_ID };
 
-  if (!FRAMEIO_TOKEN) {
+  if (!frameioToken()) {
     return res.json({ ...results, error: 'FRAMEIO_TOKEN not set' });
   }
 
@@ -1233,7 +1235,7 @@ router.get('/frame-diagnose', async (req, res) => {
     // Method 3: Try listing the user's projects directly
     try {
       const searchRes = await fetch(`https://api.frame.io/v2/search/library?account_id=${me?.account_id}&type=project&page_size=20`, {
-        headers: { Authorization: `Bearer ${FRAMEIO_TOKEN}` },
+        headers: { Authorization: `Bearer ${frameioToken()}` },
       });
       if (searchRes.ok) {
         const searchData = await searchRes.json();
@@ -1899,7 +1901,7 @@ router.get('/frame-durations', async (req, res) => {
 router.get('/create-frame-folder/:taskId', async (req, res) => {
   const { taskId } = req.params;
   try {
-    if (!FRAMEIO_TOKEN) {
+    if (!frameioToken()) {
       return res.status(500).json({ error: 'FRAMEIO_TOKEN not set' });
     }
 
