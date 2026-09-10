@@ -41,6 +41,7 @@
 //             server will reject — but the SERVER gate above is the authority;
 //             the dropdown is a courtesy.
 import { Router } from 'express';
+import storeConfig from '../config/storeConfig.js';
 import crypto from 'crypto';
 import { pgQuery, client } from '../db/pg.js';
 import { authenticate } from '../middleware/auth.js';
@@ -77,7 +78,7 @@ export const FETCH_TIMEOUT_MS = 8_000;
 // QUERY COST — MEASURED, not estimated. Shopify rejects a single query whose
 // requested cost exceeds 1000 and debits a 2000-point bucket that refills at
 // 100/s on this shop. This query shape was run read-only against the live
-// store (17cca0-2.myshopify.com, API 2024-01) at four page sizes:
+// store (the deployment's SHOPIFY_STORE_DOMAIN, storeConfig API version) at four page sizes:
 //
 //   products(first:N) with variants(first:50)   requestedQueryCost
 //     N=5                                          35
@@ -115,7 +116,7 @@ function shopifyCreds() {
   return {
     store: process.env.PUURE_SHOPIFY_STORE || process.env.SHOPIFY_STORE_DOMAIN || '',
     token: process.env.PUURE_SHOPIFY_TOKEN || process.env.SHOPIFY_ACCESS_TOKEN || '',
-    apiVersion: process.env.SHOPIFY_API_VERSION || '2024-01',
+    apiVersion: storeConfig.shopifyApiVersion(),
   };
 }
 

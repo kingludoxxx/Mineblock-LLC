@@ -12,7 +12,7 @@
 // TRANSPORT: Shopify Admin REST (`pages.json`). The Admin GraphQL `pages`
 // connection only exists on recent API versions, while `pages.json` has been
 // stable on every version this codebase can be pointed at (SHOPIFY_API_VERSION
-// defaults to 2024-01). A transport we cannot verify against the live store is
+// defaults in config/storeConfig.js). A transport we cannot verify against the live store is
 // not a transport — so there is one path, not a GraphQL-with-REST-fallback
 // pair whose fallback leg would never be exercised.
 //
@@ -33,6 +33,7 @@
 //   CONFIG     no/!malformed store, token or api version -> shopify_not_configured
 // Everything permanent carries retryable:false so the UI hides Retry.
 import { Router } from 'express';
+import storeConfig from '../config/storeConfig.js';
 import { authenticate } from '../middleware/auth.js';
 import { requirePermission } from '../middleware/rbac.js';
 import { checkRateLimit } from '../middleware/rateLimiter.js';
@@ -97,7 +98,7 @@ function shopifyCreds() {
   return {
     store: process.env.PUURE_SHOPIFY_STORE || process.env.SHOPIFY_STORE_DOMAIN || '',
     token: process.env.PUURE_SHOPIFY_TOKEN || process.env.SHOPIFY_ACCESS_TOKEN || '',
-    apiVersion: process.env.SHOPIFY_API_VERSION || '2024-01',
+    apiVersion: storeConfig.shopifyApiVersion(),
   };
 }
 

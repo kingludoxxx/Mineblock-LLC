@@ -18,6 +18,8 @@
 // rule 1: rollback/rotation must not require a redeploy).
 
 // Transport-class failure against the pricing backend. Callers map to 503.
+import storeConfig from '../config/storeConfig.js';
+
 export class PricingUnavailableError extends Error {
   constructor(reason = 'pricing_unavailable') {
     super(reason);
@@ -83,7 +85,7 @@ function shopifyCreds() {
   return {
     store: process.env.PUURE_SHOPIFY_STORE || process.env.SHOPIFY_STORE_DOMAIN || '',
     token: process.env.PUURE_SHOPIFY_TOKEN || process.env.SHOPIFY_ACCESS_TOKEN || '',
-    apiVersion: process.env.SHOPIFY_API_VERSION || '2024-01',
+    apiVersion: storeConfig.shopifyApiVersion(),
   };
 }
 

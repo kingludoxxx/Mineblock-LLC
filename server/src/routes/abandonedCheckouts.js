@@ -51,6 +51,7 @@
 //   the link. Until the endpoint exists the link 404s — nothing else breaks.
 // ───────────────────────────────────────────────────────────────────────────
 import { Router } from 'express';
+import storeConfig from '../config/storeConfig.js';
 import { pgQuery } from '../db/pg.js';
 import { authenticate } from '../middleware/auth.js';
 import { requirePermission } from '../middleware/rbac.js';
@@ -162,7 +163,7 @@ function handleRouteError(res, err, where, fallback) {
 }
 
 // Shopify's checkouts feed. Both parameters here were verified against the LIVE
-// store (17cca0-2.myshopify.com, API 2024-01) with read-only GETs before this
+// store (the deployment's SHOPIFY_STORE_DOMAIN, storeConfig API version) with read-only GETs before this
 // shipped, because both encode a claim about somebody else's API:
 //
 // status=any (was: status=open)
@@ -195,7 +196,7 @@ const MAX_429_RETRIES = 5;
 async function syncFromShopify() {
   const store = process.env.PUURE_SHOPIFY_STORE || process.env.SHOPIFY_STORE_DOMAIN;
   const token = process.env.PUURE_SHOPIFY_TOKEN || process.env.SHOPIFY_ACCESS_TOKEN;
-  const apiVersion = process.env.SHOPIFY_API_VERSION || '2024-01';
+  const apiVersion = storeConfig.shopifyApiVersion();
   if (!store || !token) {
     throw new Error('Shopify not configured (SHOPIFY_STORE_DOMAIN / SHOPIFY_ACCESS_TOKEN)');
   }

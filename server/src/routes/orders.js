@@ -4,6 +4,7 @@
 // Funnel/attribution fields (funnel_name, utm, touches) are wired but stay
 // empty until the tracking phase lands.
 import { Router } from 'express';
+import storeConfig from '../config/storeConfig.js';
 import { pgQuery } from '../db/pg.js';
 import { authenticate } from '../middleware/auth.js';
 import { requirePermission } from '../middleware/rbac.js';
@@ -328,7 +329,7 @@ export async function upsertOrderFromShopify(order) {
 async function resolveLineItemImages(lineItems) {
   const store = process.env.PUURE_SHOPIFY_STORE || process.env.SHOPIFY_STORE_DOMAIN;
   const token = process.env.PUURE_SHOPIFY_TOKEN || process.env.SHOPIFY_ACCESS_TOKEN;
-  const apiVersion = process.env.SHOPIFY_API_VERSION || '2024-01';
+  const apiVersion = storeConfig.shopifyApiVersion();
   const items = Array.isArray(lineItems) ? lineItems : [];
   const productIds = [...new Set(items.map((li) => li.product_id).filter(Boolean))];
   if (!productIds.length) return items;
@@ -646,7 +647,7 @@ router.get('/subscriptions', async (req, res) => {
 router.post('/sync-shopify', async (req, res) => {
   const store = process.env.PUURE_SHOPIFY_STORE || process.env.SHOPIFY_STORE_DOMAIN;
   const token = process.env.PUURE_SHOPIFY_TOKEN || process.env.SHOPIFY_ACCESS_TOKEN;
-  const apiVersion = process.env.SHOPIFY_API_VERSION || '2024-01';
+  const apiVersion = storeConfig.shopifyApiVersion();
   if (!store || !token) {
     return res.status(400).json({
       error:

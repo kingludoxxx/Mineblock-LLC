@@ -41,6 +41,7 @@
 // the harness can drive the real pipeline against a mock Shopify.
 
 import crypto from 'crypto';
+import storeConfig from '../config/storeConfig.js';
 import dns from 'dns/promises';
 import http from 'node:http';
 import https from 'node:https';
@@ -510,7 +511,7 @@ export function shopifyCreds() {
   return {
     store: process.env.PUURE_SHOPIFY_STORE || process.env.SHOPIFY_STORE_DOMAIN || '',
     token: process.env.PUURE_SHOPIFY_TOKEN || process.env.SHOPIFY_ACCESS_TOKEN || '',
-    apiVersion: process.env.SHOPIFY_API_VERSION || '2024-01',
+    apiVersion: storeConfig.shopifyApiVersion(),
   };
 }
 

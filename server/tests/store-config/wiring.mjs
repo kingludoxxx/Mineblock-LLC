@@ -38,6 +38,22 @@ for (const f of ['config/env.js', 'routes/adsControlCenter.js', 'routes/adsRepor
   });
 }
 
+// item 4
+for (const f of ['routes/abandonedCheckouts.js', 'routes/funnelCommerce.js', 'routes/orders.js', 'routes/shopifyPages.js', 'routes/shopifyVariants.js', 'services/checkoutDiscount.js', 'services/checkoutPricing.js', 'services/mediaService.js', 'services/shopifyOrderCreate.js']) {
+  test(`${f}: Shopify API version comes from storeConfig, no '2024-01' fallback`, () => {
+    const s = src(f);
+    assert.doesNotMatch(s, /SHOPIFY_API_VERSION\s*\|\|/, 'legacy `SHOPIFY_API_VERSION || literal` read survives');
+    assert.doesNotMatch(s, /2024-01/);
+    assert.match(s, /storeConfig\.shopifyApiVersion\(\)/);
+  });
+}
+test('the Shopify API version default exists in exactly ONE place (storeConfig)', () => {
+  let out = '';
+  try { out = execFileSync('git', ['grep', '-n', "'2024-01'", '--', 'server/src'], { cwd: REPO, encoding: 'utf8' }); } catch (e) { if (e.status !== 1) throw e; }
+  const lines = out.trim().split('\n').filter(Boolean);
+  assert.deepEqual(lines.map((l) => l.split(':')[0]), ['server/src/config/storeConfig.js'], out);
+});
+
 // A1 over the whole tree (allowed: tests and docs)
 test('A1: git grep over server/src is empty', () => {
   let out = '';
