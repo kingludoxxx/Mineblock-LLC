@@ -54,6 +54,7 @@ import funnelCommerceRoutes from './funnelCommerce.js';
 import orderEditRoutes from './orderEdit.js';
 import dunningRoutes from './dunning.js';
 import funnelThemesRoutes from './funnelThemes.js';
+import hubSsoRoutes from './hubSso.js';
 
 const mountRoutes = (app) => {
   app.use('/api/v1/users', userRoutes);
@@ -136,6 +137,7 @@ const mountRoutes = (app) => {
   // rates are written through /funnel-costs/rates with scope='item'.
   app.use('/api/v1/funnel-cost-groups', funnelCostGroupsRoutes);
   app.use('/api/v1/health-alerts', healthAlertsRoutes); // PLATFORM: operational alert feed + ack (authed, audit:read; 5-min sweep starts on load, HEALTH_ALERTS_SWEEP_DISABLED=1 off)
+  app.use('/api/v1/hub-sso', hubSsoRoutes); // HUB SSO (S1-4): exchanges a hub-minted ticket for this dashboard's own session; 404 unless HUB_SSO_ENABLED='1'
   app.use('/api/v1/crm-sso', crmSsoRoutes); // CRM SWITCH-OVER: mints the SSO ticket for the embedded Funnel OS CRM (authed; 503 unless SSO_SHARED_SECRET is set)
   // METRICS ENGINE — the one query API + presets + dashboard composite (authed,
   // funnels permission; read-only, isolated analytics pool, REPORT_TZ buckets).

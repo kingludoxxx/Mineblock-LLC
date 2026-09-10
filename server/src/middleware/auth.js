@@ -2,6 +2,7 @@ import crypto from 'crypto';
 import { verifyAccessToken } from '../utils/jwt.js';
 import pool from '../config/db.js';
 import logger from '../utils/logger.js';
+import { peekHubSsoClaims, hubSessionIsLive } from '../services/hubSession.js';
 
 // ---------------------------------------------------------------------------
 // Redis import — another agent creates db/redis.js; gracefully degrade if
@@ -88,8 +89,11 @@ export const authenticate = async (req, res, next) => {
     }
 
     // ---- 2. Redis cache check --------------------------------------------
+    // Hub-SSO sessions (services/hubSession.js) opt OUT of the cache: a revoked session must be refused on the very
+    // next request, not up to SESSION_TTL later. The peek is unverified and only ever routes onto the STRICTER path.
+    const hubSso = peekHubSsoClaims(token);
     const hash = tokenHash(token);
-    const cached = await getCachedSession(hash);
+    const cached = hubSso ? null : await getCachedSession(hash);
 
     if (cached) {
       req.user = cached;
@@ -128,6 +132,13 @@ export const authenticate = async (req, res, next) => {
       return res.status(401).json({ error: 'Authentication required' });
     }
 
+    // Hub-SSO session: the sessions row must still be there. Deleting it (logout, "log out other devices", an admin
+    // revoke, or the hub removing the operator) ends the session on this request, with no grace window.
+    if (hubSso && !(await hubSessionIsLive(decoded.sid, decoded.userId))) {
+      logger.warn('Hub SSO session revoked', { userId: decoded.userId });
+      return res.status(401).json({ error: 'Authentication required' });
+    }
+
     const row = result.rows[0];
     const userObj = {
       id: row.id,
@@ -139,8 +150,8 @@ export const authenticate = async (req, res, next) => {
       emailVerified: row.email_verified,
     };
 
-    // ---- 5. Cache in Redis -----------------------------------------------
-    await cacheSession(hash, userObj);
+    // ---- 5. Cache in Redis (never for a hub-SSO session) -------------------
+    if (!hubSso) await cacheSession(hash, userObj);
 
     req.user = userObj;
     next();
