@@ -34,6 +34,31 @@ services:
         value: ""
       - key: GEMINI_API_KEY
         value: ""
+      # ── The Store Brain (S4-SB) ────────────────────────────────────────
+      # Per-PAIR credential, set in this service's own environment and nowhere
+      # else (R4/R39: no platform fallback). READ-ONLY — writes need a dashboard
+      # session. sync:false = Render never copies it between services and it is
+      # not in git. Unset ⇒ service calls answer 503, never "allow".
+      - key: BRAIN_SERVICE_TOKEN
+        sync: false
+      # Optional: with it set AND pgvector on this database, Brain search runs
+      # the vector path; without it, the tsvector keyword path.
+      - key: OPENAI_API_KEY
+        sync: false
+      # ── Cloudflare R2 — media and the Brain's raw-body archive ─────────
+      # R2_BUCKET_NAME must name THIS store's bucket: the Brain refuses to mirror
+      # to the legacy shared fallback, because a raw body's key is its sha256 and
+      # two stores with the same bytes would write the same key.
+      - key: R2_ACCOUNT_ID
+        sync: false
+      - key: R2_ACCESS_KEY_ID
+        sync: false
+      - key: R2_SECRET_ACCESS_KEY
+        sync: false
+      - key: R2_BUCKET_NAME
+        sync: false
+      - key: R2_PUBLIC_URL
+        sync: false
 
   # ── Lasso → Google Sheet daily sync ────────────────────────────────────
   # Runs every day at 22:00 UTC = 00:00 CEST (Italy time during DST)

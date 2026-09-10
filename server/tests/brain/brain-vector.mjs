@@ -142,6 +142,75 @@ ok(ea.embedded === true && ea.vector_column === true, 'V2.1 embeddings are writt
     'V2.5 …and the fallback finds the right document (exact term, not nearest neighbour)', JSON.stringify(kwRes.results.map((r) => r.id)));
 }
 
+// ── V6 INSIGHTS IN VECTOR MODE (S4-SB2 / P0-1) ─────────────────────────────
+// This suite only ever asserted DOCUMENTS, which is exactly why it stayed green
+// while the vector path returned NO insight, ever: nothing wrote
+// kb_embeddings.insight_id, so `JOIN kb_insights i ON i.id = e.insight_id` matched
+// zero rows. Keyword mode reads search_tsv and worked, so the whole approval layer
+// was visible on the no-pgvector cluster and INVISIBLE on the pgvector shape
+// production runs — with no error, indistinguishable from "no approved insights".
+{
+  const { createInsight, setInsightStatus, embedInsight } = await import('../../src/services/brainStore.js');
+  const [reviewer] = await sql`INSERT INTO users (id, email, first_name, last_name, is_active)
+    VALUES (gen_random_uuid(), 'v@t.co', 'V', 'T', TRUE) RETURNING id`;
+
+  const ins = await createInsight(sql, {
+    insight_type: 'pain', body: 'alphaterm is the pain customers name most often',
+    source_document_ids: [a.document.id],
+  });
+  const proposed = await search(sql, { q: 'alphaterm', type: 'insight', provider: fakeProvider });
+  ok(proposed.results.length === 0,
+    'V6.1 a PROPOSED insight is not in the default (approved) vector result', JSON.stringify(proposed.results.map((r) => r.id)));
+
+  const approved = await setInsightStatus(sql, ins.id, 'approved', {
+    actor: `user:${reviewer.id}`, userId: reviewer.id,
+  });
+  ok(approved.status === 'approved' && approved.approved_by === reviewer.id,
+    'V6.2 approving records the reviewing USER id', JSON.stringify({ s: approved.status, by: approved.approved_by }));
+
+  const e = await embedInsight(sql, ins.id, { provider: fakeProvider });
+  ok(e.embedded === true && e.vector_column === true, 'V6.3 an insight embeds into the vector COLUMN', JSON.stringify(e));
+  const [{ n: insRows }] = await sql`SELECT count(*)::int AS n FROM kb_embeddings WHERE insight_id IS NOT NULL AND embedding IS NOT NULL`;
+  ok(insRows === 1, 'V6.4 …kb_embeddings.insight_id is actually written (it never was before)', `rows=${insRows}`);
+
+  const vec = await search(sql, { q: 'alphaterm', provider: fakeProvider });
+  const ids = vec.results.map((r) => `${r.kind}:${r.id}`);
+  ok(vec.mode === 'vector' && ids.includes(`insight:${ins.id}`),
+    'V6.5 the APPROVED insight comes back in VECTOR mode', `${vec.mode} ${JSON.stringify(ids)}`);
+  const kw = await search(sql, { q: 'alphaterm', provider: null });
+  ok(kw.results.map((r) => `${r.kind}:${r.id}`).includes(`insight:${ins.id}`),
+    'V6.6 …and in KEYWORD mode, so the two modes agree about the approval layer', JSON.stringify(kw.results.map((r) => `${r.kind}:${r.id}`)));
+  const only = await search(sql, { q: 'alphaterm', type: 'insight', provider: fakeProvider });
+  ok(only.mode === 'vector' && only.results.length === 1 && only.results[0].id === ins.id,
+    'V6.7 …and an explicit type=insight vector query is NON-EMPTY (it used to be [] with no error)', JSON.stringify(only.results.map((r) => r.id)));
+  ok(Array.isArray(only.results[0]?.citations) && only.results[0].citations[0]?.document_id === a.document.id,
+    'V6.8 …carrying its citations', JSON.stringify(only.results[0]?.citations));
+}
+
+// ── V7 the on-demand BACKFILL — a Brain approved before any of this existed ─
+{
+  const { createInsight, setInsightStatus, backfillInsightEmbeddings } = await import('../../src/services/brainStore.js');
+  const [reviewer] = await sql`SELECT id FROM users WHERE email = 'v@t.co' LIMIT 1`;
+  const old = await createInsight(sql, {
+    insight_type: 'objection', body: 'betaterm doubts, approved while no provider was configured',
+    source_document_ids: [b.document.id],
+  });
+  await setInsightStatus(sql, old.id, 'approved', { actor: `user:${reviewer.id}`, userId: reviewer.id });
+  // Deliberately NOT embedded — this is the pre-existing row the review is about.
+  const [{ n: before }] = await sql`SELECT count(*)::int AS n FROM kb_embeddings WHERE insight_id = ${old.id}`;
+  ok(before === 0, 'V7.1 an approved insight with NO embedding row exists', `rows=${before}`);
+
+  const found = await search(sql, { q: 'betaterm', type: 'insight', provider: fakeProvider });
+  ok(found.mode === 'vector' && found.results.some((r) => r.id === old.id),
+    'V7.2 …and a vector search FINDS it: the search path backfills on demand instead of answering []',
+    JSON.stringify(found.results.map((r) => r.id)));
+  const [{ n: after }] = await sql`SELECT count(*)::int AS n FROM kb_embeddings WHERE insight_id = ${old.id} AND embedding IS NOT NULL`;
+  ok(after === 1, 'V7.3 …the backfill actually wrote the vector', `rows=${after}`);
+  const again = await backfillInsightEmbeddings(sql, { provider: fakeProvider });
+  ok(again.embedded === 0 && again.remaining === 0,
+    'V7.4 …and it is idempotent: a second pass embeds nothing and reports 0 remaining', JSON.stringify(again));
+}
+
 {
   const boom = { ...fakeProvider, embed: async () => { throw new Error('embedding provider 500: upstream on fire'); } };
   let threw = null;

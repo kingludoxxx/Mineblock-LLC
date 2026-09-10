@@ -54,7 +54,7 @@ ok(mig.status === 0, 'B0.1 real migration runner brings an EMPTY database to the
 Object.assign(process.env, {
   DATABASE_URL: DB, DATABASE_SSL: '0', NODE_ENV: 'development',
   JWT_ACCESS_SECRET: 'localdev', JWT_REFRESH_SECRET: 'localdev',
-  PRODUCT_CODES_JSON, BRAIN_SERVICE_TOKEN: SERVICE_TOKEN,
+  PRODUCT_CODES_JSON, BRAIN_SERVICE_TOKEN: SERVICE_TOKEN, STORE_CODE: 'SA',
   MONEY_SWEEP_DISABLED: '1', TRACKING_SWEEPS_DISABLED: '1', DOMAIN_SWEEP_DISABLED: '1',
 });
 delete process.env.OPENAI_API_KEY;
@@ -68,9 +68,18 @@ const { vectorColumnAvailable } = await import('../../src/services/brain/embeddi
 const [u] = await sql`INSERT INTO users (id, email, first_name, last_name, is_active)
           VALUES (gen_random_uuid(),'b@t.co','B','T', TRUE) RETURNING id`;
 const [r] = await sql`INSERT INTO roles (id, name, permissions)
-          VALUES (gen_random_uuid(),'brain-tester', ${sql.json({ brain: ['access'] })}) RETURNING id`;
+          VALUES (gen_random_uuid(),'brain-tester', ${sql.json({ brain: ['access', 'read', 'write', 'approve'] })}) RETURNING id`;
 await sql`INSERT INTO user_roles (user_id, role_id) VALUES (${u.id}, ${r.id})`;
 const TOKEN = signAccessToken({ userId: u.id });
+
+// A SECOND user who may read and write but may NOT approve — the split the flat
+// `brain:access` permission used to hide (S4-SB2).
+const [u2] = await sql`INSERT INTO users (id, email, first_name, last_name, is_active)
+          VALUES (gen_random_uuid(),'w@t.co','W','T', TRUE) RETURNING id`;
+const [r2] = await sql`INSERT INTO roles (id, name, permissions)
+          VALUES (gen_random_uuid(),'brain-writer', ${sql.json({ brain: ['access', 'read', 'write'] })}) RETURNING id`;
+await sql`INSERT INTO user_roles (user_id, role_id) VALUES (${u2.id}, ${r2.id})`;
+const WRITER_TOKEN = signAccessToken({ userId: u2.id });
 
 const app = express();
 app.use(express.json({ limit: '10mb' }));
@@ -82,6 +91,7 @@ const BASE = `http://127.0.0.1:${server.address().port}/api/v1/brain`;
 const SESSION = { Authorization: `Bearer ${TOKEN}`, 'Content-Type': 'application/json' };
 const SERVICE = { 'X-Brain-Service-Token': SERVICE_TOKEN, 'Content-Type': 'application/json' };
 const NOAUTH = { 'Content-Type': 'application/json' };
+const WRITER = { Authorization: `Bearer ${WRITER_TOKEN}`, 'Content-Type': 'application/json' };
 
 async function call(method, path, body, headers = SESSION) {
   const r = await fetch(`${BASE}${path}`, {
@@ -131,8 +141,8 @@ ok(ing1.status === 201 && ing1.j?.created === true && ing1.j?.document?.id,
 const DOC_ID = ing1.j?.document?.id;
 ok(typeof DOC_ID === 'number', 'B2.1b ids are NUMBERS across the whole API (not int8 strings from one path and numbers from another)', typeof DOC_ID);
 ok(typeof ing1.j?.document?.body_object_key === 'string'
-   && /^knowledge\/raw\/reddit\/2026-09-01\/[0-9a-f]{64}\.txt$/.test(ing1.j.document.body_object_key),
-  'B2.2 the bucket key follows knowledge/raw/<source>/<date>/<hash> (brand-spy prefix convention)',
+   && /^stores\/SA\/knowledge\/raw\/reddit\/2026-09-01\/[0-9a-f]{64}\.txt$/.test(ing1.j.document.body_object_key),
+  'B2.2 the bucket key is stores/<STORE_CODE>/knowledge/raw/<source>/<date>/<sha256>.<ext> — the store prefix is what stops two stores colliding in one bucket',
   ing1.j?.document?.body_object_key);
 const ing2 = await call('POST', '/ingest', {
   source: 'reddit', url: 'https://example.invalid/r/x/1', title: 'knee pain thread',
@@ -348,6 +358,178 @@ ok(typeof INS_ID === 'number', 'B4.1b …insight ids too', typeof INS_ID);
   ok(r.status === 200 && (r.j?.limit <= 100), 'B9.7 limit is clamped', JSON.stringify(r.j?.limit));
   const r2 = await call('GET', '/search');
   ok(r2.status === 400, 'B9.8 search with no q is refused', JSON.stringify(r2.j));
+}
+
+// ── B10 the S4-SB2 review findings, each asserted so it cannot come back ────
+// Every one of these reproduced RED on the pinned tree before the fix.
+
+// P0-2 — the service token is READ-ONLY.
+{
+  const i = await call('POST', '/insights', {
+    insight_type: 'pain', body: 'a claim a pipeline must not be able to bless',
+    source_document_ids: [DOC_ID],
+  });
+  const ID = i.j?.insight?.id;
+  const p = await call('PATCH', `/insights/${ID}`, { status: 'approved' }, SERVICE);
+  ok(p.status === 403 && p.j?.code === 'service_read_only',
+    'B10.1 P0-2 the SERVICE token cannot approve an insight (403 service_read_only)', `${p.status} ${JSON.stringify(p.j)}`);
+  const row = await sql`SELECT status, approved_by FROM kb_insights WHERE id = ${ID}`;
+  ok(row[0].status === 'proposed' && row[0].approved_by === null,
+    'B10.2 …and the row did not move — no approved_by="service" anywhere', JSON.stringify(row));
+
+  const pb = await call('PUT', '/playbook/BBB', { sections: { angles: [{ key: 'x', value: { copy: 'by a pipeline' } }] } }, SERVICE);
+  ok(pb.status === 403 && pb.j?.code === 'service_read_only',
+    'B10.3 …nor write the playbook', `${pb.status} ${JSON.stringify(pb.j)}`);
+  const lk = await call('POST', '/playbook/AAA/lock', {}, SERVICE);
+  ok(lk.status === 403, 'B10.4 …nor lock it', `${lk.status} ${JSON.stringify(lk.j)}`);
+  const ul = await call('POST', '/playbook/AAA/unlock', {}, SERVICE);
+  ok(ul.status === 403, 'B10.5 …nor unlock it', `${ul.status} ${JSON.stringify(ul.j)}`);
+  const ig = await call('POST', '/ingest', { source: 'reddit', text: 'a pipeline writing raw sources' }, SERVICE);
+  ok(ig.status === 403, 'B10.6 …nor ingest', `${ig.status} ${JSON.stringify(ig.j)}`);
+  const ex = await call('POST', '/extract', { document_id: DOC_ID }, SERVICE);
+  ok(ex.status === 403, 'B10.7 …nor start an extraction', `${ex.status} ${JSON.stringify(ex.j)}`);
+
+  // …and every READ it exists for still works.
+  const reads = await Promise.all([
+    call('GET', '/search?q=braces', undefined, SERVICE),
+    call('GET', `/documents/${DOC_ID}`, undefined, SERVICE),
+    call('GET', '/documents', undefined, SERVICE),
+    call('GET', '/insights', undefined, SERVICE),
+    call('GET', '/playbook/AAA', undefined, SERVICE),
+  ]);
+  ok(reads.every((x) => x.status === 200),
+    'B10.8 …while search / documents / insights / playbook READS all stay 200 for it', JSON.stringify(reads.map((x) => x.status)));
+}
+
+// P0-3 — approved_only=false is a reviewer's privilege.
+{
+  const s1 = await call('GET', '/search?q=braces&approved_only=false', undefined, SERVICE);
+  ok(s1.status === 403 && s1.j?.code === 'approval_scope',
+    'B10.9 P0-3 the service actor CANNOT ask for approved_only=false (403)', `${s1.status} ${JSON.stringify(s1.j)}`);
+  const s2 = await call('GET', '/search?q=braces&approved_only=false', undefined, WRITER);
+  ok(s2.status === 403 && s2.j?.code === 'approval_scope',
+    'B10.10 …nor may a session with brain:write but not brain:approve', `${s2.status} ${JSON.stringify(s2.j)}`);
+  const s3 = await call('GET', '/search?q=braces&approved_only=false', undefined, SESSION);
+  ok(s3.status === 200 && s3.j?.approved_only === false,
+    'B10.11 …a reviewer (brain:approve) still may', `${s3.status} ${JSON.stringify(s3.j?.approved_only)}`);
+  const s4 = await call('GET', '/search?q=braces', undefined, SERVICE);
+  ok(s4.status === 200 && s4.j?.approved_only === true
+     && (s4.j.results || []).filter((x) => x.kind === 'insight').every((x) => x.status === 'approved'),
+    'B10.12 …and the pipeline default is the APPROVED layer', JSON.stringify(s4.j?.approved_only));
+}
+
+// P0-2b — approved_by is a real user id, not a label.
+{
+  const i = await call('POST', '/insights', { insight_type: 'pain', body: 'reviewed by a person', source_document_ids: [DOC_ID] });
+  const ID = i.j?.insight?.id;
+  const p = await call('PATCH', `/insights/${ID}`, { status: 'approved' }, SESSION);
+  ok(p.status === 200 && p.j?.insight?.approved_by === u.id,
+    'B10.13 approved_by is the REVIEWING USER’s id (a row in users), not a role name', `${p.status} ${JSON.stringify(p.j?.insight?.approved_by)} want ${u.id}`);
+  const w = await call('PATCH', `/insights/${ID}`, { status: 'rejected', reason: 'not supported' }, WRITER);
+  ok(w.status === 403 && w.j?.code === 'brain_permission',
+    'B10.14 a session with brain:write but not brain:approve cannot review either', `${w.status} ${JSON.stringify(w.j)}`);
+}
+
+// P1-5 — the playbook may only cite APPROVED insights.
+{
+  const prop = await call('POST', '/insights', { insight_type: 'pain', body: 'still proposed, must not be citable', source_document_ids: [DOC_ID] });
+  const PID = prop.j?.insight?.id;
+  const r = await call('PUT', '/playbook/BBB', {
+    sections: { angles: [{ key: 'a1', value: { copy: 'cites a proposal' }, cites: [PID] }] },
+  }, SESSION);
+  ok(r.status === 422 && r.j?.code === 'citation_not_approved',
+    'B10.15 P1-5 an entry citing a PROPOSED insight is refused (422)', `${r.status} ${JSON.stringify(r.j)}`);
+  const after = await call('GET', '/playbook/BBB');
+  ok(after.j?.playbook?.version === 0,
+    'B10.16 …and the refused write did NOT bump the version', JSON.stringify(after.j?.playbook?.version));
+}
+
+// P1-4 — the lock is real.
+{
+  const w1 = await call('PUT', '/playbook/BBB', { sections: { angles: [{ key: 'a1', value: { copy: 'v1' }, cites: [INS_ID] }] } });
+  const v1 = w1.j?.playbook?.version;
+  const lk = await call('POST', '/playbook/BBB/lock', {});
+  ok(lk.status === 200 && lk.j?.playbook?.locked_at, 'B10.17 P1-4 the playbook locks', JSON.stringify(lk.j?.playbook?.locked_at));
+  const w2 = await call('PUT', '/playbook/BBB', { sections: { angles: [{ key: 'a1', value: { copy: 'REWRITTEN AFTER THE LOCK' }, cites: [INS_ID] }] } });
+  ok(w2.status === 423 && w2.j?.code === 'playbook_locked',
+    'B10.18 …a PUT while LOCKED is refused with 423', `${w2.status} ${JSON.stringify(w2.j)}`);
+  const g = await call('GET', '/playbook/BBB');
+  ok(g.j?.playbook?.sections?.angles?.[0]?.value?.copy === 'v1',
+    'B10.19 …the locked CONTENT is unchanged (a run manifest citing it still means something)', JSON.stringify(g.j?.playbook?.sections?.angles));
+  ok(g.j?.playbook?.version === v1,
+    'B10.20 …and the version did NOT move on the refused write', `${g.j?.playbook?.version} vs ${v1}`);
+  const relock = await call('POST', '/playbook/BBB/lock', {});
+  ok(relock.status === 423, 'B10.21 …re-locking a locked playbook is refused, never a silent re-stamp', `${relock.status}`);
+  const badUnlock = await call('POST', '/playbook/BBB/unlock', {}, WRITER);
+  ok(badUnlock.status === 403, 'B10.22 …unlocking needs brain:approve, not brain:write', `${badUnlock.status} ${JSON.stringify(badUnlock.j)}`);
+  const un = await call('POST', '/playbook/BBB/unlock', {}, SESSION);
+  ok(un.status === 200 && un.j?.playbook?.locked_at === null,
+    'B10.23 …a reviewer unlocks it', JSON.stringify(un.j?.playbook?.locked_at));
+  const w3 = await call('PUT', '/playbook/BBB', { sections: { angles: [{ key: 'a1', value: { copy: 'v2 after a real unlock' }, cites: [INS_ID] }] } });
+  ok(w3.status === 200 && w3.j?.playbook?.version === v1 + 1,
+    'B10.24 …and only THEN does the write land, bumping the version exactly once', `${w3.status} ${w3.j?.playbook?.version} vs ${v1}`);
+}
+
+// P1-6 — the object key is server-derived.
+{
+  const a = await call('POST', '/ingest', {
+    source: 'operator-research', text: 'payload A for the ext probe',
+    ext: 'txt/../../../../brand-spy/videos/owned',
+  });
+  ok(a.status === 422 && a.j?.code === 'ext_not_yours',
+    'B10.25 P1-6 a caller-supplied ext is refused (422) — the traversal payload from the review', `${a.status} ${JSON.stringify(a.j)}`);
+  const b = await call('POST', '/ingest', {
+    source: 'operator-research', text: 'payload B for the key probe',
+    body_object_key: '../../../other-store/secret.txt',
+  });
+  ok(b.status === 422 && b.j?.code === 'key_not_yours',
+    'B10.26 …and a caller-supplied body_object_key is refused (422)', `${b.status} ${JSON.stringify(b.j)}`);
+  const [{ n: escaped }] = await sql`SELECT count(*)::int AS n FROM kb_documents WHERE body_object_key NOT LIKE 'stores/SA/knowledge/raw/%'`;
+  ok(escaped === 0, 'B10.27 …so NO row in this Brain carries a key outside the convention', `rows=${escaped}`);
+  const c = await call('POST', '/ingest', { source: 'operator research', text: 'payload C, honest', content_type: 'text/markdown' });
+  ok(c.status === 201 && /^stores\/SA\/knowledge\/raw\/operator-research\/\d{4}-\d{2}-\d{2}\/[0-9a-f]{64}\.md$/.test(c.j?.document?.body_object_key || ''),
+    'B10.28 …while an honest ingest gets the derived key, ext taken from content_type', c.j?.document?.body_object_key);
+  const d = await call('POST', '/ingest', { source: 'reddit', text: 'an executable body', content_type: 'application/x-sh' });
+  ok(d.status === 422 && d.j?.code === 'bad_content_type',
+    'B10.29 …and an unarchivable content type is refused rather than defaulted to .txt', `${d.status} ${JSON.stringify(d.j)}`);
+}
+
+// P1-7 — the bucket half: config read at request time, per-store prefix, and a
+// refusal to mirror rather than a write into a possibly shared bucket.
+{
+  const { bucketTarget } = await import('../../src/services/brain/brainBucket.js');
+  const saved = { ...process.env };
+  delete process.env.R2_ACCOUNT_ID; delete process.env.R2_ACCESS_KEY_ID;
+  delete process.env.R2_SECRET_ACCESS_KEY; delete process.env.R2_BUCKET_NAME;
+  ok(bucketTarget().ok === false && /R2 is not configured/.test(bucketTarget().reason),
+    'B10.30 P1-7 no R2 config → the Brain does not mirror, and says why', JSON.stringify(bucketTarget()));
+
+  process.env.R2_ACCOUNT_ID = 'acct'; process.env.R2_ACCESS_KEY_ID = 'akid';
+  process.env.R2_SECRET_ACCESS_KEY = 'secret';
+  const noBucket = bucketTarget();
+  ok(noBucket.ok === false && /R2_BUCKET_NAME/.test(noBucket.reason),
+    'B10.31 …account + keys but NO bucket is REFUSED, never the shared fallback bucket', JSON.stringify(noBucket));
+
+  process.env.R2_BUCKET_NAME = 'store-a-bucket';
+  const good = bucketTarget();
+  ok(good.ok === true && good.bucket === 'store-a-bucket' && good.prefix === 'stores/SA/',
+    'B10.32 …with the bucket set it mirrors, under this store’s mandatory prefix', JSON.stringify(good));
+
+  const before = process.env.STORE_CODE;
+  delete process.env.STORE_CODE;
+  const noCode = bucketTarget();
+  ok(noCode.ok === false && /STORE_CODE/.test(noCode.reason),
+    'B10.33 …STORE_CODE unset → REFUSES to mirror (an unprefixed object could collide)', JSON.stringify(noCode));
+  process.env.STORE_CODE = before;
+
+  // R7, by execution: the same call, a different env, a different answer — the
+  // config is read PER CALL, not captured at import.
+  process.env.R2_BUCKET_NAME = 'store-a-bucket-rotated';
+  ok(bucketTarget().bucket === 'store-a-bucket-rotated',
+    'B10.34 …and the R2 config is read at REQUEST time: rotating the var changes the next call', bucketTarget().bucket);
+  for (const k of ['R2_ACCOUNT_ID', 'R2_ACCESS_KEY_ID', 'R2_SECRET_ACCESS_KEY', 'R2_BUCKET_NAME']) {
+    if (saved[k] === undefined) delete process.env[k]; else process.env[k] = saved[k];
+  }
 }
 
 await sql.end();

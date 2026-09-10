@@ -9,8 +9,9 @@
 
 import {
   BrainError, assertProductCode, assertInsightType, assertStatus, assertSection,
-  contentHash, rawObjectKey, clampLimit, BODY_MAX_BYTES,
+  contentHash, rawObjectKey, clampLimit, BODY_MAX_BYTES, extForContentType, CONTENT_TYPES,
 } from './brain/brainSchema.js';
+import { storeCode } from '../config/storeConfig.js';
 import { getEmbeddingProvider, vectorColumnAvailable, toVectorLiteral } from './brain/embeddingProvider.js';
 
 /**
@@ -62,8 +63,25 @@ export async function ingestDocument(sql, input = {}, { actor = null } = {}) {
 
   const hash = contentHash(text);
   const contentType = trimOrNull(input.content_type) || 'text/plain';
-  const key = trimOrNull(input.body_object_key)
-    || rawObjectKey({ source, capturedAt, hash, contentType, ext: input.ext || null });
+
+  // P1-6: the object key is SERVER-DERIVED and nothing else. Both of these used
+  // to reach the key verbatim, and the key is what the ingest route uploads to
+  // and what a future signed-URL route would read back:
+  //   ext: 'txt/../../../../brand-spy/videos/owned'  → a key outside the
+  //        convention whose R2_PUBLIC_URL form a browser normalises elsewhere
+  //   body_object_key: '../../../other-store/secret.txt' → stored verbatim
+  // Refusing them LOUDLY (422) beats silently ignoring them: a caller that sends
+  // one has a wrong model of who owns the key and needs to hear so.
+  if (input.body_object_key !== undefined && input.body_object_key !== null) {
+    throw new BrainError('key_not_yours',
+      'body_object_key is derived by the server from the content hash — it cannot be supplied by the caller', 422);
+  }
+  if (input.ext !== undefined && input.ext !== null) {
+    throw new BrainError('ext_not_yours',
+      `ext is derived from content_type — send content_type instead (one of: ${CONTENT_TYPES.join(', ')})`, 422);
+  }
+  extForContentType(contentType); // 422 on an unarchivable type, before any write
+  const key = rawObjectKey({ source, capturedAt, hash, contentType, storeCode: storeCode() });
 
   const existing = await sql`
     SELECT * FROM kb_documents
@@ -196,17 +214,35 @@ export async function listInsights(sql, filters = {}) {
   return { insights: rows.map((r) => ({ ...withNumericIds(r), citations: cites.get(Number(r.id)) || [] })), limit };
 }
 
-/** Approve or reject. The actor is recorded; there is no anonymous approval. */
-export async function setInsightStatus(sql, id, status, { actor = null, reason = null } = {}) {
+/** A v4-shaped uuid — what `users.id` is. Not a claim that the row exists. */
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * Approve or reject.
+ *
+ * P0-2: "the actor is a non-empty string" was the whole gate, so the per-pair
+ * SERVICE token — the credential that exists so a pipeline can READ — approved
+ * insights and stamped `approved_by = "service"`. An approval is a human act:
+ * `userId` must be a real dashboard user id, and it is what lands in
+ * `approved_by`. A rejection records the same id and KEEPS its reason.
+ */
+export async function setInsightStatus(sql, id, status, { actor = null, userId = null, reason = null } = {}) {
   const n = Number.parseInt(id, 10);
   if (!Number.isFinite(n)) throw new BrainError('bad_id', 'insight id must be an integer');
   const s = assertStatus(status);
   if (s === 'proposed') throw new BrainError('bad_status', 'an insight cannot be moved back to proposed; create a new one');
   if (!trimOrNull(actor)) throw new BrainError('no_actor', 'an approval must record who made it', 401);
+  const uid = trimOrNull(userId);
+  if (!uid || !UUID_RE.test(uid)) {
+    throw new BrainError('no_reviewer',
+      'approving or rejecting an insight requires a dashboard user — a service credential cannot review its own inputs', 403);
+  }
+  const [user] = await sql`SELECT id FROM users WHERE id = ${uid}::uuid LIMIT 1`;
+  if (!user) throw new BrainError('no_reviewer', 'the reviewing user does not exist in this store', 403);
   const rows = await sql`
     UPDATE kb_insights
     SET status = ${s},
-        approved_by = ${s === 'approved' ? String(actor) : null},
+        approved_by = ${s === 'approved' ? uid : null},
         approved_at = ${s === 'approved' ? new Date() : null},
         rejected_reason = ${s === 'rejected' ? trimOrNull(reason) : null},
         updated_at = NOW()
@@ -268,12 +304,33 @@ export async function putPlaybook(sql, productCodeIn, payload = {}, { actor = nu
       normalised.push({ section, key, position: Number.isFinite(entry.position) ? entry.position : i, value: entry.value, cites });
     });
   }
+  // P1-5: EXISTS was the whole citation check, so layer 3 — the layer pipelines
+  // actually read — could carry an unapproved insight through its citation, which
+  // is the approval gate defeated by the back door. A cited insight must be
+  // APPROVED, and the refusal names which ones were not and what status they hold.
   const allCites = [...new Set(normalised.flatMap((e) => e.cites))];
   if (allCites.length) {
-    const found = await sql`SELECT id FROM kb_insights WHERE id = ANY(${sql.array(allCites)}::bigint[])`;
-    const have = new Set(found.map((r) => Number(r.id)));
-    const missing = allCites.filter((id) => !have.has(id));
+    const found = await sql`SELECT id, status FROM kb_insights WHERE id = ANY(${sql.array(allCites)}::bigint[])`;
+    const byId = new Map(found.map((r) => [Number(r.id), r.status]));
+    const missing = allCites.filter((id) => !byId.has(id));
     if (missing.length) throw new BrainError('bad_citation', `cited insight(s) not in this store's Brain: ${missing.join(', ')}`);
+    const unapproved = allCites.filter((id) => byId.get(id) !== 'approved');
+    if (unapproved.length) {
+      throw new BrainError('citation_not_approved',
+        `the playbook may only cite APPROVED insights — ${unapproved.map((id) => `${id} is ${byId.get(id)}`).join(', ')}`, 422);
+    }
+  }
+
+  // P1-4: the lock was decorative — putPlaybook never read `locked_at`, so a
+  // write after a lock rewrote the content, bumped the version, and LEFT the old
+  // lock stamp in place, so the head row asserted a lock it no longer described.
+  // A locked playbook refuses the write (423) and the version does NOT move;
+  // changing it needs an explicit unlock, which is a brain:approve act.
+  const [head] = await sql`SELECT version, locked_at, locked_by FROM playbook_products WHERE product_code = ${productCode} LIMIT 1`;
+  if (head?.locked_at) {
+    throw new BrainError('playbook_locked',
+      `playbook version ${head.version} is LOCKED (by ${head.locked_by || 'unknown'} at ${new Date(head.locked_at).toISOString()}) — unlock it before writing`,
+      423);
   }
 
   await sql.begin(async (tx) => {
@@ -300,14 +357,48 @@ export async function putPlaybook(sql, productCodeIn, payload = {}, { actor = nu
   return getPlaybook(sql, productCode);
 }
 
-/** Lock the current version: what a pipeline run quotes in its manifest (R16). */
+/**
+ * Lock the current version: what a pipeline run quotes in its manifest (R16).
+ * While locked, `putPlaybook` refuses (423), so the locked version's CONTENT is
+ * fixed and a run manifest that names it means something. Re-locking an already
+ * locked playbook is refused rather than silently re-stamping `locked_at`.
+ */
 export async function lockPlaybook(sql, productCodeIn, { actor = null } = {}) {
   const productCode = assertProductCode(productCodeIn, { required: true });
-  const rows = await sql`
+  const [head] = await sql`SELECT version, locked_at, locked_by FROM playbook_products WHERE product_code = ${productCode} LIMIT 1`;
+  if (!head) throw new BrainError('not_found', `no playbook for ${productCode}`, 404);
+  if (head.locked_at) {
+    throw new BrainError('playbook_locked',
+      `playbook version ${head.version} is already locked (by ${head.locked_by || 'unknown'} at ${new Date(head.locked_at).toISOString()})`,
+      423);
+  }
+  await sql`
     UPDATE playbook_products SET locked_at = NOW(), locked_by = ${trimOrNull(actor)}, updated_at = NOW()
-    WHERE product_code = ${productCode} RETURNING *`;
-  if (!rows.length) throw new BrainError('not_found', `no playbook for ${productCode}`, 404);
-  return rows[0];
+    WHERE product_code = ${productCode}`;
+  return getPlaybook(sql, productCode);
+}
+
+/**
+ * Release the lock. Editing a locked playbook is a deliberate act, so it is
+ * separate from the write and gated on brain:approve at the route. The version
+ * does NOT move here: unlocking changes no content.
+ */
+export async function unlockPlaybook(sql, productCodeIn, { actor = null } = {}) {
+  const productCode = assertProductCode(productCodeIn, { required: true });
+  const [head] = await sql`SELECT locked_at FROM playbook_products WHERE product_code = ${productCode} LIMIT 1`;
+  if (!head) throw new BrainError('not_found', `no playbook for ${productCode}`, 404);
+  if (!head.locked_at) throw new BrainError('playbook_not_locked', `the playbook for ${productCode} is not locked`, 409);
+  await sql`
+    UPDATE playbook_products SET locked_at = NULL, locked_by = NULL, updated_at = NOW()
+    WHERE product_code = ${productCode}`;
+  logUnlock(productCode, actor);
+  return getPlaybook(sql, productCode);
+}
+
+/** An unlock is rare and consequential — it is always on the record. */
+function logUnlock(productCode, actor) {
+  // eslint-disable-next-line no-console
+  console.log(JSON.stringify({ event: 'brain.playbook.unlock', product_code: productCode, actor: actor || null, at: new Date().toISOString() }));
 }
 
 // ── Embeddings (written where a provider exists; never required) ────────────
@@ -338,8 +429,78 @@ export async function embedDocument(sql, documentId, { provider = getEmbeddingPr
   return { embedded: true, vector_column: hasVector, dim: provider.dim };
 }
 
+/**
+ * Embed ONE insight into `kb_embeddings.insight_id`.
+ *
+ * P0-1: nothing anywhere wrote `insight_id`. `embedDocument` was the only writer
+ * and it always wrote `document_id`, while the vector search joins
+ * `kb_embeddings e JOIN kb_insights i ON i.id = e.insight_id` — always zero rows.
+ * Keyword mode reads `search_tsv` and worked, so the entire approval layer was
+ * visible on the no-pgvector cluster the lane tested on and INVISIBLE on the
+ * pgvector shape production runs, with no error: a pipeline asking for approved
+ * insights got `[]`, which reads exactly like "this store has none".
+ */
+export async function embedInsight(sql, insightId, { provider = getEmbeddingProvider() } = {}) {
+  if (!provider) return { embedded: false, reason: 'no embedding provider configured' };
+  const [ins] = await sql`SELECT id, body, quote FROM kb_insights WHERE id = ${Number(insightId)}`;
+  if (!ins) throw new BrainError('not_found', `no insight ${insightId}`, 404);
+  const chunk = [ins.body, ins.quote].filter(Boolean).join('\n').slice(0, 8000);
+  const [vec] = await provider.embed([chunk]);
+  const hasVector = await vectorColumnAvailable(sql);
+  await sql`
+    INSERT INTO kb_embeddings (insight_id, chunk_index, chunk_text, provider, model, dim, embedding_json)
+    VALUES (${ins.id}, 0, ${chunk}, ${provider.name}, ${provider.model}, ${provider.dim}, ${sql.json(vec)})
+    ON CONFLICT (insight_id, chunk_index, model) WHERE insight_id IS NOT NULL
+    DO UPDATE SET chunk_text = EXCLUDED.chunk_text, embedding_json = EXCLUDED.embedding_json`;
+  if (hasVector) {
+    await sql.unsafe(
+      'UPDATE kb_embeddings SET embedding = $1::vector WHERE insight_id = $2 AND chunk_index = 0 AND model = $3',
+      [toVectorLiteral(vec), ins.id, provider.model],
+    );
+  }
+  return { embedded: true, vector_column: hasVector, dim: provider.dim };
+}
+
+/**
+ * Embed every insight of the given statuses that has no vector for this model
+ * yet, and report the count. Called on the vector search path so a Brain whose
+ * insights were approved before this code existed — or while OPENAI_API_KEY was
+ * unset — becomes searchable on the next query instead of answering `[]` forever.
+ *
+ * Bounded per call: a Brain with thousands of unembedded insights catches up over
+ * several queries rather than turning one search into a batch job. It RAISES on a
+ * provider failure; an incomplete index that answers "nothing matched" is the
+ * exact silence this whole fix is about.
+ */
+export async function backfillInsightEmbeddings(sql, { provider = getEmbeddingProvider(), statuses = ['approved'], limit = 50 } = {}) {
+  if (!provider) return { embedded: 0, remaining: 0, reason: 'no embedding provider configured' };
+  const pending = await sql`
+    SELECT i.id FROM kb_insights i
+    WHERE i.status = ANY(${sql.array(statuses)}::text[])
+      AND NOT EXISTS (
+        SELECT 1 FROM kb_embeddings e
+        WHERE e.insight_id = i.id AND e.chunk_index = 0 AND e.model = ${provider.model}
+      )
+    ORDER BY i.id
+    LIMIT ${Math.max(1, Math.min(Number(limit) || 50, 500))}`;
+  let embedded = 0;
+  for (const row of pending) {
+    await embedInsight(sql, Number(row.id), { provider });
+    embedded += 1;
+  }
+  const [{ n: remaining }] = await sql`
+    SELECT count(*)::int AS n FROM kb_insights i
+    WHERE i.status = ANY(${sql.array(statuses)}::text[])
+      AND NOT EXISTS (
+        SELECT 1 FROM kb_embeddings e
+        WHERE e.insight_id = i.id AND e.chunk_index = 0 AND e.model = ${provider.model}
+      )`;
+  return { embedded, remaining };
+}
+
 export default {
   ingestDocument, getDocument, listDocuments,
   createInsight, listInsights, setInsightStatus, citationsFor,
-  getPlaybook, putPlaybook, lockPlaybook, embedDocument,
+  getPlaybook, putPlaybook, lockPlaybook, unlockPlaybook,
+  embedDocument, embedInsight, backfillInsightEmbeddings,
 };

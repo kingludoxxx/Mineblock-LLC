@@ -93,20 +93,70 @@ export function sourceSlug(source) {
   return s;
 }
 
-const EXT_BY_TYPE = { 'text/markdown': 'md', 'application/json': 'json', 'text/html': 'html', 'text/plain': 'txt' };
+/**
+ * The ONLY extensions the Brain will ever write, and the ONLY content types it
+ * accepts. The extension is DERIVED from the content type — it is never taken
+ * from the caller. (S4-SB2 / P1-6: a caller-supplied `ext` reached the key
+ * verbatim, so `ext: 'txt/../../../../brand-spy/videos/owned'` produced a key
+ * that escaped the documented convention and, once handed to `R2_PUBLIC_URL`,
+ * a URL a browser normalises to a DIFFERENT object.)
+ */
+const EXT_BY_TYPE = Object.freeze({
+  'text/plain': 'txt',
+  'text/markdown': 'md',
+  'application/json': 'json',
+  'text/html': 'html',
+  'text/csv': 'csv',
+});
+export const CONTENT_TYPES = Object.freeze(Object.keys(EXT_BY_TYPE));
+
+/** Content type → the one extension allowed for it. Unknown type → 422. */
+export function extForContentType(contentType) {
+  const ct = String(contentType || '').trim().toLowerCase().split(';')[0].trim();
+  const ext = EXT_BY_TYPE[ct];
+  if (!ext) {
+    throw new BrainError('bad_content_type',
+      `content_type ${JSON.stringify(ct)} is not one the Brain can archive — allowed: ${CONTENT_TYPES.join(', ')}`,
+      422);
+  }
+  return ext;
+}
 
 /**
- * The bucket key for a raw document body:
- *   knowledge/raw/<source-slug>/<YYYY-MM-DD>/<sha256>.<ext>
- * Same convention as the existing R2 mirrors (`brand-spy/videos/<id>.mp4`):
- * a flat namespace prefix, no leading slash, the content id as the filename.
+ * Every legal Brain object key, anchored end to end. The store prefix is the
+ * bucket-isolation half (P1-7): two stores that share a bucket cannot collide,
+ * because the prefix is built from STORE_CODE and nothing else.
+ *   [stores/<CODE>/]knowledge/raw/<source-slug>/<YYYY-MM-DD>/<sha256>.<ext>
+ * There is no `.` or `..` segment anywhere in that grammar, so a key that
+ * matches it cannot traverse.
  */
-export function rawObjectKey({ source, capturedAt, hash, contentType = 'text/plain', ext = null }) {
+export const OBJECT_KEY_RE =
+  /^(?:stores\/[A-Z0-9][A-Z0-9_-]{0,31}\/)?knowledge\/raw\/[a-z0-9]+(?:-[a-z0-9]+)*\/\d{4}-\d{2}-\d{2}\/[0-9a-f]{64}\.[a-z0-9]{1,8}$/;
+
+/** Belt and braces: the regex forbids traversal, this states it as a rule. */
+export function assertObjectKey(key) {
+  const k = String(key ?? '');
+  if (!OBJECT_KEY_RE.test(k) || k.split('/').some((seg) => seg === '.' || seg === '..')) {
+    throw new BrainError('bad_object_key',
+      'the object key is derived by the server and must match knowledge/raw/<source>/<date>/<sha256>.<ext>', 422);
+  }
+  return k;
+}
+
+/**
+ * The bucket key for a raw document body — SERVER-DERIVED, always:
+ *   stores/<STORE_CODE>/knowledge/raw/<source-slug>/<YYYY-MM-DD>/<sha256>.<ext>
+ * `storeCode` null (a deployment with no STORE_CODE) drops the prefix and the
+ * ingest route then refuses to mirror to R2 at all, rather than writing an
+ * unprefixed object into a bucket another store may share.
+ */
+export function rawObjectKey({ source, capturedAt, hash, contentType = 'text/plain', storeCode = null }) {
   const d = capturedAt ? new Date(capturedAt) : new Date();
   if (Number.isNaN(d.getTime())) throw new BrainError('bad_captured_at', 'captured_at is not a date');
   const day = d.toISOString().slice(0, 10);
-  const e = (ext || EXT_BY_TYPE[contentType] || 'txt').replace(/^\./, '');
-  return `knowledge/raw/${sourceSlug(source)}/${day}/${hash}.${e}`;
+  const e = extForContentType(contentType);
+  const prefix = storeCode ? `stores/${String(storeCode).trim().toUpperCase()}/` : '';
+  return assertObjectKey(`${prefix}knowledge/raw/${sourceSlug(source)}/${day}/${hash}.${e}`);
 }
 
 export function clampLimit(v, def = SEARCH_LIMIT_DEFAULT) {

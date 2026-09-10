@@ -21,7 +21,7 @@ import {
   BrainError, assertProductCode, assertInsightType, clampLimit,
 } from './brain/brainSchema.js';
 import { getEmbeddingProvider, vectorColumnAvailable, toVectorLiteral } from './brain/embeddingProvider.js';
-import { citationsFor } from './brainStore.js';
+import { citationsFor, backfillInsightEmbeddings } from './brainStore.js';
 
 const KINDS = ['document', 'insight'];
 
@@ -36,12 +36,22 @@ function startOf(v) {
   return /^\d{4}-\d{2}-\d{2}$/.test(s) ? `${s}T00:00:00.000Z` : s;
 }
 
-function parseFilters(opts) {
+function parseFilters(opts, { mayReadUnapproved = false } = {}) {
   const q = String(opts.q ?? '').trim();
   if (!q) throw new BrainError('no_query', 'q is required');
   const kind = opts.type ? String(opts.type).trim() : null;
   if (kind && !KINDS.includes(kind)) throw new BrainError('bad_type', `type must be one of: ${KINDS.join(', ')}`);
-  const approvedOnly = !(opts.approved_only === false || String(opts.approved_only).toLowerCase() === 'false');
+
+  // P0-3: the flag came off the query string with no reference to WHO was asking,
+  // so the one thing R16 forbids — a pipeline reading unapproved insights — was
+  // one query parameter away for the exact caller R16 is about. Seeing
+  // unapproved work is a REVIEWER's privilege; the caller must be able to approve.
+  const wantsUnapproved = opts.approved_only === false || String(opts.approved_only).toLowerCase() === 'false';
+  if (wantsUnapproved && !mayReadUnapproved) {
+    throw new BrainError('approval_scope',
+      'approved_only=false shows unapproved insights and is limited to reviewers (brain:approve) — a service credential always reads the approved layer', 403);
+  }
+  const approvedOnly = !wantsUnapproved;
   return {
     q,
     kind,
@@ -146,6 +156,13 @@ async function vectorSearch(sql, f, provider) {
     }
   }
   if (f.kind !== 'document') {
+    // The insight half only answers where insight vectors EXIST. Rows approved
+    // before this path could write them (or while no provider was configured)
+    // would otherwise stay invisible for ever, silently — so catch them up here,
+    // bounded, before the join runs. A reviewer reading unapproved work needs the
+    // proposed rows embedded too, or `approved_only=false` is empty in vector mode.
+    const statuses = f.approvedOnly ? ['approved'] : ['approved', 'proposed'];
+    await backfillInsightEmbeddings(sql, { provider, statuses });
     const rows = await sql.unsafe(`
       SELECT i.id, 1 - (e.embedding <=> $1::vector) AS score, i.insight_type, i.body, i.quote,
              i.status, i.confidence, i.product_code, i.created_at
@@ -169,10 +186,12 @@ async function vectorSearch(sql, f, provider) {
 /**
  * @param {import('postgres').Sql} sql  this store's database — the only one reachable
  * @param {object} opts  q, type, product, source, insight_type, from, to, approved_only, limit
+ * @param {{mayReadUnapproved?: boolean}} [ctx]  the CALLER's standing, decided by the
+ *   route from the credential presented — never by the query string (P0-3)
  * @returns {{mode:'vector'|'keyword', limit:number, approved_only:boolean, results:object[]}}
  */
-export async function search(sql, opts = {}) {
-  const f = parseFilters(opts);
+export async function search(sql, opts = {}, ctx = {}) {
+  const f = parseFilters(opts, ctx);
   const provider = opts.provider !== undefined ? opts.provider : getEmbeddingProvider();
   const canVector = provider ? await vectorColumnAvailable(sql) : false;
   const mode = provider && canVector ? 'vector' : 'keyword';

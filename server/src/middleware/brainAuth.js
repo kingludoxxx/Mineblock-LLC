@@ -30,6 +30,52 @@ export function tokensMatch(presented, expected) {
 
 const sessionChain = [authenticate, requirePermission('brain', 'access')];
 
+/**
+ * Does the SESSION on this request carry `brain:<action>`?
+ *
+ * The same rule `requirePermission` applies, asked as a QUESTION instead of as a
+ * gate: some decisions are not "refuse the route" but "narrow what it returns"
+ * (approved_only). SuperAdmin's `{"*":["*"]}` answers true for everything.
+ * A service token has no session and therefore no action permission at all.
+ */
+export function sessionHasBrainPermission(req, action) {
+  if (req.brainActor === 'service') return false;
+  for (const role of req.user?.roles || []) {
+    let permissions = role.permissions;
+    if (!permissions) continue;
+    if (typeof permissions === 'string') {
+      try { permissions = JSON.parse(permissions); } catch { continue; }
+    }
+    if (Array.isArray(permissions['*']) && permissions['*'].includes('*')) return true;
+    const actions = permissions.brain;
+    if (Array.isArray(actions) && (actions.includes('*') || actions.includes(action))) return true;
+  }
+  return false;
+}
+
+/**
+ * P0-2: `brainAuth` set `req.brainActor='service'` and every route then treated
+ * it exactly like a human reviewer, so the CRM token — the credential that exists
+ * so a pipeline can READ — approved insights, rewrote the playbook and locked it.
+ * The service actor is READ-ONLY. Everything that changes state needs a dashboard
+ * session carrying the matching permission.
+ */
+export function requireBrainWriter(action) {
+  return (req, res, next) => {
+    if (req.brainActor === 'service') {
+      return res.status(403).json({
+        error: 'The Brain service token is read-only — search, documents, insights and the playbook may be READ with it. '
+             + 'Changing the Brain needs a dashboard session.',
+        code: 'service_read_only',
+      });
+    }
+    if (!sessionHasBrainPermission(req, action)) {
+      return res.status(403).json({ error: `This action needs the brain:${action} permission`, code: 'brain_permission' });
+    }
+    return next();
+  };
+}
+
 export function brainAuth(req, res, next) {
   const presented = req.headers[SERVICE_TOKEN_HEADER];
 
@@ -63,3 +109,4 @@ export function brainAuth(req, res, next) {
 }
 
 export default brainAuth;
+export { requirePermission as requireSessionPermission };

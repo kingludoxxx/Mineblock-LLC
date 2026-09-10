@@ -22,20 +22,37 @@
 
 import { Router } from 'express';
 import { client as sql } from '../db/pg.js';
-import brainAuth from '../middleware/brainAuth.js';
+import brainAuth, { requireBrainWriter, sessionHasBrainPermission } from '../middleware/brainAuth.js';
 import { BrainError } from '../services/brain/brainSchema.js';
 import { StoreConfigError } from '../config/storeConfig.js';
 import {
   ingestDocument, getDocument, listDocuments,
   createInsight, listInsights, setInsightStatus,
-  getPlaybook, putPlaybook, lockPlaybook, embedDocument,
+  getPlaybook, putPlaybook, lockPlaybook, unlockPlaybook, embedDocument, embedInsight,
 } from '../services/brainStore.js';
 import { search } from '../services/brainSearch.js';
 import { runExtraction } from '../services/brainExtract.js';
+import { mirrorRawBody } from '../services/brain/brainBucket.js';
 import logger from '../utils/logger.js';
 
 const router = Router();
 router.use(brainAuth);
+
+// Who is asking, and what may they do? The service token is a READ credential:
+// every state change below carries requireBrainWriter, which refuses it outright
+// and then checks the session's own brain:<action> permission (P0-2).
+const READ = 'read';
+const WRITE = 'write';
+const APPROVE = 'approve';
+
+/** A reader must hold brain:read — or be the (read-only) service credential. */
+const requireReader = (req, res, next) => {
+  if (req.brainActor === 'service') return next();
+  if (!sessionHasBrainPermission(req, READ)) {
+    return res.status(403).json({ error: 'This action needs the brain:read permission', code: 'brain_permission' });
+  }
+  return next();
+};
 
 /** One error shape for the whole surface. An unexpected error is a 500, logged. */
 function fail(res, err, where) {
@@ -54,32 +71,34 @@ const wrap = (where, fn) => async (req, res) => {
 };
 
 // ── search ─────────────────────────────────────────────────────────────────
-router.get('/search', wrap('search', async (req, res) => {
-  const out = await search(sql, req.query);
+router.get('/search', requireReader, wrap('search', async (req, res) => {
+  const out = await search(sql, req.query, {
+    mayReadUnapproved: sessionHasBrainPermission(req, APPROVE),
+  });
   res.json(out);
 }));
 
 // ── raw documents ──────────────────────────────────────────────────────────
-router.get('/documents', wrap('documents.list', async (req, res) => {
+router.get('/documents', requireReader, wrap('documents.list', async (req, res) => {
   res.json(await listDocuments(sql, req.query));
 }));
 
-router.get('/documents/:id', wrap('documents.get', async (req, res) => {
+router.get('/documents/:id', requireReader, wrap('documents.get', async (req, res) => {
   res.json({ document: await getDocument(sql, req.params.id) });
 }));
 
-router.post('/ingest', wrap('ingest', async (req, res) => {
+router.post('/ingest', requireBrainWriter(WRITE), wrap('ingest', async (req, res) => {
   const body = req.body || {};
-  // A caller may hand over an R2 object reference instead of text; the text is
-  // still what gets indexed, so it is required either way.
+  // The object key is derived by the store from the content hash; a caller that
+  // supplies one (or an `ext`) is refused there with 422, before any write.
   const { document, created } = await ingestDocument(sql, body, { actor: req.brainActor || null });
 
   if (created) {
     // Best effort, never fatal: the bucket is the archive, the database is the index.
     try {
-      const { isR2Configured, uploadBuffer } = await import('../services/r2.js');
-      if (isR2Configured() && document.body_object_key && !body.body_object_key) {
-        await uploadBuffer(Buffer.from(document.body_text, 'utf8'), document.body_object_key, document.content_type);
+      const out = await mirrorRawBody(document);
+      if (!out.mirrored) {
+        logger.warn('brain ingest: raw body not mirrored to the bucket', { reason: out.reason, key: document.body_object_key });
       }
     } catch (err) {
       logger.warn('brain ingest: raw body not mirrored to the bucket', { message: err?.message, key: document.body_object_key });
@@ -94,25 +113,34 @@ router.post('/ingest', wrap('ingest', async (req, res) => {
 }));
 
 // ── insights ───────────────────────────────────────────────────────────────
-router.get('/insights', wrap('insights.list', async (req, res) => {
+router.get('/insights', requireReader, wrap('insights.list', async (req, res) => {
   res.json(await listInsights(sql, req.query));
 }));
 
-router.post('/insights', wrap('insights.create', async (req, res) => {
+router.post('/insights', requireBrainWriter(WRITE), wrap('insights.create', async (req, res) => {
   const insight = await createInsight(sql, req.body || {}, { actor: req.brainActor || null });
   res.status(201).json({ insight });
 }));
 
-router.patch('/insights/:id', wrap('insights.patch', async (req, res) => {
+router.patch('/insights/:id', requireBrainWriter(APPROVE), wrap('insights.patch', async (req, res) => {
   const { status, reason } = req.body || {};
   const insight = await setInsightStatus(sql, req.params.id, status, {
-    actor: req.brainActor || null, reason,
+    actor: req.brainActor || null, userId: req.user?.id || null, reason,
   });
+  // An approved insight must be reachable in BOTH modes from the moment it is
+  // approved — not only once someone happens to run a vector query (P0-1).
+  if (insight.status === 'approved') {
+    try {
+      await embedInsight(sql, insight.id);
+    } catch (err) {
+      logger.warn('brain approve: insight not embedded now (the search path backfills it)', { message: err?.message });
+    }
+  }
   res.json({ insight });
 }));
 
 // ── extraction (proposes; never approves) ──────────────────────────────────
-router.post('/extract', wrap('extract', async (req, res) => {
+router.post('/extract', requireBrainWriter(WRITE), wrap('extract', async (req, res) => {
   const { document_id: documentId, model } = req.body || {};
   const out = await runExtraction(sql, {
     documentId, model: model || undefined, actor: req.brainActor || null,
@@ -121,17 +149,23 @@ router.post('/extract', wrap('extract', async (req, res) => {
 }));
 
 // ── playbook ───────────────────────────────────────────────────────────────
-router.get('/playbook/:product', wrap('playbook.get', async (req, res) => {
+router.get('/playbook/:product', requireReader, wrap('playbook.get', async (req, res) => {
   res.json({ playbook: await getPlaybook(sql, req.params.product) });
 }));
 
-router.put('/playbook/:product', wrap('playbook.put', async (req, res) => {
+router.put('/playbook/:product', requireBrainWriter(WRITE), wrap('playbook.put', async (req, res) => {
   const playbook = await putPlaybook(sql, req.params.product, req.body || {}, { actor: req.brainActor || null });
   res.json({ playbook });
 }));
 
-router.post('/playbook/:product/lock', wrap('playbook.lock', async (req, res) => {
+router.post('/playbook/:product/lock', requireBrainWriter(WRITE), wrap('playbook.lock', async (req, res) => {
   res.json({ playbook: await lockPlaybook(sql, req.params.product, { actor: req.brainActor || null }) });
+}));
+
+// Releasing a lock un-fixes the version a pipeline run may already cite, so it
+// is a reviewer's act, not a writer's.
+router.post('/playbook/:product/unlock', requireBrainWriter(APPROVE), wrap('playbook.unlock', async (req, res) => {
+  res.json({ playbook: await unlockPlaybook(sql, req.params.product, { actor: req.brainActor || null }) });
 }));
 
 export default router;

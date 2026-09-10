@@ -15,7 +15,8 @@
         "postinstall": "PLAYWRIGHT_BROWSERS_PATH=./playwright-browsers npx playwright install chromium chromium-headless-shell",
         "test": "node server/tests/run-all.mjs",
         "test:smoke": "node server/tests/run-all.mjs --suite smoke",
-        "brain:import": "node server/scripts/brain-import.mjs"
+        "brain:import": "node server/scripts/brain-import.mjs",
+        "brain:vector-enable": "node server/scripts/brain-vector-enable.mjs"
     },
     "keywords": [],
     "author": "",

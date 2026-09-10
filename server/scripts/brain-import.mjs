@@ -21,10 +21,12 @@ import { readdirSync, statSync, readFileSync } from 'node:fs';
 import { join, relative, extname } from 'node:path';
 import { dbSslEnabled } from '../src/config/dbSsl.js';
 
+// File suffix → the CONTENT TYPE to declare. The bucket extension is derived by
+// the server from that type and is not the CLI's to choose (S4-SB2 / P1-6).
 const EXT = new Map([
-  ['.md', { type: 'text/markdown', ext: 'md' }],
-  ['.txt', { type: 'text/plain', ext: 'txt' }],
-  ['.json', { type: 'application/json', ext: 'json' }],
+  ['.md', { type: 'text/markdown' }],
+  ['.txt', { type: 'text/plain' }],
+  ['.json', { type: 'application/json' }],
 ]);
 
 function usage(msg) {
@@ -79,6 +81,8 @@ const sql = postgres(dsn, { ssl: dbSslEnabled() ? 'require' : false, onnotice: (
 const { ingestDocument, embedDocument } = await import('../src/services/brainStore.js');
 
 let created = 0, existing = 0, failed = 0;
+let embedded = 0, notEmbedded = 0;
+const embedReasons = new Map();
 try {
   // Prove the connection and the schema BEFORE claiming any count.
   await sql`SELECT 1 FROM kb_documents LIMIT 1`;
@@ -92,13 +96,23 @@ try {
     try {
       const { document, created: isNew } = await ingestDocument(sql, {
         source, title: rel, text, product_code: product,
-        content_type: meta.type, ext: meta.ext,
+        content_type: meta.type,
         captured_at: f.mtime, metadata: { path: rel },
       }, { actor: 'cli:brain-import' });
       if (isNew) { created += 1; console.log(`  new   ${rel} → ${document.body_object_key}`); }
       else { existing += 1; console.log(`  same  ${rel} (already in the Brain)`); }
       if (isNew) {
-        try { await embedDocument(sql, document.id); } catch { /* optional provider; keyword search still indexes it */ }
+        // Never silent (review P2-13): a swallowed embedding error used to leave
+        // no line and no count, so "imported 40" could mean 40 unsearchable rows
+        // on the vector path. Count both outcomes and print them at the end.
+        try {
+          const e = await embedDocument(sql, document.id);
+          if (e.embedded) embedded += 1;
+          else { notEmbedded += 1; embedReasons.set(e.reason, (embedReasons.get(e.reason) || 0) + 1); }
+        } catch (err) {
+          notEmbedded += 1;
+          embedReasons.set(err.message, (embedReasons.get(err.message) || 0) + 1);
+        }
       }
     } catch (err) {
       failed += 1;
@@ -119,4 +133,6 @@ try {
 
 await sql.end({ timeout: 5 });
 console.log(`\nscanned: ${all.length} | ingestable: ${ingestable.length} | new: ${created} | already present: ${existing} | skipped (unsupported type): ${skippedFiles.length} | failed: ${failed}`);
+console.log(`embedded: ${embedded} | not embedded: ${notEmbedded}${
+  notEmbedded ? ` (${[...embedReasons].map(([r, n]) => `${n}× ${r}`).join('; ')})` : ''}`);
 process.exit(failed ? 1 : 0);

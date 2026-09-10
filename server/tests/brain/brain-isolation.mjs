@@ -96,10 +96,36 @@ async function boot(store) {
 
 for (const s of STORES) Object.assign(s, await boot(s));
 
+// Each store gets its OWN dashboard user in its OWN database. Writing is a
+// session act (S4-SB2 / P0-2: the service token is read-only), and a user in
+// store A's database has no row in store B's, so this ALSO keeps the credentials
+// per pair — the property I4 tests for the service token.
+process.env.JWT_ACCESS_SECRET ||= 'localdev';
+const { signAccessToken } = await import('../../src/utils/jwt.js');
+for (const s of STORES) {
+  const db = postgres(s.url, { ssl: false, onnotice: () => {} });
+  const [u] = await db`INSERT INTO users (id, email, first_name, last_name, is_active)
+    VALUES (gen_random_uuid(), ${`brain-${s.name.toLowerCase()}@t.co`}, 'B', 'T', TRUE) RETURNING id`;
+  const [r] = await db`INSERT INTO roles (id, name, permissions)
+    VALUES (gen_random_uuid(), 'brain-iso', ${db.json({ brain: ['access', 'read', 'write', 'approve'] })}) RETURNING id`;
+  await db`INSERT INTO user_roles (user_id, role_id) VALUES (${u.id}, ${r.id})`;
+  s.jwt = signAccessToken({ userId: u.id });
+  await db.end();
+}
+
 const callAs = (base, token) => async (method, path, body) => {
   const r = await fetch(`${base}${path}`, {
     method,
     headers: { 'X-Brain-Service-Token': token, 'Content-Type': 'application/json' },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+  let j = null; try { j = await r.json(); } catch { /* non-JSON */ }
+  return { status: r.status, j };
+};
+const sessionAs = (base, jwt) => async (method, path, body) => {
+  const r = await fetch(`${base}${path}`, {
+    method,
+    headers: { Authorization: `Bearer ${jwt}`, 'Content-Type': 'application/json' },
     body: body === undefined ? undefined : JSON.stringify(body),
   });
   let j = null; try { j = await r.json(); } catch { /* non-JSON */ }
@@ -113,11 +139,11 @@ const bCall = callAs(B.base, B.token);
 // A term that matches in BOTH stores — so a leak would be VISIBLE, not hidden
 // behind a query that could never have matched the other store anyway.
 const SHARED_TERM = 'squeaky';
-const aDoc = await aCall('POST', '/ingest', {
+const aDoc = await sessionAs(A.base, A.jwt)('POST', '/ingest', {
   source: 'reddit', title: 'store A thread', product_code: A.product,
   text: `The squeaky hinge on the STORE-A-ONLY-SECRET unit drove me mad.`,
 });
-const bDoc = await bCall('POST', '/ingest', {
+const bDoc = await sessionAs(B.base, B.jwt)('POST', '/ingest', {
   source: 'reddit', title: 'store B thread', product_code: B.product,
   text: `A squeaky wheel on the STORE-B-ONLY-SECRET unit drove me mad.`,
 });
