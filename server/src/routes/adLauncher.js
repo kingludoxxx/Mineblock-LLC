@@ -206,17 +206,18 @@ function safeObj(v) {
 }
 
 function defaultStoreUrl() {
-  // SHOPIFY_STORE_URL is a REQUIRED per-brand env var (Mineblock: https://mineblock.co,
-  // Puure: https://trypuure.co, etc.). Placeholder fallback catches missing config.
-  return process.env.SHOPIFY_STORE_URL || 'https://example.com';
+  // The store's public URL is store DATA (storeConfig.shopifyStoreUrl(),
+  // env SHOPIFY_STORE_URL). There is NO literal fallback: unset → null and
+  // the launch route refuses with a 400 that names the fix.
+  return storeConfig.shopifyStoreUrl();
 }
 
 // Resolve the landing page URL for an ad, in priority order:
 // 1. Explicit per-launch override (body.landing_page_url)
 // 2. product_profiles.product_url for batch.product_id
-// 3. SHOPIFY_STORE_URL env var
-// 4. hardcoded https://mineblock.co
-async function resolveLandingUrl({ batch, override }) {
+// 3. SHOPIFY_STORE_URL (storeConfig)
+// Nothing else — returns null when none is set; the caller must refuse.
+export async function resolveLandingUrl({ batch, override }) {
   if (override) return override;
   try {
     const rows = await pgQuery(
@@ -477,6 +478,10 @@ router.post('/batches/:id/launch', async (req, res) => {
     if (creatives.length === 0) return res.status(400).json({ success: false, error: { message: 'No creatives in batch' } });
 
     const landingUrl = await resolveLandingUrl({ batch, override: landing_page_url });
+    if (!landingUrl) {
+      return res.status(400).json({ success: false, error: { message:
+        'No landing page URL for this batch: pass landing_page_url, set product_profiles.product_url for the product, or set SHOPIFY_STORE_URL for this store' } });
+    }
 
     await pgQuery(
       "UPDATE ad_batches SET status = 'launching', meta_adset_id = $1, meta_campaign_id = $2, updated_at = NOW() WHERE id = $3",

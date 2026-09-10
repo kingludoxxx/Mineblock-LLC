@@ -209,3 +209,14 @@ test('timezone(): REPORT_TZ default Europe/Madrid; set → value; invalid IANA �
   process.env.REPORT_TZ = 'Mars/Olympus';
   assert.throws(() => sc.timezone(), /REPORT_TZ 'Mars\/Olympus' is not a valid IANA timezone/);
 });
+
+// ── item 8: store public URL — no literal fallback ──────────────────────────
+test('shopifyStoreUrl(): unset → null + one warning; set → value; snapshot carries it', () => {
+  clearEnv();
+  const w = captureWarnings(() => { assert.equal(sc.shopifyStoreUrl(), null); sc.shopifyStoreUrl(); });
+  assert.equal(w.length, 1, String(w));
+  assert.match(w[0], /SHOPIFY_STORE_URL/);
+  process.env.SHOPIFY_STORE_URL = 'https://zz.example';
+  assert.equal(sc.shopifyStoreUrl(), 'https://zz.example');
+  assert.equal(sc.snapshot().shopify.storeUrl, 'https://zz.example');
+});

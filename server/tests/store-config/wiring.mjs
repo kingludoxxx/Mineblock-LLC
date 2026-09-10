@@ -94,6 +94,13 @@ test('REPORT_TZ is read in exactly ONE place (storeConfig); reportTz.js and funn
   assert.match(src('services/funnelMetrics.js'), /storeConfig\.timezone\(\)/);
 });
 
+// item 8
+test('adLauncher.js has no store-URL literal fallback and reads storeConfig.shopifyStoreUrl()', () => {
+  const s = src('routes/adLauncher.js');
+  assert.doesNotMatch(s, /mineblock\.co|example\.com|SHOPIFY_STORE_URL\s*\|\|/);
+  assert.match(s, /storeConfig\.shopifyStoreUrl\(\)/);
+});
+
 // A1 over the whole tree (allowed: tests and docs)
 test('A1: git grep over server/src is empty', () => {
   let out = '';

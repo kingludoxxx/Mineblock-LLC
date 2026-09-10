@@ -97,6 +97,12 @@ export function shopifyStoreDomain() {
   return readString('SHOPIFY_STORE_DOMAIN', { unsetMessage: 'not set — Shopify Admin calls are dormant on this deployment' });
 }
 
+/** The store's public URL (`https://…`, no trailing slash); unset → null (one warning). */
+export function shopifyStoreUrl() {
+  const v = readString('SHOPIFY_STORE_URL', { unsetMessage: 'not set — no landing-page fallback; ad launches without a product URL are refused' });
+  return v ? v.replace(/\/+$/, '') : null;
+}
+
 /** The ONE place the Shopify Admin API version defaults. */
 export const SHOPIFY_API_VERSION_DEFAULT = '2024-01';
 const SHOPIFY_API_VERSION_RE = /^\d{4}-\d{2}$/;
@@ -207,6 +213,7 @@ export function snapshot() {
     brand: brand(),
     shopify: {
       storeDomain: shopifyStoreDomain(),
+      storeUrl: shopifyStoreUrl(),
       apiVersion: shopifyApiVersion(),
     },
     whop: {
@@ -224,7 +231,7 @@ export function snapshot() {
 
 const storeConfig = {
   setStoreConfigSource, resetWarnings,
-  storeCode, brand, shopifyStoreDomain, shopifyApiVersion, SHOPIFY_API_VERSION_DEFAULT, whopCompanyId, tripleWhaleShopId,
+  storeCode, brand, shopifyStoreDomain, shopifyStoreUrl, shopifyApiVersion, SHOPIFY_API_VERSION_DEFAULT, whopCompanyId, tripleWhaleShopId,
   metaApiVersion, metaGraphUrl, META_API_VERSION_DEFAULT, frameioToken,
   timezone, TIMEZONE_DEFAULT,
   snapshot,
