@@ -110,6 +110,7 @@
     "122_creative_analysis_fresh_shape.sql",
     "123_store_code_tagging.sql",
     "124_store_code_lazy_tables.sql",
-    "126_hub_sso.sql"
+    "126_hub_sso.sql",
+    "127_store_identity.sql"
   ]
 }

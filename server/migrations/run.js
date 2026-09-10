@@ -24,11 +24,24 @@
  * OUTPUT  Database WARNINGs raised by a migration are printed (`WARNING (database): …`).
  *
  * CLI     node server/migrations/run.js [--dry-run [--allow-pending]] [--strict] [--dir <path>] [--mark-applied a.sql,b.sql]
+ *                                      [--relabel-identity --i-typed-the-store-name=<Name>]
  * STORE   STORE_CODE (required for a real run, ^[A-Z0-9]{2,4}$) is set as the
  *         transaction-local `app.store_code` for every migration, so a store-tagging
  *         migration labels rows with THIS store's code. Unset or malformed REFUSES
  *         the run before anything is written (Lane C review F1) — a silent default
  *         would tag a Puure database 'MB'. A dry run only warns.
+ * IDENT   `_store_identity` (migration 127) is the DATABASE's own label. It is read
+ *         as the first statement under the advisory lock, before the ledger is even
+ *         created: a row whose store_code differs from STORE_CODE REFUSES the run
+ *         with `STORE IDENTITY MISMATCH: database is <X>, STORE_CODE is <Y>` and
+ *         zero writes (review P1-3 — shape-checking STORE_CODE never tied it to the
+ *         database it was about to label). No row yet → this run records one.
+ *         Deliberate relabel: --relabel-identity --i-typed-the-store-name=<Name>,
+ *         where Name must equal STORE_NAME (or BRAND_NAME) for this deployment.
+ * REPORT  After a real run the runner counts the `store_code` column defaults:
+ *         `store_code column defaults — <CODE>: N, other stores: 0`. Any default
+ *         carrying ANOTHER store's literal exits 1 and names the columns; that is
+ *         the check the Puure deploy bracket needs, now inside the runner.
  * LOCKS   Every migration transaction runs `SET LOCAL lock_timeout`
  *         (MIGRATION_LOCK_TIMEOUT, default 5s, "0" disables): a migration that cannot
  *         take its ACCESS EXCLUSIVE locks fails fast and re-runnably instead of
@@ -37,6 +50,8 @@
  * ENV     DATABASE_URL (required) · STORE_CODE (required) · MIGRATIONS_DIR (= --dir)
  *         STRICT_MIGRATIONS=1 (= --strict) · MIGRATION_LOCK_TIMEOUT (default 5s)
  *         MIGRATE_SSL=0|1 (default auto: off for localhost/127.0.0.1/sslmode=disable, on otherwise)
+ *         STORE_NAME or BRAND_NAME (only --relabel-identity reads them)
+ *         RENDER_GIT_COMMIT (Render sets it; else `git rev-parse HEAD`, else 'unknown')
  * EXIT    0 clean · 1 any error or refusal. A dry run exits 1 when the database is
  *         NOT current: pending files (unless --allow-pending, the pre-apply
  *         rehearsal), a checksum mismatch, a rename, or (STRICT) an orphan —
@@ -49,6 +64,7 @@ import pg from 'pg';
 import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
+import { spawnSync } from 'child_process';
 import { fileURLToPath } from 'url';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -246,6 +262,180 @@ export function resolveLockTimeout(env = process.env) {
   return v;
 }
 
+/* ── Store identity (migration 127, review finding P1-3) ─────────────────────
+ *
+ * The database's own label. `STORE_CODE` says what THIS RUN thinks it is;
+ * `_store_identity.store_code` says what the DATABASE already is. When they
+ * disagree the run is refused before a single byte is written — on Puure's
+ * first deploy a copy-pasted `STORE_CODE=MB` would otherwise label 100 % of
+ * Puure's rows as Mineblock's, exit 0, and the deploy would succeed.
+ */
+
+/** Bumped when the runner's identity contract changes; recorded on the row that run writes. */
+export const RUNNER_VERSION = 'run.js/2 (store-identity)';
+
+export const IDENTITY_TABLE = '_store_identity';
+
+/**
+ * The commit this run is applying: Render's env, else the HEAD of the checkout
+ * that contains THIS runner (never `--dir`, which can point at a scratch
+ * directory that is not a repository), else 'unknown'.
+ */
+export function resolveRunCommit(env = process.env, dir = __dirname) {
+  const fromEnv = (env.RENDER_GIT_COMMIT ?? '').trim();
+  if (fromEnv) return fromEnv;
+  const res = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: dir, encoding: 'utf8' });
+  const sha = (res.stdout || '').trim();
+  return /^[0-9a-f]{7,40}$/.test(sha) ? sha : 'unknown';
+}
+
+/**
+ * { table: false } table absent (an old database, or 127 not applied yet)
+ * { table: true, row: null } table present, no identity recorded yet
+ * { table: true, row: {store_code, first_run_at, first_run_commit, runner_version} }
+ * Throws MigrationError on a MALFORMED identity (more than one row, or a
+ * store_code that is not a store code) — fail closed: an unreadable label is
+ * not the same thing as no label, and guessing which store it meant is exactly
+ * the mistake this table exists to prevent.
+ */
+export async function readStoreIdentity(client) {
+  const { rows: [{ t }] } = await client.query(`SELECT to_regclass('public.${IDENTITY_TABLE}') AS t`);
+  if (!t) return { table: false, row: null };
+  const { rows } = await client.query(
+    `SELECT store_code, first_run_at, first_run_commit, runner_version FROM ${IDENTITY_TABLE} ORDER BY id`);
+  if (rows.length === 0) return { table: true, row: null };
+  if (rows.length > 1) {
+    throw new MigrationError(
+      `MALFORMED STORE IDENTITY: ${IDENTITY_TABLE} holds ${rows.length} rows (${rows.map((r) => JSON.stringify(r.store_code)).join(', ')}) — it must hold exactly one. `
+      + 'REFUSING to run: this database does not say which store it belongs to. Resolve the table by hand.');
+  }
+  const row = rows[0];
+  const code = row.store_code == null ? '' : String(row.store_code).trim();
+  if (!STORE_CODE_RE.test(code)) {
+    throw new MigrationError(
+      `MALFORMED STORE IDENTITY: ${IDENTITY_TABLE}.store_code is ${JSON.stringify(row.store_code)}, which is not a store code (expected ${STORE_CODE_RE}). `
+      + 'REFUSING to run: this database does not say which store it belongs to. Resolve the row by hand.');
+  }
+  return { table: true, row: { ...row, store_code: code } };
+}
+
+const identityLine = (row) => `${row.store_code} (first run ${new Date(row.first_run_at).toISOString()}, commit ${row.first_run_commit})`;
+
+/** The refusal itself. Throws when the database already belongs to a different store. */
+export function assertIdentityMatches(identity, storeCode) {
+  if (!identity.row) return;
+  if (identity.row.store_code === storeCode) return;
+  throw new MigrationError(
+    `STORE IDENTITY MISMATCH: database is ${identity.row.store_code}, STORE_CODE is ${storeCode}\n`
+    + `  ${IDENTITY_TABLE}: ${identityLine(identity.row)}\n`
+    + '  REFUSING to run — nothing was written. Every row this run would tag belongs to the OTHER store.\n'
+    + `  Point DATABASE_URL at ${storeCode}'s database, or set STORE_CODE=${identity.row.store_code}.\n`
+    + '  A deliberate relabel: --relabel-identity --i-typed-the-store-name=<the store\'s display name>.');
+}
+
+/**
+ * The typed-name gate for a relabel (RULES.md R3 in the runner). The name must
+ * equal this deployment's configured display name — STORE_NAME if the service
+ * sets one, otherwise BRAND_NAME, which every store already carries
+ * (server/config/env.PL.example: BRAND_NAME=Puure). PRODUCT_CODES_JSON carries
+ * no display name, so it is not a source. Neither variable set → REFUSED: a
+ * relabel with nothing to type against is just a flag.
+ */
+export function resolveStoreName(env = process.env) {
+  for (const key of ['STORE_NAME', 'BRAND_NAME']) {
+    const v = (env[key] ?? '').trim();
+    if (v) return { key, name: v };
+  }
+  return null;
+}
+
+export function assertTypedStoreName(typed, env = process.env) {
+  const configured = resolveStoreName(env);
+  if (!configured) {
+    throw new MigrationError(
+      '--relabel-identity REFUSED: this deployment has no configured store display name (neither STORE_NAME nor BRAND_NAME is set), '
+      + 'so there is nothing for --i-typed-the-store-name to be checked against. Set STORE_NAME (or BRAND_NAME) on the service first.');
+  }
+  if (typed === undefined || String(typed).trim() === '') {
+    throw new MigrationError(`--relabel-identity REFUSED: --i-typed-the-store-name=<Name> is required and must equal ${configured.key} for this deployment.`);
+  }
+  if (String(typed).trim() !== configured.name) {
+    throw new MigrationError(
+      `--relabel-identity REFUSED: typed store name ${JSON.stringify(String(typed).trim())} does not match ${configured.key} for this deployment. `
+      + 'Nothing was written. Relabelling a database is how a store loses its rows to another store; the name is typed exactly or not at all.');
+  }
+  return configured;
+}
+
+async function recordIdentity(client, { storeCode, commit, log }) {
+  await client.query(
+    `INSERT INTO ${IDENTITY_TABLE} (id, store_code, first_run_at, first_run_commit, runner_version)
+     VALUES (1, $1, NOW(), $2, $3) ON CONFLICT (id) DO NOTHING`,
+    [storeCode, commit, RUNNER_VERSION]);
+  const after = await readStoreIdentity(client);
+  if (after.row) log(`database identity recorded: ${identityLine(after.row)} (runner ${after.row.runner_version})`);
+  return after;
+}
+
+async function relabelIdentity(client, identity, { storeCode, commit, typedName, env = process.env, log }) {
+  if (!identity.table) {
+    throw new MigrationError(`--relabel-identity REFUSED: ${IDENTITY_TABLE} does not exist on this database (migration 127 has never run here). There is no identity to relabel.`);
+  }
+  if (!identity.row) {
+    throw new MigrationError(`--relabel-identity REFUSED: ${IDENTITY_TABLE} is empty — this database has no identity yet, so an ordinary run records ${storeCode} without any override.`);
+  }
+  const configured = assertTypedStoreName(typedName, env);
+  const before = identityLine(identity.row);
+  if (identity.row.store_code === storeCode) {
+    log(`--relabel-identity: database identity is ALREADY ${storeCode} — nothing to relabel (${before})`);
+    return identity;
+  }
+  await client.query(
+    `UPDATE ${IDENTITY_TABLE} SET store_code = $1, first_run_commit = $2, runner_version = $3 WHERE id = 1`,
+    [storeCode, commit, RUNNER_VERSION]);
+  const after = await readStoreIdentity(client);
+  log(`RELABELLED database identity (typed ${configured.key} "${configured.name}"): ${before}  ->  ${identityLine(after.row)}`);
+  return after;
+}
+
+/**
+ * The Puure bracket's column-default check, moved inside the runner (brief C3.4).
+ * Every `store_code` column whose DEFAULT is a store literal is counted; a
+ * literal that is not THIS store's is a mixed-label database and exits 1.
+ */
+const STORE_DEFAULT_RE = /^'([A-Z0-9]{2,4})'::text$/;
+export async function storeCodeDefaults(client) {
+  const { rows } = await client.query(
+    `SELECT table_name, column_name, column_default
+       FROM information_schema.columns
+      WHERE table_schema = 'public' AND column_name = 'store_code' AND column_default IS NOT NULL
+      ORDER BY table_name, column_name`);
+  const byCode = new Map();
+  for (const r of rows) {
+    const m = STORE_DEFAULT_RE.exec(String(r.column_default).trim());
+    if (!m) continue;
+    if (!byCode.has(m[1])) byCode.set(m[1], []);
+    byCode.get(m[1]).push(`${r.table_name}.${r.column_name}`);
+  }
+  return byCode;
+}
+
+/** Prints the report; throws when another store's literal is defaulted anywhere. */
+export async function reportStoreCodeDefaults(client, storeCode, log) {
+  const byCode = await storeCodeDefaults(client);
+  const mine = byCode.get(storeCode) || [];
+  const others = [...byCode.entries()].filter(([code]) => code !== storeCode);
+  const otherCount = others.reduce((n, [, cols]) => n + cols.length, 0);
+  log(`store_code column defaults — ${storeCode}: ${mine.length}, other stores: ${otherCount}`);
+  if (otherCount) {
+    const lines = others.map(([code, cols]) => `  ${code}: ${cols.join(', ')}`);
+    throw new MigrationError(
+      `MIXED STORE LABELS: ${otherCount} store_code column default(s) carry another store's code on a ${storeCode} database. `
+      + `The migrations ran; this report FAILS the run so the deploy stops here.\n${lines.join('\n')}`);
+  }
+  return { mine: mine.length, other: otherCount };
+}
+
 async function applyOne(client, filename, file, { storeCode, lockTimeout = DEFAULT_LOCK_TIMEOUT } = {}) {
   await client.query('BEGIN');
   try {
@@ -279,8 +469,16 @@ async function withLock(client, fn, log) {
  * Apply pending migrations in manifest order. dryRun → report only, no writes of any kind
  * (no ledger creation, no backfill). Returns the final report.
  */
-export async function migrate(client, { dir = DEFAULT_DIR, dryRun = false, strict = false, log = console.log } = {}) {
+export async function migrate(client, {
+  dir = DEFAULT_DIR, dryRun = false, strict = false, log = console.log,
+  relabelIdentity: wantRelabel = false, typedStoreName = undefined, env = process.env,
+} = {}) {
   if (dryRun) {
+    if (wantRelabel) {
+      // A relabel is a WRITE, and the whole point of --dry-run is that it writes
+      // nothing. Offering it here would make "rehearse it first" mean the opposite.
+      throw new MigrationError('--relabel-identity is not available on a dry run (it writes the identity row). Run it as a real run.');
+    }
     const report = await computeReport(client, { dir });
     for (const f of report.pending) log(`pending: ${f}`);
     for (const m of report.mismatches) log(`CHECKSUM MISMATCH: ${m.filename} (ledger ${m.ledger} ≠ disk ${m.disk})`);
@@ -289,21 +487,48 @@ export async function migrate(client, { dir = DEFAULT_DIR, dryRun = false, stric
     for (const f of report.orphans) log(`${strict ? 'STRICT would REFUSE: ' : 'WARNING: '}${orphanLine(f)}`);
     // A dry run writes nothing, so it stays usable as a preflight without the
     // variable — but it says out loud that the real run would refuse (F1).
+    let sc = null;
     try {
-      const sc = resolveStoreCode();
-      log(`store code for a real run (app.store_code): ${sc} · lock_timeout: ${resolveLockTimeout()}`);
+      sc = resolveStoreCode(env);
+      log(`store code for a real run (app.store_code): ${sc} · lock_timeout: ${resolveLockTimeout(env)}`);
     } catch (err) {
       log(`STORE_CODE: ${err.message}`);
+    }
+    // The identity report. A malformed identity THROWS here, exactly as it would
+    // on a real run: a preflight that stays quiet about it is worse than useless.
+    const identity = await readStoreIdentity(client);
+    if (identity.row) {
+      log(`database identity: ${identityLine(identity.row)}`);
+      if (sc && identity.row.store_code !== sc) {
+        report.identityMismatch = { database: identity.row.store_code, storeCode: sc };
+        log(`STORE IDENTITY MISMATCH: database is ${identity.row.store_code}, STORE_CODE is ${sc} — a real run would REFUSE and write nothing.`);
+      }
+    } else if (!identity.table) {
+      log(`no identity yet (${IDENTITY_TABLE} does not exist here; migration 127 will create it)`
+        + `${sc ? `, this run will record ${sc}` : ''}`);
+    } else {
+      log(`no identity yet${sc ? `, this run will record ${sc}` : ''}`);
     }
     log(formatSummary(report, { dryRun: true }));
     return report;
   }
 
   // Fail-closed BEFORE anything is written, ledger backfill included (review F1/F7).
-  const storeCode = resolveStoreCode();
-  const lockTimeout = resolveLockTimeout();
+  const storeCode = resolveStoreCode(env);
+  const lockTimeout = resolveLockTimeout(env);
+  const runCommit = resolveRunCommit(env);
 
   return withLock(client, async () => {
+    // FIRST statement under the lock, before ensureLedger's CREATE TABLE: on a
+    // mismatch the run exits with literally zero writes — see the identity block above.
+    let identity = await readStoreIdentity(client);
+    if (wantRelabel) {
+      identity = await relabelIdentity(client, identity, { storeCode, commit: runCommit, typedName: typedStoreName, env, log });
+    } else if (identity.row) {
+      assertIdentityMatches(identity, storeCode);
+      log(`database identity: ${identityLine(identity.row)}`);
+    }
+
     await ensureLedger(client);
     let report = await computeReport(client, { dir });
 
@@ -347,9 +572,20 @@ export async function migrate(client, { dir = DEFAULT_DIR, dryRun = false, stric
       ran++;
     }
 
+    // 127 has applied by now (or the table was already there). Record the label
+    // this run used, so the NEXT run has something to be refused against.
+    if (!identity.row) {
+      identity = await readStoreIdentity(client);
+      if (identity.table && !identity.row) identity = await recordIdentity(client, { storeCode, commit: runCommit, log });
+      else if (!identity.table) log(`WARNING: ${IDENTITY_TABLE} does not exist after the run — this database's store label is NOT recorded and a wrong STORE_CODE cannot be refused here. Is 127_store_identity.sql in order.json?`);
+    }
+
     const final = await computeReport(client, { dir });
     log(ran === 0 ? 'All migrations are up to date.' : `Successfully ran ${ran} migration(s).`);
     log(formatSummary(final));
+    // Last, and it can fail the run: the migrations are committed, but a
+    // database carrying another store's column defaults must not reach a deploy.
+    await reportStoreCodeDefaults(client, storeCode, log);
     return final;
   }, log);
 }
@@ -375,6 +611,13 @@ export async function markApplied(client, filenames, { dir = DEFAULT_DIR, dryRun
     return { dryRun: true, inserted: [], wouldInsert: toInsert, alreadyPresent };
   }
   return withLock(client, async () => {
+    // --mark-applied writes ledger rows, so it gets the same identity gate — but
+    // it never sets app.store_code, so it only refuses when STORE_CODE is
+    // actually set and actually disagrees. A malformed identity refuses outright.
+    const identity = await readStoreIdentity(client);
+    if (identity.row && (process.env.STORE_CODE ?? '').trim()) {
+      assertIdentityMatches(identity, resolveStoreCode());
+    }
     await ensureLedger(client);
     // P2-1: on a legacy ledger (filename-only rows) backfill FIRST, exactly as a real
     // run does, so the marked file continues the history (N+1) instead of taking
@@ -414,11 +657,16 @@ function describeTarget(url) {
 }
 
 const USAGE = `usage: node server/migrations/run.js [--dry-run [--allow-pending]] [--strict] [--dir <migrationsDir>] [--mark-applied a.sql,b.sql]
+                                    [--relabel-identity --i-typed-the-store-name=<Name>]
   --dry-run        report only, no writes; exit 1 unless the database is current
   --allow-pending  (dry-run only) pending files do not fail the dry run — the pre-apply rehearsal
   --strict         orphan ledger rows refuse instead of warn (= STRICT_MIGRATIONS=1)
+  --relabel-identity --i-typed-the-store-name=<Name>
+                   deliberately move this database from one store to another. <Name> must equal
+                   STORE_NAME (or BRAND_NAME) for this deployment. Never on a dry run.
   env: DATABASE_URL (required), STORE_CODE (required for a real run, ^[A-Z0-9]{2,4}$),
-       MIGRATIONS_DIR, STRICT_MIGRATIONS=1 (= --strict), MIGRATION_LOCK_TIMEOUT (default 5s), MIGRATE_SSL=0|1`;
+       MIGRATIONS_DIR, STRICT_MIGRATIONS=1 (= --strict), MIGRATION_LOCK_TIMEOUT (default 5s), MIGRATE_SSL=0|1,
+       STORE_NAME / BRAND_NAME (--relabel-identity only), RENDER_GIT_COMMIT`;
 
 function parseArgs(argv) {
   const opts = {
@@ -427,6 +675,8 @@ function parseArgs(argv) {
     strict: process.env.STRICT_MIGRATIONS === '1',
     dir: process.env.MIGRATIONS_DIR ? path.resolve(process.env.MIGRATIONS_DIR) : DEFAULT_DIR,
     markApplied: null,
+    relabelIdentity: false,
+    typedStoreName: undefined,
     help: false,
   };
   for (let i = 0; i < argv.length; i++) {
@@ -437,10 +687,16 @@ function parseArgs(argv) {
     else if (a === '--dir') opts.dir = path.resolve(argv[++i] ?? '');
     else if (a.startsWith('--dir=')) opts.dir = path.resolve(a.slice('--dir='.length));
     else if (a === '--mark-applied') opts.markApplied = (argv[++i] ?? '').split(',').map((s) => s.trim()).filter(Boolean);
+    else if (a === '--relabel-identity') opts.relabelIdentity = true;
+    else if (a === '--i-typed-the-store-name') opts.typedStoreName = argv[++i] ?? '';
+    else if (a.startsWith('--i-typed-the-store-name=')) opts.typedStoreName = a.slice('--i-typed-the-store-name='.length);
     else if (a === '--help' || a === '-h') opts.help = true;
     else throw new MigrationError(`Unknown argument: ${a}\n${USAGE}`);
   }
   if (opts.allowPending && !opts.dryRun) throw new MigrationError(`--allow-pending only applies to --dry-run (a real run applies pending files)\n${USAGE}`);
+  if (opts.relabelIdentity && opts.dryRun) throw new MigrationError(`--relabel-identity is not available on a dry run (it writes the identity row)\n${USAGE}`);
+  if (opts.relabelIdentity && opts.markApplied) throw new MigrationError(`--relabel-identity and --mark-applied do different jobs; run them separately\n${USAGE}`);
+  if (opts.typedStoreName !== undefined && !opts.relabelIdentity) throw new MigrationError(`--i-typed-the-store-name is only meaningful with --relabel-identity\n${USAGE}`);
   return opts;
 }
 
@@ -480,9 +736,13 @@ async function main(argv) {
       console.log(`${r.dryRun ? 'DRY RUN — would mark' : 'Marked'} applied: ${(r.dryRun ? r.wouldInsert : r.inserted).join(', ') || '(none)'}; already present: ${r.alreadyPresent.join(', ') || '(none)'}`);
       return 0;
     }
-    const report = await migrate(client, { dir: opts.dir, dryRun: opts.dryRun, strict: opts.strict });
+    const report = await migrate(client, {
+      dir: opts.dir, dryRun: opts.dryRun, strict: opts.strict,
+      relabelIdentity: opts.relabelIdentity, typedStoreName: opts.typedStoreName,
+    });
     if (!opts.dryRun) return 0; // a real run throws on every refusal; reaching here means it applied cleanly
     const notCurrent = report.mismatches.length || report.renames.length || (opts.strict && report.orphans.length)
+      || report.identityMismatch
       || (report.pending.length && !opts.allowPending);
     if (report.pending.length && !opts.allowPending) console.log(`DRY RUN exit 1: ${report.pending.length} pending file(s) — the database is not current (pass --allow-pending for a pre-apply rehearsal)`);
     return notCurrent ? 1 : 0;

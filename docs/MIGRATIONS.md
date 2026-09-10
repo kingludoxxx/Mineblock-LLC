@@ -28,8 +28,13 @@ The first `npm run migrate` on a live database backfills the checksum of every l
    ```
    Orphans (ledger rows whose file no longer exists, e.g. a puure `089_*`) are printed as warnings here; resolve them BEFORE step 5, because STRICT refuses them.
 3. Make sure the pre-deploy command exists. `render.yaml` carries `preDeployCommand: npm run migrate` for `mineblock-admin`. For services not declared in that blueprint (puure-dashboard, mineblock-crm), set Settings -> Pre-Deploy Command to `npm run migrate` in the Render dashboard. Pre-deploy commands need a paid instance type; the services are on `starter`, so confirm on each service before relying on it.
-4. Deploy with an explicit `commitId` (R37). In the deploy log expect `Backfilled checksum + applied_order for N legacy ledger row(s)` and `Successfully ran K migration(s)`; at boot expect `Migrations: ledger matches order.json (M applied, 0 pending, 0 mismatches)`.
+4. Deploy with an explicit `commitId` (R37). In the deploy log expect `Backfilled checksum + applied_order for N legacy ledger row(s)`, `Successfully ran K migration(s)`, `database identity recorded: <CODE> (first run …, commit …)` and `store_code column defaults — <CODE>: N, other stores: 0`; at boot expect `Migrations: ledger matches order.json (M applied, 0 pending, 0 mismatches)`.
 5. Only then set `STRICT_MIGRATIONS=1` on the service (one restart). From that point a pending, mismatched, or (for `npm run migrate`) orphaned migration refuses instead of logging.
+
+**The first run is also the run that LABELS the database** (migration 127, section 2c). It writes
+`_store_identity` with the `STORE_CODE` it was given, and every later run whose `STORE_CODE` differs
+is refused. So the first run is the one that has to be right: rehearse it (step 2) with the same
+`STORE_CODE` the service will carry, and read the `database identity recorded:` line in the deploy log.
 
 ## 2b. STORE_CODE — required on every service (Lane C, review F1)
 
@@ -55,6 +60,66 @@ Each migration transaction also runs `SET LOCAL lock_timeout` (`MIGRATION_LOCK_T
 otherwise wait forever and queue every later reader behind it. On a timeout the transaction rolls back,
 the ledger is untouched and the same command is simply re-run at a quieter moment.
 
+`STORE_CODE` being *shape*-valid was never the same as it being *right* for this database. That half is
+section 2c.
+
+## 2c. Store identity — the database says which store it is (lane C3, review P1-3)
+
+`STORE_CODE=PL npm run migrate` against Mineblock's database used to exit 0 with no complaint, because
+nothing tied the variable to the database it was about to label. One copy-pasted env var on Puure's
+first deploy would have labelled 100 % of Puure's rows `MB`, and the deploy would have succeeded.
+
+Migration `127_store_identity.sql` creates `_store_identity` — one row: `store_code`, `first_run_at`,
+`first_run_commit`, `runner_version`. The migration writes no data; **`run.js` writes the row**, with
+the `STORE_CODE` that run was given, so the label always records the code that actually tagged the rows.
+
+| Situation | What `npm run migrate` does |
+|---|---|
+| no `_store_identity` (a database from before 127) | treated as "no identity yet"; 127 runs and this run records the row |
+| table present, no row | this run records the row |
+| row matches `STORE_CODE` | prints `database identity: MB (first run …, commit …)` and continues |
+| row differs | prints `STORE IDENTITY MISMATCH: database is MB, STORE_CODE is PL` and **exits 1 with zero writes** |
+| row malformed (not `^[A-Z0-9]{2,4}$`, or more than one row) | `MALFORMED STORE IDENTITY`, exits 1, zero writes |
+
+The identity is read as the FIRST statement under the advisory lock, before the ledger table is even
+created, so a refusal really does write nothing. `npm run migrate:dry-run` reports the same thing
+(`database identity: …` / `no identity yet, this run will record PL`) and exits 1 on a mismatch, which
+is what makes it usable as the preflight gate. `--mark-applied` is a write path too and carries the
+same refusal whenever `STORE_CODE` is set.
+
+**Deliberate relabel** (moving a database from one store to another, e.g. a restored dump repurposed
+for a new store):
+
+```
+STORE_CODE=PL npm run migrate -- --relabel-identity --i-typed-the-store-name=Puure
+```
+
+`<Name>` must equal this deployment's configured display name: `STORE_NAME` if the service sets one,
+otherwise `BRAND_NAME` (`server/config/env.PL.example` carries `BRAND_NAME=Puure`). `PRODUCT_CODES_JSON`
+carries no display name, so it is not a source. Neither variable set → the relabel is refused: there is
+nothing to type against. Wrong name, missing name, or `--dry-run` → refused, nothing written. On success
+the runner prints `RELABELLED database identity (typed BRAND_NAME "Puure"): MB (…) -> PL (…)`.
+`first_run_at` is not moved: it is the database's first run, not the relabel.
+
+A relabel changes the LABEL, not the DATA. The 90-odd `store_code` column defaults still carry the old
+code, so the next check (section 2d) fails the run until
+`STORE_CODE=PL node server/scripts/backfill-store-codes.mjs --relabel-store PL` has run. That order is
+deliberate: identity first, data second, and the runner refuses to call it done in between.
+
+## 2d. The column-default report — the Puure bracket's check, inside the runner
+
+After every real run the runner prints
+
+```
+store_code column defaults — PL: 91, other stores: 0
+```
+
+counting `store_code` columns whose DEFAULT is a store literal. **Any default carrying another store's
+code exits 1 and names the columns** (`MIXED STORE LABELS: 1 … PL: puure_leftovers.store_code`). The
+migrations have already committed at that point; the report failing is what stops the deploy. This is
+the check REVIEW-MERGE-1 P1-3 asked the Puure bracket to run by hand immediately after `npm run migrate`
+and before the instance swap; it is no longer a manual step, and it cannot be forgotten.
+
 ## 3. STRICT
 
 `STRICT_MIGRATIONS=1` (env) or `--strict` (flag) means:
@@ -69,7 +134,8 @@ Renamed applied files (a pending file whose sha256 equals an orphan row's checks
 - Append at the END of `order` unless the file must precede an existing dependent (then directly before it). The numeric prefix is documentation, not the order.
 - Numbering: 100-119 tracking/Puure sessions, 120+ HUB. Lane A used 120, 121, 122; Lane C uses 123, 124
   (and reserves 125 for `staged/125_clickup_brief_resolutions_rekey.sql`, which is NOT auto-run — `run.js`
-  and `server.js` read only `*.sql` directly under `server/migrations/`). The next free HUB number is 126.
+  and `server.js` read only `*.sql` directly under `server/migrations/`). Lane E used 126; lane C3 uses
+  127 (`127_store_identity.sql`, section 2c). The next free HUB number is 128.
 - Never rename or edit an applied file. Fix forward with a new file. (Checksum mismatch and rename are both refusals.)
 - Never delete an applied file. Under STRICT the orphan row refuses the run; without STRICT it is a printed warning and the file silently never runs on a fresh database.
 - A migration must run on an EMPTY database (R6) and be a no-op where the route already created the shape. Guard with the catalog (`IF NOT EXISTS`, `information_schema`, `pg_constraint`), not with `EXCEPTION WHEN OTHERS`: a swallowed error is how 017/061 hid a missing table for months. `RAISE WARNING` when you decline to act; `run.js` prints database warnings in the deploy log.
@@ -80,8 +146,10 @@ Renamed applied files (a pending file whose sha256 equals an orphan row's checks
 
 ```
 node server/migrations/run.js [--dry-run [--allow-pending]] [--strict] [--dir <migrationsDir>] [--mark-applied a.sql,b.sql]
+                             [--relabel-identity --i-typed-the-store-name=<Name>]
 env: DATABASE_URL (required), STORE_CODE (required for a real run, ^[A-Z0-9]{2,4}$), MIGRATIONS_DIR (= --dir),
-     STRICT_MIGRATIONS=1 (= --strict), MIGRATION_LOCK_TIMEOUT (default 5s), MIGRATE_SSL=0|1
+     STRICT_MIGRATIONS=1 (= --strict), MIGRATION_LOCK_TIMEOUT (default 5s), MIGRATE_SSL=0|1,
+     STORE_NAME / BRAND_NAME (--relabel-identity only), RENDER_GIT_COMMIT (recorded on the identity row)
 npm run migrate            = node server/migrations/run.js
 npm run migrate:dry-run    = node server/migrations/run.js --dry-run   (extra flags after --, e.g. -- --allow-pending)
 ```
@@ -96,9 +164,13 @@ npm run migrate:dry-run    = node server/migrations/run.js --dry-run   (extra fl
 | orphan row, STRICT | refuses, 1 | 1 | 1 |
 | manifest broken / DB unreachable / no DATABASE_URL | 1 before any write | 1 | 1 |
 | STORE_CODE unset or malformed | refuses, 1, before any write | warns, 0 | warns, 0 |
+| STORE_CODE differs from `_store_identity.store_code` | refuses, 1, before any write | 1 | 1 |
+| `_store_identity` malformed (bad code, or >1 row) | refuses, 1, before any write | 1 | 1 |
+| a `store_code` column defaults to ANOTHER store's code | migrations commit, report exits 1 naming the columns | n/a | n/a |
 | a migration cannot take its locks within `lock_timeout` | that file rolls back, run exits 1, ledger untouched | n/a | n/a |
 
 Ledger: `_migrations(id, filename UNIQUE, executed_at, checksum sha256-hex-of-bytes, applied_order)`. `applied_order` is the per-database apply sequence (1-based, monotonic), not the manifest index; re-ordering the manifest never invalidates history.
 
 Tests: `node server/tests/migrations/migrations.mjs` (A1-A8; A7/A8 need the read-only `mineblock_copy` on the local Postgres, they SKIP otherwise)
-and `node --test server/tests/store-code/*.test.mjs` (Lane C A1-A7: tagging, backfill, the STORE_CODE refusal and the lock timeout).
+and `node --test server/tests/store-code/*.test.mjs` (Lane C A1-A7: tagging, backfill, the STORE_CODE refusal and the lock timeout;
+lane C3 `c3-store-identity.test.mjs`: the identity gate, the relabel override and the column-default report).
