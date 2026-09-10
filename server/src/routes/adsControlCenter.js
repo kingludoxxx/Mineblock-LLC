@@ -10,7 +10,8 @@ router.use(authenticate, requirePermission('ads-control-center', 'access'));
 // ── Config ──────────────────────────────────────────────────────────────
 const META_ACCESS_TOKEN = process.env.META_ACCESS_TOKEN || '';
 const META_AD_ACCOUNT_IDS = (process.env.META_AD_ACCOUNT_IDS || '').split(',').filter(Boolean);
-const META_GRAPH_URL = 'https://graph.facebook.com/v21.0';
+// Meta Graph base URL: storeConfig.metaGraphUrl() at call time (META_API_VERSION, one default).
+const metaGraphUrl = () => storeConfig.metaGraphUrl();
 const TW_API_KEY = process.env.TRIPLEWHALE_API_KEY || '';
 // Triple Whale shop id: storeConfig.tripleWhaleShopId() at call time (unset = dormant).
 const TW_SQL_URL = 'https://api.triplewhale.com/api/v2/orcabase/api/sql';
@@ -273,7 +274,7 @@ async function findAdByName(adName) {
         limit: '5',
         access_token: META_ACCESS_TOKEN,
       });
-      const url = `${META_GRAPH_URL}/${accountId}/ads?${params}`;
+      const url = `${metaGraphUrl()}/${accountId}/ads?${params}`;
       const res = await fetch(url, { signal: AbortSignal.timeout(15000) });
       if (!res.ok) {
         const errBody = await res.text().catch(() => '');
@@ -315,7 +316,7 @@ async function findAdByName(adName) {
 }
 
 async function pauseAd(adId) {
-  const res = await fetch(`${META_GRAPH_URL}/${adId}?status=PAUSED&access_token=${META_ACCESS_TOKEN}`, {
+  const res = await fetch(`${metaGraphUrl()}/${adId}?status=PAUSED&access_token=${META_ACCESS_TOKEN}`, {
     method: 'POST', signal: AbortSignal.timeout(15000),
   });
   const data = await res.json();
@@ -324,7 +325,7 @@ async function pauseAd(adId) {
 }
 
 async function resumeAd(adId) {
-  const res = await fetch(`${META_GRAPH_URL}/${adId}?status=ACTIVE&access_token=${META_ACCESS_TOKEN}`, {
+  const res = await fetch(`${metaGraphUrl()}/${adId}?status=ACTIVE&access_token=${META_ACCESS_TOKEN}`, {
     method: 'POST', signal: AbortSignal.timeout(15000),
   });
   const data = await res.json();
@@ -333,7 +334,7 @@ async function resumeAd(adId) {
 }
 
 async function updateAdsetBudget(adsetId, newBudgetCents) {
-  const res = await fetch(`${META_GRAPH_URL}/${adsetId}?daily_budget=${Math.round(newBudgetCents)}&access_token=${META_ACCESS_TOKEN}`, {
+  const res = await fetch(`${metaGraphUrl()}/${adsetId}?daily_budget=${Math.round(newBudgetCents)}&access_token=${META_ACCESS_TOKEN}`, {
     method: 'POST', signal: AbortSignal.timeout(15000),
   });
   const data = await res.json();

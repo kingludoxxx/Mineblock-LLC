@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import storeConfig from '../config/storeConfig.js';
 import { authenticate } from '../middleware/auth.js';
 import { requirePermission } from '../middleware/rbac.js';
 import { pgQuery } from '../db/pg.js';
@@ -65,7 +66,7 @@ router.use(authenticate, requirePermission('ads-launcher', 'access'));
 // one fails first. Authenticated (unlike the older _diag-meta) — this reports
 // on credentials and must not be a public surface.
 router.get('/meta/diagnose', async (req, res) => {
-  const GRAPH = 'https://graph.facebook.com/v21.0';
+  const GRAPH = storeConfig.metaGraphUrl();
   const token = process.env.META_ACCESS_TOKEN;
   const appId = process.env.META_APP_ID;
   const appSecret = process.env.META_APP_SECRET;

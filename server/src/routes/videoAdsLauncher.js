@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import storeConfig from '../config/storeConfig.js';
 import { authenticate } from '../middleware/auth.js';
 import { requirePermission } from '../middleware/rbac.js';
 import { pgQuery } from '../db/pg.js';
@@ -747,7 +748,7 @@ async function launchVideoToAdset({ video, template, adsetId, adsetName, page, a
     // placeholders must be sent LITERALLY.
     creativeBody.url_tags = DEFAULT_URL_TAGS;
 
-    const creativeRes = await fetch(`https://graph.facebook.com/v21.0/${template.ad_account_id}/adcreatives`, {
+    const creativeRes = await fetch(`${storeConfig.metaGraphUrl()}/${template.ad_account_id}/adcreatives`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       signal: AbortSignal.timeout(45000),

@@ -4582,7 +4582,7 @@ router.post('/iterate/:creativeId', authenticate, async (req, res) => {
         if ((!probe || !probe.ok) && parent.meta_ad_id && process.env.META_ACCESS_TOKEN) {
           console.log(`[iterations] batch ${batchId} | Meta URL stale, refreshing ad ${parent.meta_ad_id}`);
           const refreshRes = await fetch(
-            `https://graph.facebook.com/v23.0/${parent.meta_ad_id}?fields=creative{image_url,thumbnail_url}&access_token=${process.env.META_ACCESS_TOKEN}`
+            `${storeConfig.metaGraphUrl()}/${parent.meta_ad_id}?fields=creative{image_url,thumbnail_url}&access_token=${process.env.META_ACCESS_TOKEN}`
           );
           if (refreshRes.ok) {
             const rData = await refreshRes.json();

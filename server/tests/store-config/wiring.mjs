@@ -54,6 +54,27 @@ test('the Shopify API version default exists in exactly ONE place (storeConfig)'
   assert.deepEqual(lines.map((l) => l.split(':')[0]), ['server/src/config/storeConfig.js'], out);
 });
 
+// item 5
+for (const f of ['routes/adLauncher.js', 'routes/adRejectionMonitor.js', 'routes/adsControlCenter.js', 'routes/briefPipeline.js', 'routes/creativeAnalysis.js', 'routes/kpiSystem.js', 'routes/metaWebhook.js', 'routes/videoAdsLauncher.js', 'routes/adsReporting.js', 'services/funnelSpend.js', 'services/metaAdsApi.js']) {
+  test(`${f}: no pinned graph.facebook.com/vNN literal; version comes from storeConfig`, () => {
+    const s = src(f);
+    assert.doesNotMatch(s, /graph\.facebook\.com\/v\d/);
+    assert.match(s, /storeConfig\.metaGraphUrl\(\)/);
+  });
+}
+test('routes/staticsGeneration.js:4592 (the v23.0 refresh) reads storeConfig; other pins are out of this lane', () => {
+  const s = src('routes/staticsGeneration.js');
+  assert.doesNotMatch(s, /graph\.facebook\.com\/v23/);
+  assert.match(s, /storeConfig\.metaGraphUrl\(\)/);
+});
+test('the Meta Graph host+version literal exists in exactly ONE place (storeConfig)', () => {
+  let out = '';
+  try { out = execFileSync('git', ['grep', '-nE', 'graph\\.facebook\\.com/v[0-9]', '--', 'server/src'], { cwd: REPO, encoding: 'utf8' }); } catch (e) { if (e.status !== 1) throw e; }
+  const files = [...new Set(out.trim().split('\n').filter(Boolean).map((l) => l.split(':')[0]))];
+  // staticsGeneration.js keeps three pins outside this lane's line budget (7191, 9742, 10300) — see docs/lanes/lane-f.md
+  assert.deepEqual(files.filter((f) => !f.endsWith('staticsGeneration.js')), [], out);
+});
+
 // A1 over the whole tree (allowed: tests and docs)
 test('A1: git grep over server/src is empty', () => {
   let out = '';

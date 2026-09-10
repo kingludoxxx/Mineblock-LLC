@@ -150,3 +150,18 @@ test('tripleWhaleShopId(): NO literal default; unset → null + ONE warning; set
   assert.equal(sc.tripleWhaleShopId(), 'zz-store.myshopify.com');
   assert.equal(sc.snapshot().tripleWhale.shopId, 'zz-store.myshopify.com');
 });
+
+// ── item 5: Meta Graph API version ──────────────────────────────────────────
+test('metaApiVersion(): the ONE default is v21.0; malformed → default + one warning; metaGraphUrl() composes it', () => {
+  clearEnv();
+  assert.equal(sc.metaApiVersion(), 'v21.0');
+  assert.equal(sc.metaGraphUrl(), 'https://graph.facebook.com/v21.0');
+  process.env.META_API_VERSION = 'v23.0';
+  assert.equal(sc.metaApiVersion(), 'v23.0');
+  assert.equal(sc.metaGraphUrl(), 'https://graph.facebook.com/v23.0');
+  assert.equal(sc.snapshot().meta.apiVersion, 'v23.0');
+  process.env.META_API_VERSION = '23';
+  const w = captureWarnings(() => { assert.equal(sc.metaApiVersion(), 'v21.0'); sc.metaApiVersion(); });
+  assert.equal(w.length, 1, String(w));
+  assert.match(w[0], /META_API_VERSION/);
+});

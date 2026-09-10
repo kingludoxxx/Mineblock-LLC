@@ -15,7 +15,8 @@ const TW_ATTRIBUTION_MODEL = process.env.TW_ATTRIBUTION_MODEL || 'lastPlatformCl
 const TW_REVENUE_COL       = process.env.TW_REVENUE_COL || 'order_revenue';
 const CRON_SECRET          = process.env.CRON_SECRET || '';
 const META_ACCESS_TOKEN    = process.env.META_ACCESS_TOKEN || '';
-const META_GRAPH_URL       = 'https://graph.facebook.com/v22.0';
+// Meta Graph base URL: storeConfig.metaGraphUrl() at call time (META_API_VERSION, one default).
+const metaGraphUrl = () => storeConfig.metaGraphUrl();
 const CLICKUP_TOKEN        = process.env.CLICKUP_API_TOKEN || '';
 const CLICKUP_LIST_ID      = process.env.CLICKUP_MB_VIDEO_LIST_ID || '';
 const CLICKUP_TEAM_ID      = process.env.CLICKUP_TEAM_ID || '';
@@ -429,7 +430,7 @@ async function enrichWithMetaLinks(rows) {
       let resolvedFbLink = null;
       let resolvedCreatedTime = null;
       try {
-        const url = `${META_GRAPH_URL}/${adId}?fields=${encodeURIComponent(FIELDS)}&access_token=${META_ACCESS_TOKEN}`;
+        const url = `${metaGraphUrl()}/${adId}?fields=${encodeURIComponent(FIELDS)}&access_token=${META_ACCESS_TOKEN}`;
         const res = await fetch(url, { signal: AbortSignal.timeout(10000) });
         if (res.ok) {
           const d = await res.json();

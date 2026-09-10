@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import storeConfig from '../config/storeConfig.js';
 import { authenticate } from '../middleware/auth.js';
 import { requirePermission } from '../middleware/rbac.js';
 import { pgQuery } from '../db/pg.js';
@@ -9,7 +10,8 @@ router.use(authenticate, requirePermission('ad-rejection-monitor', 'access'));
 // ── Config ──────────────────────────────────────────────────────────
 const META_ACCESS_TOKEN = process.env.META_ACCESS_TOKEN || '';
 const META_AD_ACCOUNT_IDS = (process.env.META_AD_ACCOUNT_IDS || '').split(',').filter(Boolean);
-const META_GRAPH_URL = 'https://graph.facebook.com/v21.0';
+// Meta Graph base URL: storeConfig.metaGraphUrl() at call time (META_API_VERSION, one default).
+const metaGraphUrl = () => storeConfig.metaGraphUrl();
 const SLACK_BOT_TOKEN = process.env.SLACK_BOT_TOKEN || '';
 const SLACK_CHANNEL = process.env.SLACK_REJECTION_CHANNEL || '';
 
@@ -70,7 +72,7 @@ async function checkSiblingAds(briefNumber, sourceAccountId, sourceAccountName) 
     for (const accountId of META_AD_ACCOUNT_IDS) {
       const accountName = ACCOUNT_NAMES[accountId] || accountId;
       const filter = encodeURIComponent(JSON.stringify([{ field: 'name', operator: 'CONTAIN', value: briefNumber }]));
-      const url = `${META_GRAPH_URL}/${accountId}/ads?fields=id,name,effective_status,configured_status&filtering=${filter}&limit=50&access_token=${META_ACCESS_TOKEN}`;
+      const url = `${metaGraphUrl()}/${accountId}/ads?fields=id,name,effective_status,configured_status&filtering=${filter}&limit=50&access_token=${META_ACCESS_TOKEN}`;
       const resp = await fetch(url);
       const data = await resp.json();
       if (data.error || !data.data) continue;
@@ -208,7 +210,7 @@ function shuffleArray(arr) {
 }
 
 async function fetchAdsForAccount(accountId) {
-  const url = `${META_GRAPH_URL}/${accountId}/ads?fields=name,effective_status,configured_status,adset{configured_status},campaign{configured_status}&effective_status=["DISAPPROVED","WITH_ISSUES"]&limit=100&access_token=${META_ACCESS_TOKEN}`;
+  const url = `${metaGraphUrl()}/${accountId}/ads?fields=name,effective_status,configured_status,adset{configured_status},campaign{configured_status}&effective_status=["DISAPPROVED","WITH_ISSUES"]&limit=100&access_token=${META_ACCESS_TOKEN}`;
   const resp = await fetch(url);
   if (!resp.ok) {
     throw new Error(`Meta API error for ${accountId}: HTTP ${resp.status} ${resp.statusText}`);
@@ -324,7 +326,7 @@ async function cleanupResolvedAds() {
       const ids = batch.map(r => r.ad_id).join(',');
 
       try {
-        const resp = await fetch(`${META_GRAPH_URL}/?ids=${ids}&fields=effective_status&access_token=${META_ACCESS_TOKEN}`);
+        const resp = await fetch(`${metaGraphUrl()}/?ids=${ids}&fields=effective_status&access_token=${META_ACCESS_TOKEN}`);
         const data = await resp.json();
 
         for (const row of batch) {
@@ -509,7 +511,7 @@ router.get('/debug-ad/:adId', authenticate, async (req, res) => {
   try {
     const { adId } = req.params;
     const fields = 'id,name,account_id,adset_id,campaign_id,effective_status,configured_status,ad_review_feedback,issues_info,recommendations,updated_time,created_time,adset{name,configured_status},campaign{name,configured_status,effective_status}';
-    const url = `${META_GRAPH_URL}/${adId}?fields=${fields}&access_token=${META_ACCESS_TOKEN}`;
+    const url = `${metaGraphUrl()}/${adId}?fields=${fields}&access_token=${META_ACCESS_TOKEN}`;
     const resp = await fetch(url);
     const data = await resp.json();
 
@@ -550,7 +552,7 @@ router.get('/search-by-name/:name', authenticate, async (req, res) => {
       const accountName = ACCOUNT_NAMES[accountId] || accountId;
       // Use filtering to find ads with the name pattern
       const filter = encodeURIComponent(JSON.stringify([{ field: 'name', operator: 'CONTAIN', value: name }]));
-      const url = `${META_GRAPH_URL}/${accountId}/ads?fields=id,name,effective_status,configured_status,updated_time,created_time&filtering=${filter}&limit=100&access_token=${META_ACCESS_TOKEN}`;
+      const url = `${metaGraphUrl()}/${accountId}/ads?fields=id,name,effective_status,configured_status,updated_time,created_time&filtering=${filter}&limit=100&access_token=${META_ACCESS_TOKEN}`;
 
       try {
         const resp = await fetch(url);

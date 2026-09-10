@@ -109,6 +109,28 @@ export function shopifyApiVersion() {
   return v;
 }
 
+// ── Meta ────────────────────────────────────────────────────────────────
+
+/** The ONE place the Meta Graph API version defaults. */
+export const META_API_VERSION_DEFAULT = 'v21.0';
+const META_API_VERSION_RE = /^v\d{1,3}\.\d{1,2}$/;
+
+/** Meta Graph API version (`vNN.N`); malformed → default + one warning. */
+export function metaApiVersion() {
+  const v = raw('META_API_VERSION');
+  if (v === undefined) return META_API_VERSION_DEFAULT;
+  if (!META_API_VERSION_RE.test(v)) {
+    warnOnce('META_API_VERSION', `'${v.slice(0, 20)}' is not a Graph version (vNN.N) — using ${META_API_VERSION_DEFAULT}`);
+    return META_API_VERSION_DEFAULT;
+  }
+  return v;
+}
+
+/** `https://graph.facebook.com/<version>` — the base every Graph call is built on. */
+export function metaGraphUrl() {
+  return `https://graph.facebook.com/${metaApiVersion()}`;
+}
+
 // ── Triple Whale ────────────────────────────────────────────────────────
 
 /** Triple Whale shop id; NO literal default — unset = feature dormant (one warning). */
@@ -144,12 +166,16 @@ export function snapshot() {
     tripleWhale: {
       shopId: tripleWhaleShopId(),
     },
+    meta: {
+      apiVersion: metaApiVersion(),
+    },
   };
 }
 
 const storeConfig = {
   setStoreConfigSource, resetWarnings,
   storeCode, brand, shopifyStoreDomain, shopifyApiVersion, SHOPIFY_API_VERSION_DEFAULT, whopCompanyId, tripleWhaleShopId,
+  metaApiVersion, metaGraphUrl, META_API_VERSION_DEFAULT,
   snapshot,
 };
 export default storeConfig;

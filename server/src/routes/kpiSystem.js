@@ -289,7 +289,8 @@ const SELLERBOARD_FEED_URL = process.env.SELLERBOARD_FEED_URL || '';
 const META_TOKEN = process.env.META_ACCESS_TOKEN || '';
 const META_ACCOUNT_IDS = (process.env.META_AD_ACCOUNT_IDS || '')
   .split(',').map(s => s.trim()).filter(Boolean);
-const META_GRAPH = 'https://graph.facebook.com/v21.0';
+// Meta Graph base URL: storeConfig.metaGraphUrl() at call time (META_API_VERSION, one default).
+const metaGraphUrl = () => storeConfig.metaGraphUrl();
 
 const UNIT_COST_PER_MINER = 10.92;
 const UNIT_COST_PER_MINER_2920 = 11.28; // Orders #2722-#5716
@@ -2662,7 +2663,7 @@ async function syncMetaAdSpend(days = 8) {
         level: 'account',
         access_token: META_TOKEN,
       });
-      const res = await fetch(`${META_GRAPH}/${accountId}/insights?${params}`, {
+      const res = await fetch(`${metaGraphUrl()}/${accountId}/insights?${params}`, {
         signal: AbortSignal.timeout(20000),
       });
       const data = await res.json();

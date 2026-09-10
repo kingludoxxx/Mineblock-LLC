@@ -1,10 +1,13 @@
 // ── Meta Ads API Service ─────────────────────────────────────────────────
 // Wraps the Meta Marketing API for launching ads (image upload, creative, ad).
 
+import storeConfig from '../config/storeConfig.js';
+
 const META_ACCESS_TOKEN = process.env.META_ACCESS_TOKEN || '';
 const META_APP_SECRET = process.env.META_APP_SECRET || '';
 const META_AD_ACCOUNT_IDS = (process.env.META_AD_ACCOUNT_IDS || '').split(',').filter(Boolean);
-const META_GRAPH_URL = 'https://graph.facebook.com/v21.0';
+// Meta Graph base URL: storeConfig.metaGraphUrl() at call time (META_API_VERSION, one default).
+const metaGraphUrl = () => storeConfig.metaGraphUrl();
 const META_API_TIMEOUT = 45000;  // 45s timeout for all Meta API calls
 const META_UPLOAD_TIMEOUT = 60000; // 60s for image uploads (larger payloads)
 
@@ -16,7 +19,7 @@ export const DEFAULT_URL_TAGS = 'tw_source={{site_source_name}}&tw_adid={{ad.id}
 
 /**
  * Upload an ad image to a Meta ad account
- * @param {string} adAccountId - e.g. 'act_123456'
+ * @param {string} adAccountId - the `act_<id>` form
  * @param {Buffer} imageBuffer - Image data
  * @returns {{ hash: string, url: string }}
  */
@@ -29,7 +32,7 @@ export async function uploadAdImage(adAccountId, imageBuffer) {
   formData.append('access_token', META_ACCESS_TOKEN);
   formData.append('bytes', base64);
 
-  const res = await fetch(`${META_GRAPH_URL}/${adAccountId}/adimages`, {
+  const res = await fetch(`${metaGraphUrl()}/${adAccountId}/adimages`, {
     method: 'POST',
     body: formData,
     signal: AbortSignal.timeout(META_UPLOAD_TIMEOUT),
@@ -100,7 +103,7 @@ export async function createAdCreative(adAccountId, params) {
 
   console.log(`[createAdCreative] link: ${link}, page_id: ${resolvedPageId}, cta: ${cta}`);
 
-  const res = await fetch(`${META_GRAPH_URL}/${adAccountId}/adcreatives`, {
+  const res = await fetch(`${metaGraphUrl()}/${adAccountId}/adcreatives`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     signal: AbortSignal.timeout(META_API_TIMEOUT),
@@ -125,7 +128,7 @@ export async function createAdCreative(adAccountId, params) {
 export async function createAd(adAccountId, params) {
   const { name, adsetId, creativeId, status = 'ACTIVE' } = params;
 
-  const res = await fetch(`${META_GRAPH_URL}/${adAccountId}/ads`, {
+  const res = await fetch(`${metaGraphUrl()}/${adAccountId}/ads`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     signal: AbortSignal.timeout(META_API_TIMEOUT),
@@ -151,7 +154,7 @@ export async function createAd(adAccountId, params) {
  * Get ad status
  */
 export async function getAdStatus(adId) {
-  const res = await fetch(`${META_GRAPH_URL}/${adId}?fields=effective_status,name&access_token=${META_ACCESS_TOKEN}`);
+  const res = await fetch(`${metaGraphUrl()}/${adId}?fields=effective_status,name&access_token=${META_ACCESS_TOKEN}`);
   if (!res.ok) throw new Error(`Meta ad status error ${res.status}`);
   const data = await res.json();
   return { status: data.effective_status, name: data.name };
@@ -188,7 +191,7 @@ export function getAllAdAccountIds() {
  */
 export async function discoverAdAccounts() {
   const results = [];
-  let url = `${META_GRAPH_URL}/me/adaccounts?fields=id,name,currency,account_status,business&limit=100&access_token=${META_ACCESS_TOKEN}`;
+  let url = `${metaGraphUrl()}/me/adaccounts?fields=id,name,currency,account_status,business&limit=100&access_token=${META_ACCESS_TOKEN}`;
   const MAX_PAGES = 5;
   for (let page = 0; page < MAX_PAGES; page++) {
     const res = await fetch(url, { signal: AbortSignal.timeout(META_API_TIMEOUT) });
@@ -266,7 +269,7 @@ export async function getAdAccounts() {
   for (const accountId of META_AD_ACCOUNT_IDS) {
     try {
       const res = await fetch(
-        `${META_GRAPH_URL}/${accountId}?fields=name,account_id,currency,account_status,business_name&access_token=${META_ACCESS_TOKEN}`
+        `${metaGraphUrl()}/${accountId}?fields=name,account_id,currency,account_status,business_name&access_token=${META_ACCESS_TOKEN}`
       );
       if (res.ok) {
         const data = await res.json();
@@ -317,7 +320,7 @@ export async function resolveAdAccountNames(accountIds) {
     for (const id of candidates) {
       try {
         const res = await fetch(
-          `${META_GRAPH_URL}/${id}?fields=name,account_id,business_name&access_token=${META_ACCESS_TOKEN}`,
+          `${metaGraphUrl()}/${id}?fields=name,account_id,business_name&access_token=${META_ACCESS_TOKEN}`,
           { signal: AbortSignal.timeout(8000) }
         );
         if (!res.ok) continue;
@@ -342,7 +345,7 @@ export async function resolveAdAccountNames(accountIds) {
  */
 export async function getPages(adAccountId) {
   const res = await fetch(
-    `${META_GRAPH_URL}/${adAccountId}/promote_pages?fields=id,name,picture&access_token=${META_ACCESS_TOKEN}`
+    `${metaGraphUrl()}/${adAccountId}/promote_pages?fields=id,name,picture&access_token=${META_ACCESS_TOKEN}`
   );
   if (!res.ok) {
     const err = await res.text();
@@ -357,7 +360,7 @@ export async function getPages(adAccountId) {
  */
 export async function getPixels(adAccountId) {
   const res = await fetch(
-    `${META_GRAPH_URL}/${adAccountId}/adspixels?fields=id,name,is_unavailable&access_token=${META_ACCESS_TOKEN}`
+    `${metaGraphUrl()}/${adAccountId}/adspixels?fields=id,name,is_unavailable&access_token=${META_ACCESS_TOKEN}`
   );
   if (!res.ok) {
     const err = await res.text();
@@ -377,7 +380,7 @@ export async function getCampaigns(adAccountId) {
     effective_status: '["ACTIVE","PAUSED"]',
     access_token: META_ACCESS_TOKEN,
   });
-  const res = await fetch(`${META_GRAPH_URL}/${adAccountId}/campaigns?${params}`);
+  const res = await fetch(`${metaGraphUrl()}/${adAccountId}/campaigns?${params}`);
   if (!res.ok) {
     const err = await res.text();
     throw new Error(`Meta campaigns error ${res.status}: ${err.slice(0, 300)}`);
@@ -399,7 +402,7 @@ export async function getAdSets(campaignId) {
     effective_status: '["ACTIVE","PAUSED"]',
     access_token: META_ACCESS_TOKEN,
   });
-  const res = await fetch(`${META_GRAPH_URL}/${campaignId}/adsets?${params}`);
+  const res = await fetch(`${metaGraphUrl()}/${campaignId}/adsets?${params}`);
   if (!res.ok) {
     const err = await res.text();
     throw new Error(`Meta adsets error ${res.status}: ${err.slice(0, 300)}`);
@@ -416,7 +419,7 @@ export async function getAdSets(campaignId) {
  */
 export async function getCustomAudiences(adAccountId) {
   const res = await fetch(
-    `${META_GRAPH_URL}/${adAccountId}/customaudiences?fields=id,name,approximate_count_lower_bound,approximate_count_upper_bound,subtype&limit=200&access_token=${META_ACCESS_TOKEN}`
+    `${metaGraphUrl()}/${adAccountId}/customaudiences?fields=id,name,approximate_count_lower_bound,approximate_count_upper_bound,subtype&limit=200&access_token=${META_ACCESS_TOKEN}`
   );
   if (!res.ok) {
     const err = await res.text();
@@ -481,7 +484,7 @@ export async function createCampaign(adAccountId, params) {
     if (bidStrategy) body.bid_strategy = bidStrategy;
   }
 
-  const res = await fetch(`${META_GRAPH_URL}/${adAccountId}/campaigns`, {
+  const res = await fetch(`${metaGraphUrl()}/${adAccountId}/campaigns`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     signal: AbortSignal.timeout(META_API_TIMEOUT),
@@ -502,7 +505,7 @@ export async function createCampaign(adAccountId, params) {
  * a create_new launch whose ad sets all failed).
  */
 export async function deleteCampaign(campaignId) {
-  const res = await fetch(`${META_GRAPH_URL}/${campaignId}?access_token=${META_ACCESS_TOKEN}`, {
+  const res = await fetch(`${metaGraphUrl()}/${campaignId}?access_token=${META_ACCESS_TOKEN}`, {
     method: 'DELETE',
     signal: AbortSignal.timeout(META_API_TIMEOUT),
   });
@@ -581,7 +584,7 @@ export async function createAdSet(adAccountId, params) {
   let isCBO = false;
   try {
     const camRes = await fetch(
-      `${META_GRAPH_URL}/${campaignId}?fields=daily_budget,lifetime_budget&access_token=${META_ACCESS_TOKEN}`,
+      `${metaGraphUrl()}/${campaignId}?fields=daily_budget,lifetime_budget&access_token=${META_ACCESS_TOKEN}`,
       { signal: AbortSignal.timeout(META_API_TIMEOUT) }
     );
     if (camRes.ok) {
@@ -623,7 +626,7 @@ export async function createAdSet(adAccountId, params) {
   }
 
   console.log('[createAdSet] targeting payload:', JSON.stringify(body.targeting));
-  const res = await fetch(`${META_GRAPH_URL}/${adAccountId}/adsets`, {
+  const res = await fetch(`${metaGraphUrl()}/${adAccountId}/adsets`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     signal: AbortSignal.timeout(META_API_TIMEOUT),
@@ -694,7 +697,7 @@ export async function createFlexibleAdCreative(adAccountId, params) {
 
   console.log(`[createFlexibleAdCreative] link: ${link}, url_tags: ${DEFAULT_URL_TAGS}`);
 
-  const res = await fetch(`${META_GRAPH_URL}/${adAccountId}/adcreatives`, {
+  const res = await fetch(`${metaGraphUrl()}/${adAccountId}/adcreatives`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     signal: AbortSignal.timeout(META_API_TIMEOUT),
@@ -831,7 +834,7 @@ export async function createPlacementAwareAdCreative(adAccountId, params) {
 
   console.log(`[createPlacementAwareAdCreative] ${name}: chose ratio=${chosen.ratio} (preferred 4:5 → 1:1 → 9:16), link=${link}`);
 
-  const res = await fetch(`${META_GRAPH_URL}/${adAccountId}/adcreatives`, {
+  const res = await fetch(`${metaGraphUrl()}/${adAccountId}/adcreatives`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     signal: AbortSignal.timeout(META_API_TIMEOUT),
@@ -880,7 +883,7 @@ export async function uploadAdImageFromUrl(adAccountId, imageUrl) {
  */
 export async function getVideoThumbnail(videoId) {
   try {
-    const res = await fetch(`${META_GRAPH_URL}/${videoId}/thumbnails?access_token=${META_ACCESS_TOKEN}`, {
+    const res = await fetch(`${metaGraphUrl()}/${videoId}/thumbnails?access_token=${META_ACCESS_TOKEN}`, {
       signal: AbortSignal.timeout(15000),
     });
     if (!res.ok) return null;
@@ -896,7 +899,7 @@ export async function waitForVideoReady(videoId, maxWaitMs = 1200000) {
   while (Date.now() - start < maxWaitMs) {
     let res;
     try {
-      res = await fetch(`${META_GRAPH_URL}/${videoId}?fields=status&access_token=${META_ACCESS_TOKEN}`, {
+      res = await fetch(`${metaGraphUrl()}/${videoId}?fields=status&access_token=${META_ACCESS_TOKEN}`, {
         signal: AbortSignal.timeout(15000),
       });
     } catch (e) {
@@ -935,7 +938,7 @@ export async function waitForVideoReady(videoId, maxWaitMs = 1200000) {
  * Upload video to Meta ad account
  */
 export async function uploadAdVideo(adAccountId, videoUrl, title) {
-  const res = await fetch(`${META_GRAPH_URL}/${adAccountId}/advideos`, {
+  const res = await fetch(`${metaGraphUrl()}/${adAccountId}/advideos`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     signal: AbortSignal.timeout(META_UPLOAD_TIMEOUT),
@@ -962,13 +965,13 @@ export async function diagnoseMetaApp() {
   const results = {};
 
   // 1. Debug token
-  const debugRes = await fetch(`${META_GRAPH_URL}/debug_token?input_token=${META_ACCESS_TOKEN}&access_token=${META_ACCESS_TOKEN}`);
+  const debugRes = await fetch(`${metaGraphUrl()}/debug_token?input_token=${META_ACCESS_TOKEN}&access_token=${META_ACCESS_TOKEN}`);
   results.token = await debugRes.json();
 
   // 2. Try to get app info
   const appId = results.token?.data?.app_id;
   if (appId) {
-    const appRes = await fetch(`${META_GRAPH_URL}/${appId}?fields=name,category,link&access_token=${META_ACCESS_TOKEN}`);
+    const appRes = await fetch(`${metaGraphUrl()}/${appId}?fields=name,category,link&access_token=${META_ACCESS_TOKEN}`);
     results.app = await appRes.json();
     results.app_id = appId;
   }
@@ -991,7 +994,7 @@ export async function switchAppToLiveMode() {
 
   const appToken = `${appId}|${META_APP_SECRET}`;
 
-  const res = await fetch(`${META_GRAPH_URL}/${appId}`, {
+  const res = await fetch(`${metaGraphUrl()}/${appId}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
