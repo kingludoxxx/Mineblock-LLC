@@ -3,18 +3,20 @@ import { authenticate } from '../middleware/auth.js';
 import { requirePermission } from '../middleware/rbac.js';
 import { pgQuery } from '../db/pg.js';
 import { randomUUID } from 'crypto';
+import storeConfig from '../config/storeConfig.js';
 
 const router = Router();
 
 // ── Config ────────────────────────────────────────────────────────────────────
 const TW_API_KEY           = process.env.TRIPLEWHALE_API_KEY || '';
-const TW_SHOP_ID           = process.env.TRIPLEWHALE_SHOP_ID || '17cca0-2.myshopify.com';
+// Triple Whale shop id: storeConfig.tripleWhaleShopId() at call time (unset = dormant).
 const TW_SQL_URL           = 'https://api.triplewhale.com/api/v2/orcabase/api/sql';
 const TW_ATTRIBUTION_MODEL = process.env.TW_ATTRIBUTION_MODEL || 'lastPlatformClick';
 const TW_REVENUE_COL       = process.env.TW_REVENUE_COL || 'order_revenue';
 const CRON_SECRET          = process.env.CRON_SECRET || '';
 const META_ACCESS_TOKEN    = process.env.META_ACCESS_TOKEN || '';
-const META_GRAPH_URL       = 'https://graph.facebook.com/v22.0';
+// Meta Graph base URL: storeConfig.metaGraphUrl() at call time (META_API_VERSION, one default).
+const metaGraphUrl = () => storeConfig.metaGraphUrl();
 const CLICKUP_TOKEN        = process.env.CLICKUP_API_TOKEN || '';
 const CLICKUP_LIST_ID      = process.env.CLICKUP_MB_VIDEO_LIST_ID || '';
 const CLICKUP_TEAM_ID      = process.env.CLICKUP_TEAM_ID || '';
@@ -201,13 +203,15 @@ function getDateRange(rangeKey, customFrom, customTo) {
 // ── Triple Whale query ────────────────────────────────────────────────────────
 async function fetchTwData(startDate, endDate) {
   if (!TW_API_KEY) throw new Error('TRIPLEWHALE_API_KEY not set');
+  const twShopId = storeConfig.tripleWhaleShopId();
+  if (!twShopId) throw new Error('TRIPLEWHALE_SHOP_ID not set — Triple Whale is dormant on this deployment');
 
   async function twQuery(sql) {
     const res = await fetch(TW_SQL_URL, {
       method:  'POST',
       headers: { 'x-api-key': TW_API_KEY, 'Content-Type': 'application/json' },
       body:    JSON.stringify({
-        shopId:           TW_SHOP_ID,
+        shopId:           twShopId,
         query:            sql.trim(),
         period:           { startDate, endDate },
         attributionModel: TW_ATTRIBUTION_MODEL,
@@ -426,7 +430,7 @@ async function enrichWithMetaLinks(rows) {
       let resolvedFbLink = null;
       let resolvedCreatedTime = null;
       try {
-        const url = `${META_GRAPH_URL}/${adId}?fields=${encodeURIComponent(FIELDS)}&access_token=${META_ACCESS_TOKEN}`;
+        const url = `${metaGraphUrl()}/${adId}?fields=${encodeURIComponent(FIELDS)}&access_token=${META_ACCESS_TOKEN}`;
         const res = await fetch(url, { signal: AbortSignal.timeout(10000) });
         if (res.ok) {
           const d = await res.json();
@@ -1046,6 +1050,8 @@ router.get('/report', (req, res) => handleReportRequest(req, res));
 // discover the right column without guessing in the main query path.
 router.get('/tw-probe', async (req, res) => {
   if (!TW_API_KEY) return res.status(500).json({ error: 'TRIPLEWHALE_API_KEY not set' });
+  const twShopId = storeConfig.tripleWhaleShopId();
+  if (!twShopId) return res.status(500).json({ error: 'TRIPLEWHALE_SHOP_ID not set' });
   const range = getDateRange('this_week');
 
   async function tryQuery(label, sql) {
@@ -1054,7 +1060,7 @@ router.get('/tw-probe', async (req, res) => {
         method: 'POST',
         headers: { 'x-api-key': TW_API_KEY, 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          shopId: TW_SHOP_ID,
+          shopId: twShopId,
           query: sql.trim(),
           period: { startDate: range.start, endDate: range.end },
           attributionModel: TW_ATTRIBUTION_MODEL,

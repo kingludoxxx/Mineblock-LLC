@@ -1,0 +1,114 @@
+{
+  "storeCode": "MB",
+  "brand": {
+    "name": "Mineblock LLC",
+    "shortName": "Mineblock",
+    "logoWhite": "/logo-white.png",
+    "logoSymbol": "/logo-symbol-white.png",
+    "logoBlack": "/logo-black.svg",
+    "emailDomain": "mineblock.com"
+  },
+  "shopify": {
+    "storeDomain": "17cca0-2.myshopify.com",
+    "storeUrl": "https://mineblock.co",
+    "apiVersion": "2024-01"
+  },
+  "whop": {
+    "companyId": "biz_pkN7XmNrvouslh"
+  },
+  "tripleWhale": {
+    "shopId": "17cca0-2.myshopify.com"
+  },
+  "meta": {
+    "apiVersion": "v23.0",
+    "adAccounts": [
+      {
+        "id": "act_938489175321542",
+        "name": "Mineblock X8"
+      },
+      {
+        "id": "act_1972517213693373",
+        "name": "Mineblock CC 4"
+      },
+      {
+        "id": "act_1238893338181787",
+        "name": "Mineblock CC 5"
+      },
+      {
+        "id": "act_25781501541499027",
+        "name": "Mineblock X6"
+      }
+    ]
+  },
+  "slack": {
+    "pnl": "C0AF724MJPR",
+    "kpi": "C0AN0BPN0NA",
+    "rejection": null,
+    "editors": {
+      "Uly": "C0ANNMMPUCC",
+      "Dimaranan": "C0ARP2SBQ8J"
+    }
+  },
+  "timezone": "Europe/Madrid",
+  "productCodes": {
+    "MB": {
+      "code": "MB",
+      "aliases": [],
+      "default": true,
+      "namingCode": null,
+      "fbPage": null,
+      "clickup": {
+        "videoListId": "901518716584",
+        "staticListId": "901518769479",
+        "mediaBuyingListId": "901518769621",
+        "initialStatus": "edit queue",
+        "productId": null
+      },
+      "frameio": {
+        "projectId": "19c0ce1f-f357-4da8-ba1f-bd7eb201e660",
+        "editingFolderId": "2eb1701e-fd39-45fa-a981-947a565f9093",
+        "staticEditingFolderId": "c9440b5e-beb0-416a-91bf-27cfb8dad2e9"
+      }
+    },
+    "PL": {
+      "code": "PL",
+      "aliases": [
+        "PUURE"
+      ],
+      "default": false,
+      "namingCode": "PL",
+      "fbPage": "Puure",
+      "clickup": {
+        "videoListId": "901524484514",
+        "staticListId": null,
+        "mediaBuyingListId": null,
+        "initialStatus": "edit queue",
+        "productId": null
+      },
+      "frameio": {
+        "projectId": "b38fbf28-9004-422d-902b-8cb4abed214b",
+        "editingFolderId": "51ec2ac5-4e55-4281-bfaa-26776fc81d10",
+        "staticEditingFolderId": null
+      }
+    },
+    "P1": {
+      "code": "P1",
+      "aliases": [],
+      "default": false,
+      "namingCode": "P1",
+      "fbPage": null,
+      "clickup": {
+        "videoListId": "901524484514",
+        "staticListId": null,
+        "mediaBuyingListId": null,
+        "initialStatus": null,
+        "productId": "123yxuahe91"
+      },
+      "frameio": {
+        "projectId": "b664289d-226b-47c2-a826-5b1377d52b4d",
+        "editingFolderId": "10abecc4-31ee-413c-ba12-c7cdddef63cd",
+        "staticEditingFolderId": null
+      }
+    }
+  }
+}

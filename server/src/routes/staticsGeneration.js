@@ -23,6 +23,7 @@
 //     prompt against the parent image.
 
 import { Router } from 'express';
+import storeConfig from '../config/storeConfig.js';
 import {
   enforceTextShape,
   describeShapeReport,
@@ -4581,7 +4582,7 @@ router.post('/iterate/:creativeId', authenticate, async (req, res) => {
         if ((!probe || !probe.ok) && parent.meta_ad_id && process.env.META_ACCESS_TOKEN) {
           console.log(`[iterations] batch ${batchId} | Meta URL stale, refreshing ad ${parent.meta_ad_id}`);
           const refreshRes = await fetch(
-            `https://graph.facebook.com/v23.0/${parent.meta_ad_id}?fields=creative{image_url,thumbnail_url}&access_token=${process.env.META_ACCESS_TOKEN}`
+            `${storeConfig.metaGraphUrl()}/${parent.meta_ad_id}?fields=creative{image_url,thumbnail_url}&access_token=${process.env.META_ACCESS_TOKEN}`
           );
           if (refreshRes.ok) {
             const rData = await refreshRes.json();
@@ -7180,7 +7181,8 @@ router.patch('/creatives/bulk-status', authenticate, async (req, res) => {
 async function _doRepairThumbnails(req, res) {
   try {
     const META_ACCESS_TOKEN = process.env.META_ACCESS_TOKEN || '';
-    const META_GRAPH_URL = 'https://graph.facebook.com/v21.0';
+    // Graph version is store data: storeConfig.metaGraphUrl() (env META_API_VERSION).
+    const META_GRAPH_URL = storeConfig.metaGraphUrl();
 
     // Match every URL type that can go stale:
     //   - tempfile.aiquickdraw.com         → Kie.ai temp URLs that expire after a few hours
@@ -9341,7 +9343,7 @@ async function triggerTWSync({ awaitResult = false } = {}) {
 // sync worker.
 // ═════════════════════════════════════════════════════════════════════════
 const _TW_API_KEY = process.env.TRIPLEWHALE_API_KEY || '';
-const _TW_SHOP_ID = process.env.TRIPLEWHALE_SHOP_ID || '17cca0-2.myshopify.com';
+// Triple Whale shop id: storeConfig.tripleWhaleShopId() at call time (unset = dormant).
 const _TW_SQL_URL = 'https://api.triplewhale.com/api/v2/orcabase/api/sql';
 const _TW_ATTRIBUTION_DEFAULT = process.env.TW_ATTRIBUTION_MODEL || 'lastPlatformClick';
 // Defaults aligned to TW UI's Triple Attribution + Meta view (the operator's
@@ -9363,11 +9365,13 @@ let _twKnownAccountCols = null; // { idCol, nameCol, idOnly? } | false | null
 
 async function _twQuery(sql, startDate, endDate, attributionModel) {
   if (!_TW_API_KEY) throw new Error('TRIPLEWHALE_API_KEY not configured');
+  const twShopId = storeConfig.tripleWhaleShopId();
+  if (!twShopId) throw new Error('TRIPLEWHALE_SHOP_ID not configured — Triple Whale is dormant on this deployment');
   const res = await fetch(_TW_SQL_URL, {
     method: 'POST',
     headers: { 'x-api-key': _TW_API_KEY, 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      shopId: _TW_SHOP_ID,
+      shopId: twShopId,
       query: sql.trim(),
       period: { startDate, endDate },
       attributionModel,
@@ -9731,7 +9735,7 @@ async function resolveMetaAccountNames(rawIds) {
   // for read calls; we expect <10 accounts so a flat Promise.all is fine).
   await Promise.all(toFetch.map(async (bare) => {
     try {
-      const url = `https://graph.facebook.com/v22.0/act_${bare}?fields=name&access_token=${encodeURIComponent(token)}`;
+      const url = `${storeConfig.metaGraphUrl()}/act_${bare}?fields=name&access_token=${encodeURIComponent(token)}`;
       const r = await fetch(url, { signal: AbortSignal.timeout(8000) });
       if (!r.ok) return;
       const j = await r.json();
@@ -10289,7 +10293,8 @@ router.get('/meta-ads/last-sync', authenticate, async (req, res) => {
 async function _doMetaAdsRepairThumbnails(req, res) {
   try {
     const META_ACCESS_TOKEN = process.env.META_ACCESS_TOKEN || '';
-    const META_GRAPH_URL = 'https://graph.facebook.com/v21.0';
+    // Graph version is store data: storeConfig.metaGraphUrl() (env META_API_VERSION).
+    const META_GRAPH_URL = storeConfig.metaGraphUrl();
     if (!META_ACCESS_TOKEN) {
       return res.status(503).json({ success: false, error: { message: 'META_ACCESS_TOKEN not set' } });
     }

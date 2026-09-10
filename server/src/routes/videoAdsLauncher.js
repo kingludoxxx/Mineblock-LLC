@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import storeConfig from '../config/storeConfig.js';
 import { authenticate } from '../middleware/auth.js';
 import { requirePermission } from '../middleware/rbac.js';
 import { pgQuery } from '../db/pg.js';
@@ -481,7 +482,7 @@ router.post('/import-frame', authenticate, async (req, res) => {
     // Patterns: next.frame.io/project/.../asset_id, app.frame.io/...
     // Accept both historical env names; V4 URLs (next.frame.io) don't need
     // this token at all — they authenticate via the IMS OAuth machinery.
-    const FRAME_TOKEN = process.env.FRAME_IO_TOKEN || process.env.FRAMEIO_TOKEN || '';
+    const FRAME_TOKEN = storeConfig.frameioToken(); // FRAMEIO_TOKEN (legacy FRAME_IO_TOKEN honoured one release)
     const isV4Url = /(^|\.)next\.frame\.io$/.test((() => { try { return new URL(frame_url).hostname; } catch { return ''; } })());
     if (!FRAME_TOKEN && !isV4Url) {
       return res.status(400).json({ success: false, error: { message: 'Frame.io token not configured (FRAMEIO_TOKEN env var)' } });
@@ -747,7 +748,7 @@ async function launchVideoToAdset({ video, template, adsetId, adsetName, page, a
     // placeholders must be sent LITERALLY.
     creativeBody.url_tags = DEFAULT_URL_TAGS;
 
-    const creativeRes = await fetch(`https://graph.facebook.com/v21.0/${template.ad_account_id}/adcreatives`, {
+    const creativeRes = await fetch(`${storeConfig.metaGraphUrl()}/${template.ad_account_id}/adcreatives`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       signal: AbortSignal.timeout(45000),

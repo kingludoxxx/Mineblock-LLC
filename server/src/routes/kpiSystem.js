@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import storeConfig from '../config/storeConfig.js';
 import { authenticate } from '../middleware/auth.js';
 import { requirePermission } from '../middleware/rbac.js';
 import { pgQuery } from '../db/pg.js';
@@ -106,12 +107,13 @@ router.get('/cron/pnl-watchdog', async (req, res) => {
     // Still broken → post loud alert to the P&L channel (uses chat.postMessage,
     // which works with bots-basic scope — not the missing channels:history).
     const SLACK_TOKEN = process.env.SLACK_BOT_TOKEN || '';
-    if (SLACK_TOKEN) {
+    const pnlChannel = storeConfig.slackChannels().pnl;
+    if (SLACK_TOKEN && pnlChannel) {
       await fetch('https://slack.com/api/chat.postMessage', {
         method: 'POST',
         headers: { 'Authorization': `Bearer ${SLACK_TOKEN}`, 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          channel: 'C0AF724MJPR',
+          channel: pnlChannel,
           text: `:rotating_light: *Daily P&L automation is BROKEN* — no report sent for ${dateStr}. Watchdog retry also failed. Check Render logs for \`mineblock-dashboard\` around ${new Date().toISOString()}.`,
           username: 'Mineblock Watchdog',
         }),
@@ -229,7 +231,7 @@ router.get('/health/daily-pnl', async (req, res) => {
         slackBotUserId: authTest.user_id || null,
         yesterdaySnapshotExists: snap.length > 0,
         yesterdayDate: dateStr,
-        channelId: 'C0AF724MJPR',
+        channelId: storeConfig.slackChannels().pnl,
       },
       recentReports: ledger.map((r) => ({ date: r.report_date, sentAt: r.sent_at, profit: r.profit, slackTs: r.slack_ts, slackChannel: r.slack_channel })),
     });
@@ -257,21 +259,29 @@ router.get('/public/cost-sheet', async (req, res) => {
 router.use(authenticate, requirePermission('kpi-system', 'access'));
 
 // ── Config ──────────────────────────────────────────────────────────
-const SHOPIFY_STORE = '17cca0-2.myshopify.com';
+// Store domain + API version come from storeConfig at CALL time (R7); an
+// unset domain makes every Shopify Admin call throw a clear error instead of
+// syncing another store's orders.
+function shopifyAdminBase() {
+  const d = storeConfig.shopifyStoreDomain();
+  if (!d) throw new Error('SHOPIFY_STORE_DOMAIN not set — KPI Shopify sync is dormant on this deployment');
+  const v = storeConfig.shopifyApiVersion();
+  if (!v) throw new Error('SHOPIFY_API_VERSION is malformed — KPI Shopify sync refused until it is fixed');
+  return `https://${d}/admin/api/${v}`;
+}
 const SHOPIFY_TOKEN = process.env.SHOPIFY_ACCESS_TOKEN || '';
 // SUPPLIER_SHARE_TOKEN — env var for public /public/cost-sheet token-based access
 const SUPPLIER_SHARE_TOKEN = process.env.SUPPLIER_SHARE_TOKEN || '';
 const SLACK_BOT_TOKEN = process.env.SLACK_BOT_TOKEN || '';
-const SLACK_KPI_CHANNEL = 'C0AN0BPN0NA'; // supply-chain alerts channel
+// Supply-chain alerts channel: storeConfig.slackChannels().kpi (env SLACK_KPI_CHANNEL), read at call time.
 
 // Track already-alerted unknown products to avoid spam
 const alertedUnknownProducts = new Set();
-const SHOPIFY_API_VERSION = '2024-01';
 const MIN_ORDER_NUMBER = 0; // Sync ALL orders
 
 const WHOP_API_TOKEN = process.env.WHOP_API_TOKEN || '';
 const WHOP_API_URL = 'https://api.whop.com/api';
-const WHOP_COMPANY_ID = 'biz_pkN7XmNrvouslh';
+// Whop company id: storeConfig.whopCompanyId() (read at call time; unused here today).
 
 // Sellerboard "Dashboard by day" CSV automation feed — pre-tokenised, single URL.
 // See migration 055. Timezone convention: Sellerboard reports Amazon's PST/PDT
@@ -282,7 +292,8 @@ const SELLERBOARD_FEED_URL = process.env.SELLERBOARD_FEED_URL || '';
 const META_TOKEN = process.env.META_ACCESS_TOKEN || '';
 const META_ACCOUNT_IDS = (process.env.META_AD_ACCOUNT_IDS || '')
   .split(',').map(s => s.trim()).filter(Boolean);
-const META_GRAPH = 'https://graph.facebook.com/v21.0';
+// Meta Graph base URL: storeConfig.metaGraphUrl() at call time (META_API_VERSION, one default).
+const metaGraphUrl = () => storeConfig.metaGraphUrl();
 
 const UNIT_COST_PER_MINER = 10.92;
 const UNIT_COST_PER_MINER_2920 = 11.28; // Orders #2722-#5716
@@ -773,7 +784,7 @@ async function seedStaticData() {
 
 // ── Shopify API ─────────────────────────────────────────────────────
 async function shopifyFetch(endpoint, params = {}) {
-  const url = new URL(`https://${SHOPIFY_STORE}/admin/api/${SHOPIFY_API_VERSION}/${endpoint}`);
+  const url = new URL(`${shopifyAdminBase()}/${endpoint}`);
   for (const [k, v] of Object.entries(params)) url.searchParams.set(k, v);
 
   const resp = await fetch(url.toString(), {
@@ -2561,12 +2572,13 @@ router.get('/export', authenticate, async (req, res) => {
 let autoSyncCount = 0;
 
 async function sendKpiSlackAlert(text) {
-  if (!SLACK_BOT_TOKEN || !SLACK_KPI_CHANNEL) return;
+  const kpiChannel = storeConfig.slackChannels().kpi;
+  if (!SLACK_BOT_TOKEN || !kpiChannel) return;
   try {
     await fetch('https://slack.com/api/chat.postMessage', {
       method: 'POST',
       headers: { 'Authorization': `Bearer ${SLACK_BOT_TOKEN}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ channel: SLACK_KPI_CHANNEL, text, username: 'Mineblock Bot', icon_url: 'https://i.imgur.com/PJCRE4g.png' }),
+      body: JSON.stringify({ channel: kpiChannel, text, username: 'Mineblock Bot', icon_url: 'https://i.imgur.com/PJCRE4g.png' }),
     });
   } catch {}
 }
@@ -2655,7 +2667,7 @@ async function syncMetaAdSpend(days = 8) {
         level: 'account',
         access_token: META_TOKEN,
       });
-      const res = await fetch(`${META_GRAPH}/${accountId}/insights?${params}`, {
+      const res = await fetch(`${metaGraphUrl()}/${accountId}/insights?${params}`, {
         signal: AbortSignal.timeout(20000),
       });
       const data = await res.json();
@@ -2700,6 +2712,7 @@ async function syncMetaAdSpend(days = 8) {
 
 async function autoSync() {
   if (!SHOPIFY_TOKEN) return;
+  if (!storeConfig.shopifyStoreDomain() || !storeConfig.shopifyApiVersion()) return; // dormant/refused: storeConfig warned once
   try {
     await ensureTables();
     await seedStaticData();
@@ -2714,7 +2727,7 @@ async function autoSync() {
     let recentOrders = [];
     if (autoSyncCount % 5 === 0) {
       const threeDaysAgo = new Date(Date.now() - 3 * 86400000).toISOString();
-      const url = `https://${SHOPIFY_STORE}/admin/api/${SHOPIFY_API_VERSION}/orders.json?status=any&created_at_min=${threeDaysAgo}&limit=250&fields=id,order_number,created_at,total_price,subtotal_price,current_subtotal_price,total_discounts,line_items,shipping_address,financial_status,refunds`;
+      const url = `${shopifyAdminBase()}/orders.json?status=any&created_at_min=${threeDaysAgo}&limit=250&fields=id,order_number,created_at,total_price,subtotal_price,current_subtotal_price,total_discounts,line_items,shipping_address,financial_status,refunds`;
       try {
         const resp = await fetch(url, { headers: { 'X-Shopify-Access-Token': SHOPIFY_TOKEN } });
         if (resp.ok) recentOrders = (await resp.json()).orders || [];
@@ -2782,7 +2795,7 @@ setTimeout(() => {
 }, 30_000); // Start 30s after boot
 
 // ── Daily P&L Slack Report ──────────────────────────────────────────────────
-const SLACK_DAILY_PNL_CHANNEL = 'C0AF724MJPR';
+// Daily P&L channel: storeConfig.slackChannels().pnl (env SLACK_PNL_CHANNEL), read at call time.
 // Operations & Teams removed from P&L report per request
 
 // Track sent reports to prevent duplicates within the same server instance
@@ -2791,6 +2804,10 @@ const sentReports = new Set();
 async function sendDailyPnlReport(dateStr, { force = false } = {}) {
   if (!SLACK_BOT_TOKEN) {
     throw new Error('No SLACK_BOT_TOKEN configured');
+  }
+  const SLACK_DAILY_PNL_CHANNEL = storeConfig.slackChannels().pnl;
+  if (!SLACK_DAILY_PNL_CHANNEL) {
+    throw new Error('No SLACK_PNL_CHANNEL configured — daily P&L report skipped');
   }
 
   await ensureTables();

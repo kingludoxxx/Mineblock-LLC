@@ -18,7 +18,8 @@ const env = {
   LOG_LEVEL: process.env.LOG_LEVEL || 'info',
   CLICKUP_API_TOKEN: process.env.CLICKUP_API_TOKEN || '',
   TRIPLEWHALE_API_KEY: process.env.TRIPLEWHALE_API_KEY || '',
-  TRIPLEWHALE_SHOP_ID: process.env.TRIPLEWHALE_SHOP_ID || '17cca0-2.myshopify.com',
+  // TRIPLEWHALE_SHOP_ID: store identity — read at call time via
+  // config/storeConfig.js tripleWhaleShopId(); no literal default (R5/R15).
 };
 
 if (env.NODE_ENV === 'production') {

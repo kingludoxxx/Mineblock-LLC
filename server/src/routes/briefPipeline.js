@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import storeConfig from '../config/storeConfig.js';
 import { authenticate } from '../middleware/auth.js';
 import { scoreBrief, specificityScore, lengthParityScore, DEFAULT_WEIGHTS, ungroundedHookClaims, nearDuplicateHookIdx } from '../services/briefScore.js';
 import {
@@ -482,22 +483,31 @@ const MEDIA_BUYING_LIST = process.env.CLICKUP_MB_MEDIA_BUYING_LIST_ID || '';
 // LIST (ClickUp custom fields are list-scoped), so pushBriefToClickUp
 // resolves field + dropdown-option ids dynamically by NAME via
 // resolveListConfig(listId) instead of a single hardcoded FIELD_IDS map.
-const CLICKUP_PIPELINES = {
-  MB: { listId: VIDEO_ADS_LIST,   initialStatus: 'edit queue', namingCode: null },   // default
-  PL: { listId: PUURE_VIDEO_LIST, initialStatus: 'edit queue', namingCode: 'PL', fbPage: 'Puure' }, // Puure — pushes land straight in edit queue (operator request)
-};
-
-// Product → pipeline. Puure (code PUURE / naming PL) routes to PL | Video
-// Creatives; everything else stays on MB | Video Ads.
+//
+// The product → list/naming/FB-page map is STORE DATA: env PRODUCT_CODES_JSON
+// read at call time through storeConfig.productFor(code) (code, alias or the
+// entry marked default). No entry and no default → a named error, never a
+// guessed list. Read at call time so a Render env change needs no restart.
 function pipelineForProduct(productCode) {
-  const c = String(productCode || '').toUpperCase();
-  if (c === 'PUURE' || c === 'PL') return CLICKUP_PIPELINES.PL;
-  return CLICKUP_PIPELINES.MB;
+  const p = storeConfig.productFor(productCode);
+  if (!p) {
+    throw new Error(`PRODUCT_CODES_JSON has no entry (and no default) for product code ${JSON.stringify(String(productCode || ''))}`);
+  }
+  if (!p.clickup.videoListId) {
+    throw new Error(`PRODUCT_CODES_JSON entry ${p.code} has no clickup.videoListId — cannot push briefs for it`);
+  }
+  return {
+    code: p.code,
+    listId: p.clickup.videoListId,
+    initialStatus: p.clickup.initialStatus || 'edit queue',
+    namingCode: p.namingCode,
+    fbPage: p.fbPage,
+  };
 }
 
-// The code that leads the naming convention. Puure briefs read PUURE as the
-// DB product_code (master-brief context lookups depend on it) but must be
-// NAMED with the brand's short code 'PL'.
+// The code that leads the naming convention. A product may read one code as
+// the DB product_code (master-brief context lookups depend on it) but be
+// NAMED with its entry's namingCode.
 function namingProductCode(productCode) {
   const pl = pipelineForProduct(productCode);
   return pl.namingCode || productCode || 'MR';
@@ -594,7 +604,7 @@ async function performBootMetaAudit() {
     const bare = String(rawId).trim().replace(/^act_/i, '');
     const accountIdAct = `act_${bare}`;
     try {
-      const url = `${META_GRAPH_URL}/${accountIdAct}?fields=name,business,account_status&access_token=${META_ACCESS_TOKEN}`;
+      const url = `${metaGraphUrl()}/${accountIdAct}?fields=name,business,account_status&access_token=${META_ACCESS_TOKEN}`;
       const resp = await fetch(url, { signal: AbortSignal.timeout(10000) });
       const data = await resp.json();
       if (!resp.ok || data.error) {
@@ -698,7 +708,8 @@ function staticAdExclusionClause(tablePrefix = 'ca') {
     AND (${p}creative_link IS NULL OR ${p}creative_link !~* '\\.(jpg|jpeg|png|gif|webp|svg)([?#]|$)')
   `.trim();
 }
-const META_GRAPH_URL = 'https://graph.facebook.com/v21.0';
+// Meta Graph base URL: storeConfig.metaGraphUrl() at call time (META_API_VERSION, one default).
+const metaGraphUrl = () => storeConfig.metaGraphUrl();
 
 // ── Direct video resolver from Mineblock-owned Meta ad ──────────────────
 // Given a Meta ad_id that we believe belongs to one of OUR ad accounts,
@@ -738,7 +749,7 @@ async function resolveOwnedVideoFromMeta(metaAdId) {
     //    live probe: for B0112 the outer id is 1486111699652922 but the actual
     //    file lives at 814979381492094 inside object_story_spec.video_data.
     const fieldsExpr = 'name,account_id,effective_status,creative{video_id,thumbnail_url,object_story_spec{video_data{video_id,title,message}}}';
-    const url = `${META_GRAPH_URL}/${adId}?fields=${encodeURIComponent(fieldsExpr)}&access_token=${META_ACCESS_TOKEN}`;
+    const url = `${metaGraphUrl()}/${adId}?fields=${encodeURIComponent(fieldsExpr)}&access_token=${META_ACCESS_TOKEN}`;
     const resp = await fetch(url, { signal: AbortSignal.timeout(10000) });
     const data = await resp.json();
     if (!resp.ok || data.error) {
@@ -782,7 +793,7 @@ async function resolveOwnedVideoFromMeta(metaAdId) {
   // FIRST, then fall through to the paginated /{account}/advideos search.
   for (const vid of candidateVideoIds) {
     try {
-      const vurl = `${META_GRAPH_URL}/${vid}?fields=source,permalink_url&access_token=${META_ACCESS_TOKEN}`;
+      const vurl = `${metaGraphUrl()}/${vid}?fields=source,permalink_url&access_token=${META_ACCESS_TOKEN}`;
       const vresp = await fetch(vurl, { signal: AbortSignal.timeout(10000) });
       const vdata = await vresp.json();
       if (vresp.ok && !vdata.error && vdata.source) {
@@ -825,7 +836,7 @@ async function resolveOwnedVideoFromMeta(metaAdId) {
         access_token: META_ACCESS_TOKEN,
       });
       if (cursor) params.set('after', cursor);
-      const aurl = `${META_GRAPH_URL}/${accountIdAct}/advideos?${params.toString()}`;
+      const aurl = `${metaGraphUrl()}/${accountIdAct}/advideos?${params.toString()}`;
       const aresp = await fetch(aurl, { signal: AbortSignal.timeout(15000) });
       const adata = await aresp.json();
       if (!aresp.ok || adata.error) break;
@@ -2536,7 +2547,7 @@ async function extractFromMetaAdId(adId) {
   // Strategy A: Ad Library API (works for ANY public ad, not just yours)
   try {
     console.log(`[BriefPipeline] Trying Ad Library API for ad ${adId}`);
-    const libUrl = `${META_GRAPH_URL}/ads_archive?ad_reached_countries=US&search_terms=*&ad_archive_id=${adId}&fields=ad_snapshot_url,ad_creative_bodies,ad_creative_link_titles,ad_creative_link_descriptions&limit=1&access_token=${META_ACCESS_TOKEN}`;
+    const libUrl = `${metaGraphUrl()}/ads_archive?ad_reached_countries=US&search_terms=*&ad_archive_id=${adId}&fields=ad_snapshot_url,ad_creative_bodies,ad_creative_link_titles,ad_creative_link_descriptions&limit=1&access_token=${META_ACCESS_TOKEN}`;
     const libRes = await fetch(libUrl, { signal: AbortSignal.timeout(15000) });
     const libData = await libRes.json();
     console.log(`[BriefPipeline] Ad Library response:`, JSON.stringify(libData).slice(0, 300));
@@ -2611,7 +2622,7 @@ async function extractFromMetaAdId(adId) {
   // Strategy B: Try your own ad accounts (works for your own ads)
   for (const accountId of META_AD_ACCOUNT_IDS) {
     try {
-      const searchUrl = `${META_GRAPH_URL}/${accountId}/ads?fields=name,creative.fields(thumbnail_url,video_id,body,title,link_description)&filtering=[{"field":"ad.id","operator":"EQUAL","value":"${adId}"}]&limit=5&access_token=${META_ACCESS_TOKEN}`;
+      const searchUrl = `${metaGraphUrl()}/${accountId}/ads?fields=name,creative.fields(thumbnail_url,video_id,body,title,link_description)&filtering=[{"field":"ad.id","operator":"EQUAL","value":"${adId}"}]&limit=5&access_token=${META_ACCESS_TOKEN}`;
       const searchRes = await fetch(searchUrl, { signal: AbortSignal.timeout(10000) });
       const searchData = await searchRes.json();
 
@@ -2625,7 +2636,7 @@ async function extractFromMetaAdId(adId) {
         if (creative.video_id) {
           // Use advideos endpoint (ad account scope) — /{video_id}?fields=source fails with Marketing API tokens
           const vidRes = await fetch(
-            `${META_GRAPH_URL}/${accountId}/advideos?filtering=[{"field":"id","operator":"EQUAL","value":"${creative.video_id}"}]&fields=source&limit=1&access_token=${META_ACCESS_TOKEN}`,
+            `${metaGraphUrl()}/${accountId}/advideos?filtering=[{"field":"id","operator":"EQUAL","value":"${creative.video_id}"}]&fields=source&limit=1&access_token=${META_ACCESS_TOKEN}`,
             { signal: AbortSignal.timeout(10000) }
           );
           const vidData = await vidRes.json();
@@ -3882,7 +3893,7 @@ async function refreshMetaThumbnail(creativeId) {
 
   for (const accountId of META_AD_ACCOUNT_IDS) {
     try {
-      const searchUrl = `${META_GRAPH_URL}/${accountId}/ads?fields=name,creative.fields(thumbnail_url,image_url,video_id).thumbnail_width(720).thumbnail_height(720)&filtering=[{"field":"name","operator":"CONTAIN","value":"${creativeId}"}]&limit=10&access_token=${META_ACCESS_TOKEN}`;
+      const searchUrl = `${metaGraphUrl()}/${accountId}/ads?fields=name,creative.fields(thumbnail_url,image_url,video_id).thumbnail_width(720).thumbnail_height(720)&filtering=[{"field":"name","operator":"CONTAIN","value":"${creativeId}"}]&limit=10&access_token=${META_ACCESS_TOKEN}`;
       const resp = await fetch(searchUrl);
       const data = await resp.json();
       if (data.error || !data.data?.length) continue;
@@ -3898,7 +3909,7 @@ async function refreshMetaThumbnail(creativeId) {
           try {
             // Use advideos endpoint (ad account scope) — /{video_id}?fields=source fails with Marketing API tokens
             const vidResp = await fetch(
-              `${META_GRAPH_URL}/${accountId}/advideos?filtering=[{"field":"id","operator":"EQUAL","value":"${videoId}"}]&fields=source&limit=1&access_token=${META_ACCESS_TOKEN}`,
+              `${metaGraphUrl()}/${accountId}/advideos?filtering=[{"field":"id","operator":"EQUAL","value":"${videoId}"}]&fields=source&limit=1&access_token=${META_ACCESS_TOKEN}`,
               { signal: AbortSignal.timeout(10000) }
             );
             const vidData = await vidResp.json();

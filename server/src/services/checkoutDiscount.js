@@ -21,6 +21,7 @@
 // retryable error — a Shopify blip must never turn into a free discount or a
 // silently full-priced charge after the buyer saw a discounted total.
 import { PricingUnavailableError } from './checkoutPricing.js';
+import storeConfig from '../config/storeConfig.js';
 
 const TIMEOUT_MS = 8_000;
 const round2 = (n) => Math.round(Number(n) * 100) / 100;
@@ -30,7 +31,7 @@ function creds() {
   return {
     store,
     token: process.env.PUURE_SHOPIFY_TOKEN || process.env.SHOPIFY_ACCESS_TOKEN || '',
-    apiVersion: process.env.SHOPIFY_API_VERSION || '2024-01',
+    apiVersion: storeConfig.shopifyApiVersion(),
     apiBase: process.env.SHOPIFY_API_BASE || (store ? `https://${store}` : ''),
   };
 }

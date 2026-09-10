@@ -22,6 +22,7 @@
 // A Shopify outage must read as an outage, never as "no products found" —
 // an empty {variants:[]} is a POSITIVE claim that the catalog has no match.
 import { Router } from 'express';
+import storeConfig from '../config/storeConfig.js';
 import { authenticate } from '../middleware/auth.js';
 import { requirePermission } from '../middleware/rbac.js';
 import { checkRateLimit } from '../middleware/rateLimiter.js';
@@ -47,7 +48,7 @@ function shopifyCreds() {
   return {
     store: process.env.PUURE_SHOPIFY_STORE || process.env.SHOPIFY_STORE_DOMAIN || '',
     token: process.env.PUURE_SHOPIFY_TOKEN || process.env.SHOPIFY_ACCESS_TOKEN || '',
-    apiVersion: process.env.SHOPIFY_API_VERSION || '2024-01',
+    apiVersion: storeConfig.shopifyApiVersion(),
   };
 }
 

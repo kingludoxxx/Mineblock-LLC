@@ -23,6 +23,7 @@
 // rest of the money path) and resolve to the SAME store checkoutPricing.js
 // priced against, so the numeric variant ids are valid there.
 import { pgQuery } from '../db/pg.js';
+import storeConfig from '../config/storeConfig.js';
 import { ensureCheckoutTables } from './checkoutSchema.js';
 
 // Bounded so the webhook ACK stays inside EVERY gateway's budget: this create
@@ -48,7 +49,7 @@ export function shopifyOrderCreds() {
   return {
     store,
     token: process.env.PUURE_SHOPIFY_TOKEN || process.env.SHOPIFY_ACCESS_TOKEN || '',
-    apiVersion: process.env.SHOPIFY_API_VERSION || '2024-01',
+    apiVersion: storeConfig.shopifyApiVersion(),
     apiBase: process.env.SHOPIFY_API_BASE || (store ? `https://${store}` : ''),
   };
 }

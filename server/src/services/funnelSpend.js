@@ -31,6 +31,7 @@
 // Authorization: Bearer header, NEVER in the URL query string, and never
 // logged — a token in a URL lands in access logs and error messages.
 import { pgQuery } from '../db/pg.js';
+import storeConfig from '../config/storeConfig.js';
 import { reportDayKey } from './reportTz.js';
 import { ensureFunnelCostsTables } from './funnelCostsSchema.js';
 // lb_clicks belongs to the tracking lane; its exported ensure is the
@@ -42,7 +43,7 @@ const META_API_TIMEOUT = 45000;
 
 // Read at CALL time, not module load, so the harness can set the override
 // after import and a token rotation needs no restart.
-const graphBase = () => process.env.META_GRAPH_OVERRIDE_URL || 'https://graph.facebook.com/v21.0';
+const graphBase = () => process.env.META_GRAPH_OVERRIDE_URL || storeConfig.metaGraphUrl();
 const metaToken = () => process.env.META_ACCESS_TOKEN || '';
 
 export const metaConfigured = () => Boolean(metaToken());

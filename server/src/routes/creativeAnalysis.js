@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import storeConfig from '../config/storeConfig.js';
 import crypto from 'crypto';
 import { authenticate } from '../middleware/auth.js';
 import { requirePermission } from '../middleware/rbac.js';
@@ -73,7 +74,7 @@ router.post('/_purgewronglinkages', async (req, res) => {
   }
   const token = process.env.META_ACCESS_TOKEN || '';
   if (!token) return res.status(503).json({ success: false, error: 'META_ACCESS_TOKEN not set' });
-  const META = 'https://graph.facebook.com/v21.0';
+  const META = storeConfig.metaGraphUrl();
   try {
     const rows = await pgQuery(
       `SELECT ad_name, ad_account_id, meta_ad_id
@@ -164,7 +165,7 @@ router.use(authenticate, requirePermission('creative-analysis', 'access'));
 
 // ── Config ──────────────────────────────────────────────────────────
 const TW_API_KEY  = process.env.TRIPLEWHALE_API_KEY || '';
-const TW_SHOP_ID  = process.env.TRIPLEWHALE_SHOP_ID || '17cca0-2.myshopify.com';
+// Triple Whale shop id: storeConfig.tripleWhaleShopId() at call time (unset = dormant).
 const TW_SQL_URL  = 'https://api.triplewhale.com/api/v2/orcabase/api/sql';
 const CRON_SECRET = process.env.CRON_SECRET || '';
 // Triple Whale attribution model — must match what TW dashboard shows
@@ -179,7 +180,8 @@ const TW_PURCHASE_COL = process.env.TW_PURCHASE_COL || 'website_purchases';
 // Meta Marketing API config
 const META_ACCESS_TOKEN = process.env.META_ACCESS_TOKEN || '';
 const META_AD_ACCOUNT_IDS = (process.env.META_AD_ACCOUNT_IDS || '').split(',').filter(Boolean);
-const META_GRAPH_URL = 'https://graph.facebook.com/v21.0';
+// Meta Graph base URL: storeConfig.metaGraphUrl() at call time (META_API_VERSION, one default).
+const metaGraphUrl = () => storeConfig.metaGraphUrl();
 
 let tableReady = false; // cache ensureTable so it only runs once
 let twKnownRevCol = null; // cache discovered TW column names across requests — cleared on deploy
@@ -593,6 +595,11 @@ async function fetchTripleWhaleAds(startDate, endDate) {
     twLastSyncError = 'TRIPLEWHALE_API_KEY not configured on server';
     return [];
   }
+  const twShopId = storeConfig.tripleWhaleShopId();
+  if (!twShopId) {
+    twLastSyncError = 'TRIPLEWHALE_SHOP_ID not configured on server';
+    return [];
+  }
 
   // Revenue/purchase columns — use configured columns first, then fallbacks (deduplicated)
   const uniqueRevCols = [...new Set([TW_REVENUE_COL, 'order_revenue', 'channel_reported_conversion_value'])];
@@ -607,7 +614,7 @@ async function fetchTripleWhaleAds(startDate, endDate) {
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
-        shopId: TW_SHOP_ID,
+        shopId: twShopId,
         query: sql.trim(),
         period: { startDate, endDate },
         attributionModel: TW_ATTRIBUTION_MODEL,
@@ -1244,7 +1251,7 @@ async function syncMetaThumbnails() {
 
   for (const accountId of META_AD_ACCOUNT_IDS) {
     try {
-      let url = `${META_GRAPH_URL}/${accountId}/ads?fields=name,creative.fields(thumbnail_url,image_url,object_story_spec,video_id).thumbnail_width(720).thumbnail_height(720)&limit=100&access_token=${META_ACCESS_TOKEN}`;
+      let url = `${metaGraphUrl()}/${accountId}/ads?fields=name,creative.fields(thumbnail_url,image_url,object_story_spec,video_id).thumbnail_width(720).thumbnail_height(720)&limit=100&access_token=${META_ACCESS_TOKEN}`;
       let pageCount = 0;
 
       while (url && pageCount < 20) {
@@ -1373,7 +1380,7 @@ async function syncMetaThumbnails() {
   // Bulk-fetch advideos from each account
   for (const accountId of META_AD_ACCOUNT_IDS) {
     try {
-      let url = `${META_GRAPH_URL}/${accountId}/advideos?fields=id,source&limit=100&access_token=${META_ACCESS_TOKEN}`;
+      let url = `${metaGraphUrl()}/${accountId}/advideos?fields=id,source&limit=100&access_token=${META_ACCESS_TOKEN}`;
       let pageCount = 0;
       while (url && pageCount < 20) {
         const resp = await fetch(url);
@@ -1406,7 +1413,7 @@ async function syncMetaThumbnails() {
     for (const vid of uniqueMissing.slice(0, 50)) {
       try {
         const resp = await fetch(
-          `${META_GRAPH_URL}/${vid}?fields=source&access_token=${META_ACCESS_TOKEN}`,
+          `${metaGraphUrl()}/${vid}?fields=source&access_token=${META_ACCESS_TOKEN}`,
           { signal: AbortSignal.timeout(8000) }
         );
         if (resp.ok) {
@@ -2543,6 +2550,10 @@ router.get('/creative-daily', authenticate, async (req, res) => {
     if (!TW_API_KEY) {
       return res.status(500).json({ success: false, error: { message: 'Triple Whale API key not configured' } });
     }
+    const twShopId = storeConfig.tripleWhaleShopId();
+    if (!twShopId) {
+      return res.status(500).json({ success: false, error: { message: 'TRIPLEWHALE_SHOP_ID not configured' } });
+    }
 
     // Check server-side cache
     const dailyCacheKey = `${creative_id}|${startDate}|${endDate}`;
@@ -2559,7 +2570,7 @@ router.get('/creative-daily', authenticate, async (req, res) => {
       const r = await fetch(TW_SQL_URL, {
         method: 'POST',
         headers: { 'x-api-key': TW_API_KEY, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ shopId: TW_SHOP_ID, query: sql.trim(), period: { startDate, endDate }, attributionModel: TW_ATTRIBUTION_MODEL }),
+        body: JSON.stringify({ shopId: twShopId, query: sql.trim(), period: { startDate, endDate }, attributionModel: TW_ATTRIBUTION_MODEL }),
         signal: AbortSignal.timeout(30000),
       });
       if (!r.ok) {
@@ -2802,7 +2813,7 @@ async function fetchMetaInsights(metaAdId) {
       'video_play_actions',
     ].join(',');
 
-    const url = `${META_GRAPH_URL}/${encodeURIComponent(metaAdId)}/insights?fields=${fields}&date_preset=maximum&action_breakdowns=action_reaction&access_token=${META_ACCESS_TOKEN}`;
+    const url = `${metaGraphUrl()}/${encodeURIComponent(metaAdId)}/insights?fields=${fields}&date_preset=maximum&action_breakdowns=action_reaction&access_token=${META_ACCESS_TOKEN}`;
     const res = await fetch(url, { signal: AbortSignal.timeout(30000) });
     if (!res.ok) {
       const errText = await res.text();
@@ -2962,7 +2973,7 @@ router.get('/meta-insights/:adId/daily', authenticate, async (req, res) => {
     const end = endDate && dateRegex.test(endDate) ? endDate : new Date().toISOString().slice(0, 10);
     const start = startDate && dateRegex.test(startDate) ? startDate : (() => { const d = new Date(); d.setDate(d.getDate() - 30); return d.toISOString().slice(0, 10); })();
 
-    const url = `${META_GRAPH_URL}/${encodeURIComponent(adId)}/insights?fields=spend,impressions,clicks,actions&time_increment=1&time_range={"since":"${start}","until":"${end}"}&limit=500&access_token=${META_ACCESS_TOKEN}`;
+    const url = `${metaGraphUrl()}/${encodeURIComponent(adId)}/insights?fields=spend,impressions,clicks,actions&time_increment=1&time_range={"since":"${start}","until":"${end}"}&limit=500&access_token=${META_ACCESS_TOKEN}`;
     const apiRes = await fetch(url, { signal: AbortSignal.timeout(30000) });
     if (!apiRes.ok) {
       const errText = await apiRes.text();
@@ -3039,7 +3050,7 @@ router.get('/meta-lookup/:creativeId', authenticate, async (req, res) => {
         // Get video_id from the ad object (Marketing API token works for ad objects)
         // Fetch ad creative with all useful video fields
         const adRes = await fetch(
-          `${META_GRAPH_URL}/${cached.meta_ad_id}?fields=creative{video_id,thumbnail_url,object_story_spec,effective_object_story_id}&access_token=${META_ACCESS_TOKEN}`,
+          `${metaGraphUrl()}/${cached.meta_ad_id}?fields=creative{video_id,thumbnail_url,object_story_spec,effective_object_story_id}&access_token=${META_ACCESS_TOKEN}`,
           { signal: AbortSignal.timeout(10000) }
         );
         if (adRes.ok) {
@@ -3062,7 +3073,7 @@ router.get('/meta-lookup/:creativeId', authenticate, async (req, res) => {
             if (!freshUrl) {
               try {
                 const directRes = await fetch(
-                  `${META_GRAPH_URL}/${videoId}?fields=source,permalink_url&access_token=${META_ACCESS_TOKEN}`,
+                  `${metaGraphUrl()}/${videoId}?fields=source,permalink_url&access_token=${META_ACCESS_TOKEN}`,
                   { signal: AbortSignal.timeout(8000) }
                 );
                 if (directRes.ok) {
@@ -3080,7 +3091,7 @@ router.get('/meta-lookup/:creativeId', authenticate, async (req, res) => {
               if (storyId) {
                 try {
                   const postRes = await fetch(
-                    `${META_GRAPH_URL}/${storyId}?fields=attachments{media{source}},source&access_token=${META_ACCESS_TOKEN}`,
+                    `${metaGraphUrl()}/${storyId}?fields=attachments{media{source}},source&access_token=${META_ACCESS_TOKEN}`,
                     { signal: AbortSignal.timeout(8000) }
                   );
                   if (postRes.ok) {
@@ -3097,7 +3108,7 @@ router.get('/meta-lookup/:creativeId', authenticate, async (req, res) => {
             if (!freshUrl) {
               for (const accountId of META_AD_ACCOUNT_IDS) {
                 try {
-                  let pgUrl = `${META_GRAPH_URL}/${accountId}/advideos?fields=id,source&limit=100&access_token=${META_ACCESS_TOKEN}`;
+                  let pgUrl = `${metaGraphUrl()}/${accountId}/advideos?fields=id,source&limit=100&access_token=${META_ACCESS_TOKEN}`;
                   let pages = 0;
                   while (pgUrl && pages < 5 && !freshUrl) {
                     const vidRes = await fetch(pgUrl, { signal: AbortSignal.timeout(10000) });
@@ -3171,7 +3182,7 @@ router.get('/meta-lookup/:creativeId', authenticate, async (req, res) => {
       META_AD_ACCOUNT_IDS.slice(0, 5).flatMap((accountId) =>
         adNames.slice(0, 5).map(async (adName) => {
           const filt = encodeURIComponent(JSON.stringify([{ field: 'name', operator: 'EQUAL', value: adName }]));
-          const searchUrl = `${META_GRAPH_URL}/${accountId}/ads?filtering=${filt}&fields=id,name,account_id,creative{thumbnail_url,video_id,effective_object_story_id}&limit=1&access_token=${META_ACCESS_TOKEN}`;
+          const searchUrl = `${metaGraphUrl()}/${accountId}/ads?filtering=${filt}&fields=id,name,account_id,creative{thumbnail_url,video_id,effective_object_story_id}&limit=1&access_token=${META_ACCESS_TOKEN}`;
           const apiRes = await fetch(searchUrl, { signal: AbortSignal.timeout(15000) });
           if (!apiRes.ok) return null;
           const json = await apiRes.json();
@@ -3216,7 +3227,7 @@ router.get('/meta-lookup/:creativeId', authenticate, async (req, res) => {
         // Strategy 1: direct /{video_id}?fields=source
         try {
           const directRes = await fetch(
-            `${META_GRAPH_URL}/${vid}?fields=source,permalink_url&access_token=${META_ACCESS_TOKEN}`,
+            `${metaGraphUrl()}/${vid}?fields=source,permalink_url&access_token=${META_ACCESS_TOKEN}`,
             { signal: AbortSignal.timeout(8000) }
           );
           if (directRes.ok) {
@@ -3230,7 +3241,7 @@ router.get('/meta-lookup/:creativeId', authenticate, async (req, res) => {
             const storyId = ad.creative?.effective_object_story_id;
             if (storyId) {
               const postRes = await fetch(
-                `${META_GRAPH_URL}/${storyId}?fields=attachments{media{source}}&access_token=${META_ACCESS_TOKEN}`,
+                `${metaGraphUrl()}/${storyId}?fields=attachments{media{source}}&access_token=${META_ACCESS_TOKEN}`,
                 { signal: AbortSignal.timeout(8000) }
               );
               if (postRes.ok) {
@@ -3283,6 +3294,8 @@ router.get('/meta-lookup/:creativeId', authenticate, async (req, res) => {
  */
 export async function fetchDailyAdSpend(startDate, endDate) {
   if (!TW_API_KEY) return [];
+  const twShopId = storeConfig.tripleWhaleShopId();
+  if (!twShopId) return []; // dormant: storeConfig warned once
   try {
     // Use the revenue column previously discovered by fetchTripleWhaleAds
     // (cached in twKnownRevCol). Falls back to the configured TW_REVENUE_COL
@@ -3294,7 +3307,7 @@ export async function fetchDailyAdSpend(startDate, endDate) {
       method: 'POST',
       headers: { 'x-api-key': TW_API_KEY, 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        shopId: TW_SHOP_ID,
+        shopId: twShopId,
         query: `SELECT event_date, SUM(spend) as total_spend, SUM(${revRef}) as total_revenue FROM pixel_joined_tvf WHERE event_date BETWEEN @startDate AND @endDate GROUP BY event_date ORDER BY event_date`,
         period: { startDate, endDate },
         attributionModel: TW_ATTRIBUTION_MODEL,
@@ -3307,7 +3320,7 @@ export async function fetchDailyAdSpend(startDate, endDate) {
         method: 'POST',
         headers: { 'x-api-key': TW_API_KEY, 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          shopId: TW_SHOP_ID,
+          shopId: twShopId,
           query: `SELECT event_date, SUM(spend) as total_spend FROM pixel_joined_tvf WHERE event_date BETWEEN @startDate AND @endDate GROUP BY event_date ORDER BY event_date`,
           period: { startDate, endDate },
           attributionModel: TW_ATTRIBUTION_MODEL,

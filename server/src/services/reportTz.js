@@ -8,8 +8,11 @@
 //
 // STORAGE stays UTC everywhere; only REPORT bucketing and window bounds use
 // this module. DST is handled by Intl (the double-offset refinement below
-// covers the two transition days). Env-overridable for tests/other operators.
-const REPORT_TZ = process.env.REPORT_TZ || 'Europe/Madrid';
+// covers the two transition days). Env-overridable for tests/other operators:
+// REPORT_TZ is read in ONE place, config/storeConfig.js timezone().
+import storeConfig from '../config/storeConfig.js';
+
+const REPORT_TZ = storeConfig.timezone();
 
 const DTF = new Intl.DateTimeFormat('en-CA', {
   timeZone: REPORT_TZ,

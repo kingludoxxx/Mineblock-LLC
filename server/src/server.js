@@ -14,6 +14,7 @@ import {
 } from './workers/staticsQueueWorker.js';
 import { closeBrowser as closeThumbBrowser } from './routes/pageThumbnails.js';
 import { checkPending } from '../migrations/run.js';
+import storeConfig from './config/storeConfig.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -90,6 +91,19 @@ async function runSeeds() {
 // Startup
 // ---------------------------------------------------------------------------
 const start = async () => {
+  // 0. Store-config gate — FAIL CLOSED (R5/R15, REVIEW-LANE-F.md P1-1).
+  // A required store key that is missing or malformed is a routing hazard, not
+  // a dormant feature: with no PRODUCT_CODES_JSON the ClickUp/Frame.io paths
+  // used to fall through to another product's project and rename live cards.
+  // The process refuses to start instead. Rollback stays "set the variable".
+  try {
+    const gate = storeConfig.assertBootConfig();
+    logger.info(`Store config OK (${gate.checked.join(', ')})`);
+  } catch (err) {
+    logger.error(`STORE CONFIG INVALID — refusing to start: ${err.message}`);
+    process.exit(1);
+  }
+
   // 1. Connect legacy pg pool (used by migrations, seeds, existing code)
   try {
     await testConnection();

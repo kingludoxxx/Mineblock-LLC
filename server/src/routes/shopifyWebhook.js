@@ -11,14 +11,13 @@ import {
 } from './kpiSystem.js';
 import { upsertOrderFromShopify } from './orders.js';
 import { handleInboundShopifyRefund } from '../services/shopifyRefund.js';
+import storeConfig from '../config/storeConfig.js';
 
 const router = Router();
 
-// Env-driven so each deployment (Mineblock, Puure) points at its own store.
-// Default preserves the original Mineblock behavior.
-const SHOPIFY_STORE = process.env.SHOPIFY_STORE_DOMAIN || '17cca0-2.myshopify.com';
+// Store domain + API version come from storeConfig at CALL time (R7). No
+// literal default: an unset domain fails closed with one warning.
 const SHOPIFY_TOKEN = process.env.SHOPIFY_ACCESS_TOKEN || '';
-const SHOPIFY_API_VERSION = '2024-01';
 const SHOPIFY_WEBHOOK_SECRET = process.env.SHOPIFY_WEBHOOK_SECRET || '';
 
 // ── HMAC Verification ───────────────────────────────────────────────
@@ -239,6 +238,14 @@ router.post('/register', authenticate, async (req, res) => {
     if (!SHOPIFY_TOKEN) {
       return res.status(400).json({ success: false, error: { message: 'SHOPIFY_ACCESS_TOKEN not configured' } });
     }
+    const storeDomain = storeConfig.shopifyStoreDomain();
+    if (!storeDomain) {
+      return res.status(400).json({ success: false, error: { message: 'SHOPIFY_STORE_DOMAIN not configured' } });
+    }
+    const apiVersion = storeConfig.shopifyApiVersion();
+    if (!apiVersion) {
+      return res.status(400).json({ success: false, error: { message: 'SHOPIFY_API_VERSION is malformed (expected YYYY-MM)' } });
+    }
 
     const baseUrl = process.env.RENDER_EXTERNAL_URL || process.env.PUBLIC_APP_URL || 'http://localhost:3000';
     const webhookAddress = `${baseUrl}/api/v1/shopify-webhook/orders`;
@@ -248,7 +255,7 @@ router.post('/register', authenticate, async (req, res) => {
 
     for (const topic of topics) {
       const resp = await fetch(
-        `https://${SHOPIFY_STORE}/admin/api/${SHOPIFY_API_VERSION}/webhooks.json`,
+        `https://${storeDomain}/admin/api/${apiVersion}/webhooks.json`,
         {
           method: 'POST',
           headers: {

@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { authenticate } from '../middleware/auth.js';
 import { requirePermission } from '../middleware/rbac.js';
 import { pgQuery } from '../db/pg.js';
+import storeConfig from '../config/storeConfig.js';
 
 const router = Router();
 router.use(authenticate, requirePermission('ads-control-center', 'access'));
@@ -9,22 +10,17 @@ router.use(authenticate, requirePermission('ads-control-center', 'access'));
 // ── Config ──────────────────────────────────────────────────────────────
 const META_ACCESS_TOKEN = process.env.META_ACCESS_TOKEN || '';
 const META_AD_ACCOUNT_IDS = (process.env.META_AD_ACCOUNT_IDS || '').split(',').filter(Boolean);
-const META_GRAPH_URL = 'https://graph.facebook.com/v21.0';
+// Meta Graph base URL: storeConfig.metaGraphUrl() at call time (META_API_VERSION, one default).
+const metaGraphUrl = () => storeConfig.metaGraphUrl();
 const TW_API_KEY = process.env.TRIPLEWHALE_API_KEY || '';
-const TW_SHOP_ID = process.env.TRIPLEWHALE_SHOP_ID || '17cca0-2.myshopify.com';
+// Triple Whale shop id: storeConfig.tripleWhaleShopId() at call time (unset = dormant).
 const TW_SQL_URL = 'https://api.triplewhale.com/api/v2/orcabase/api/sql';
 const SLACK_BOT_TOKEN = process.env.SLACK_BOT_TOKEN || '';
-const SLACK_PNL_CHANNEL = 'C0AF724MJPR';
+// P&L Slack channel: storeConfig.slackChannels().pnl (env SLACK_PNL_CHANNEL), read at call time.
 
-const ACCOUNT_NAMES = {
-  'act_938489175321542': 'Mineblock X8',
-  'act_1972517213693373': 'Mineblock CC 4',
-  'act_1238893338181787': 'Mineblock CC 5',
-  'act_25781501541499027': 'Mineblock X6',
-  'act_1363888491879561': 'Luvora CC',
-  'act_1417689703203647': 'Luvora CC 2',
-  'act_642819725560039': 'Luvora CC 3',
-};
+// Ad-account display names: storeConfig.adAccountNames() at call time from
+// env META_AD_ACCOUNTS_JSON ([{id, name}]); no account or brand literal here.
+const accountNames = () => storeConfig.adAccountNames();
 
 // ── Helpers ─────────────────────────────────────────────────────────────
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -131,6 +127,8 @@ async function fetchTWAdPerformance(startDate, endDate) {
     console.error('[Ads Control] TRIPLEWHALE_API_KEY not set');
     return [];
   }
+  const twShopId = storeConfig.tripleWhaleShopId();
+  if (!twShopId) return []; // dormant: storeConfig warned once
 
   const revenueColumns = ['order_revenue', 'pixel_revenue', 'revenue'];
   const purchaseColumns = [
@@ -146,7 +144,7 @@ async function fetchTWAdPerformance(startDate, endDate) {
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
-        shopId: TW_SHOP_ID,
+        shopId: twShopId,
         query: sql.trim(),
         period: { startDate, endDate },
       }),
@@ -270,7 +268,7 @@ async function findAdByName(adName) {
         limit: '5',
         access_token: META_ACCESS_TOKEN,
       });
-      const url = `${META_GRAPH_URL}/${accountId}/ads?${params}`;
+      const url = `${metaGraphUrl()}/${accountId}/ads?${params}`;
       const res = await fetch(url, { signal: AbortSignal.timeout(15000) });
       if (!res.ok) {
         const errBody = await res.text().catch(() => '');
@@ -299,7 +297,7 @@ async function findAdByName(adName) {
           adsetBudget: ad.adset?.daily_budget ? Number(ad.adset.daily_budget) : null,
           campaignName: ad.campaign?.name || null,
           accountId,
-          accountName: ACCOUNT_NAMES[accountId] || accountId,
+          accountName: accountNames()[accountId] || accountId,
         };
       }
     } catch (err) {
@@ -312,7 +310,7 @@ async function findAdByName(adName) {
 }
 
 async function pauseAd(adId) {
-  const res = await fetch(`${META_GRAPH_URL}/${adId}?status=PAUSED&access_token=${META_ACCESS_TOKEN}`, {
+  const res = await fetch(`${metaGraphUrl()}/${adId}?status=PAUSED&access_token=${META_ACCESS_TOKEN}`, {
     method: 'POST', signal: AbortSignal.timeout(15000),
   });
   const data = await res.json();
@@ -321,7 +319,7 @@ async function pauseAd(adId) {
 }
 
 async function resumeAd(adId) {
-  const res = await fetch(`${META_GRAPH_URL}/${adId}?status=ACTIVE&access_token=${META_ACCESS_TOKEN}`, {
+  const res = await fetch(`${metaGraphUrl()}/${adId}?status=ACTIVE&access_token=${META_ACCESS_TOKEN}`, {
     method: 'POST', signal: AbortSignal.timeout(15000),
   });
   const data = await res.json();
@@ -330,7 +328,7 @@ async function resumeAd(adId) {
 }
 
 async function updateAdsetBudget(adsetId, newBudgetCents) {
-  const res = await fetch(`${META_GRAPH_URL}/${adsetId}?daily_budget=${Math.round(newBudgetCents)}&access_token=${META_ACCESS_TOKEN}`, {
+  const res = await fetch(`${metaGraphUrl()}/${adsetId}?daily_budget=${Math.round(newBudgetCents)}&access_token=${META_ACCESS_TOKEN}`, {
     method: 'POST', signal: AbortSignal.timeout(15000),
   });
   const data = await res.json();
@@ -341,6 +339,11 @@ async function updateAdsetBudget(adsetId, newBudgetCents) {
 // ── Slack Alert ─────────────────────────────────────────────────────────
 async function sendSlackAlert(logEntry) {
   if (!SLACK_BOT_TOKEN) return;
+  // No channel configured for this store → skip the post. Without this,
+  // {"channel": null} is POSTed and Slack answers 200 {ok:false}, which the
+  // .catch() below never sees: a silent failure (REVIEW-LANE-F.md P2-1).
+  const channel = storeConfig.slackChannels().pnl;
+  if (!channel) return;
   const actionEmoji = logEntry.action === 'pause_ad' ? ':octagonal_sign:' : logEntry.action === 'resume_ad' ? ':arrow_forward:' : logEntry.action.includes('budget') ? ':chart_with_upwards_trend:' : ':bell:';
   const blocks = [
     { type: 'header', text: { type: 'plain_text', text: `${actionEmoji} Ad Automation Action`, emoji: true } },
@@ -359,7 +362,7 @@ async function sendSlackAlert(logEntry) {
     method: 'POST',
     headers: { 'Authorization': `Bearer ${SLACK_BOT_TOKEN}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      channel: SLACK_PNL_CHANNEL,
+      channel,
       text: `Ad Automation: ${logEntry.action} - ${logEntry.ad_name}`,
       blocks,
       username: process.env.BRAND_NAME ? `${process.env.BRAND_NAME} Bot` : 'Ads Bot',
@@ -1000,4 +1003,5 @@ router.get('/status', authenticate, async (req, res) => {
   }
 });
 
+export { sendSlackAlert };
 export default router;

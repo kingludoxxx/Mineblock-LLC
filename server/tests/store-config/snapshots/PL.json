@@ -1,0 +1,75 @@
+{
+  "storeCode": "PL",
+  "brand": {
+    "name": "Puure",
+    "shortName": "Puure",
+    "logoWhite": "/logo-puure-white.png",
+    "logoSymbol": "/logo-puure-symbol-white.png",
+    "logoBlack": "/logo-puure-black.svg",
+    "emailDomain": "trypuure.co"
+  },
+  "shopify": {
+    "storeDomain": "9jn59g-x7.myshopify.com",
+    "storeUrl": "https://trypuure.co",
+    "apiVersion": "2024-01"
+  },
+  "whop": {
+    "companyId": null
+  },
+  "tripleWhale": {
+    "shopId": null
+  },
+  "meta": {
+    "apiVersion": "v23.0",
+    "adAccounts": []
+  },
+  "slack": {
+    "pnl": null,
+    "kpi": null,
+    "rejection": null,
+    "editors": {}
+  },
+  "timezone": "Europe/Madrid",
+  "productCodes": {
+    "PL": {
+      "code": "PL",
+      "aliases": [
+        "PUURE"
+      ],
+      "default": true,
+      "namingCode": "PL",
+      "fbPage": "Puure",
+      "clickup": {
+        "videoListId": "901524484514",
+        "staticListId": null,
+        "mediaBuyingListId": null,
+        "initialStatus": "edit queue",
+        "productId": null
+      },
+      "frameio": {
+        "projectId": "b38fbf28-9004-422d-902b-8cb4abed214b",
+        "editingFolderId": "51ec2ac5-4e55-4281-bfaa-26776fc81d10",
+        "staticEditingFolderId": null
+      }
+    },
+    "P1": {
+      "code": "P1",
+      "aliases": [],
+      "default": false,
+      "namingCode": "P1",
+      "fbPage": null,
+      "clickup": {
+        "videoListId": "901524484514",
+        "staticListId": null,
+        "mediaBuyingListId": null,
+        "initialStatus": null,
+        "productId": "123yxuahe91"
+      },
+      "frameio": {
+        "projectId": "b664289d-226b-47c2-a826-5b1377d52b4d",
+        "editingFolderId": "10abecc4-31ee-413c-ba12-c7cdddef63cd",
+        "staticEditingFolderId": null
+      }
+    }
+  }
+}
