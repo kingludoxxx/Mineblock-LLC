@@ -19,7 +19,7 @@
 // Run:  node server/tests/migrations/migrations.mjs
 import postgres from 'postgres';
 import { spawnSync } from 'child_process';
-import { readFileSync, readdirSync, cpSync, mkdtempSync, writeFileSync, appendFileSync, rmSync, existsSync } from 'fs';
+import { readFileSync, readdirSync, cpSync, mkdtempSync, writeFileSync, appendFileSync, rmSync, renameSync, existsSync } from 'fs';
 import { createHash } from 'crypto';
 import { tmpdir } from 'os';
 import { fileURLToPath } from 'url';
@@ -157,6 +157,25 @@ const r2d = runMigrate({ DATABASE_URL: DB1, MIGRATIONS_DIR: editedDir }, ['--dry
 ok(r2d.code !== 0 && /mismatches:\s*1\b/.test(r2d.out) && /001_create_roles\.sql/.test(r2d.out),
   'A2.6 --dry-run reports the mismatch by name and exits non-zero', tail(r2d.out, 600));
 rmSync(editedDir, { recursive: true, force: true });
+
+// A2.7–A2.9 (review P1-1): a RENAMED applied file is a re-execution, not a new
+// migration. Rename 001 on a COPY of the dir, list the new name in order.json:
+// the old row becomes an orphan and the identical bytes show up as "pending".
+const renamedDir = copyMigrationsDir('renamed');
+renameSync(join(renamedDir, '001_create_roles.sql'), join(renamedDir, '001_create_roles_v2.sql'));
+{
+  const m = JSON.parse(readFileSync(join(renamedDir, 'order.json'), 'utf8'));
+  m.order = m.order.map((f) => (f === '001_create_roles.sql' ? '001_create_roles_v2.sql' : f));
+  writeFileSync(join(renamedDir, 'order.json'), JSON.stringify(m, null, 2));
+}
+const r27 = runMigrate({ DATABASE_URL: DB1, MIGRATIONS_DIR: renamedDir });
+ok(r27.code !== 0 && /001_create_roles_v2\.sql/.test(r27.out) && /001_create_roles\.sql/.test(r27.out) && /renam/i.test(r27.out),
+  'A2.7 renamed applied file (orphan row + pending file, SAME checksum) → REFUSED, message names both names and says rename', tail(r27.out, 700));
+ok(snapshot(await ledger(DB1)) === snapshot(led1), 'A2.8 the rename refusal wrote NOTHING to the ledger (the bytes were not re-executed)');
+const r27d = runMigrate({ DATABASE_URL: DB1, MIGRATIONS_DIR: renamedDir }, ['--dry-run']);
+ok(r27d.code !== 0 && /001_create_roles_v2\.sql/.test(r27d.out) && /renam/i.test(r27d.out),
+  'A2.9 --dry-run reports the rename by name and exits non-zero', tail(r27d.out, 700));
+rmSync(renamedDir, { recursive: true, force: true });
 
 // ═══════════════════════════════════════════════════════════════════════════
 // A3 — LEGACY REMAP: filename-only ledger rows get checksum backfilled ONCE
@@ -317,8 +336,26 @@ console.log('\n── A6 failure paths ──');
   const r7 = spawnSync(process.execPath, [RUN_JS], { env: env7, encoding: 'utf8' });
   ok(r7.status !== 0 && /DATABASE_URL/.test((r7.stdout || '') + (r7.stderr || '')), 'A6.7 no DATABASE_URL → non-zero exit, message names DATABASE_URL', tail((r7.stdout || '') + (r7.stderr || ''), 400));
 
+  // A6.9–A6.11 (review P1-1 / P2-3): "skip by deletion" — an applied file deleted
+  // from disk AND removed from order.json leaves an orphan ledger row. Non-STRICT:
+  // the run continues but the orphan is a VISIBLE warning naming the file.
+  // STRICT (--strict flag or STRICT_MIGRATIONS=1): the run REFUSES.
+  const d6 = copyMigrationsDir('deleted');
+  rmSync(join(d6, '099_static_ad_naming.sql'));
+  const m6 = JSON.parse(readFileSync(join(d6, 'order.json'), 'utf8')); m6.order = m6.order.filter((f) => f !== '099_static_ad_naming.sql');
+  writeFileSync(join(d6, 'order.json'), JSON.stringify(m6, null, 2));
+  const f9 = runMigrate({ DATABASE_URL: DB1, MIGRATIONS_DIR: d6 });
+  ok(f9.code === 0 && /WARNING[^\n]*099_static_ad_naming\.sql/.test(f9.out) && /orphan/i.test(f9.out),
+    'A6.9 deleted + de-listed applied file, non-STRICT → exit 0 but a visible WARNING line naming the orphan', tail(f9.out, 500));
+  const f10 = runMigrate({ DATABASE_URL: DB1, MIGRATIONS_DIR: d6 }, ['--strict']);
+  ok(f10.code !== 0 && /099_static_ad_naming\.sql/.test(f10.out) && /orphan/i.test(f10.out) && /REFUS/i.test(f10.out),
+    'A6.10 same under --strict → REFUSED, message names the orphan', tail(f10.out, 500));
+  const f11 = runMigrate({ DATABASE_URL: DB1, MIGRATIONS_DIR: d6, STRICT_MIGRATIONS: '1' }, ['--dry-run']);
+  ok(f11.code !== 0 && /099_static_ad_naming\.sql/.test(f11.out),
+    'A6.11 STRICT_MIGRATIONS=1 --dry-run with an orphan → exits non-zero, names it', tail(f11.out, 500));
+
   ok(snapshot(await ledger(DB1)) === before, 'A6.8 none of the failure paths wrote to the ledger');
-  for (const d of [d1, d2, d3, d4, d5]) rmSync(d, { recursive: true, force: true });
+  for (const d of [d1, d2, d3, d4, d5, d6]) rmSync(d, { recursive: true, force: true });
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

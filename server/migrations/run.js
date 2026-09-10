@@ -15,12 +15,18 @@
  *         backfilled ONCE from the current file bytes; the run then continues.
  *         An already-applied file whose bytes changed → the run REFUSES and
  *         names the file. Applied migrations are immutable: add a new one.
+ *         A RENAMED applied file (pending file whose checksum equals an orphan
+ *         ledger row's checksum) is a re-execution in disguise → REFUSED.
+ *         An ORPHAN row (applied here, no such file on disk any more) is a
+ *         visible WARNING, and a refusal under STRICT.
+ * STRICT  --strict or STRICT_MIGRATIONS=1: orphans refuse instead of warn.
  * LOCK    pg_advisory_lock serialises runners; two cannot interleave.
  *
- * CLI     node server/migrations/run.js [--dry-run] [--dir <path>] [--mark-applied a.sql,b.sql]
- * ENV     DATABASE_URL (required) · MIGRATIONS_DIR (= --dir)
+ * CLI     node server/migrations/run.js [--dry-run] [--strict] [--dir <path>] [--mark-applied a.sql,b.sql]
+ * ENV     DATABASE_URL (required) · MIGRATIONS_DIR (= --dir) · STRICT_MIGRATIONS=1 (= --strict)
  *         MIGRATE_SSL=0|1 (default auto: off for localhost/127.0.0.1/sslmode=disable, on otherwise)
- * EXIT    0 clean · 1 any error, refusal, or (dry-run) a checksum mismatch
+ * EXIT    0 clean · 1 any error or refusal; a dry run also exits 1 on a checksum
+ *         mismatch, a rename, or (STRICT) an orphan
  *
  * LIBRARY server.js and admin routes import { checkPending } for a READ-ONLY
  *         report. Nothing outside this file writes the ledger.
@@ -118,9 +124,18 @@ export async function computeReport(client, { dir = DEFAULT_DIR } = {}) {
   const mismatches = ledger.rows
     .filter((r) => files.has(r.filename) && r.checksum != null && r.checksum !== files.get(r.filename).checksum)
     .map((r) => ({ filename: r.filename, ledger: r.checksum, disk: files.get(r.filename).checksum }));
-  const orphans = ledger.rows.filter((r) => !files.has(r.filename)).map((r) => r.filename);
+  const orphanRows = ledger.rows.filter((r) => !files.has(r.filename));
+  const orphans = orphanRows.map((r) => r.filename);
+  // A pending file whose bytes equal an orphan row's bytes is that row's file
+  // RENAMED (the manifest was edited to match): running it would re-execute an
+  // applied migration. Legacy orphans (checksum NULL) cannot be matched this
+  // way; STRICT catches those by refusing every orphan.
+  const orphanByChecksum = new Map(orphanRows.filter((r) => r.checksum != null).map((r) => [r.checksum, r.filename]));
+  const renames = pending
+    .filter((f) => orphanByChecksum.has(files.get(f).checksum))
+    .map((f) => ({ pending: f, orphan: orphanByChecksum.get(files.get(f).checksum), checksum: files.get(f).checksum }));
   return {
-    dir, order, files, ledger, applied, pending, legacy, mismatches, orphans,
+    dir, order, files, ledger, applied, pending, legacy, mismatches, orphans, renames,
     clean: pending.length === 0 && mismatches.length === 0,
   };
 }
@@ -130,8 +145,13 @@ export const checkPending = computeReport;
 
 export function formatSummary(r, { dryRun = false } = {}) {
   return `${dryRun ? 'DRY RUN — ' : ''}applied: ${r.applied.length} | pending: ${r.pending.length} | mismatches: ${r.mismatches.length}`
-    + ` | legacy (no checksum): ${r.legacy.length} | orphans (ledger rows without a file): ${r.orphans.length}`;
+    + ` | legacy (no checksum): ${r.legacy.length} | orphans (ledger rows without a file): ${r.orphans.length}`
+    + (r.renames.length ? ` | renamed applied files: ${r.renames.length}` : '');
 }
+
+const renameLines = (r) => r.renames.map((x) => `  ${x.pending} has the same checksum as orphan ledger row ${x.orphan} (sha256 ${x.checksum})`);
+const orphanLine = (f) => `orphan ledger row ${f}: applied on this database but no such file is on disk or in order.json`
+  + ' — a deleted migration never runs on a fresh database; STRICT refuses this';
 
 async function ensureLedger(client) {
   await client.query(`
@@ -200,13 +220,14 @@ async function withLock(client, fn, log) {
  * Apply pending migrations in manifest order. dryRun → report only, no writes of any kind
  * (no ledger creation, no backfill). Returns the final report.
  */
-export async function migrate(client, { dir = DEFAULT_DIR, dryRun = false, log = console.log } = {}) {
+export async function migrate(client, { dir = DEFAULT_DIR, dryRun = false, strict = false, log = console.log } = {}) {
   if (dryRun) {
     const report = await computeReport(client, { dir });
     for (const f of report.pending) log(`pending: ${f}`);
     for (const m of report.mismatches) log(`CHECKSUM MISMATCH: ${m.filename} (ledger ${m.ledger} ≠ disk ${m.disk})`);
+    for (const line of renameLines(report)) log(`RENAMED APPLIED FILE (would be re-executed):${line}`);
     for (const f of report.legacy.map((r) => r.filename)) log(`legacy ledger row (checksum will be backfilled on the next real run): ${f}`);
-    for (const f of report.orphans) log(`orphan ledger row (no such file on disk): ${f}`);
+    for (const f of report.orphans) log(`${strict ? 'STRICT would REFUSE: ' : 'WARNING: '}${orphanLine(f)}`);
     log(formatSummary(report, { dryRun: true }));
     return report;
   }
@@ -228,7 +249,19 @@ export async function migrate(client, { dir = DEFAULT_DIR, dryRun = false, log =
         + `Applied migrations are immutable — add a new migration instead.\n${lines.join('\n')}`
       );
     }
-    for (const f of report.orphans) log(`WARNING: ledger row without a file on disk (left untouched): ${f}`);
+    if (report.renames.length) {
+      throw new MigrationError(
+        `REFUSING to run: ${report.renames.length} pending file(s) carry the checksum of an orphan ledger row — that is a RENAMED applied migration, `
+        + `and running it would re-execute it. Restore the original filename (and its order.json entry) or fix forward with a new file.\n${renameLines(report).join('\n')}`
+      );
+    }
+    if (strict && report.orphans.length) {
+      throw new MigrationError(
+        `REFUSING to run (STRICT): ${report.orphans.length} orphan ledger row(s) — applied on this database but no such file on disk or in order.json. `
+        + `Restore the file(s) or resolve the ledger deliberately.\n${report.orphans.map((f) => `  ${f}`).join('\n')}`
+      );
+    }
+    for (const f of report.orphans) log(`WARNING: ${orphanLine(f)}`);
 
     let ran = 0;
     for (const f of report.pending) {
@@ -295,14 +328,21 @@ function describeTarget(url) {
   catch { return '<unparseable DATABASE_URL>'; }
 }
 
-const USAGE = `usage: node server/migrations/run.js [--dry-run] [--dir <migrationsDir>] [--mark-applied a.sql,b.sql]
-  env: DATABASE_URL (required), MIGRATIONS_DIR, MIGRATE_SSL=0|1`;
+const USAGE = `usage: node server/migrations/run.js [--dry-run] [--strict] [--dir <migrationsDir>] [--mark-applied a.sql,b.sql]
+  env: DATABASE_URL (required), MIGRATIONS_DIR, STRICT_MIGRATIONS=1 (= --strict), MIGRATE_SSL=0|1`;
 
 function parseArgs(argv) {
-  const opts = { dryRun: false, dir: process.env.MIGRATIONS_DIR ? path.resolve(process.env.MIGRATIONS_DIR) : DEFAULT_DIR, markApplied: null, help: false };
+  const opts = {
+    dryRun: false,
+    strict: process.env.STRICT_MIGRATIONS === '1',
+    dir: process.env.MIGRATIONS_DIR ? path.resolve(process.env.MIGRATIONS_DIR) : DEFAULT_DIR,
+    markApplied: null,
+    help: false,
+  };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--dry-run') opts.dryRun = true;
+    else if (a === '--strict') opts.strict = true;
     else if (a === '--dir') opts.dir = path.resolve(argv[++i] ?? '');
     else if (a.startsWith('--dir=')) opts.dir = path.resolve(a.slice('--dir='.length));
     else if (a === '--mark-applied') opts.markApplied = (argv[++i] ?? '').split(',').map((s) => s.trim()).filter(Boolean);
@@ -343,8 +383,10 @@ async function main(argv) {
       console.log(`${r.dryRun ? 'DRY RUN — would mark' : 'Marked'} applied: ${(r.dryRun ? r.wouldInsert : r.inserted).join(', ') || '(none)'}; already present: ${r.alreadyPresent.join(', ') || '(none)'}`);
       return 0;
     }
-    const report = await migrate(client, { dir: opts.dir, dryRun: opts.dryRun });
-    return report.mismatches.length ? 1 : 0;
+    const report = await migrate(client, { dir: opts.dir, dryRun: opts.dryRun, strict: opts.strict });
+    if (!opts.dryRun) return 0; // a real run throws on every refusal; reaching here means it applied cleanly
+    const refuse = report.mismatches.length || report.renames.length || (opts.strict && report.orphans.length);
+    return refuse ? 1 : 0;
   } catch (err) {
     console.error(err instanceof MigrationError ? `Migration failed: ${err.message}` : `Migration failed: ${err.stack || err.message}`);
     return 1;
