@@ -24,10 +24,12 @@
  *   4. child tables inherit from their parent row (brief_launches,
  *      brief_pipeline_references, ad_launches, video_ad_launches, statics_launches).
  *   5. clickup_brief_resolutions: from the brief row with the same ClickUp
- *      task id/url; from an optional --p1-tasks <file> list (task ids or URLs
- *      exported from the P1 list, one per line); from a URL containing the P1
- *      ClickUp product id. Brief NUMBER alone is never used (that is the
- *      collision this slice exists to remove).
+ *      task id/url; from the canonical ad names in creative_analysis
+ *      ('<CODE> - B#### - ...') when a number appears under exactly one code
+ *      (several codes = CONFLICT, listed); from an optional --p1-tasks <file>
+ *      list (task ids or URLs exported from the P1 list, one per line); from a
+ *      URL containing the P1 ClickUp product id. A brief NUMBER alone is never
+ *      used (that is the collision this slice exists to remove).
  *   6. image_store: rows referenced by /tmp-img/<id> URLs of tagged creatives.
  *   7. counters: brief_number_counter ids tagged per rules (1=MR, 2=PL); the P1
  *      row is inserted with value = MAX(brief_number) of P1 briefs; the PL row
@@ -213,6 +215,26 @@ async function main() {
         `UPDATE clickup_brief_resolutions SET product_code = $1 WHERE product_code IS NULL
           AND (task_id = ANY($2::text[]) OR task_url = ANY($2::text[]) OR task_url LIKE ANY(SELECT '%/' || k FROM unnest($2::text[]) k))`,
         [p1.product_code, p1TaskKeys]);
+    }
+    // 5c. Ad-name evidence: launched ads are named '<CODE> - B#### - ...' (the
+    // canonical naming the ads report itself parses brief numbers from). A
+    // number seen under exactly ONE code is attributed; a number seen under
+    // several codes is the collision this slice exists to remove and is
+    // listed as a CONFLICT, never picked.
+    const ev = rules.ad_name_evidence;
+    if (ev && (await tableExists(ev.table)) && (await columns(ev.table)).includes(ev.column)) {
+      const evidence = `SELECT DISTINCT substring(${ident(ev.column)} FROM $1) AS code, substring(${ident(ev.column)} FROM $2)::int AS n
+                        FROM ${ident(ev.table)} WHERE ${ident(ev.column)} ~ $3 AND substring(${ident(ev.column)} FROM $1) <> ALL($4::text[])`;
+      const codeRx = ev.regex.replace('([A-Z0-9]+)', '([A-Z0-9]+)').replace('([0-9]{2,5})', '[0-9]{2,5}');
+      const numRx = ev.regex.replace('([A-Z0-9]+)', '[A-Z0-9]+');
+      const params = [codeRx, numRx, ev.regex, ev.ignored_codes || []];
+      await upd('5.clickup.adname', 'clickup_brief_resolutions',
+        `WITH ev AS (${evidence}), one AS (SELECT n, MIN(code) AS code FROM ev GROUP BY n HAVING COUNT(*) = 1)
+         UPDATE clickup_brief_resolutions r SET product_code = one.code FROM one WHERE one.n = r.brief_number AND r.product_code IS NULL`, params);
+      for (const r of (await q(`WITH ev AS (${evidence}), many AS (SELECT n, string_agg(code, ',' ORDER BY code) AS codes FROM ev GROUP BY n HAVING COUNT(*) > 1)
+         SELECT r.brief_number, many.codes FROM clickup_brief_resolutions r JOIN many ON many.n = r.brief_number WHERE r.product_code IS NULL LIMIT $5`, [...params, opts.sample])).rows) {
+        conflicts.push({ table: 'clickup_brief_resolutions', id: String(r.brief_number), reason: `brief number used by ads of several codes (${r.codes}); left untagged` });
+      }
     }
     await upd('5.clickup.productid', 'clickup_brief_resolutions',
       `UPDATE clickup_brief_resolutions SET product_code = $1 WHERE product_code IS NULL AND task_url LIKE $2`,

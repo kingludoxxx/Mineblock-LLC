@@ -40,7 +40,17 @@ export async function freshDb(name, { template } = {}) {
   if (!/^lane_store_code_[a-z0-9_]+$/.test(name)) throw new Error(`refusing to touch database ${name}`);
   await withClient('postgres', async (c) => {
     await c.query(`DROP DATABASE IF EXISTS ${name}`);
-    await c.query(template ? `CREATE DATABASE ${name} TEMPLATE ${template}` : `CREATE DATABASE ${name}`);
+    // node --test runs files in parallel; concurrent CREATE DATABASE can race on
+    // pg_database_datname_index (SQLSTATE 23505). Retry a few times.
+    for (let attempt = 1; ; attempt++) {
+      try {
+        await c.query(template ? `CREATE DATABASE ${name} TEMPLATE ${template}` : `CREATE DATABASE ${name}`);
+        break;
+      } catch (err) {
+        if (err.code !== '23505' || attempt >= 5) throw err;
+        await new Promise((r) => setTimeout(r, 200 * attempt));
+      }
+    }
   });
   return name;
 }

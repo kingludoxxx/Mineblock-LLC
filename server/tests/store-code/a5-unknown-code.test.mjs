@@ -35,7 +35,16 @@ async function seed(c) {
   await c.query(`INSERT INTO clickup_brief_resolutions (brief_number, task_id, task_url) VALUES
     (12, 'task-p1-12', 'https://app.clickup.com/t/task-p1-12'),
     (11, 'task-mr-11', 'https://app.clickup.com/t/task-mr-11'),
+    (97, 'task-na', 'https://app.clickup.com/t/task-na'),
+    (98, 'task-ambiguous', 'https://app.clickup.com/t/task-ambiguous'),
     (99, 'task-nobody', 'https://app.clickup.com/t/task-nobody')`);
+  // ad-name evidence: 99 seen under one code, 98 under two (collision), 97 only under the NA placeholder
+  await c.query(`INSERT INTO creative_analysis (creative_id, ad_name) VALUES
+    ('c1', 'MR - B0099 - H1 - NA - Avatar - Angle - Cartoon - Ludovico - NA - Uly - WK17_2026'),
+    ('c2', 'MR - B0098 - H1 - NA - Avatar - Angle - Cartoon - Ludovico - NA - Uly - WK17_2026'),
+    ('c3', 'P1 - B0098 - IT - NA - Angle - Mashup - Ludovico - NA - WK17_2026'),
+    ('c4', 'NA - B0097 - H1 - NA'),
+    ('c5', 'Urgency - 1')`);
   await c.query(`INSERT INTO brief_number_counter (id, value) VALUES (1, 500), (2, 21)`);
   await c.query(`INSERT INTO product_im_counters (product_id, next_im) VALUES (2, 7), (3, 4)`);
   await c.query(`INSERT INTO statics_im_counter (id, next_number) VALUES (1, 42)`);
@@ -83,7 +92,7 @@ test('A5: dry-run changes nothing and reports; apply tags known + P1, leaves unk
     const bl = await c.query(`SELECT b.brief_number, l.product_code FROM brief_launches l JOIN brief_pipeline_generated b ON b.id = l.brief_id ORDER BY 1`);
     assert.deepEqual(bl.rows.map((r) => [r.brief_number, r.product_code]), [[11, 'MR'], [12, 'P1']]);
     const cbr = await c.query(`SELECT brief_number, product_code FROM clickup_brief_resolutions ORDER BY brief_number`);
-    assert.deepEqual(cbr.rows.map((r) => [r.brief_number, r.product_code]), [[11, 'MR'], [12, 'P1'], [99, null]]);
+    assert.deepEqual(cbr.rows.map((r) => [r.brief_number, r.product_code]), [[11, 'MR'], [12, 'P1'], [97, null], [98, null], [99, 'MR']]);
     const bnc = await c.query(`SELECT id, product_code, value FROM brief_number_counter ORDER BY id`);
     assert.deepEqual(bnc.rows.map((r) => [r.id, r.product_code, r.value]), [[1, 'MR', 500], [2, 'PL', 21], [3, 'P1', 13]]);
     const pic = await c.query(`SELECT product_id, product_code FROM product_im_counters ORDER BY product_id`);
@@ -100,8 +109,9 @@ test('A5: dry-run changes nothing and reports; apply tags known + P1, leaves unk
   assert.equal(t.spy_creatives.product_code.MR, 1);
   assert.equal(t.spy_creatives.store_code.MB, 4);
   assert.equal(t.image_store.untagged, 2);
-  assert.equal(t.clickup_brief_resolutions.untagged, 1);
-  assert.deepEqual(t.clickup_brief_resolutions.untagged_sample, ['99']);
+  assert.equal(t.clickup_brief_resolutions.untagged, 2);
+  assert.deepEqual(t.clickup_brief_resolutions.untagged_sample, ['97', '98']);
+  assert.ok(run1.summary.conflicts.some((x) => x.table === 'clickup_brief_resolutions' && x.id === '98' && x.reason.includes('MR,P1')), 'ambiguous brief number 98 must be a listed conflict');
   assert.equal(t.product_profiles.untagged, 2);
   assert.equal(t.statics_im_counter.untagged, 1);
   assert.ok(run1.summary.conflicts.some((x) => x.table === 'brief_pipeline_generated' && x.reason.includes('P1')), 'PUURE row with a P1 naming prefix must be reported as a conflict, not overwritten');
