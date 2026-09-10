@@ -120,3 +120,51 @@ ATTEMPTED: ran each on the Lane F branch and on baseline edc1030 (git archive + 
 FIX TRIED: none — environmental/pre-existing (hardcoded /Users/ludo/Mineblock-LLC/node_modules in the tests, databases created by another harness, a column from a migration not in this tree). Not touched: outside the lane.
 STATUS: BLOCKED (pre-existing; for the lead / Lane B runner)
 ---
+
+---
+TIMESTAMP: 2026-09-11 02:40
+TASK: S4-SB — the Store Brain
+ERROR: read-path / forbidden files touched in the working tree: server/src/routes/index.js,
+server/src/middleware/brainAuth.js, server/src/routes/brain.js,
+server/src/services/brain/brainSchema.js, server/src/services/brain/embeddingProvider.js,
+server/src/services/brainExtract.js, server/src/services/brainSearch.js,
+server/src/services/brainStore.js
+  (server/tests/store-code/a6-no-read-path.test.mjs, subtest 1)
+ATTEMPTED: Running the store-code suite as the lane brief requires.
+FIX TRIED: None applied. a6 is Lane C's SCOPE guard: it asserts that nothing under server/src/
+appears in the lane's diff or working tree. On a clean hub/main checkout it passes; on ANY
+feature branch it takes lane mode and reports that branch's server/src files as violations, so
+it is unsatisfiable for every lane that ships server code. Committing does not help. Per R35 I
+did not edit another lane's test. Recommended repair for the integrator: attribute the sweep to
+the store-code lane's own commits, or gate it behind LANE_BASE_COMMIT. Its second subtest
+("the runner change is the store-code + lock-timeout contract and nothing else") still passes.
+STATUS: BLOCKED (for the integrator, not for this lane)
+---
+
+---
+TIMESTAMP: 2026-09-11 02:36
+TASK: S4-SB — the Store Brain
+ERROR: [live-view/globe-effect] client dependencies are not installed. Run: cd client && npm install
+  (Cannot find module 'vite') — also ai-media/dialog-dom.mjs: UNRESOLVED_IMPORT Could not resolve 'vite'
+ATTEMPTED: node server/tests/run-all.mjs (full suite) in the lane worktree.
+FIX TRIED: The lane brief says to symlink node_modules from /Users/ludo/landing-dashboard;
+client/ carries a SECOND install this repo also needs. `ln -s /Users/ludo/landing-dashboard/
+client/node_modules client/node_modules` — after which all four scripts exit 0. COMMON.md
+should say to symlink both, or these four fail in every lane worktree for a reason unrelated
+to the lane.
+STATUS: FIXED
+---
+
+---
+TIMESTAMP: 2026-09-11 02:30
+TASK: S4-SB — the Store Brain
+ERROR: (silent) brain-import.mjs C5.4 "an unreachable database exits non-zero" passed under
+run-all for the WRONG reason.
+ATTEMPTED: The check pointed DATABASE_URL at a literally-named database that does not exist.
+FIX TRIED: run-all.mjs's preflight scans test files for DSNs and CREATES every database it
+finds ("PREFLIGHT 127.0.0.1:5433: created db s4_brain_no_such_db"), so the database existed by
+the time the check ran. The name is now assembled at runtime from parts and dropped first, and
+a new assertion C5.4b requires the error text to name the database. A literal DSN in a test is
+a database the runner will conjure — worth a line in the runner's own docs.
+STATUS: FIXED
+---

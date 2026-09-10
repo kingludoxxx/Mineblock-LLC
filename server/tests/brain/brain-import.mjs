@@ -101,10 +101,19 @@ ok(/new:\s*1\b/.test(r3.out) && await count() === 4,
   ok(r.code !== 0 && /--source/.test(r.out), 'C5.3 FAILURE PATH: a missing --source is refused', r.out);
 }
 {
+  // The name is BUILT AT RUNTIME on purpose. run-all.mjs preflights every DSN it
+  // can find in a test file and CREATES the database — a literal name here would
+  // have been created for us and this failure path would have silently passed.
+  const absent = ['s4', 'brain', 'absent', String(process.pid), String(Date.now())].join('_');
+  const admin2 = postgres(`${PG}/postgres`, { ssl: false, onnotice: () => {} });
+  await admin2.unsafe(`DROP DATABASE IF EXISTS ${absent}`);
+  await admin2.end();
   const r = run(['--product', 'AAA', '--source', 'operator research', FIX],
-    { DATABASE_URL: 'postgres://postgres@127.0.0.1:5433/s4_brain_no_such_db' });
+    { DATABASE_URL: `${PG}/${absent}` });
   ok(r.code !== 0 && /does not exist|ECONNREFUSED|database/i.test(r.out),
     'C5.4 FAILURE PATH: an unreachable database exits non-zero with the real error, never "0 new"', r.out);
+  ok(new RegExp(`"${absent}" does not exist`).test(r.out),
+    'C5.4b …and the message names the database it could not reach', r.out.slice(-300));
 }
 {
   const empty = mkdtempSync(join(tmpdir(), 's4-brain-empty-'));

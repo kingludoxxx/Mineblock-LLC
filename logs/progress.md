@@ -5173,3 +5173,46 @@ OUTPUT: Lane F suite 97/97 (was 81/81; +16 new tests, 0 regressions) across stor
 DECISIONS: DECISION MADE: PRODUCT_CODES_JSON='{}' is treated as invalid (empty catalogue) as well as unset/malformed — "no silent empty catalog" would otherwise still be reachable through an explicit '{}'. DECISION MADE: the boot gate lives in a new assertBootConfig() called from server.js, NOT at storeConfig import time, so R7 (read at request time) still holds. DECISION MADE: no extra per-route guards added in clickupWebhook.js — with boot refusing, the fall-through is unreachable, and the route's existing try/catch already contains an escaped throw; adding dead guards would be untestable code. DECISION MADE: v23.0 rather than pinning per store, per the reviewer's low-cost recommendation; per-store override remains one env var. NOT DONE: review P2-2 (seven Shopify call sites 404 instead of a clear shopify_not_configured on a malformed SHOPIFY_API_VERSION) — cosmetic per the reviewer, not on the lead's list, spans seven files in other lanes' areas; needs its own slice. NOT DONE: the Meta v23.0 live field check — a lane makes no live calls (R35); named for the lead. HARD PRECONDITION for the lead: PRODUCT_CODES_JSON must be set on every service BEFORE this commit is deployed, or the service will refuse to start.
 STATUS: COMPLETE (lane deliverable; nothing pushed, nothing merged into hub/main, nothing deployed, no live service called)
 ---
+
+---
+TIMESTAMP: 2026-09-11 02:55
+TASK: S4-SB — the Store Brain (Multi-Store Hub, lane day2/s4-brain)
+BUILT: One Brain per store, physically isolated inside that store's own Postgres and bucket.
+Migrations 128/129/130 add the three layers — RAW SOURCES (kb_documents, immutable, identified
+by the sha256 of their bytes, body mirrored to knowledge/raw/<source>/<date>/), INSIGHTS
+(kb_insights + kb_insight_sources + kb_extraction_jobs + kb_embeddings, proposed/approved/
+rejected with mandatory provenance) and PLAYBOOK (playbook_products/entries/citations, the
+curated per-product layer pipelines read). One internal API per store at /api/v1/brain
+(search, documents, ingest, insights, extract, playbook, lock), authenticated by a dashboard
+session with brain:access OR that pair's own BRAIN_SERVICE_TOKEN (constant-time compare, 503
+when unset). There is no store_id column and no store parameter anywhere: retrieval is scoped
+by construction. Embeddings sit behind a provider interface — OpenAI text-embedding-3-small
+when OPENAI_API_KEY is set, otherwise Postgres full-text over GENERATED tsvector columns — and
+migration 129 creates the pgvector column only where the extension exists. Plus an idempotent
+operator-research import CLI (npm run brain:import) and docs/BRAIN.md.
+TESTED: Tests written first (R24), run RED (ERR_MODULE_NOT_FOUND, reproducible by moving the
+router aside), then GREEN. 109 checks across four scripts: brain-routes 58/58 (1 skip: pgvector
+absent on the shared cluster), brain-isolation 14/14 (two stores, two databases, two node
+processes over HTTP), brain-import 18/18, brain-vector 19/19 against a real pgvector 0.8.0
+Postgres built into a PRIVATE copy of the pg16 distribution on port 5434 (the shared cluster
+was not modified). Migrations run on an empty database (111 -> 114 entries) and on a
+mineblock_copy clone, twice each. Failure paths exercised: no credential, wrong token, unset
+token, unknown product code, insight without provenance, unreachable model, missing
+ANTHROPIC_API_KEY, embedding upstream 429, malformed JSON, missing folder, unreachable database.
+Regression: migrations suite still 76/76, smoke 14/14, sandbox 8/8, store-code 26/27.
+OUTPUT: Verbatim in ~/tasks/multistore-hub/briefs/out/PROOF-S4-SB.md. Highlights:
+"Successfully ran 114 migration(s). applied: 114 | pending: 0 | mismatches: 0"; "58 passed,
+0 failed, 1 skipped"; "14 passed, 0 failed, 0 skipped"; "18 passed, 0 failed, 0 skipped";
+"19 passed, 0 failed, 0 skipped"; "76 passed, 0 failed, 0 skipped"; "SUMMARY: 14 passed,
+0 failed, 0 timed out, 0 skipped".
+DECISIONS: DECISION MADE — pgvector is NOT available on the shared local Postgres (proved by
+execution). Rather than skip the vector path or install into a cluster three lanes share, I
+built pgvector 0.8.0 into a private copy of the distribution and served it on port 5434, so
+both search paths are proven and nothing shared changed. DECISION MADE — playbook fields are
+rows (product_code, section, entry_key) rather than columns, because the field list is
+editorial and would otherwise need a migration per field, and R15 forbids naming a product's
+fields in engine code. DECISION MADE — every id the Brain API returns is normalised to a
+Number; postgres.js returns int8 as a string, which made one path's id !== another path's id
+for the same row and produced a test that passed for the wrong reason.
+STATUS: COMPLETE
+---
