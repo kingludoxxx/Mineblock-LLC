@@ -117,8 +117,15 @@ test('shopifyApiVersion(): the ONE default is 2024-01; malformed → default + o
   assert.equal(sc.shopifyApiVersion(), '2024-01');
   process.env.SHOPIFY_API_VERSION = '2025-07';
   assert.equal(sc.shopifyApiVersion(), '2025-07');
+  // MALFORMED is a misconfiguration to REFUSE (null), never repaired into a
+  // path — the shopify-import contract (clone-page/shopify-import.mjs n1).
+  for (const bad of ['latest', '2024-1', '2024-01/../../orders', '../admin', '2024-01 ']) {
+    process.env.SHOPIFY_API_VERSION = bad;
+    assert.equal(sc.shopifyApiVersion(), null, JSON.stringify(bad));
+  }
+  sc.resetWarnings();
   process.env.SHOPIFY_API_VERSION = 'latest';
-  const w = captureWarnings(() => { assert.equal(sc.shopifyApiVersion(), '2024-01'); sc.shopifyApiVersion(); });
+  const w = captureWarnings(() => { sc.shopifyApiVersion(); sc.shopifyApiVersion(); });
   assert.equal(w.length, 1, String(w));
   assert.match(w[0], /SHOPIFY_API_VERSION/);
 });

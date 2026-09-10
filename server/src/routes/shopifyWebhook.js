@@ -243,6 +243,9 @@ router.post('/register', authenticate, async (req, res) => {
       return res.status(400).json({ success: false, error: { message: 'SHOPIFY_STORE_DOMAIN not configured' } });
     }
     const apiVersion = storeConfig.shopifyApiVersion();
+    if (!apiVersion) {
+      return res.status(400).json({ success: false, error: { message: 'SHOPIFY_API_VERSION is malformed (expected YYYY-MM)' } });
+    }
 
     const baseUrl = process.env.RENDER_EXTERNAL_URL || process.env.PUBLIC_APP_URL || 'http://localhost:3000';
     const webhookAddress = `${baseUrl}/api/v1/shopify-webhook/orders`;

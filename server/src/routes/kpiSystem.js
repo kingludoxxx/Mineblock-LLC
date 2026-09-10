@@ -261,10 +261,12 @@ router.use(authenticate, requirePermission('kpi-system', 'access'));
 // Store domain + API version come from storeConfig at CALL time (R7); an
 // unset domain makes every Shopify Admin call throw a clear error instead of
 // syncing another store's orders.
-function shopifyStore() {
+function shopifyAdminBase() {
   const d = storeConfig.shopifyStoreDomain();
   if (!d) throw new Error('SHOPIFY_STORE_DOMAIN not set — KPI Shopify sync is dormant on this deployment');
-  return d;
+  const v = storeConfig.shopifyApiVersion();
+  if (!v) throw new Error('SHOPIFY_API_VERSION is malformed — KPI Shopify sync refused until it is fixed');
+  return `https://${d}/admin/api/${v}`;
 }
 const SHOPIFY_TOKEN = process.env.SHOPIFY_ACCESS_TOKEN || '';
 // SUPPLIER_SHARE_TOKEN — env var for public /public/cost-sheet token-based access
@@ -781,7 +783,7 @@ async function seedStaticData() {
 
 // ── Shopify API ─────────────────────────────────────────────────────
 async function shopifyFetch(endpoint, params = {}) {
-  const url = new URL(`https://${shopifyStore()}/admin/api/${storeConfig.shopifyApiVersion()}/${endpoint}`);
+  const url = new URL(`${shopifyAdminBase()}/${endpoint}`);
   for (const [k, v] of Object.entries(params)) url.searchParams.set(k, v);
 
   const resp = await fetch(url.toString(), {
@@ -2708,7 +2710,7 @@ async function syncMetaAdSpend(days = 8) {
 
 async function autoSync() {
   if (!SHOPIFY_TOKEN) return;
-  if (!storeConfig.shopifyStoreDomain()) return; // dormant: one warning is emitted by storeConfig
+  if (!storeConfig.shopifyStoreDomain() || !storeConfig.shopifyApiVersion()) return; // dormant/refused: storeConfig warned once
   try {
     await ensureTables();
     await seedStaticData();
@@ -2723,7 +2725,7 @@ async function autoSync() {
     let recentOrders = [];
     if (autoSyncCount % 5 === 0) {
       const threeDaysAgo = new Date(Date.now() - 3 * 86400000).toISOString();
-      const url = `https://${shopifyStore()}/admin/api/${storeConfig.shopifyApiVersion()}/orders.json?status=any&created_at_min=${threeDaysAgo}&limit=250&fields=id,order_number,created_at,total_price,subtotal_price,current_subtotal_price,total_discounts,line_items,shipping_address,financial_status,refunds`;
+      const url = `${shopifyAdminBase()}/orders.json?status=any&created_at_min=${threeDaysAgo}&limit=250&fields=id,order_number,created_at,total_price,subtotal_price,current_subtotal_price,total_discounts,line_items,shipping_address,financial_status,refunds`;
       try {
         const resp = await fetch(url, { headers: { 'X-Shopify-Access-Token': SHOPIFY_TOKEN } });
         if (resp.ok) recentOrders = (await resp.json()).orders || [];

@@ -49,8 +49,11 @@ function raw(key) {
   }
   const v = process.env[key];
   if (v === undefined || v === null) return undefined;
-  const s = String(v).trim();
-  return s === '' ? undefined : s;
+  const s = String(v);
+  // Blank = unset. NOT trimmed otherwise: a stray space in a value that is
+  // interpolated into a URL path is a misconfiguration the validators below
+  // must SEE, not one this layer quietly repairs.
+  return s.trim() === '' ? undefined : s;
 }
 
 /** Non-secret string; unset → null with one warning (unless silent). */
@@ -96,15 +99,20 @@ export function shopifyStoreDomain() {
 
 /** The ONE place the Shopify Admin API version defaults. */
 export const SHOPIFY_API_VERSION_DEFAULT = '2024-01';
-const SHOPIFY_API_VERSION_RE = /^\d{4}-(01|04|07|10)$/;
+const SHOPIFY_API_VERSION_RE = /^\d{4}-\d{2}$/;
 
-/** Shopify Admin API version (`YYYY-01|04|07|10`); malformed → default + one warning. */
+/**
+ * Shopify Admin API version (`YYYY-MM`). UNSET → the one default. MALFORMED
+ * (anything that is not exactly YYYY-MM — a path fragment, a stray space,
+ * 'latest') → null + one warning: it is a misconfiguration every caller must
+ * refuse, never a value this layer repairs into a URL path.
+ */
 export function shopifyApiVersion() {
   const v = raw('SHOPIFY_API_VERSION');
   if (v === undefined) return SHOPIFY_API_VERSION_DEFAULT;
   if (!SHOPIFY_API_VERSION_RE.test(v)) {
-    warnOnce('SHOPIFY_API_VERSION', `'${v.slice(0, 20)}' is not a Shopify version (YYYY-01|04|07|10) — using ${SHOPIFY_API_VERSION_DEFAULT}`);
-    return SHOPIFY_API_VERSION_DEFAULT;
+    warnOnce('SHOPIFY_API_VERSION', `${JSON.stringify(v.slice(0, 20))} is not a Shopify version (YYYY-MM) — Shopify calls are refused until it is fixed`);
+    return null;
   }
   return v;
 }
@@ -177,7 +185,7 @@ export const TIMEZONE_DEFAULT = 'Europe/Madrid';
  * Intl, and a silent default would mis-bucket money, so it fails closed hard.
  */
 export function timezone() {
-  const want = raw('REPORT_TZ') ?? TIMEZONE_DEFAULT;
+  const want = (raw('REPORT_TZ') ?? TIMEZONE_DEFAULT).trim();
   try {
     new Intl.DateTimeFormat('en-US', { timeZone: want });
     return want;
