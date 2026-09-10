@@ -24,7 +24,7 @@ process.env.TRACKING_IP_SALT = 's2s-harness-salt';
 // The delivery drain must not start a background timer inside the harness.
 process.env.TRACKING_SWEEPS_DISABLED = '1';
 
-const NM = '/Users/ludo/Mineblock-LLC/node_modules';
+const NM = new URL('../../../node_modules', import.meta.url).pathname.replace(/\/$/, '');
 const express = (await import(`${NM}/express/index.js`)).default;
 const jwt = (await import(`${NM}/jsonwebtoken/index.js`)).default;
 const postgres = (await import(`${NM}/postgres/src/index.js`)).default;

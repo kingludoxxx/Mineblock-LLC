@@ -21,7 +21,7 @@ delete process.env.TRACKING_RELAY_OVERRIDE_URL; // endpoint tests need the real 
 
 import http from 'http';
 
-const NM = '/Users/ludo/Mineblock-LLC/node_modules';
+const NM = new URL('../../../node_modules', import.meta.url).pathname.replace(/\/$/, '');
 const postgres = (await import(`${NM}/postgres/src/index.js`)).default;
 const sql = postgres(process.env.DATABASE_URL, { onnotice: () => {} });
 

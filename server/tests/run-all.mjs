@@ -36,6 +36,9 @@ const DEFAULT_PGURL = 'postgres://postgres@/tmp:5433/lane_ci_fleet';
 // clean checkout. Where the brief asked for a subject that has no runnable test
 // on this tree, the gap is recorded in server/tests/QUARANTINE.md rather than
 // papered over with an unrelated script.
+// B2: orders-list coverage is real now that orders/orders-extras.mjs imports
+// this repository. Product-profile CRUD still has no test anywhere in the tree,
+// so that gap is still recorded rather than substituted.
 const SMOKE = [
   // auth — real authenticate + requirePermission, role matrix built from the migration
   { id: 'auth/role-matrix', file: 'platform/platform.mjs' },
@@ -43,6 +46,10 @@ const SMOKE = [
   { id: 'auth/crud-401', file: 'page-library/page-library.mjs' },
   // health — the tracking-health classifier
   { id: 'health', file: 'tracking/health-shape.mjs' },
+  // orders — the REAL /api/v1/orders router (list, filters, auth matrix).
+  // Restored in session B2: this script was quarantined for importing another
+  // checkout by absolute path, so smoke had no orders-list coverage at all.
+  { id: 'orders/list', file: 'orders/orders-extras.mjs' },
   // orders / money path — settlement resume + the P&L route surface over orders
   { id: 'orders/resume', file: 'money-path/resume-link.mjs' },
   { id: 'orders/pnl-routes', file: 'costs/routes.mjs' },

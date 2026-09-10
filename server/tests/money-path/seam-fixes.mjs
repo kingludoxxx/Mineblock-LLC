@@ -48,16 +48,16 @@ process.env.TRACKING_SWEEPS_DISABLED = '1';
 process.env.DOMAIN_SWEEP_DISABLED = '1';
 process.env.SHOPIFY_ORDER_CREATE_ENABLED = '0';
 
-const { default: app } = await import('/Users/ludo/Puure-integrator/server/src/app.js');
+const { default: app } = await import(new URL('../../src/app.js', import.meta.url));
 const server = app.listen(PORT);
 await new Promise((r) => setTimeout(r, 4000));
 
 const sql = postgres(DB, { ssl: false });
-const { ensureCheckoutTables } = await import('/Users/ludo/Puure-integrator/server/src/services/checkoutSchema.js');
-const { ensureSplitTables } = await import('/Users/ludo/Puure-integrator/server/src/services/splitTestSchema.js');
+const { ensureCheckoutTables } = await import(new URL('../../src/services/checkoutSchema.js', import.meta.url));
+const { ensureSplitTables } = await import(new URL('../../src/services/splitTestSchema.js', import.meta.url));
 await ensureCheckoutTables(); await ensureSplitTables();
 
-const { recordExposure } = await import('/Users/ludo/Puure-integrator/server/src/services/splitCredits.js');
+const { recordExposure } = await import(new URL('../../src/services/splitCredits.js', import.meta.url));
 
 async function seedSession({ id, total, pi }) {
   await sql`INSERT INTO co_sessions (id, funnel_id, page_id, status, line_items, subtotal, shipping, tax, total, currency, gateway, gateway_session_id)
@@ -102,7 +102,7 @@ async function postWebhook(evt) {
 
 // ================= S1b: non-finite value refused, not coerced to 0 ========
 {
-  const { creditConversion } = await import('/Users/ludo/Puure-integrator/server/src/services/splitCredits.js');
+  const { creditConversion } = await import(new URL('../../src/services/splitCredits.js', import.meta.url));
   const S = 'co_s1b', T = 'sp_s1b';
   await seedSession({ id: S, total: 10, pi: 'pi_s1b' });
   await seedTest(T);

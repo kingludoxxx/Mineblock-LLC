@@ -12,7 +12,7 @@
 import http from 'http';
 import crypto from 'crypto';
 
-const NM = '/Users/ludo/Mineblock-LLC/node_modules';
+const NM = new URL('../../../node_modules', import.meta.url).pathname.replace(/\/$/, '');
 const PORT = 4021;
 const MOCK_WHOP_PORT = 4110;
 const DB = 'postgres://puure@127.0.0.1:5433/puure_upsell';

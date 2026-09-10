@@ -37,7 +37,7 @@ delete process.env.TRACKING_RELAY_OVERRIDE_URL;   // ga4 must NOT ride the meta 
 import http from 'http';
 import crypto from 'crypto';
 
-const NM = '/Users/ludo/Mineblock-LLC/node_modules';
+const NM = new URL('../../../node_modules', import.meta.url).pathname.replace(/\/$/, '');
 const express = (await import(`${NM}/express/index.js`)).default;
 const jwt = (await import(`${NM}/jsonwebtoken/index.js`)).default;
 const postgres = (await import(`${NM}/postgres/src/index.js`)).default;

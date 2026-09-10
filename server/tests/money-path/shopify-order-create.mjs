@@ -20,7 +20,7 @@ process.env.PUURE_SHOPIFY_TOKEN = 'shpat_mock_token';
 process.env.SHOPIFY_API_VERSION = '2024-01';
 process.env.SHOPIFY_ORDER_CREATE_ENABLED = '1'; // explicit opt-in (cross-store guard)
 
-const NM = '/Users/ludo/Mineblock-LLC/node_modules';
+const NM = new URL('../../../node_modules', import.meta.url).pathname.replace(/\/$/, '');
 const postgres = (await import(`${NM}/postgres/src/index.js`)).default;
 const sql = postgres(process.env.DATABASE_URL, { onnotice: () => {} });
 

@@ -2,7 +2,7 @@
 // Each check reproduces a CONFIRMED bug's failure path and asserts the fix.
 // Harness :4003 (mock Stripe :4009, mock Whop :4010), MONEY_SWEEP_DISABLED=1.
 import crypto from 'crypto';
-import postgres from '/Users/ludo/Mineblock-LLC/node_modules/postgres/src/index.js';
+import postgres from 'postgres';
 
 const B = 'http://127.0.0.1:4003/api/v1/checkout/public';
 const WHW = 'http://127.0.0.1:4003/api/v1/gateway-webhooks/whop';
@@ -116,7 +116,7 @@ check('C3 canceled(dispute) row NOT re-charged', cxRow.status === 'canceled');
 // We simulate transport by setting mock to a mode that returns non-JSON 500? Instead: use a funnel whose stripe base points to a dead host.
 await fetch(`${ADMIN}/gateways/fn_deadstripe/stripe`, { method: 'PUT', headers: H, body: JSON.stringify({ secret_key: 'sk_test_dead', webhook_secret: 'whsec_x' }) });
 // Can't easily force transport error through the shared mock; assert the code path via unit: chargeOffSession against dead base.
-const stripeGw = await import('/Users/ludo/Mineblock-LLC/server/src/services/gateways/stripe.js');
+const stripeGw = await import(new URL('../../src/services/gateways/stripe.js', import.meta.url));
 process.env.STRIPE_API_BASE_SAVED = process.env.STRIPE_API_BASE;
 const deadRes = await (async () => {
   const saved = process.env.STRIPE_API_BASE; process.env.STRIPE_API_BASE = 'http://127.0.0.1:1/v1';
@@ -129,7 +129,7 @@ check('C1 Stripe transport failure flagged transport:true (not a decline)', dead
 // Re-import moneySweeps with garbage env in a child check: values are module-const, so assert via a fresh process.
 import { execSync } from 'child_process';
 const clampOut = execSync(`MONEY_SWEEP_TICK_MS=0 MONEY_SWEEP_PENDING_MIN_AGE_MIN=abc node --input-type=module -e "
-import('/Users/ludo/Mineblock-LLC/server/src/services/moneySweeps.js').then(m => {
+import('${new URL('../../src/services/moneySweeps.js', import.meta.url).href}').then(m => {
   // TICK not exported; assert indirectly: runMoneySweepOnce exists and env didn't NaN-crash import
   console.log('import_ok');
 });
@@ -186,7 +186,7 @@ const negPut = await fetch(`${ADMIN}/upsells/${offP}`, { method: 'PUT', headers:
 check('F6 PUT negative price → 422', negPut === 422);
 
 // ═══ #9/F5 — price cache is bounded (unit: many distinct bad gids don't grow forever) ═══
-const pricing = await import('/Users/ludo/Mineblock-LLC/server/src/services/checkoutPricing.js');
+const pricing = await import(new URL('../../src/services/checkoutPricing.js', import.meta.url));
 check('F5 price cache exposes clear + bounded set logic', typeof pricing.clearPriceCache === 'function');
 
 console.log(`\nRESULT: ${pass} passed, ${fail} failed`);

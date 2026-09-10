@@ -13,7 +13,7 @@ const DB = 'postgres://puure@127.0.0.1:5433/puure_cogs_migrate';
 process.env.DATABASE_URL = DB;
 process.env.NODE_ENV = 'development';
 
-const NM = '/Users/ludo/Mineblock-LLC/node_modules';
+const NM = new URL('../../../node_modules', import.meta.url).pathname.replace(/\/$/, '');
 const postgres = (await import(`${NM}/postgres/src/index.js`)).default;
 
 const admin = postgres('postgres://puure@127.0.0.1:5433/postgres', { ssl: false });
