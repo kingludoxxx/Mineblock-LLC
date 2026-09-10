@@ -44,14 +44,11 @@ const FRAMEIO_EDITING_FOLDER       = process.env.FRAMEIO_MB_EDITING_FOLDER      
 const FRAMEIO_STATIC_EDITING_FOLDER = process.env.FRAMEIO_MB_STATIC_EDITING_FOLDER || '';
 const PL_FRAMEIO_PROJECT_ID        = process.env.FRAMEIO_PUURE_PROJECT_ID        || '';
 const PL_FRAMEIO_EDITING_FOLDER    = process.env.FRAMEIO_PUURE_EDITING_FOLDER    || '';
-// Product P1 (Pulse Pro) shares the PL | Video Creatives list with Puure, but its
-// editing folders go to their own Frame.io parent ("P1 Puulse Pro Ads"). Routed by
-// the card's Product relationship, not by list — see taskIsP1().
-// "P1  Puulse Pro Ads" FOLDER inside the "Reevo Health" Frame.io project.
-// (b664289d is the PROJECT id; the folder create needs the FOLDER id below.)
-const P1_FRAMEIO_PROJECT_ID        = process.env.FRAMEIO_P1_PROJECT_ID || 'b664289d-226b-47c2-a826-5b1377d52b4d';
-const P1_FRAMEIO_EDITING_FOLDER    = process.env.FRAMEIO_P1_EDITING_FOLDER || '10abecc4-31ee-413c-ba12-c7cdddef63cd';
-const P1_PRODUCT_ID                = process.env.CLICKUP_P1_PRODUCT_ID || '123yxuahe91';
+// A product that shares the PL list but owns its Frame.io parent (project +
+// editing folder) is routed by the card's Product relationship, not by list.
+// Which products those are is STORE DATA: env PRODUCT_CODES_JSON entries that
+// declare clickup.productId (+ frameio.projectId / editingFolderId), read at
+// call time through storeConfig — see productForTask(). No id literal here.
 const FRAMEIO_API = 'https://api.frame.io/v2';
 
 // List IDs — per-brand env vars. Each instance sets only its own.
@@ -97,12 +94,22 @@ const FIELD_IDS = {
   productPL: '08dfcdf9-6333-469d-bd92-8b034fa2edbc',
 };
 
-// True when a PL card's Product relationship points at the P1 (Pulse Pro) product.
-// Matches by task id (rename-safe) with a name fallback.
-function taskIsP1(task) {
+// The PRODUCT_CODES_JSON entry a PL card's Product relationship points at, or
+// null when the relationship names no product that declares a ClickUp
+// productId. Matches by item id (rename-safe) with the code as name fallback.
+function productForTask(task) {
   const f = task.custom_fields?.find((x) => x.id === FIELD_IDS.productPL);
-  if (!f || !Array.isArray(f.value)) return false;
-  return f.value.some((t) => t.id === P1_PRODUCT_ID || String(t.name || '').trim() === 'P1');
+  if (!f || !Array.isArray(f.value)) return null;
+  for (const t of f.value) {
+    const p = storeConfig.productForClickupProductRef(t);
+    if (p) return p;
+  }
+  return null;
+}
+// A product-routed card owns its Frame.io parent when its entry declares one.
+function ownFrameParent(task) {
+  const p = productForTask(task);
+  return p && p.frameio.projectId && p.frameio.editingFolderId ? p : null;
 }
 
 // Dropdown index → label mappings
@@ -863,11 +870,13 @@ function generatePlNamingConvention(task, briefNumber, weekLabel, existingName) 
 
 async function reconcilePlName(task, { assignNumberIfMissing = false } = {}) {
   try {
-    // P1 (Pulse Pro) cards carry their own naming (set at creation) and their own
-    // avatar/angle dropdowns; the PL reconciler would overwrite them with a "PL -"
-    // prefix and NA slots, so leave P1 cards untouched.
-    if (taskIsP1(task)) {
-      logger.info(`[reconcilePlName] Skipping ${task.id} — P1 product card (own naming)`);
+    // Product-routed cards (an entry with its own clickup.productId) carry their
+    // own naming (set at creation) and their own avatar/angle dropdowns; the PL
+    // reconciler would overwrite them with a "PL -" prefix and NA slots, so
+    // leave them untouched.
+    const ownProduct = productForTask(task);
+    if (ownProduct) {
+      logger.info(`[reconcilePlName] Skipping ${task.id} — ${ownProduct.code} product card (own naming)`);
       return;
     }
     const name = task.name || '';
@@ -925,10 +934,11 @@ async function handleEditingStatusChange(task, taskListId) {
   if (taskListId === VIDEO_ADS_LIST)         parentFolderId = FRAMEIO_EDITING_FOLDER;
   else if (taskListId === STATIC_ADS_LIST)   parentFolderId = FRAMEIO_STATIC_EDITING_FOLDER;
   else if (taskListId === PL_VIDEO_LIST) {   // PL pipeline
-    if (taskIsP1(task)) {                     // P1 → Reevo Health project / "P1 Puulse Pro Ads"
-      parentFolderId = P1_FRAMEIO_EDITING_FOLDER;
-      projectId = P1_FRAMEIO_PROJECT_ID;
-    } else {                                  // Puure → Puure project
+    const own = ownFrameParent(task);         // product-routed card → its own project/folder
+    if (own) {
+      parentFolderId = own.frameio.editingFolderId;
+      projectId = own.frameio.projectId;
+    } else {                                  // the list's own project
       parentFolderId = PL_FRAMEIO_EDITING_FOLDER;
       projectId = PL_FRAMEIO_PROJECT_ID;
     }
@@ -1924,7 +1934,8 @@ router.get('/create-frame-folder/:taskId', async (req, res) => {
     let projectId = FRAMEIO_PROJECT_ID;
     if (taskListId === STATIC_ADS_LIST) parentFolderId = FRAMEIO_STATIC_EDITING_FOLDER;
     if (taskListId === PL_VIDEO_LIST) {
-      if (taskIsP1(task)) { parentFolderId = P1_FRAMEIO_EDITING_FOLDER; projectId = P1_FRAMEIO_PROJECT_ID; }
+      const own = ownFrameParent(task);
+      if (own) { parentFolderId = own.frameio.editingFolderId; projectId = own.frameio.projectId; }
       else { parentFolderId = PL_FRAMEIO_EDITING_FOLDER; projectId = PL_FRAMEIO_PROJECT_ID; }
     }
 

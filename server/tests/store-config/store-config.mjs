@@ -272,3 +272,51 @@ test('slackChannels(): unset → nulls / {} with ONE warning per key; set → va
   w = captureWarnings(() => { assert.deepEqual(sc.slackChannels().editors, {}); });
   assert.equal(w.length, 1, String(w));
 });
+
+// ── item 11: product codes from PRODUCT_CODES_JSON ──────────────────────────
+const PRODUCTS = JSON.stringify({
+  AA: { default: true, clickup: { videoListId: '111', staticListId: '112', mediaBuyingListId: '113', initialStatus: 'edit queue' }, frameio: { projectId: 'proj-aa', editingFolderId: 'fold-aa', staticEditingFolderId: 'fold-aa-static' } },
+  BB: { aliases: ['BEEBRAND'], clickup: { videoListId: '221', initialStatus: 'edit queue' }, frameio: { projectId: 'proj-bb', editingFolderId: 'fold-bb' }, namingCode: 'BB', fbPage: 'Bee' },
+  B1: { clickup: { videoListId: '221', productId: 'cu-prod-b1' }, frameio: { projectId: 'proj-b1', editingFolderId: 'fold-b1' }, namingCode: 'B1' },
+});
+test('productCodes(): unset → {} + one warning; malformed / wrong shape → {} + one warning', () => {
+  clearEnv();
+  let w = captureWarnings(() => { assert.deepEqual(sc.productCodes(), {}); sc.productCodes(); });
+  assert.equal(w.length, 1, String(w)); assert.match(w[0], /PRODUCT_CODES_JSON/);
+  for (const bad of ['{nope', '[]', '{"aa": "x"}', '{"AA": {"clickup": "111"}}', '{"AA": {"default": true}, "BB": {"default": true}}']) {
+    clearEnv(); process.env.PRODUCT_CODES_JSON = bad;
+    w = captureWarnings(() => { assert.deepEqual(sc.productCodes(), {}, bad); sc.productCodes(); });
+    assert.equal(w.length, 1, `${bad}: ${w}`); assert.match(w[0], /PRODUCT_CODES_JSON/);
+  }
+});
+test('productCodes(): valid → normalised entries; productFor() by code, alias (case-insensitive) or default; unknown with no default → null', () => {
+  clearEnv(); process.env.PRODUCT_CODES_JSON = PRODUCTS;
+  const w = captureWarnings(() => {
+    const p = sc.productCodes();
+    assert.deepEqual(Object.keys(p), ['AA', 'BB', 'B1']);
+    assert.deepEqual(p.BB, {
+      code: 'BB', aliases: ['BEEBRAND'], default: false, namingCode: 'BB', fbPage: 'Bee',
+      clickup: { videoListId: '221', staticListId: null, mediaBuyingListId: null, initialStatus: 'edit queue', productId: null },
+      frameio: { projectId: 'proj-bb', editingFolderId: 'fold-bb', staticEditingFolderId: null },
+    });
+    assert.equal(p.AA.default, true);
+    assert.equal(p.AA.namingCode, null);
+    assert.equal(sc.productFor('bb').code, 'BB');
+    assert.equal(sc.productFor('beebrand').code, 'BB');
+    assert.equal(sc.productFor('ZZ').code, 'AA', 'unknown → the default entry');
+    assert.equal(sc.productFor(undefined).code, 'AA');
+    assert.equal(sc.defaultProduct().code, 'AA');
+  });
+  assert.equal(w.length, 0, String(w));
+  process.env.PRODUCT_CODES_JSON = JSON.stringify({ BB: JSON.parse(PRODUCTS).BB });
+  assert.equal(sc.productFor('ZZ'), null, 'no default entry → null, never a guessed pipeline');
+  assert.equal(sc.defaultProduct(), null);
+});
+test('productForClickupProductRef(): matches a ClickUp Product relationship by product id or by code name; only entries that declare a productId', () => {
+  clearEnv(); process.env.PRODUCT_CODES_JSON = PRODUCTS;
+  assert.equal(sc.productForClickupProductRef({ id: 'cu-prod-b1', name: 'whatever' }).code, 'B1');
+  assert.equal(sc.productForClickupProductRef({ id: 'other', name: ' B1 ' }).code, 'B1');
+  assert.equal(sc.productForClickupProductRef({ id: 'other', name: 'BB' }), null, 'BB declares no productId → never matched');
+  assert.equal(sc.productForClickupProductRef(null), null);
+  assert.ok(JSON.stringify(sc.snapshot().productCodes).includes('cu-prod-b1'));
+});

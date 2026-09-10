@@ -227,6 +227,113 @@ export function whopCompanyId() {
   return readString('WHOP_COMPANY_ID', { unsetMessage: 'not set — Whop company-scoped calls are dormant on this deployment' });
 }
 
+// ── Product codes ───────────────────────────────────────────────────────
+//
+// env PRODUCT_CODES_JSON = {
+//   "<CODE>": {
+//     "default": true,                 // at most one; used for unknown codes
+//     "aliases": ["<other code>"],     // e.g. a DB product_code that maps here
+//     "namingCode": "<CODE>" | null,   // code that leads the naming convention
+//     "fbPage": "<FB Page option>" | null,
+//     "clickup": { "videoListId", "staticListId", "mediaBuyingListId",
+//                  "initialStatus", "productId" },   // productId = the ClickUp
+//                  // Product-relationship item that routes a card to this code
+//     "frameio": { "projectId", "editingFolderId", "staticEditingFolderId" }
+//   }, …
+// }
+// Every field is optional and null when absent. Unset or malformed → {} with
+// ONE warning: pipelines are dormant, never routed to another store's list.
+
+const STR_OR_NULL = (v) => (typeof v === 'string' && v.trim() !== '' ? v : null);
+const CODE_RE = /^[A-Z0-9]{1,8}$/;
+
+function normaliseProduct(code, e) {
+  if (!e || typeof e !== 'object' || Array.isArray(e)) throw new Error(`entry ${code} must be an object`);
+  for (const k of ['clickup', 'frameio']) {
+    if (e[k] !== undefined && (!e[k] || typeof e[k] !== 'object' || Array.isArray(e[k]))) throw new Error(`entry ${code}.${k} must be an object`);
+  }
+  const aliases = e.aliases === undefined ? [] : e.aliases;
+  if (!Array.isArray(aliases) || !aliases.every((a) => typeof a === 'string' && a.trim() !== '')) throw new Error(`entry ${code}.aliases must be an array of strings`);
+  const cu = e.clickup || {};
+  const fr = e.frameio || {};
+  return {
+    code,
+    aliases: aliases.map((a) => a.trim().toUpperCase()),
+    default: e.default === true,
+    namingCode: STR_OR_NULL(e.namingCode),
+    fbPage: STR_OR_NULL(e.fbPage),
+    clickup: {
+      videoListId: STR_OR_NULL(cu.videoListId),
+      staticListId: STR_OR_NULL(cu.staticListId),
+      mediaBuyingListId: STR_OR_NULL(cu.mediaBuyingListId),
+      initialStatus: STR_OR_NULL(cu.initialStatus),
+      productId: STR_OR_NULL(cu.productId),
+    },
+    frameio: {
+      projectId: STR_OR_NULL(fr.projectId),
+      editingFolderId: STR_OR_NULL(fr.editingFolderId),
+      staticEditingFolderId: STR_OR_NULL(fr.staticEditingFolderId),
+    },
+  };
+}
+
+/** `{ CODE: entry }`, validated and normalised; unset/malformed → {} (one warning). */
+export function productCodes() {
+  const rawJson = raw('PRODUCT_CODES_JSON');
+  if (rawJson === undefined) {
+    warnOnce('PRODUCT_CODES_JSON', 'not set — ClickUp/Frame.io product pipelines are dormant on this deployment');
+    return {};
+  }
+  try {
+    const parsed = JSON.parse(rawJson);
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('must be an object keyed by product code');
+    const out = {};
+    let defaults = 0;
+    for (const [code, entry] of Object.entries(parsed)) {
+      if (!CODE_RE.test(code)) throw new Error(`key ${JSON.stringify(code)} is not an upper-case product code`);
+      out[code] = normaliseProduct(code, entry);
+      if (out[code].default) defaults += 1;
+    }
+    if (defaults > 1) throw new Error('more than one entry is marked default');
+    return out;
+  } catch (e) {
+    warnOnce('PRODUCT_CODES_JSON', `is invalid (${e.message}) — product pipelines dormant`);
+    return {};
+  }
+}
+
+/** The entry marked `default`, or null. */
+export function defaultProduct() {
+  return Object.values(productCodes()).find((p) => p.default) || null;
+}
+
+/**
+ * Entry for a product code or alias (case-insensitive); unknown → the default
+ * entry; no default → null (the caller refuses — never a guessed pipeline).
+ */
+export function productFor(code) {
+  const c = String(code || '').trim().toUpperCase();
+  const all = productCodes();
+  if (c && all[c]) return all[c];
+  if (c) {
+    const byAlias = Object.values(all).find((p) => p.aliases.includes(c));
+    if (byAlias) return byAlias;
+  }
+  return Object.values(all).find((p) => p.default) || null;
+}
+
+/**
+ * Entry for a ClickUp Product-relationship item ({id, name}): matches an
+ * entry that DECLARES clickup.productId, by id (rename-safe) or by the code
+ * as the item's name. Entries without a productId are never matched.
+ */
+export function productForClickupProductRef(ref) {
+  if (!ref || typeof ref !== 'object') return null;
+  const id = typeof ref.id === 'string' ? ref.id : null;
+  const name = String(ref.name || '').trim().toUpperCase();
+  return Object.values(productCodes()).find((p) => p.clickup.productId && (p.clickup.productId === id || p.code === name)) || null;
+}
+
 // ── Slack ───────────────────────────────────────────────────────────────
 
 /**
@@ -306,6 +413,7 @@ export function snapshot() {
     },
     slack: slackChannels(),
     timezone: timezone(),
+    productCodes: productCodes(),
   };
 }
 
@@ -314,6 +422,7 @@ const storeConfig = {
   storeCode, brand, shopifyStoreDomain, shopifyStoreUrl, shopifyApiVersion, SHOPIFY_API_VERSION_DEFAULT, whopCompanyId, tripleWhaleShopId,
   metaApiVersion, metaGraphUrl, META_API_VERSION_DEFAULT, adAccounts, adAccountNames, adAccountName, frameioToken,
   timezone, TIMEZONE_DEFAULT, slackChannels,
+  productCodes, defaultProduct, productFor, productForClickupProductRef,
   snapshot,
 };
 export default storeConfig;

@@ -119,6 +119,19 @@ for (const f of ['routes/kpiSystem.js', 'routes/adsControlCenter.js', 'routes/br
   });
 }
 
+// item 11
+test('briefPipeline.js: CLICKUP_PIPELINES map is gone; pipelineForProduct() resolves through storeConfig.productFor()', () => {
+  const s = src('routes/briefPipeline.js');
+  assert.doesNotMatch(s, /const CLICKUP_PIPELINES\s*=|c === 'PUURE' \|\| c === 'PL'|fbPage: 'Puure'/);
+  assert.match(s, /storeConfig\.productFor\(/);
+});
+test('clickupWebhook.js: no Frame.io / ClickUp id literal defaults; product routing through storeConfig.productForClickupProductRef()', () => {
+  const s = src('routes/clickupWebhook.js');
+  assert.doesNotMatch(s, /123yxuahe91|b664289d|10abecc4|=== 'P1'/);
+  assert.doesNotMatch(s, /process\.env\.(FRAMEIO_P1_[A-Z_]+|CLICKUP_P1_PRODUCT_ID)/);
+  assert.match(s, /storeConfig\.productForClickupProductRef\(/);
+});
+
 // A1 over the whole tree (allowed: tests and docs)
 test('A1: git grep over server/src is empty', () => {
   let out = '';

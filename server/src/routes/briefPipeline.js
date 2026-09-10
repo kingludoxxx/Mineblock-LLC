@@ -483,22 +483,31 @@ const MEDIA_BUYING_LIST = process.env.CLICKUP_MB_MEDIA_BUYING_LIST_ID || '';
 // LIST (ClickUp custom fields are list-scoped), so pushBriefToClickUp
 // resolves field + dropdown-option ids dynamically by NAME via
 // resolveListConfig(listId) instead of a single hardcoded FIELD_IDS map.
-const CLICKUP_PIPELINES = {
-  MB: { listId: VIDEO_ADS_LIST,   initialStatus: 'edit queue', namingCode: null },   // default
-  PL: { listId: PUURE_VIDEO_LIST, initialStatus: 'edit queue', namingCode: 'PL', fbPage: 'Puure' }, // Puure — pushes land straight in edit queue (operator request)
-};
-
-// Product → pipeline. Puure (code PUURE / naming PL) routes to PL | Video
-// Creatives; everything else stays on MB | Video Ads.
+//
+// The product → list/naming/FB-page map is STORE DATA: env PRODUCT_CODES_JSON
+// read at call time through storeConfig.productFor(code) (code, alias or the
+// entry marked default). No entry and no default → a named error, never a
+// guessed list. Read at call time so a Render env change needs no restart.
 function pipelineForProduct(productCode) {
-  const c = String(productCode || '').toUpperCase();
-  if (c === 'PUURE' || c === 'PL') return CLICKUP_PIPELINES.PL;
-  return CLICKUP_PIPELINES.MB;
+  const p = storeConfig.productFor(productCode);
+  if (!p) {
+    throw new Error(`PRODUCT_CODES_JSON has no entry (and no default) for product code ${JSON.stringify(String(productCode || ''))}`);
+  }
+  if (!p.clickup.videoListId) {
+    throw new Error(`PRODUCT_CODES_JSON entry ${p.code} has no clickup.videoListId — cannot push briefs for it`);
+  }
+  return {
+    code: p.code,
+    listId: p.clickup.videoListId,
+    initialStatus: p.clickup.initialStatus || 'edit queue',
+    namingCode: p.namingCode,
+    fbPage: p.fbPage,
+  };
 }
 
-// The code that leads the naming convention. Puure briefs read PUURE as the
-// DB product_code (master-brief context lookups depend on it) but must be
-// NAMED with the brand's short code 'PL'.
+// The code that leads the naming convention. A product may read one code as
+// the DB product_code (master-brief context lookups depend on it) but be
+// NAMED with its entry's namingCode.
 function namingProductCode(productCode) {
   const pl = pipelineForProduct(productCode);
   return pl.namingCode || productCode || 'MR';
