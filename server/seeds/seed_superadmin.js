@@ -8,11 +8,33 @@ const pool = new Pool({
   ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false,
 });
 
-const SUPERADMIN_EMAIL = 'admin@try-mineblock.com';
-const SUPERADMIN_PASSWORD = 'MineblockAdmin2026!';
 const SALT_ROUNDS = 12;
 
+// The first administrator of a store is STORE IDENTITY, so it is data (R5) and
+// never a literal in shared code (R15). Both variables are REQUIRED and there is
+// no fallback: a default would seed one store's admin — with a password that is
+// in the repository — into every store born after it. Unset = refuse, seed
+// nothing, exit non-zero, so the operator sets them and re-runs.
+function requiredCredential(key) {
+  const v = process.env[key];
+  if (v === undefined || v === null || String(v).trim() === '') {
+    throw new Error(
+      `${key} is not set — refusing to seed a super-admin. Set SUPERADMIN_EMAIL and `
+      + 'SUPERADMIN_PASSWORD for THIS store (they are per-store credentials, R4) and re-run.'
+    );
+  }
+  return String(v);
+}
+
+/** Preflight: both credentials present BEFORE any seed writes a row. */
+export function assertSuperAdminEnv() {
+  requiredCredential('SUPERADMIN_EMAIL');
+  requiredCredential('SUPERADMIN_PASSWORD');
+}
+
 export async function seedSuperAdmin() {
+  const SUPERADMIN_EMAIL = requiredCredential('SUPERADMIN_EMAIL');
+  const SUPERADMIN_PASSWORD = requiredCredential('SUPERADMIN_PASSWORD');
   const client = await pool.connect();
   try {
     // Check if user already exists
