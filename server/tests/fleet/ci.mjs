@@ -157,13 +157,14 @@ if (script) {
     ok(r.status === 0, 'A6 passes once the literal is removed', `status=${r.status}\n${r.stdout}${r.stderr}`);
   }
 
-  // (e) every banned term, one at a time, in either guarded directory
+  // (e) every banned term, one at a time, in either guarded directory.
+  // Brand words are matched case-insensitively; codes and ids case-sensitively.
   const BANNED = ['Puure', 'mineblock', 'MinerForge', 'Reevo', 'PL', 'P1', 'MR', 'act_1234567890', '17cca0-2', '9jn59g-x7'];
   for (const term of BANNED) {
     const target = path.join(pipelines, 'brief.js');
     writeFileSync(target, `const code = ${JSON.stringify(term)};\n`);
     const r = runGuard(ROOT);
-    ok(r.status !== 0, `A6 FAILS on banned term ${JSON.stringify(term)} (case-insensitive)`, `status=${r.status}\n${r.stdout}${r.stderr}`);
+    ok(r.status !== 0, `A6 FAILS on banned term ${JSON.stringify(term)}`, `status=${r.status}\n${r.stdout}${r.stderr}`);
     rmSync(target);
   }
 
@@ -173,6 +174,37 @@ if (script) {
     writeFileSync(target, 'const plan = "APPLICABLE PLANS are compiled"; const mrs = "MRSA"; const p10 = "P10";\n');
     const r = runGuard(ROOT);
     ok(r.status === 0, 'A6 PL/MR/P1 are word-bounded (PLANS, MRSA, P10 are not hits)', `status=${r.status}\n${r.stdout}${r.stderr}`);
+    rmSync(target);
+  }
+
+  // (g) P2-7: the guard must not fire on ORDINARY CODE. A guard that cries wolf
+  // the day server/src/services/engine/ is created gets switched off, and then
+  // it guards nothing. Every line below is real code shape, not a brand.
+  const ORDINARY = [
+    ['a lowercase p1 identifier', 'const p1 = points[0];'],
+    ['a transpiled require', 'const react_1 = require("react");'],
+    ['an English honorific', '// Mr. Smith reviewed this'],
+    ['a locale path segment', 'const locale = "/pl/checkout";'],
+    ['a lowercase pl identifier', 'const pl = payload.length;'],
+    ['a word ending in act_<digit>', 'const x = "fact_9";'],
+    ['a contract_ id', 'const id = "contract_12";'],
+    ['mixed ordinary code', 'const p1 = 1, pl = 2, mr = 3; // fact_7, react_1'],
+  ];
+  for (const [why, code] of ORDINARY) {
+    const target = path.join(pipelines, 'brief.js');
+    writeFileSync(target, `${code}\n`);
+    const r = runGuard(ROOT);
+    ok(r.status === 0, `A6/P2-7 the guard does NOT fire on ordinary code: ${why}`, `status=${r.status}\n${r.stdout}${r.stderr}`);
+    rmSync(target);
+  }
+
+  // (h) the case rule itself: brands any case, codes only uppercase
+  {
+    const target = path.join(pipelines, 'brief.js');
+    for (const spelling of ['Puure', 'puure', 'PUURE', 'MineBlock']) {
+      writeFileSync(target, `const b = ${JSON.stringify(spelling)};\n`);
+      ok(runGuard(ROOT).status !== 0, `A6/P2-7 a brand is caught in any case (${spelling})`, spelling);
+    }
     rmSync(target);
   }
 

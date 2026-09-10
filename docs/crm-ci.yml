@@ -8,7 +8,7 @@
 #
 # ── the boot smoke, and what is actually being asserted ───────────────────────
 # `MONGO_URL` is a REQUIRED field on the CRM's pydantic `Settings`
-# (backend/app/config.py:32, per ~/tasks/multistore-hub/discovery/env-inventory.md
+# (backend/app/core/config.py:32, per ~/tasks/multistore-hub/discovery/env-inventory.md
 # section 2.7). A required pydantic-settings field with no value raises
 # ValidationError when `Settings()` is constructed, and that construction happens
 # at import time, so `uvicorn app.main:app` should die during import rather than

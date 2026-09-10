@@ -1,14 +1,45 @@
-# Lane handoff — lane-b (CI + fleet)   last session 2026-09-10 (B2)   base commit 75192b1 → 81091f8
+# Lane handoff — lane-b (CI + fleet)   last session 2026-09-10 (B3)   base commit 84323b4 → b1ff265
 
 Branch `day1/lane-ci-fleet`, worktree `/Users/ludo/wt-lane-ci-fleet`.
-Proof pack: `~/tasks/multistore-hub/briefs/out/PROOF-LANE-B.md` (session B2 is the
-second half of that file).
+Proof packs: `briefs/out/PROOF-LANE-B.md` (sessions B and B2),
+**`briefs/out/PROOF-LANE-B3.md` (session B3 — the review fixes)**.
+Review being answered: `briefs/out/REVIEW-LANE-B.md`.
 
 ## Where I stopped
 
-Session B delivered the runner, CI workflow and fleet script. **Session B2 closed
-its biggest finding**: the 37 test scripts that imported other checkouts by
-absolute path. Nothing is half-applied; the tree is committed and green.
+Session B delivered the runner, CI workflow and fleet script. Session B2 closed
+the 37 scripts that imported other checkouts by absolute path. **Session B3
+applied every P1 and the listed P2s from the adversarial review.** Nothing is
+half-applied; the tree is committed and green.
+
+### Session B3 — what changed
+
+| Review item | State |
+|---|---|
+| **P1-1** protected-store guard (`--i-typed-the-store-name=Puure`, exact + case-sensitive, both `deploy` and `rollback`, rollback anchor printed before every real POST) | **fixed**, 37 assertions |
+| **P1-2** `rollback` anchors on the deploy in status `live`, never `list[0]`; refuses when no `live` record exists; `status` reads `limit=5` and reports the live record | **fixed**, 4 non-live-newest fixtures |
+| **P1-3** the Render key is attached only for `cfg.api`; the health check is unauthenticated, on the raw `fetch` | **fixed**, incl. a tampered-`url` test |
+| **P1-4** runner spawns `detached` and kills the whole process group on timeout; settles on `close` or `exit` + a bounded 250 ms drain | **fixed**, grandchild fixture + `ps` sweep |
+| P2-1 `--commit=<sha>` accepted; a bad value gets a message about the value | fixed |
+| P2-2 `--dry-run` routed through `cmdDeploy`, so it cannot bypass a refusal | fixed |
+| P2-3 `AbortSignal.timeout(30_000)` on every request | fixed |
+| P2-5 `readKeyFromSettings` tested against a temp `HOME` (no real key read) | fixed |
+| P2-6 `isSha` = 40 lowercase hex, nothing else | fixed |
+| P2-7 R15 grep split: brands case-insensitive, codes/ids case-sensitive, `act_` left-bounded | fixed |
+| P2-8 the three dependency-free `fleet/*` tests are in smoke | fixed |
+| P2-9 migrations placeholder PASS pinned to the one known 017 defect | fixed |
+| P2-11 `docs/crm-ci.yml` cites `backend/app/core/config.py:32` | fixed |
+| P2-4 | **half**: error-body echo fixed; **pagination NOT done** |
+| P2-10, P2-12 | **not done** — see "What is NOT proven" |
+| `checkoutSchema.js` create-only bug | **not done — another lane owns it** |
+
+The protected-store rule lives in `scripts/fleet.services.json` as `protection`
+(`prefix`/`store`/`rule`), **not** in `fleet.mjs`: R15 is asserted by a test that
+greps the script for the store name. A future `puure-*` service is protected the
+day it is added.
+
+`run-all.mjs` also accepts `--smoke` / `--all` as aliases; the command the briefs
+use (`run-all.mjs --smoke`) previously exited 2 with a usage error.
 
 | Goal | Delivered |
 |---|---|
@@ -20,10 +51,19 @@ absolute path. Nothing is half-applied; the tree is committed and green.
 
 ## What is proven
 
-* `npm test` exits 0. **88 passed, 0 failed, 0 timed out, 7 skipped in 644.7s**
-  (was 55 passed / 40 skipped in 322.8s on `75192b1`).
-* `npm run test:smoke`: **11 passed, 0 failed, 0 skipped in 58.6s** (cap 8 min),
-  and it now includes the real `/api/v1/orders` router.
+* `npm test` exits 0. **88 passed, 0 failed, 0 timed out, 7 skipped in 651.2s**
+  (B2: 88 / 0 / 7 in 644.7s — no regression).
+* `node server/tests/run-all.mjs --smoke`: **14 passed, 0 failed, 0 timed out,
+  0 skipped in 66.2s** (B2: 11 in 58.6s; cap 8 min). It now includes the real
+  `/api/v1/orders` router **and the three fleet test files**, so CI runs the
+  deploy refusals on every push.
+* `server/tests/fleet/` is **279 assertions** (105 + 75 + 39 + 60), up from 160.
+* **Every B3 fix was red first.** Each finding was reproduced by execution
+  (mocked fetch / fixture tree) before the fix and re-run identically after; the
+  four test files were additionally run against the pre-fix source under an
+  md5-verified file swap and went red (29 / 14 / 6 / 8 failures), proving the new
+  assertions are load-bearing rather than merely green. Outputs verbatim in
+  `PROOF-LANE-B3.md`.
 * Every one of the 37 was run as-is first, with the three out-of-repo roots made
   unresolvable — a CI runner's state, control-tested in both directions. All 37
   exited 1 at import before any assertion. Per-file before/after table is in
@@ -53,7 +93,31 @@ absolute path. Nothing is half-applied; the tree is committed and green.
    keys. ⚠ The live number is probably **29** today — `COORDINATION.md` records
    `PUURE_DATABASE_URL` removed from mineblock-dashboard and
    `SHOPIFY_WEBHOOK_SECRET` set on puure-dashboard on 2026-09-10.
-4. **`fleet deploy` and `fleet rollback` have never sent a real POST.**
+4. **`fleet deploy` and `fleet rollback` have never sent a real POST**, and B3
+   changed both of them. The new guards (P1-1 refusal, P1-2 live-anchored
+   target, the ROLLBACK ANCHOR read, P1-3 header scoping) are proven against
+   mocked fixtures only. **The review's condition stands: the second pass, and
+   the first real `deploy`/`rollback`, must confirm the anchor read and the
+   refusal against the live API.** No Render call was made in B3 (R35).
+4a. **P2-4 pagination is NOT fixed.** `env-diff` reads `?limit=100` and follows
+   no cursor, so a service with >100 variables silently under-reports drift.
+   Needs a cursor loop and a two-page fixture. Today's four services are well
+   under 100. (The error-body echo half **is** fixed: an `/env-vars` failure now
+   reports the status only, never the body.)
+4b. **P2-10 is NOT settled.** `permissions: contents: read` may be insufficient
+   for `gitleaks-action` v2 on `pull_request`. Only a real run tells; add
+   `pull-requests: read` if it fails.
+4c. **P2-12 is NOT fixed and is the lead's, not a lane's.** `git remote -v` in
+   this worktree prints an `origin` URL containing a 40-char `ghp_` token from
+   the parent clone's `.git/config`. Not in any commit. Needs rotation plus a
+   credential helper.
+4d. **`fleet/ci.mjs` is deliberately NOT in smoke**: it shells out to `python3` +
+   PyYAML, unproven on the GitHub runner. Either confirm on the first real run
+   or re-parse the workflow with a node YAML package.
+4e. **The `checkoutSchema.js` create-only bug (B2 finding 2) is untouched** —
+   another lane owns it. It is under `server/src`, which this lane may not
+   touch, and it is R6-class: a table that already exists never receives a
+   newly added column.
 5. **`money-path/upsell-page.mjs` was never run with Shopify credentials**, so
    "46 of 49 pass" is the credential-less number.
 6. **`money-path/review-regression.mjs` was never run with its harness up**, so
@@ -130,7 +194,18 @@ absolute path. Nothing is half-applied; the tree is committed and green.
 
 ## Next action for the next session
 
-Merge this branch, then run the workflow once on a real push and paste the actual
-run output into the proof pack — that is still the only unproven piece of goal 2,
-and it is now also the only thing that would confirm the 33 restored scripts run
-on a machine that has never had the other checkouts.
+1. **Second adversarial pass on the deploy code**, as the review requires: the
+   four P1s have landed, so the condition "P1-1..P1-3 before any real
+   `deploy`/`rollback`, P1-4 before CI is trusted on A4" is now met on paper and
+   needs a clean second read. Start at `scripts/fleet.mjs` `protectionRefusal`,
+   `liveAnchor`, `cmdRollback`, and `makeClient`.
+2. **Merge, then run the workflow once on a real push** and paste the actual run
+   output into the proof pack — still the only unproven piece of goal 2, and the
+   only thing that confirms the 33 restored scripts run on a machine that has
+   never had the other checkouts. Watch for P2-10 (gitleaks permissions).
+3. **The first real `deploy`/`rollback`** must be a Mineblock service, not Puure,
+   and should paste the ROLLBACK ANCHOR line it printed — that is the one part of
+   P1-1/P1-2 that fixtures cannot prove.
+4. Open, in order of value: P2-4 pagination; `fleet/ci.mjs` into smoke; the
+   ~11 min full suite (shared app boot per directory); product-profile CRUD still
+   has no test anywhere.

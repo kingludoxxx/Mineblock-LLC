@@ -16,6 +16,10 @@ const ok = (c, m, x = '') => { if (c) { pass++; console.log('PASS ', m); } else 
 
 const { main } = await import(path.join(REPO, 'scripts/fleet.mjs'));
 const KEY = 'test-not-a-real-render-key-000001';
+// Full 40-character lowercase shas: what fleet.mjs accepts (P2-6).
+const A = 'a'.repeat(40), B = 'b'.repeat(40), C = 'c'.repeat(40), D = 'd'.repeat(40), F = 'f'.repeat(40);
+const SHA = 'edc10309c1f4b7a2e6d80b53f7a91c4e2d6b8f01';
+const TYPED = '--i-typed-the-store-name=Puure';
 
 function harness(router) {
   const lines = [];
@@ -46,7 +50,7 @@ const dep = (id, status, commitId, finishedAt) => ({ deploy: { id, status, commi
   const h = harness(async (url) => {
     if (url.includes('/deploys')) {
       const svc = url.match(/services\/(srv-[a-z0-9]+)\//)[1];
-      return { body: [dep(`dep-${svc}`, 'live', 'edc1030deadbeef', '2026-09-10T11:05:00Z')] };
+      return { body: [dep(`dep-${svc}`, 'live', SHA, '2026-09-10T11:05:00Z')] };
     }
     return { status: 404, body: {} };
   });
@@ -55,7 +59,7 @@ const dep = (id, status, commitId, finishedAt) => ({ deploy: { id, status, commi
   ok(code === 0, 'status exits 0', `code=${code}\n${out}`);
   ok(h.calls.length >= 4, `status reads one deploy list per live service (got ${h.calls.length})`, JSON.stringify(h.calls.map((c) => c.url)));
   ok(h.calls.every((c) => c.method === 'GET'), 'status is read-only', JSON.stringify(h.calls.map((c) => c.method)));
-  ok(/edc1030/.test(out), 'status prints the live commit', out);
+  ok(out.includes(SHA.slice(0, 7)), 'status prints the live commit', out);
   ok(/live/.test(out), 'status prints the deploy status', out);
   ok(/2026-09-10/.test(out), 'status prints finishedAt', out);
   ok(!/\bgit\b/i.test(out), 'status reports Render, never git (R11)', out);
@@ -82,23 +86,24 @@ const dep = (id, status, commitId, finishedAt) => ({ deploy: { id, status, commi
   let polls = 0;
   const h = harness(async (url, init) => {
     if (init.method === 'POST' && url.includes('/deploys')) {
-      return { status: 201, body: { id: 'dep-new', status: 'build_in_progress', commit: { id: 'edc1030' } } };
+      return { status: 201, body: { id: 'dep-new', status: 'build_in_progress', commit: { id: SHA } } };
     }
     if (url.includes('/deploys/dep-new')) {
       polls += 1;
       return { body: polls < 3
-        ? { id: 'dep-new', status: 'build_in_progress', commit: { id: 'edc1030' } }
-        : { id: 'dep-new', status: 'live', commit: { id: 'edc1030' }, finishedAt: '2026-09-10T12:04:00Z' } };
+        ? { id: 'dep-new', status: 'build_in_progress', commit: { id: SHA } }
+        : { id: 'dep-new', status: 'live', commit: { id: SHA }, finishedAt: '2026-09-10T12:04:00Z' } };
     }
+    if (url.includes('/deploys')) return { body: [dep('dep-anchor', 'live', C, '2026-09-10T10:00:00Z')] };
     if (url.includes('/api/health')) return { body: { status: 'ok' } };
     return { status: 404, body: {} };
   });
-  const code = await main(['deploy', 'mineblock-dashboard', '--commit', 'edc1030'], h.deps);
+  const code = await main(['deploy', 'mineblock-dashboard', '--commit', SHA], h.deps);
   const out = h.out();
   ok(code === 0, 'a deploy that reaches live exits 0', `code=${code}\n${out}`);
   const post = h.calls.find((c) => c.method === 'POST');
   ok(!!post, 'a POST was issued', JSON.stringify(h.calls));
-  ok(post && post.body.commitId === 'edc1030', 'the POST carries commitId (R37)', JSON.stringify(post && post.body));
+  ok(post && post.body.commitId === SHA, 'the POST carries commitId (R37)', JSON.stringify(post && post.body));
   ok(post && post.body.clearCache === 'do_not_clear', 'the POST carries clearCache=do_not_clear', JSON.stringify(post && post.body));
   ok(polls >= 3, `the deploy is polled until terminal (${polls} polls)`, out);
   ok(/live/.test(out), 'the terminal state is printed', out);
@@ -109,10 +114,11 @@ const dep = (id, status, commitId, finishedAt) => ({ deploy: { id, status, commi
 {
   const h = harness(async (url, init) => {
     if (init.method === 'POST') return { status: 201, body: { id: 'dep-bad', status: 'build_in_progress' } };
-    if (url.includes('/deploys/dep-bad')) return { body: { id: 'dep-bad', status: 'build_failed', commit: { id: 'edc1030' } } };
+    if (url.includes('/deploys/dep-bad')) return { body: { id: 'dep-bad', status: 'build_failed', commit: { id: SHA } } };
+    if (url.includes('/deploys')) return { body: [dep('dep-anchor', 'live', C, '2026-09-10T10:00:00Z')] };
     return { status: 404, body: {} };
   });
-  const code = await main(['deploy', 'mineblock-dashboard', '--commit', 'edc1030'], h.deps);
+  const code = await main(['deploy', 'mineblock-dashboard', '--commit', SHA], h.deps);
   ok(code === 1, 'a build_failed deploy exits 1', `code=${code}\n${h.out()}`);
   ok(/build_failed/.test(h.out()), 'the failure state is named', h.out());
 }
@@ -120,35 +126,35 @@ const dep = (id, status, commitId, finishedAt) => ({ deploy: { id, status, commi
 // ── rollback: previous live/deactivated deploy whose commit differs ─────────
 {
   const list = [
-    dep('d5', 'live', 'ccccccc', '2026-09-10T11:00:00Z'),
-    dep('d4', 'build_failed', 'ddddddd', '2026-09-10T10:00:00Z'),
-    dep('d3', 'live', 'ccccccc', '2026-09-10T09:00:00Z'),   // same commit: not a rollback target
-    dep('d2', 'deactivated', 'bbbbbbb', '2026-09-09T09:00:00Z'), // <- the target
-    dep('d1', 'live', 'aaaaaaa', '2026-09-08T09:00:00Z'),
+    dep('d5', 'live', C, '2026-09-10T11:00:00Z'),
+    dep('d4', 'build_failed', D, '2026-09-10T10:00:00Z'),
+    dep('d3', 'live', C, '2026-09-10T09:00:00Z'),   // same commit: not a rollback target
+    dep('d2', 'deactivated', B, '2026-09-09T09:00:00Z'), // <- the target
+    dep('d1', 'live', A, '2026-09-08T09:00:00Z'),
   ];
   const h = harness(async (url, init) => {
     if (init.method === 'POST') return { status: 201, body: { id: 'dep-rb', status: 'build_in_progress' } };
-    if (url.includes('/deploys/dep-rb')) return { body: { id: 'dep-rb', status: 'live', commit: { id: 'bbbbbbb' }, finishedAt: '2026-09-10T12:05:00Z' } };
+    if (url.includes('/deploys/dep-rb')) return { body: { id: 'dep-rb', status: 'live', commit: { id: B }, finishedAt: '2026-09-10T12:05:00Z' } };
     if (url.includes('/deploys')) return { body: list };
     if (url.includes('/api/health')) return { body: { status: 'ok' } };
     return { status: 404, body: {} };
   });
-  const code = await main(['rollback', 'puure-dashboard'], h.deps);
+  const code = await main(['rollback', 'puure-dashboard', TYPED], h.deps);
   ok(code === 0, 'rollback exits 0', `code=${code}\n${h.out()}`);
   const post = h.calls.find((c) => c.method === 'POST');
-  ok(post && post.body.commitId === 'bbbbbbb',
+  ok(post && post.body.commitId === B,
     'rollback picks the newest live/deactivated deploy whose commit differs from the current one',
     JSON.stringify(post && post.body));
-  ok(!/ddddddd/.test(JSON.stringify(post && post.body)), 'a failed build is never a rollback target', JSON.stringify(post && post.body));
+  ok(!JSON.stringify(post && post.body).includes(D), 'a failed build is never a rollback target', JSON.stringify(post && post.body));
 }
 
 // nothing to roll back to is a refusal, not a no-op deploy
 {
   const h = harness(async (url) => {
-    if (url.includes('/deploys')) return { body: [dep('d1', 'live', 'aaaaaaa', '2026-09-10T11:00:00Z')] };
+    if (url.includes('/deploys')) return { body: [dep('d1', 'live', A, '2026-09-10T11:00:00Z')] };
     return { status: 404, body: {} };
   });
-  const code = await main(['rollback', 'puure-dashboard'], h.deps);
+  const code = await main(['rollback', 'puure-dashboard', TYPED], h.deps);
   ok(code === 1, 'rollback with no distinct earlier deploy exits 1', `code=${code}\n${h.out()}`);
   ok(h.calls.every((c) => c.method === 'GET'), 'that refusal issues no POST', JSON.stringify(h.calls.map((c) => c.method)));
 }
@@ -210,6 +216,125 @@ const dep = (id, status, commitId, finishedAt) => ({ deploy: { id, status, commi
   ok(missing.length === 0, 'A10 every asymmetric key from the inventory is named', JSON.stringify(missing));
   ok(!out.includes('never-printed'), 'A10 no value is printed', out);
   ok(/shared: 5/.test(out), 'A10 shared keys are counted, not listed as drift', out);
+}
+
+
+// ── P1-2: rollback anchors on the LIVE deploy, never on list[0] ─────────────
+// The post-incident shape: a build failed, so the NEWEST deploy record is that
+// failure and the deploy actually serving traffic sits behind it. Keying on
+// list[0] then picks the commit that is already live and reports a no-op as a
+// rollback, at the exact moment someone needs a real one.
+for (const newestStatus of ['build_failed', 'build_in_progress', 'canceled', 'update_failed']) {
+  const list = [
+    dep('d9', newestStatus, F, null),                          // newest, NOT live
+    dep('d8', 'live', C, '2026-09-10T09:00:00Z'),              // <- what is running
+    dep('d7', 'deactivated', B, '2026-09-09T09:00:00Z'),       // <- the rollback target
+    dep('d6', 'live', A, '2026-09-08T09:00:00Z'),
+  ];
+  const h = harness(async (url, init) => {
+    if (init.method === 'POST') return { status: 201, body: { id: 'rb', status: 'build_in_progress' } };
+    if (url.includes('/deploys/rb')) return { body: { id: 'rb', status: 'live', commit: { id: B }, finishedAt: '2026-09-10T12:05:00Z' } };
+    if (url.includes('/deploys')) return { body: list };
+    if (url.includes('/api/health')) return { body: { status: 'ok' } };
+    return { status: 404, body: {} };
+  });
+  const code = await main(['rollback', 'mineblock-dashboard'], h.deps);
+  const post = h.calls.find((c) => c.method === 'POST');
+  ok(code === 0, `P1-2 rollback past a ${newestStatus} newest record exits 0`, `code=${code}\n${h.out()}`);
+  ok(post && post.body.commitId === B,
+    `P1-2 with newest=${newestStatus} the target is the deploy BEFORE the live one, not the live one`,
+    JSON.stringify(post && post.body));
+  ok(!(post && post.body.commitId === C), `P1-2 with newest=${newestStatus} it never redeploys the commit already running`, JSON.stringify(post && post.body));
+  ok(/live/.test(h.out()) && h.out().includes('d8'), `P1-2 the live deploy is named as current (newest=${newestStatus})`, h.out());
+  ok(h.out().includes(F.slice(0, 7)), `P1-2 the non-live newer record is disclosed, not hidden (newest=${newestStatus})`, h.out());
+}
+
+// no live record at all: refuse, do not guess
+{
+  const list = [dep('d9', 'build_failed', F, null), dep('d8', 'canceled', C, null)];
+  const h = harness(async (url, init) => {
+    if (init.method === 'POST') return { status: 201, body: { id: 'rb', status: 'live' } };
+    if (url.includes('/deploys')) return { body: list };
+    return { status: 404, body: {} };
+  });
+  const code = await main(['rollback', 'mineblock-dashboard'], h.deps);
+  ok(code === 1, 'P1-2 no deploy in status live is a refusal', `code=${code}\n${h.out()}`);
+  ok(h.calls.every((c) => c.method === 'GET'), 'P1-2 that refusal issues no POST', JSON.stringify(h.calls.map((c) => c.method)));
+  ok(/no deploy record in status live/.test(h.out()), 'P1-2 the refusal says what is missing', h.out());
+}
+
+// ── P1-3: the Render key reaches the Render API and nothing else ────────────
+// `url` is DATA in fleet.services.json. An edited entry, a compromised app or an
+// access log on the dashboard's proxy must not be able to collect the platform
+// credential. The health check is unauthenticated by construction.
+{
+  const h = harness(async (url, init) => {
+    if (init.method === 'POST') return { status: 201, body: { id: 'dep-new', status: 'live', commit: { id: SHA } } };
+    if (url.includes('/deploys/dep-new')) return { body: { id: 'dep-new', status: 'live', commit: { id: SHA }, finishedAt: 'x' } };
+    if (url.includes('/deploys')) return { body: [dep('dep-anchor', 'live', C, '2026-09-10T10:00:00Z')] };
+    if (url.includes('/api/health')) return { body: { status: 'ok' } };
+    return { status: 404, body: {} };
+  });
+  // the harness above does not record headers, so re-wrap the fetch it built
+  const seen = [];
+  const inner = h.deps.fetch;
+  h.deps.fetch = async (url, init = {}) => { seen.push({ url: String(url), auth: (init.headers || {}).Authorization || null, signal: !!init.signal }); return inner(url, init); };
+
+  const code = await main(['deploy', 'mineblock-dashboard', '--commit', SHA], h.deps);
+  ok(code === 0, 'P1-3 the deploy completes', `code=${code}\n${h.out()}`);
+  const api = seen.filter((r) => r.url.startsWith('https://api.render.com/v1'));
+  const offApi = seen.filter((r) => !r.url.startsWith('https://api.render.com/v1'));
+  ok(api.length > 0, 'P1-3 requests were made to the Render API', JSON.stringify(seen.map((r) => r.url)));
+  ok(offApi.length > 0, 'P1-3 and at least one request went to an app host (the health check)', JSON.stringify(seen.map((r) => r.url)));
+  ok(api.every((r) => r.auth === `Bearer ${KEY}`), 'P1-3 every Render API request carries the key', JSON.stringify(api.map((r) => r.url)));
+  ok(offApi.every((r) => r.auth === null), 'P1-3 NO request outside the Render API carries an Authorization header',
+    JSON.stringify(offApi.map((r) => ({ url: r.url, auth: r.auth }))));
+  ok(seen.every((r) => !r.url.includes(KEY)), 'P1-3 the key is never in a URL', JSON.stringify(seen.map((r) => r.url)));
+
+  // P2-3: and every request is bounded by a timeout signal
+  ok(seen.filter((r) => r.url.startsWith('https://api.render.com/v1')).every((r) => r.signal),
+    'P2-3 every Render API request carries an AbortSignal timeout', JSON.stringify(seen.map((r) => ({ url: r.url, signal: r.signal }))));
+  ok(offApi.every((r) => r.signal), 'P2-3 the health check is bounded by a timeout too', JSON.stringify(offApi));
+}
+
+// a service whose url has been tampered with still gets no credential
+{
+  const { readFileSync, writeFileSync, mkdtempSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const cfg = JSON.parse(readFileSync(path.join(REPO, 'scripts/fleet.services.json'), 'utf8'));
+  for (const svc of cfg.services) if (svc.url) svc.url = 'https://attacker.example.com';
+  const dir = mkdtempSync(path.join(tmpdir(), 'laneb-cfg-'));
+  const file = path.join(dir, 'fleet.services.json');
+  writeFileSync(file, JSON.stringify(cfg));
+
+  const seen = [];
+  const h = harness(async (url, init) => {
+    if (init.method === 'POST') return { status: 201, body: { id: 'dep-new', status: 'live', commit: { id: SHA } } };
+    if (url.includes('/deploys/dep-new')) return { body: { id: 'dep-new', status: 'live', commit: { id: SHA }, finishedAt: 'x' } };
+    if (url.includes('/deploys')) return { body: [dep('dep-anchor', 'live', C, '2026-09-10T10:00:00Z')] };
+    return { body: { status: 'ok' } };
+  });
+  const inner = h.deps.fetch;
+  h.deps.fetch = async (url, init = {}) => { seen.push({ url: String(url), auth: (init.headers || {}).Authorization || null }); return inner(url, init); };
+  h.deps.servicesPath = file;
+
+  await main(['deploy', 'mineblock-dashboard', '--commit', SHA], h.deps);
+  const hostile = seen.filter((r) => r.url.includes('attacker.example.com'));
+  ok(hostile.length > 0, 'P1-3 the tampered host was contacted (the health check)', JSON.stringify(seen.map((r) => r.url)));
+  ok(hostile.every((r) => r.auth === null), 'P1-3 a tampered `url` receives NO Authorization header',
+    JSON.stringify(hostile));
+}
+
+// ── P2-4: an env-vars error body is never echoed (it can carry a VALUE) ─────
+{
+  const h = harness(async (url) => {
+    if (url.includes('/env-vars')) return { status: 500, body: { echo: { value: 'shpat_SECRET_VALUE_ECHOED' } } };
+    return { status: 404, body: {} };
+  });
+  const code = await main(['env-diff', 'puure-dashboard', 'mineblock-dashboard'], h.deps);
+  ok(code === 1, 'P2-4 an env-vars error exits 1', `code=${code}\n${h.out()}`);
+  ok(!h.out().includes('shpat_SECRET_VALUE_ECHOED'), 'P2-4 the env-vars error body is NOT echoed', h.out());
+  ok(/500/.test(h.out()), 'P2-4 the status is still reported', h.out());
 }
 
 console.log(`\nRESULT: ${pass} passed, ${fail} failed`);

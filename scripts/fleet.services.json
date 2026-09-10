@@ -1,6 +1,13 @@
 {
-  "$comment": "Fleet registry. DATA, not code (R5/R15): the fleet script holds no service name, no id and no host. Ids come from the Render dashboard; `live: true` means real customer traffic. Placeholders carry a null id until the sandbox project is provisioned.",
+  "$comment": "Fleet registry. DATA, not code (R5/R15): the fleet script holds no service name, no id, no host and no STORE name. Ids come from the Render dashboard; `live: true` means real customer traffic. Placeholders carry a null id until the sandbox project is provisioned. `protection` is the R1/R3 guard as data: any service whose name starts with `prefix` refuses deploy/rollback unless --i-typed-the-store-name=<store> is passed, matched case-sensitively.",
   "api": "https://api.render.com/v1",
+  "protection": [
+    {
+      "prefix": "puure",
+      "store": "Puure",
+      "rule": "R1/R3: deployed last, always, never in the same hour as another store, and only through the bracket (snapshots, robot purchase before and after, health, 30 min observed, Ludo's typed store name in chat)."
+    }
+  ],
   "services": [
     {
       "name": "puure-dashboard",
@@ -9,7 +16,9 @@
       "live": true,
       "url": "https://puure-dashboard.onrender.com",
       "healthPath": "/api/health",
-      "notes": "R1/R3: deployed last, always, and only through the bracket."
+      "notes": "R1/R3: deployed last, always, and only through the bracket.",
+      "protected": true,
+      "store": "Puure"
     },
     {
       "name": "mineblock-dashboard",
@@ -26,7 +35,9 @@
       "live": true,
       "url": "https://puure-crm.onrender.com",
       "healthPath": "/api/health",
-      "notes": "R1/R3: deployed last, always, and only through the bracket."
+      "notes": "R1/R3: deployed last, always, and only through the bracket.",
+      "protected": true,
+      "store": "Puure"
     },
     {
       "name": "mineblock-crm",
@@ -43,7 +54,7 @@
       "live": false,
       "url": null,
       "healthPath": "/api/health",
-      "notes": "placeholder — sandbox dashboard, not provisioned yet"
+      "notes": "placeholder \u2014 sandbox dashboard, not provisioned yet"
     },
     {
       "name": "sb-crm",
@@ -52,7 +63,7 @@
       "live": false,
       "url": null,
       "healthPath": "/api/health",
-      "notes": "placeholder — sandbox CRM, not provisioned yet"
+      "notes": "placeholder \u2014 sandbox CRM, not provisioned yet"
     }
   ]
 }

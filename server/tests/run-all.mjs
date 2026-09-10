@@ -57,6 +57,15 @@ const SMOKE = [
   { id: 'money/ssrf-guard', file: 'money-path/ssrf-guard.mjs' },
   { id: 'money/country-gate', file: 'money-path/country-gate.mjs' },
   { id: 'tracking/route-mount', file: 'tracking/extras-route-mount.mjs' },
+  // this lane's own tests: the runner's contract and the fleet script's refusal
+  // paths. All three are dependency-free (mocked fetch, tmpdir fixtures, no
+  // Postgres, no network), so CI runs the deploy guards on every push.
+  // fleet/ci.mjs is deliberately NOT here: it shells out to python3 + PyYAML,
+  // which is not a proven dependency of the GitHub runner (recorded in the
+  // proof pack as an open item for the first real run).
+  { id: 'fleet/cli-refusals', file: 'fleet/fleet-cli.mjs' },
+  { id: 'fleet/render-shapes', file: 'fleet/fleet-render.mjs' },
+  { id: 'fleet/runner-contract', file: 'fleet/runner.mjs' },
   // migrations-from-empty — placeholder until Lane A's runner lands (see below)
   { id: 'migrations/from-empty', migrations: true },
 ];
@@ -68,7 +77,7 @@ function usage(msg) {
     'usage: node server/tests/run-all.mjs [options] [filter...]',
     '  --root <dir>         test root (default server/tests)',
     '  --quarantine <file>  quarantine list (default <root>/QUARANTINE.md)',
-    '  --suite all|smoke    which set to run (default all)',
+    '  --suite all|smoke    which set to run (default all); --smoke and --all are aliases',
     '  --timeout <ms|Ns>    default per-script timeout (default 120s)',
     '  --list               enumerate and exit',
     '  --json <file>        write machine-readable results',
@@ -94,6 +103,11 @@ function parseArgs(argv) {
     if (a === '--root') o.root = need();
     else if (a === '--quarantine') o.quarantine = need();
     else if (a === '--suite') o.suite = need();
+    // `--smoke` is the spelling people actually type (and the one the lane
+    // briefs use). Accepting it beats an exit-2 usage error for a command that
+    // is obviously unambiguous.
+    else if (a === '--smoke') o.suite = 'smoke';
+    else if (a === '--all') o.suite = 'all';
     else if (a === '--timeout') { const ms = parseDuration(need()); if (ms == null) throw new Error('--timeout must look like 120s, 2m or 90000'); o.timeout = ms; }
     else if (a === '--list') o.list = true;
     else if (a === '--json') o.json = need();
@@ -230,25 +244,53 @@ async function preflight(files, log) {
 }
 
 // ── run one script ─────────────────────────────────────────────────────────
+// `detached: true` puts the child in its OWN process group, so a timeout can
+// kill the whole tree with kill(-pid). Two things go wrong without it, and both
+// are the hung CI that the per-script timeout exists to prevent:
+//   * killing only the direct child leaves a grandchild holding the inherited
+//     stdio pipes, so 'close' never fires and the runner waits forever;
+//   * the grandchild survives the run and leaks into the next one.
+// Real scripts in this suite do spawn (platform/platform.mjs re-spawns itself,
+// ai-media/dialog-dom.mjs drives a browser), so this is not a hypothetical.
 function runOne(cmd, args, { cwd, timeoutMs, env }) {
   return new Promise((resolve) => {
     const started = Date.now();
-    const child = spawn(cmd, args, { cwd, env });
+    const child = spawn(cmd, args, { cwd, env, detached: true });
     let out = '';
     let timedOut = false;
-    const timer = setTimeout(() => { timedOut = true; child.kill('SIGKILL'); }, timeoutMs);
+    let settled = false;
+    let drainTimer = null;
+
+    const killTree = (signal) => {
+      // negative pid = the whole process group. Fall back to the direct child if
+      // the group is already gone (ESRCH) or the platform refuses.
+      try { process.kill(-child.pid, signal); }
+      catch { try { child.kill(signal); } catch { /* already gone */ } }
+    };
+    const finish = (status, code) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (drainTimer) clearTimeout(drainTimer);
+      resolve({ status, code, ms: Date.now() - started, out });
+    };
+
+    const timer = setTimeout(() => { timedOut = true; killTree('SIGKILL'); }, timeoutMs);
     child.stdout.on('data', (d) => { out += d; });
     child.stderr.on('data', (d) => { out += d; });
     child.on('error', (e) => {
-      clearTimeout(timer);
-      resolve({ status: 'FAIL', code: null, ms: Date.now() - started, out: `${out}\nspawn error: ${e.message}` });
+      out += `\nspawn error: ${e.message}`;
+      finish('FAIL', null);
     });
-    child.on('close', (code) => {
-      clearTimeout(timer);
-      resolve({
-        status: timedOut ? 'TIMEOUT' : code === 0 ? 'PASS' : 'FAIL',
-        code, ms: Date.now() - started, out,
-      });
+    // 'close' is the clean path (child gone AND pipes closed). 'exit' fires even
+    // when a grandchild still holds a pipe open, so it gets a short, BOUNDED
+    // drain and then the pipes are destroyed: whichever arrives first settles.
+    child.on('close', (code) => finish(timedOut ? 'TIMEOUT' : code === 0 ? 'PASS' : 'FAIL', code));
+    child.on('exit', (code) => {
+      drainTimer = setTimeout(() => {
+        try { child.stdout.destroy(); child.stderr.destroy(); } catch { /* already destroyed */ }
+        finish(timedOut ? 'TIMEOUT' : code === 0 ? 'PASS' : 'FAIL', code);
+      }, 250);
     });
   });
 }
@@ -353,9 +395,15 @@ for (const w of work) {
     r = await runOne(process.execPath, [path.join(REPO, 'server/migrations/run.js'), '--help'], {
       cwd: REPO, timeoutMs: opts.timeout, env: { ...childEnv, DATABASE_URL: dbUrl },
     });
-    if (r.status === 'FAIL' && /Failed:\s+\d+_.*\.sql/.test(r.out)) {
-      const which = r.out.match(/Failed:\s+(\S+\.sql)\s+(.*)/);
-      r = { ...r, status: 'PASS', note: `migration runner invokable; stops at ${which ? which[1] : '?'} (known R6 defect: ${which ? which[2].slice(0, 80) : 'see QUARANTINE.md'}) — Lane A owns the fix` };
+    // The tolerated failure is ONE named migration failing for ONE named reason.
+    // A regex that matches any `Failed: <n>_<something>.sql` turns every future
+    // migration regression green, which is the opposite of what smoke is for.
+    const KNOWN_DEFECT = /Failed:\s+017_create_spy_custom_images\.sql\b[^\n]*product_profiles[^\n]*does not exist/;
+    if (r.status === 'FAIL' && KNOWN_DEFECT.test(r.out)) {
+      r = { ...r, status: 'PASS', note: 'migration runner invokable; stops at the one known R6 defect (017_create_spy_custom_images.sql: relation "product_profiles" does not exist) — Lane A owns the fix' };
+    } else if (r.status === 'FAIL') {
+      const which = r.out.match(/Failed:\s+(\S+\.sql)/);
+      r = { ...r, note: which ? `unexpected migration failure at ${which[1]} — this is NOT the tolerated 017 defect` : 'migration runner failed for an unexpected reason' };
     }
   } else {
     const timeoutMs = headerTimeout(w.abs) || opts.timeout;

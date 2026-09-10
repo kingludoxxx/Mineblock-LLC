@@ -4,8 +4,9 @@
 //
 // Covers: A1 (exit 0 when everything passes), A2 (a seeded failing assertion
 // makes the run exit 1 AND names the script), A4 (a hanging script is killed at
-// its timeout and reported FAIL, not a hung CI), plus quarantine SKIP, per-script
-// timeout headers, --list, and usage refusals.
+// its timeout and reported FAIL, not a hung CI) for BOTH a leaf process and a
+// script that spawned a child (review finding P1-4), plus quarantine SKIP,
+// per-script timeout headers, --list, and usage refusals.
 //
 // Run:  node server/tests/fleet/runner.mjs
 // test-timeout: 180s
@@ -90,6 +91,42 @@ w('green/header-timeout.mjs',
   ok(/hang\/forever\.mjs/.test(r.out), 'A4 the hanging script is named', r.out);
   ok(ms < 40000, `A4 the runner returns instead of hanging CI (took ${ms} ms)`, r.out);
   rmSync(path.join(ROOT, 'hang'), { recursive: true, force: true });
+}
+
+// ── A4, the hole the review found: a script that SPAWNED A CHILD and hangs ──
+// Killing only the direct child leaves the grandchild holding the inherited
+// stdio pipes, so 'close' never fires and the runner waits forever — the hung
+// CI that the timeout exists to prevent. Real scripts here do spawn
+// (platform/platform.mjs re-spawns itself; ai-media/dialog-dom.mjs drives a
+// browser), so this fixture is the shape of the real suite, not a curiosity.
+{
+  const MARK = `B3-GRANDCHILD-${process.pid}`;
+  w('hangkid/spawner.mjs',
+    '// test-timeout: 2s\n'
+    + "import { spawn } from 'node:child_process';\n"
+    + `spawn(process.execPath, ['-e', 'setInterval(()=>{},1000) /*${MARK}*/'], { stdio: 'inherit' });\n`
+    + 'console.log("spawned a grandchild that holds the pipe open");\n'
+    + 'setInterval(() => {}, 1000);\n');
+
+  const t0 = Date.now();
+  const r = await runner(['--root', ROOT, '--no-preflight'], { guardMs: 60000 });
+  const ms = Date.now() - t0;
+
+  ok(r.code === 1, 'P1-4 a script that spawned a child still turns the run red', `code=${r.code}\n${r.out}`);
+  ok(/TIMEOUT/.test(r.out), 'P1-4 it is reported as TIMEOUT', r.out);
+  ok(/hangkid\/spawner\.mjs/.test(r.out), 'P1-4 the hanging script is NAMED (a job-level kill names nothing)', r.out);
+  ok(/SUMMARY/.test(r.out), 'P1-4 the run still reaches its summary', r.out);
+  ok(ms < 30000, `P1-4 the runner returns in ${ms} ms instead of hanging CI`, r.out);
+
+  // and the grandchild does not survive the run: kill(-pid) took the whole group
+  const survivors = await new Promise((res) => {
+    const ps = spawn('/bin/sh', ['-c', `ps -ax -o pid,command | grep ${MARK} | grep -v grep || true`]);
+    let o = ''; ps.stdout.on('data', (d) => { o += d; }); ps.on('close', () => res(o.trim()));
+  });
+  ok(survivors === '', 'P1-4 no grandchild survives the timeout (the process GROUP was killed)', survivors);
+  if (survivors) spawn('/bin/sh', ['-c', `pkill -f ${MARK} || true`]);
+
+  rmSync(path.join(ROOT, 'hangkid'), { recursive: true, force: true });
 }
 
 // ── quarantine: listed scripts are SKIPped with a visible reason ────────────

@@ -93,9 +93,21 @@ jobs:
             echo "R15: neither server/src/services/engine nor server/src/pipelines exists yet — nothing to guard."
             exit 0
           fi
-          PATTERN='(\bPuure\b|\bMineblock\b|\bMinerForge\b|\bReevo\b|\bPL\b|\bP1\b|\bMR\b|act_[0-9]|\b17cca0-2\b|\b9jn59g-x7\b)'
+          # TWO greps, because the two halves need different case rules.
+          # Brand words are case-insensitive: a brand is a brand however it is
+          # spelled. Short codes and ad-account ids are CASE-SENSITIVE, because
+          # lowercased they are ordinary code and the guard cries wolf on the
+          # day the engine directory is created:  `const p1 = points[0]`,
+          # `const pl = payload.length`, `"/pl/checkout"`, `// Mr. Smith`.
+          # act_ also needs a LEFT boundary, or `require("react")` compiled to
+          # `react_1` is a hit.
+          BRANDS='(\bPuure\b|\bMineblock\b|\bMinerForge\b|\bReevo\b)'
+          CODES='(\bPL\b|\bP1\b|\bMR\b|\bact_[0-9]+\b|\b17cca0-2\b|\b9jn59g-x7\b)'
           echo "R15: scanning$DIRS"
-          if grep -rIniE "$PATTERN" $DIRS; then
+          rc=0
+          if grep -rIniE "$BRANDS" $DIRS; then rc=1; fi
+          if grep -rInE  "$CODES"  $DIRS; then rc=1; fi
+          if [ "$rc" -ne 0 ]; then
             echo ""
             echo "R15 VIOLATION: a brand, store, product or ad-account literal is present in engine code."
             echo "Store identity is DATA (RULES.md R5 and R15). Put the value in the store manifest or the"
