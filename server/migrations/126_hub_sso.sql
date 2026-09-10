@@ -1,4 +1,4 @@
--- 124 HUB SSO (S1-4, Lane E). Additive, idempotent, runs on an empty database.
+-- 126 HUB SSO (S1-4, Lane E). Additive, idempotent, runs on an empty database.
 -- order.json: append at the END of "order" (after Lane C's 121_store_code_tagging.sql / 122_store_code_lazy_tables.sql).
 -- Feature is dark until HUB_SSO_ENABLED='1' on the service (read at request time, R7).
 

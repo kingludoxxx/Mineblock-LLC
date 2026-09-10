@@ -107,6 +107,7 @@
     "097_launcher_campaign_and_grouping.sql",
     "098_brief_video_url.sql",
     "099_static_ad_naming.sql",
-    "122_creative_analysis_fresh_shape.sql"
+    "122_creative_analysis_fresh_shape.sql",
+    "126_hub_sso.sql"
   ]
 }

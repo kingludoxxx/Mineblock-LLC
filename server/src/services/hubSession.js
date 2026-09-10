@@ -7,6 +7,16 @@
 //   userData shape authController.js:246-254
 // Not mirrored: the Redis session-cache write (authController.js:255-256). It is an optimisation with a DB fallback
 // (middleware/auth.js:99-145 re-verifies on a cache miss), so the outcome for the caller is identical.
+//
+// REVOCATION, NO GRACE (lead's decision on review P1-4 / plan S1-4 line A4). A session minted here is marked in its
+// access token with `hub_sso: true` and `sid` = the id of its `sessions` row. `authenticate` sees the mark, skips the
+// 5-minute session cache entirely (no read, no write) and re-reads Postgres on EVERY request, refusing as soon as the
+// sessions row is gone (logout, "log out other devices", an admin revoke) or the user is inactive. Cost: one extra
+// query per hub-SSO request. The alternative (a 60 s cache TTL) would leave a removed operator inside a store for up
+// to a minute, which is the window the plan's A4 line exists to close.
+// KNOWN LIMIT: after the SPA rotates the token through POST /auth/refresh, the new access token is minted by
+// authController, which this lane may not touch (LANE-E-SSO.md), so it carries no mark and returns to the cached
+// path. Closing that needs one line in authController's refresh handler — the lead's call.
 // Any change to authController's cookie options must be repeated here; tests/hub-sso/hub-sso.mjs asserts the attributes.
 import crypto from 'crypto';
 import pool from '../config/db.js';
@@ -57,10 +67,11 @@ export const loadRoles = async (userId, client = pool) => {
  */
 export const issueSession = async (res, user, { ip, userAgent, roles }) => {
   const userRoles = roles ?? await loadRoles(user.id);
-  const accessToken = signAccessToken({ userId: user.id, email: user.email, roles: userRoles });
   const tokenId = crypto.randomUUID();
   const refreshToken = signRefreshToken({ userId: user.id, tokenId });
-  await createSession(user.id, refreshToken, ip, userAgent || '');
+  // The session row FIRST: its id goes into the access token, which is what makes the session revocable per request.
+  const session = await createSession(user.id, refreshToken, ip, userAgent || '');
+  const accessToken = signAccessToken({ userId: user.id, email: user.email, roles: userRoles, hub_sso: true, sid: session.id });
   const userData = {
     id: user.id,
     email: user.email,
@@ -75,4 +86,31 @@ export const issueSession = async (res, user, { ip, userAgent, roles }) => {
   return { accessToken, user: userData };
 };
 
-export default { issueSession, setAccessCookie, setRefreshCookie, loadRoles };
+/**
+ * Read the hub-SSO mark out of an access token WITHOUT verifying it. Used only to route a request onto the
+ * STRICTER (uncached, re-verified) path in middleware/auth.js, so a forged mark costs the forger a database read and
+ * buys nothing: the token itself is still verified there before anything is trusted.
+ * @returns {{hub_sso:true, sid:unknown}|null}
+ */
+export const peekHubSsoClaims = (token) => {
+  try {
+    const part = String(token).split('.')[1];
+    if (!part) return null;
+    const claims = JSON.parse(Buffer.from(part.replace(/-/g, '+').replace(/_/g, '/'), 'base64').toString('utf8'));
+    return claims && claims.hub_sso === true ? { hub_sso: true, sid: claims.sid } : null;
+  } catch {
+    return null;
+  }
+};
+
+/** True while the sessions row this token was issued for still exists, belongs to the user and has not expired. */
+export const hubSessionIsLive = async (sid, userId, client = pool) => {
+  if (typeof sid !== 'string' || !/^[0-9a-fA-F-]{36}$/.test(sid)) return false;
+  const { rows } = await client.query(
+    'SELECT 1 FROM sessions WHERE id = $1 AND user_id = $2 AND expires_at > NOW()',
+    [sid, userId],
+  );
+  return rows.length === 1;
+};
+
+export default { issueSession, setAccessCookie, setRefreshCookie, loadRoles, peekHubSsoClaims, hubSessionIsLive };

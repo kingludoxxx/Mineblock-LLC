@@ -33,7 +33,7 @@ Object.assign(process.env, {
 const { default: pg } = await import('pg');
 const dash = new pg.Pool({ connectionString: DASH_DB });
 await dash.query('DROP SCHEMA public CASCADE; CREATE SCHEMA public;');
-for (const f of ['001_create_roles.sql', '002_create_users.sql', '003_create_user_roles.sql', '005_create_sessions.sql', '006_create_audit_logs.sql', '008_fix_sessions_column.sql', '009_saas_users.sql', '010_create_workspaces.sql', '011_create_workspace_members.sql', '014_update_sessions.sql', '015_update_audit_logs.sql', '076_team_invitations.sql', '124_hub_sso.sql']) {
+for (const f of ['001_create_roles.sql', '002_create_users.sql', '003_create_user_roles.sql', '005_create_sessions.sql', '006_create_audit_logs.sql', '008_fix_sessions_column.sql', '009_saas_users.sql', '010_create_workspaces.sql', '011_create_workspace_members.sql', '014_update_sessions.sql', '015_update_audit_logs.sql', '076_team_invitations.sql', '126_hub_sso.sql']) {
   await dash.query(await readFile(join(REPO, 'server/migrations', f), 'utf8'));
 }
 const { seedRoles, pool: seedPool } = await import('../../seeds/seed_roles.js');
@@ -60,6 +60,7 @@ const hubKey = crypto.randomBytes(32);
 const hubApp = await createApp({ databaseUrl: HUB_DB, secretsKey: hubKey.toString('base64'), secretsKeyVersion: 1, platformEnvKeys: [], cookieSecure: false });
 const hubServer = await new Promise((r) => { const s = hubApp.listen(0, '127.0.0.1', () => r(s)); });
 const HUBURL = `http://127.0.0.1:${hubServer.address().port}`;
+process.env.HUB_ORIGIN = HUBURL; // the dashboard only accepts an exchange POSTed from the hub's own origin (review P2-6)
 const hubPool = hubApp.locals.pool;
 const OPERATOR = 'operator@example.test'; const PASSWORD = 'E2e-Passw0rd!' + crypto.randomBytes(3).toString('hex');
 await seedFromJson(hubPool, {
@@ -115,7 +116,7 @@ let ticket;
   ticket = r.json.ticket;
   const { rows: [a] } = await hubPool.query("SELECT actor, action, store_code FROM audit_log WHERE action='sso.ticket' ORDER BY id DESC LIMIT 1");
   ok(a && a.actor === OPERATOR && a.store_code === STORE, 'E3 hub: audit row sso.ticket by the operator on the store', JSON.stringify(a));
-  const x = await fetch(DASH + '/api/v1/hub-sso/exchange', { method: 'POST', redirect: 'manual', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams({ ticket, next: '/funnels' }).toString() });
+  const x = await fetch(DASH + '/api/v1/hub-sso/exchange', { method: 'POST', redirect: 'manual', headers: { origin: process.env.HUB_ORIGIN, 'content-type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams({ ticket, next: '/funnels' }).toString() });
   const cookies = x.headers.getSetCookie();
   ok(x.status === 302 && x.headers.get('location') === '/funnels', 'E4 dashboard: exchanges the HUB-minted ticket -> 302 /funnels', x.status + ' ' + (await x.text()));
   const access = cookies.find((c) => c.startsWith('accessToken='))?.split(';')[0].slice('accessToken='.length);
@@ -129,7 +130,7 @@ let ticket;
   const nonce = JSON.parse(bytes.toString('utf8')).nonce;
   const { rows: burned } = await dash.query('SELECT nonce FROM hub_sso_used_tickets WHERE nonce=$1', [nonce]);
   ok(burned.length === 1, 'E5 dashboard burned exactly that nonce');
-  const again = await fetch(DASH + '/api/v1/hub-sso/exchange', { method: 'POST', redirect: 'manual', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ ticket }) });
+  const again = await fetch(DASH + '/api/v1/hub-sso/exchange', { method: 'POST', redirect: 'manual', headers: { origin: process.env.HUB_ORIGIN, 'content-type': 'application/json' }, body: JSON.stringify({ ticket }) });
   ok(again.status === 401, 'E6 the same hub ticket replayed -> 401', String(again.status));
 }
 // 4. a ticket for ANOTHER store, minted by the same hub, is refused by this dashboard (audience)
@@ -143,7 +144,7 @@ let ticket;
   await hub('PUT', '/hub/stores/OTH/flags/hub_sso_enabled', { value: true });
   const r = await hub('POST', '/hub/stores/OTH/ticket', {});
   ok(r.status === 200, 'E7 hub: ticket for the other store minted', r.status + ' ' + r.text);
-  const x = await fetch(DASH + '/api/v1/hub-sso/exchange', { method: 'POST', redirect: 'manual', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ ticket: r.json.ticket }) });
+  const x = await fetch(DASH + '/api/v1/hub-sso/exchange', { method: 'POST', redirect: 'manual', headers: { origin: process.env.HUB_ORIGIN, 'content-type': 'application/json' }, body: JSON.stringify({ ticket: r.json.ticket }) });
   ok(x.status === 401, `E7 dashboard STORE_CODE=${STORE} refuses a ticket for OTH even under the same secret -> 401`, String(x.status));
 }
 // 5. the hub goes away: the dashboard's own login still works

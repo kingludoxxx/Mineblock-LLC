@@ -39,6 +39,7 @@ Object.assign(process.env, {
   JWT_ACCESS_SECRET: 'test-access-' + crypto.randomBytes(8).toString('hex'), JWT_REFRESH_SECRET: 'test-refresh-' + crypto.randomBytes(8).toString('hex'),
   REDIS_URL: 'redis://127.0.0.1:1', // nothing listens: the code paths must degrade, never depend on it
   STORE_CODE: 'MB',
+  HUB_ORIGIN: 'https://hub.example.test', // the hub's own origin: the exchange refuses a POST from anywhere else (review P2-6)
 });
 delete process.env.HUB_SSO_ENABLED; delete process.env.HUB_SSO_SECRET;
 
@@ -83,7 +84,7 @@ const freshIp = () => `10.${(ipCounter >> 16) & 255}.${(ipCounter >> 8) & 255}.$
 async function exchange(body, { form = false, ip = freshIp() } = {}) {
   const res = await fetch(BASE + '/api/v1/hub-sso/exchange', {
     method: 'POST', redirect: 'manual',
-    headers: { 'content-type': form ? 'application/x-www-form-urlencoded' : 'application/json', 'x-forwarded-for': ip },
+    headers: { 'content-type': form ? 'application/x-www-form-urlencoded' : 'application/json', 'x-forwarded-for': ip, origin: process.env.HUB_ORIGIN },
     body: form ? new URLSearchParams(body).toString() : JSON.stringify(body),
   });
   const text = await res.text();
@@ -108,7 +109,7 @@ const q = async (sql, params) => (await pool.query(sql, params)).rows;
 }
 
 // ── apply THIS lane's migration verbatim off disk, twice (idempotent) ───────
-const MIG = join(REPO, 'server/migrations/124_hub_sso.sql');
+const MIG = join(REPO, 'server/migrations/126_hub_sso.sql');
 const migSql = await readFile(MIG, 'utf8');
 await pool.query(migSql); await pool.query(migSql);
 {
