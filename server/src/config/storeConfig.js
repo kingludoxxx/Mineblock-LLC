@@ -12,6 +12,14 @@
 // store's value. There are deliberately no brand, store, colour, ad-account,
 // channel or domain literals in this file — the reviewer greps for them (A1).
 //
+// PRODUCT_CODES_JSON is the exception to "warn and carry on": it is REQUIRED.
+// An empty catalogue is not a dormant feature, it is a routing hazard — with
+// no catalogue clickupWebhook.js fell through to the PL Frame.io project and
+// renamed live ClickUp cards (REVIEW-LANE-F.md P1-1). So productCodes()
+// THROWS a StoreConfigError instead of returning {}, and assertBootConfig()
+// is called from server.js before anything listens: the process refuses to
+// start rather than run with a silently empty catalogue.
+//
 // ── Manifest adapter seam ────────────────────────────────────────────────
 // Today the source is process.env. The hub manifest (plan Section 13) will
 // supply the same keys per store. To switch, call
@@ -25,6 +33,11 @@
 
 let manifestSource = null;
 const warned = new Set();
+
+/** A required store-config key is missing or malformed. Refuses boot. */
+export class StoreConfigError extends Error {
+  constructor(message) { super(message); this.name = 'StoreConfigError'; }
+}
 
 export function setStoreConfigSource(fn) {
   if (fn !== null && typeof fn !== 'function') {
@@ -126,7 +139,11 @@ export function shopifyApiVersion() {
 // ── Meta ────────────────────────────────────────────────────────────────
 
 /** The ONE place the Meta Graph API version defaults. */
-export const META_API_VERSION_DEFAULT = 'v21.0';
+// The newest Graph version already in use in this tree. A single env cannot
+// reproduce the pre-existing v21/v22/v23 spread, so the default is the newest
+// (longest sunset runway), not the oldest (REVIEW-LANE-F.md P1-2). Per-store
+// override: META_API_VERSION.
+export const META_API_VERSION_DEFAULT = 'v23.0';
 const META_API_VERSION_RE = /^v\d{1,3}\.\d{1,2}$/;
 
 /** Meta Graph API version (`vNN.N`); malformed → default + one warning. */
@@ -241,8 +258,10 @@ export function whopCompanyId() {
 //     "frameio": { "projectId", "editingFolderId", "staticEditingFolderId" }
 //   }, …
 // }
-// Every field is optional and null when absent. Unset or malformed → {} with
-// ONE warning: pipelines are dormant, never routed to another store's list.
+// Every field is optional and null when absent. PRODUCT_CODES_JSON is REQUIRED:
+// unset or malformed THROWS StoreConfigError (boot refuses — see the header).
+// There is no empty-catalogue mode, because an empty catalogue made card
+// routing fall through to another product's Frame.io project.
 
 const STR_OR_NULL = (v) => (typeof v === 'string' && v.trim() !== '' ? v : null);
 const CODE_RE = /^[A-Z0-9]{1,8}$/;
@@ -277,17 +296,28 @@ function normaliseProduct(code, e) {
   };
 }
 
-/** `{ CODE: entry }`, validated and normalised; unset/malformed → {} (one warning). */
+const PRODUCT_CODES_HELP =
+  'Set it to a JSON object keyed by product code, e.g. '
+  + '{"<CODE>":{"default":true,"clickup":{"videoListId":"…","initialStatus":"edit queue"},"frameio":{"projectId":"…","editingFolderId":"…"}}} '
+  + '— see server/config/env.<STORE>.example for this store\'s exact value.';
+
+/**
+ * `{ CODE: entry }`, validated and normalised.
+ * REQUIRED: unset or malformed throws StoreConfigError. There is no empty
+ * catalogue — see the file header and assertBootConfig().
+ */
 export function productCodes() {
   const rawJson = raw('PRODUCT_CODES_JSON');
   if (rawJson === undefined) {
-    warnOnce('PRODUCT_CODES_JSON', 'not set — ClickUp/Frame.io product pipelines are dormant on this deployment');
-    return {};
+    throw new StoreConfigError(
+      `PRODUCT_CODES_JSON is not set. It is REQUIRED: without it product cards cannot be routed and the old code fell back to another product's ClickUp list and Frame.io project. ${PRODUCT_CODES_HELP}`,
+    );
   }
+  let out;
   try {
     const parsed = JSON.parse(rawJson);
     if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('must be an object keyed by product code');
-    const out = {};
+    out = {};
     let defaults = 0;
     for (const [code, entry] of Object.entries(parsed)) {
       if (!CODE_RE.test(code)) throw new Error(`key ${JSON.stringify(code)} is not an upper-case product code`);
@@ -295,11 +325,30 @@ export function productCodes() {
       if (out[code].default) defaults += 1;
     }
     if (defaults > 1) throw new Error('more than one entry is marked default');
-    return out;
+    // `{}` parses, but an empty catalogue is the very state this key exists to
+    // prevent — it is a typo or a half-written value, not a configuration.
+    if (Object.keys(out).length === 0) throw new Error('is an EMPTY catalogue ({}) — at least one product code is required');
   } catch (e) {
-    warnOnce('PRODUCT_CODES_JSON', `is invalid (${e.message}) — product pipelines dormant`);
-    return {};
+    throw new StoreConfigError(`PRODUCT_CODES_JSON is invalid: ${e.message}. ${PRODUCT_CODES_HELP}`);
   }
+  return out;
+}
+
+/**
+ * Boot gate (R5/R15). Called once from server.js BEFORE anything listens:
+ * every key this deployment cannot run without is resolved here, and the
+ * process refuses to start when one is missing or malformed. Keys that are
+ * genuinely optional stay in the warn-once path and are NOT listed here.
+ */
+const REQUIRED_AT_BOOT = [['PRODUCT_CODES_JSON', productCodes]];
+
+export function assertBootConfig() {
+  const problems = [];
+  for (const [key, getter] of REQUIRED_AT_BOOT) {
+    try { getter(); } catch (e) { problems.push(`${e.message}`); void key; }
+  }
+  if (problems.length) throw new StoreConfigError(problems.join(' | '));
+  return { ok: true, checked: REQUIRED_AT_BOOT.map(([k]) => k) };
 }
 
 /** The entry marked `default`, or null. */
@@ -423,6 +472,6 @@ const storeConfig = {
   metaApiVersion, metaGraphUrl, META_API_VERSION_DEFAULT, adAccounts, adAccountNames, adAccountName, frameioToken,
   timezone, TIMEZONE_DEFAULT, slackChannels,
   productCodes, defaultProduct, productFor, productForClickupProductRef,
-  snapshot,
+  snapshot, assertBootConfig, StoreConfigError,
 };
 export default storeConfig;

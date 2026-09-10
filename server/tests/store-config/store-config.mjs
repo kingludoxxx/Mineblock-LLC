@@ -23,8 +23,13 @@ const ENV_KEYS = [
   'FRAMEIO_MB_EDITING_FOLDER', 'FRAMEIO_PUURE_PROJECT_ID', 'FRAMEIO_PUURE_EDITING_FOLDER',
   'FRAMEIO_P1_PROJECT_ID', 'FRAMEIO_P1_EDITING_FOLDER', 'CLICKUP_P1_PRODUCT_ID',
 ];
+// PRODUCT_CODES_JSON is REQUIRED (boot refuses without it — see boot-gate.mjs),
+// so clearEnv() leaves a neutral catalogue behind: an unrelated getter must not
+// be tested against a state the server would have refused to start in.
+const NEUTRAL_PRODUCT_CODES = '{"XX":{"default":true}}';
 function clearEnv() {
   for (const k of ENV_KEYS) delete process.env[k];
+  process.env.PRODUCT_CODES_JSON = NEUTRAL_PRODUCT_CODES;
   sc.resetWarnings();
 }
 function captureWarnings(fn) {
@@ -159,16 +164,16 @@ test('tripleWhaleShopId(): NO literal default; unset → null + ONE warning; set
 });
 
 // ── item 5: Meta Graph API version ──────────────────────────────────────────
-test('metaApiVersion(): the ONE default is v21.0; malformed → default + one warning; metaGraphUrl() composes it', () => {
+test('metaApiVersion(): the ONE default is v23.0; malformed → default + one warning; metaGraphUrl() composes it', () => {
   clearEnv();
-  assert.equal(sc.metaApiVersion(), 'v21.0');
-  assert.equal(sc.metaGraphUrl(), 'https://graph.facebook.com/v21.0');
-  process.env.META_API_VERSION = 'v23.0';
   assert.equal(sc.metaApiVersion(), 'v23.0');
   assert.equal(sc.metaGraphUrl(), 'https://graph.facebook.com/v23.0');
-  assert.equal(sc.snapshot().meta.apiVersion, 'v23.0');
+  process.env.META_API_VERSION = 'v22.0';
+  assert.equal(sc.metaApiVersion(), 'v22.0');
+  assert.equal(sc.metaGraphUrl(), 'https://graph.facebook.com/v22.0');
+  assert.equal(sc.snapshot().meta.apiVersion, 'v22.0');
   process.env.META_API_VERSION = '23';
-  const w = captureWarnings(() => { assert.equal(sc.metaApiVersion(), 'v21.0'); sc.metaApiVersion(); });
+  const w = captureWarnings(() => { assert.equal(sc.metaApiVersion(), 'v23.0'); sc.metaApiVersion(); });
   assert.equal(w.length, 1, String(w));
   assert.match(w[0], /META_API_VERSION/);
 });
@@ -279,15 +284,14 @@ const PRODUCTS = JSON.stringify({
   BB: { aliases: ['BEEBRAND'], clickup: { videoListId: '221', initialStatus: 'edit queue' }, frameio: { projectId: 'proj-bb', editingFolderId: 'fold-bb' }, namingCode: 'BB', fbPage: 'Bee' },
   B1: { clickup: { videoListId: '221', productId: 'cu-prod-b1' }, frameio: { projectId: 'proj-b1', editingFolderId: 'fold-b1' }, namingCode: 'B1' },
 });
-test('productCodes(): unset → {} + one warning; malformed / wrong shape → {} + one warning', () => {
-  clearEnv();
-  let w = captureWarnings(() => { assert.deepEqual(sc.productCodes(), {}); sc.productCodes(); });
-  assert.equal(w.length, 1, String(w)); assert.match(w[0], /PRODUCT_CODES_JSON/);
+test('productCodes(): unset THROWS; malformed / wrong shape THROWS — never a silent empty catalogue (P1-1)', () => {
+  clearEnv(); delete process.env.PRODUCT_CODES_JSON;
+  assert.throws(() => sc.productCodes(), (e) => e.name === 'StoreConfigError' && /PRODUCT_CODES_JSON/.test(e.message));
   for (const bad of ['{nope', '[]', '{"aa": "x"}', '{"AA": {"clickup": "111"}}', '{"AA": {"default": true}, "BB": {"default": true}}']) {
     clearEnv(); process.env.PRODUCT_CODES_JSON = bad;
-    w = captureWarnings(() => { assert.deepEqual(sc.productCodes(), {}, bad); sc.productCodes(); });
-    assert.equal(w.length, 1, `${bad}: ${w}`); assert.match(w[0], /PRODUCT_CODES_JSON/);
+    assert.throws(() => sc.productCodes(), (e) => e.name === 'StoreConfigError' && /PRODUCT_CODES_JSON/.test(e.message), bad);
   }
+  clearEnv();
 });
 test('productCodes(): valid → normalised entries; productFor() by code, alias (case-insensitive) or default; unknown with no default → null', () => {
   clearEnv(); process.env.PRODUCT_CODES_JSON = PRODUCTS;

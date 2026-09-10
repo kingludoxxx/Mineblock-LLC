@@ -28,7 +28,9 @@ Object.assign(process.env, {
   WHOP_API_TOKEN: 'LEAK-whop-token-m3n4', CLICKUP_API_TOKEN: 'LEAK-clickup-token-o5p6',
   SHOPIFY_WEBHOOK_SECRET: 'LEAK-shopify-webhook-q7r8', CRON_SECRET: 'LEAK-cron-s9t0',
   META_APP_SECRET: 'LEAK-meta-app-u1v2',
-  // Non-secret store values
+  // Non-secret store values. PRODUCT_CODES_JSON is REQUIRED (boot refuses
+  // without it — boot-gate.mjs), so a running server always has one.
+  PRODUCT_CODES_JSON: '{"ZZ":{"default":true,"clickup":{"videoListId":"901"},"frameio":{"projectId":"proj-zz"}}}',
   STORE_CODE: 'ZZ', BRAND_NAME: 'Acme Co', BRAND_SHORT_NAME: 'Acme',
   BRAND_LOGO_WHITE: '/w.png', BRAND_LOGO_SYMBOL: '/s.png', BRAND_LOGO_BLACK: '/b.svg',
   BRAND_EMAIL_DOMAIN: 'acme.example', SHOPIFY_STORE_DOMAIN: 'zz-store.myshopify.com',
