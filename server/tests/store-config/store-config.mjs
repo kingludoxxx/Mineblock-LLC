@@ -101,3 +101,40 @@ test('storeCode(): STORE_CODE upper-cased, unset → null with one warning', () 
 });
 
 // ── the remaining items append their tests below as they land ────────────────
+
+// ── item 2: Shopify domain / API version / Whop company id ──────────────────
+test('shopifyStoreDomain(): unset → null with ONE warning; set → value', () => {
+  clearEnv();
+  const w = captureWarnings(() => { assert.equal(sc.shopifyStoreDomain(), null); sc.shopifyStoreDomain(); });
+  assert.equal(w.length, 1, String(w));
+  assert.match(w[0], /SHOPIFY_STORE_DOMAIN/);
+  process.env.SHOPIFY_STORE_DOMAIN = 'zz-store.myshopify.com';
+  assert.equal(sc.shopifyStoreDomain(), 'zz-store.myshopify.com');
+});
+
+test('shopifyApiVersion(): the ONE default is 2024-01; malformed → default + one warning', () => {
+  clearEnv();
+  assert.equal(sc.shopifyApiVersion(), '2024-01');
+  process.env.SHOPIFY_API_VERSION = '2025-07';
+  assert.equal(sc.shopifyApiVersion(), '2025-07');
+  process.env.SHOPIFY_API_VERSION = 'latest';
+  const w = captureWarnings(() => { assert.equal(sc.shopifyApiVersion(), '2024-01'); sc.shopifyApiVersion(); });
+  assert.equal(w.length, 1, String(w));
+  assert.match(w[0], /SHOPIFY_API_VERSION/);
+});
+
+test('whopCompanyId(): unset → null with one warning; set → value', () => {
+  clearEnv();
+  const w = captureWarnings(() => { assert.equal(sc.whopCompanyId(), null); });
+  assert.equal(w.length, 1, String(w));
+  process.env.WHOP_COMPANY_ID = 'biz_test';
+  assert.equal(sc.whopCompanyId(), 'biz_test');
+});
+
+test('snapshot() carries shopify.apiVersion and whop.companyId', () => {
+  clearEnv();
+  process.env.WHOP_COMPANY_ID = 'biz_test';
+  const s = sc.snapshot();
+  assert.equal(s.shopify.apiVersion, '2024-01');
+  assert.equal(s.whop.companyId, 'biz_test');
+});

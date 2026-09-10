@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import storeConfig from '../config/storeConfig.js';
 import { authenticate } from '../middleware/auth.js';
 import { requirePermission } from '../middleware/rbac.js';
 import { pgQuery } from '../db/pg.js';
@@ -257,7 +258,14 @@ router.get('/public/cost-sheet', async (req, res) => {
 router.use(authenticate, requirePermission('kpi-system', 'access'));
 
 // ── Config ──────────────────────────────────────────────────────────
-const SHOPIFY_STORE = '17cca0-2.myshopify.com';
+// Store domain + API version come from storeConfig at CALL time (R7); an
+// unset domain makes every Shopify Admin call throw a clear error instead of
+// syncing another store's orders.
+function shopifyStore() {
+  const d = storeConfig.shopifyStoreDomain();
+  if (!d) throw new Error('SHOPIFY_STORE_DOMAIN not set — KPI Shopify sync is dormant on this deployment');
+  return d;
+}
 const SHOPIFY_TOKEN = process.env.SHOPIFY_ACCESS_TOKEN || '';
 // SUPPLIER_SHARE_TOKEN — env var for public /public/cost-sheet token-based access
 const SUPPLIER_SHARE_TOKEN = process.env.SUPPLIER_SHARE_TOKEN || '';
@@ -266,12 +274,11 @@ const SLACK_KPI_CHANNEL = 'C0AN0BPN0NA'; // supply-chain alerts channel
 
 // Track already-alerted unknown products to avoid spam
 const alertedUnknownProducts = new Set();
-const SHOPIFY_API_VERSION = '2024-01';
 const MIN_ORDER_NUMBER = 0; // Sync ALL orders
 
 const WHOP_API_TOKEN = process.env.WHOP_API_TOKEN || '';
 const WHOP_API_URL = 'https://api.whop.com/api';
-const WHOP_COMPANY_ID = 'biz_pkN7XmNrvouslh';
+// Whop company id: storeConfig.whopCompanyId() (read at call time; unused here today).
 
 // Sellerboard "Dashboard by day" CSV automation feed — pre-tokenised, single URL.
 // See migration 055. Timezone convention: Sellerboard reports Amazon's PST/PDT
@@ -773,7 +780,7 @@ async function seedStaticData() {
 
 // ── Shopify API ─────────────────────────────────────────────────────
 async function shopifyFetch(endpoint, params = {}) {
-  const url = new URL(`https://${SHOPIFY_STORE}/admin/api/${SHOPIFY_API_VERSION}/${endpoint}`);
+  const url = new URL(`https://${shopifyStore()}/admin/api/${storeConfig.shopifyApiVersion()}/${endpoint}`);
   for (const [k, v] of Object.entries(params)) url.searchParams.set(k, v);
 
   const resp = await fetch(url.toString(), {
@@ -2700,6 +2707,7 @@ async function syncMetaAdSpend(days = 8) {
 
 async function autoSync() {
   if (!SHOPIFY_TOKEN) return;
+  if (!storeConfig.shopifyStoreDomain()) return; // dormant: one warning is emitted by storeConfig
   try {
     await ensureTables();
     await seedStaticData();
@@ -2714,7 +2722,7 @@ async function autoSync() {
     let recentOrders = [];
     if (autoSyncCount % 5 === 0) {
       const threeDaysAgo = new Date(Date.now() - 3 * 86400000).toISOString();
-      const url = `https://${SHOPIFY_STORE}/admin/api/${SHOPIFY_API_VERSION}/orders.json?status=any&created_at_min=${threeDaysAgo}&limit=250&fields=id,order_number,created_at,total_price,subtotal_price,current_subtotal_price,total_discounts,line_items,shipping_address,financial_status,refunds`;
+      const url = `https://${shopifyStore()}/admin/api/${storeConfig.shopifyApiVersion()}/orders.json?status=any&created_at_min=${threeDaysAgo}&limit=250&fields=id,order_number,created_at,total_price,subtotal_price,current_subtotal_price,total_discounts,line_items,shipping_address,financial_status,refunds`;
       try {
         const resp = await fetch(url, { headers: { 'X-Shopify-Access-Token': SHOPIFY_TOKEN } });
         if (resp.ok) recentOrders = (await resp.json()).orders || [];

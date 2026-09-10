@@ -94,6 +94,28 @@ export function shopifyStoreDomain() {
   return readString('SHOPIFY_STORE_DOMAIN', { unsetMessage: 'not set — Shopify Admin calls are dormant on this deployment' });
 }
 
+/** The ONE place the Shopify Admin API version defaults. */
+export const SHOPIFY_API_VERSION_DEFAULT = '2024-01';
+const SHOPIFY_API_VERSION_RE = /^\d{4}-(01|04|07|10)$/;
+
+/** Shopify Admin API version (`YYYY-01|04|07|10`); malformed → default + one warning. */
+export function shopifyApiVersion() {
+  const v = raw('SHOPIFY_API_VERSION');
+  if (v === undefined) return SHOPIFY_API_VERSION_DEFAULT;
+  if (!SHOPIFY_API_VERSION_RE.test(v)) {
+    warnOnce('SHOPIFY_API_VERSION', `'${v.slice(0, 20)}' is not a Shopify version (YYYY-01|04|07|10) — using ${SHOPIFY_API_VERSION_DEFAULT}`);
+    return SHOPIFY_API_VERSION_DEFAULT;
+  }
+  return v;
+}
+
+// ── Whop ────────────────────────────────────────────────────────────────
+
+/** Whop company id (`biz_…`); unset → null (one warning). */
+export function whopCompanyId() {
+  return readString('WHOP_COMPANY_ID', { unsetMessage: 'not set — Whop company-scoped calls are dormant on this deployment' });
+}
+
 // ── Snapshot ────────────────────────────────────────────────────────────
 
 /**
@@ -107,13 +129,17 @@ export function snapshot() {
     brand: brand(),
     shopify: {
       storeDomain: shopifyStoreDomain(),
+      apiVersion: shopifyApiVersion(),
+    },
+    whop: {
+      companyId: whopCompanyId(),
     },
   };
 }
 
 const storeConfig = {
   setStoreConfigSource, resetWarnings,
-  storeCode, brand, shopifyStoreDomain,
+  storeCode, brand, shopifyStoreDomain, shopifyApiVersion, SHOPIFY_API_VERSION_DEFAULT, whopCompanyId,
   snapshot,
 };
 export default storeConfig;
