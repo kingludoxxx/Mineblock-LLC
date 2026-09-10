@@ -339,6 +339,11 @@ async function updateAdsetBudget(adsetId, newBudgetCents) {
 // ── Slack Alert ─────────────────────────────────────────────────────────
 async function sendSlackAlert(logEntry) {
   if (!SLACK_BOT_TOKEN) return;
+  // No channel configured for this store → skip the post. Without this,
+  // {"channel": null} is POSTed and Slack answers 200 {ok:false}, which the
+  // .catch() below never sees: a silent failure (REVIEW-LANE-F.md P2-1).
+  const channel = storeConfig.slackChannels().pnl;
+  if (!channel) return;
   const actionEmoji = logEntry.action === 'pause_ad' ? ':octagonal_sign:' : logEntry.action === 'resume_ad' ? ':arrow_forward:' : logEntry.action.includes('budget') ? ':chart_with_upwards_trend:' : ':bell:';
   const blocks = [
     { type: 'header', text: { type: 'plain_text', text: `${actionEmoji} Ad Automation Action`, emoji: true } },
@@ -357,7 +362,7 @@ async function sendSlackAlert(logEntry) {
     method: 'POST',
     headers: { 'Authorization': `Bearer ${SLACK_BOT_TOKEN}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      channel: storeConfig.slackChannels().pnl,
+      channel,
       text: `Ad Automation: ${logEntry.action} - ${logEntry.ad_name}`,
       blocks,
       username: process.env.BRAND_NAME ? `${process.env.BRAND_NAME} Bot` : 'Ads Bot',
@@ -998,4 +1003,5 @@ router.get('/status', authenticate, async (req, res) => {
   }
 });
 
+export { sendSlackAlert };
 export default router;
