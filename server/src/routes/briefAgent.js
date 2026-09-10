@@ -1,4 +1,5 @@
 import express from 'express';
+import storeConfig from '../config/storeConfig.js';
 import { authenticate } from '../middleware/auth.js';
 import { requirePermission } from '../middleware/rbac.js';
 import { getEditors, getEditorNames, OWNER_ID, invalidateEditorCache } from '../utils/clickupEditors.js';
@@ -12,11 +13,9 @@ const VIDEO_ADS_LIST_ID = process.env.CLICKUP_MB_VIDEO_LIST_ID || '';
 const CLICKUP_API = 'https://api.clickup.com/api/v2';
 const SLACK_BOT_TOKEN = process.env.SLACK_BOT_TOKEN || '';
 
-// Editor Slack channels for Monday reports
-const EDITOR_SLACK_CHANNELS = {
-  Uly: 'C0ANNMMPUCC',
-  Dimaranan: 'C0ARP2SBQ8J',
-};
+// Editor Slack channels for Monday reports: storeConfig.slackChannels().editors
+// (env SLACK_EDITOR_CHANNELS_JSON = {"<editor>": "C0…"}), read at call time.
+const editorSlackChannels = () => storeConfig.slackChannels().editors;
 
 const headers = {
   Authorization: CLICKUP_TOKEN,
@@ -761,7 +760,7 @@ router.post('/create', async (req, res) => {
 
 // GET /api/v1/brief-agent/editor-report/slack/:editor
 // Returns total "ready to launch" cards this week per editor — Make calls this Monday and posts to Slack
-// Slack channels: Uly → C0ANNMMPUCC, Dimaranan → C0ARP2SBQ8J
+// Slack channels: env SLACK_EDITOR_CHANNELS_JSON (editor name → channel id)
 router.get('/editor-report/slack/:editor', async (req, res) => {
   try {
     const editorName = req.params.editor;
@@ -1020,7 +1019,7 @@ router.get('/monthly-report/:editor/:year/:month', async (req, res) => {
 router.post('/send-editor-reports', async (req, res) => {
   try {
     const results = {};
-    for (const editorName of Object.keys(EDITOR_SLACK_CHANNELS)) {
+    for (const editorName of Object.keys(editorSlackChannels())) {
       await sendEditorWeeklyReport(editorName);
       results[editorName] = 'sent';
     }
@@ -1037,7 +1036,7 @@ router.post('/send-editor-reports', async (req, res) => {
 async function sendEditorWeeklyReport(editorName) {
   const editorMap = await getEditors();
   const editorId = editorMap[editorName];
-  const channel = EDITOR_SLACK_CHANNELS[editorName];
+  const channel = editorSlackChannels()[editorName];
   if (!editorId || !channel || !SLACK_BOT_TOKEN) return;
 
   try {
@@ -1163,7 +1162,7 @@ function scheduleMondayEditorReports() {
     if (isMonday && hour === 10 && minute >= 3 && minute < 5 && lastSentDate !== berlinDate) {
       lastSentDate = berlinDate;
       console.log(`[EditorReport] Triggering Monday reports for ${berlinDate}`);
-      for (const editorName of Object.keys(EDITOR_SLACK_CHANNELS)) {
+      for (const editorName of Object.keys(editorSlackChannels())) {
         sendEditorWeeklyReport(editorName).catch(err =>
           console.error(`[EditorReport] Failed for ${editorName}:`, err.message)
         );

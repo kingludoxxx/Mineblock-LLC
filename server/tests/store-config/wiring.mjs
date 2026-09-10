@@ -110,6 +110,15 @@ for (const f of ['routes/adsControlCenter.js', 'routes/adRejectionMonitor.js', '
   });
 }
 
+// item 10
+for (const f of ['routes/kpiSystem.js', 'routes/adsControlCenter.js', 'routes/briefAgent.js']) {
+  test(`${f}: Slack channel ids come from storeConfig.slackChannels(); no C0… literal`, () => {
+    const s = src(f);
+    assert.doesNotMatch(s, /C0[A-Z0-9]{8,}/);
+    assert.match(s, /storeConfig\.slackChannels\(\)/);
+  });
+}
+
 // A1 over the whole tree (allowed: tests and docs)
 test('A1: git grep over server/src is empty', () => {
   let out = '';

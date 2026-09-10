@@ -227,6 +227,37 @@ export function whopCompanyId() {
   return readString('WHOP_COMPANY_ID', { unsetMessage: 'not set — Whop company-scoped calls are dormant on this deployment' });
 }
 
+// ── Slack ───────────────────────────────────────────────────────────────
+
+/**
+ * Slack channel ids this store posts to. Each unset key → null (one warning)
+ * and the corresponding post is skipped. `editors` is env
+ * SLACK_EDITOR_CHANNELS_JSON = { "<editor name>": "C0…", … }; malformed → {}.
+ */
+export function slackChannels() {
+  let editors = {};
+  const rawJson = raw('SLACK_EDITOR_CHANNELS_JSON');
+  if (rawJson === undefined) {
+    warnOnce('SLACK_EDITOR_CHANNELS_JSON', 'not set — editor weekly reports are dormant');
+  } else {
+    try {
+      const parsed = JSON.parse(rawJson);
+      const ok = parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+        && Object.values(parsed).every((v) => typeof v === 'string' && v.trim() !== '');
+      if (!ok) throw new Error('must be {"<editor>": "<channel id>", …}');
+      editors = { ...parsed };
+    } catch (e) {
+      warnOnce('SLACK_EDITOR_CHANNELS_JSON', `is not a valid editor→channel map (${e.message}) — editor reports dormant`);
+    }
+  }
+  return {
+    pnl: readString('SLACK_PNL_CHANNEL', { unsetMessage: 'not set — P&L Slack posts are skipped' }),
+    kpi: readString('SLACK_KPI_CHANNEL', { unsetMessage: 'not set — KPI/supply-chain Slack alerts are skipped' }),
+    rejection: readString('SLACK_REJECTION_CHANNEL', { unsetMessage: 'not set — ad-rejection Slack alerts are skipped' }),
+    editors,
+  };
+}
+
 // ── Reporting timezone ──────────────────────────────────────────────────
 
 /** The ONE place the report timezone defaults. */
@@ -273,6 +304,7 @@ export function snapshot() {
       apiVersion: metaApiVersion(),
       adAccounts: adAccounts(),
     },
+    slack: slackChannels(),
     timezone: timezone(),
   };
 }
@@ -281,7 +313,7 @@ const storeConfig = {
   setStoreConfigSource, resetWarnings,
   storeCode, brand, shopifyStoreDomain, shopifyStoreUrl, shopifyApiVersion, SHOPIFY_API_VERSION_DEFAULT, whopCompanyId, tripleWhaleShopId,
   metaApiVersion, metaGraphUrl, META_API_VERSION_DEFAULT, adAccounts, adAccountNames, adAccountName, frameioToken,
-  timezone, TIMEZONE_DEFAULT,
+  timezone, TIMEZONE_DEFAULT, slackChannels,
   snapshot,
 };
 export default storeConfig;

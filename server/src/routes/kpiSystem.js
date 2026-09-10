@@ -107,12 +107,13 @@ router.get('/cron/pnl-watchdog', async (req, res) => {
     // Still broken → post loud alert to the P&L channel (uses chat.postMessage,
     // which works with bots-basic scope — not the missing channels:history).
     const SLACK_TOKEN = process.env.SLACK_BOT_TOKEN || '';
-    if (SLACK_TOKEN) {
+    const pnlChannel = storeConfig.slackChannels().pnl;
+    if (SLACK_TOKEN && pnlChannel) {
       await fetch('https://slack.com/api/chat.postMessage', {
         method: 'POST',
         headers: { 'Authorization': `Bearer ${SLACK_TOKEN}`, 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          channel: 'C0AF724MJPR',
+          channel: pnlChannel,
           text: `:rotating_light: *Daily P&L automation is BROKEN* — no report sent for ${dateStr}. Watchdog retry also failed. Check Render logs for \`mineblock-dashboard\` around ${new Date().toISOString()}.`,
           username: 'Mineblock Watchdog',
         }),
@@ -230,7 +231,7 @@ router.get('/health/daily-pnl', async (req, res) => {
         slackBotUserId: authTest.user_id || null,
         yesterdaySnapshotExists: snap.length > 0,
         yesterdayDate: dateStr,
-        channelId: 'C0AF724MJPR',
+        channelId: storeConfig.slackChannels().pnl,
       },
       recentReports: ledger.map((r) => ({ date: r.report_date, sentAt: r.sent_at, profit: r.profit, slackTs: r.slack_ts, slackChannel: r.slack_channel })),
     });
@@ -272,7 +273,7 @@ const SHOPIFY_TOKEN = process.env.SHOPIFY_ACCESS_TOKEN || '';
 // SUPPLIER_SHARE_TOKEN — env var for public /public/cost-sheet token-based access
 const SUPPLIER_SHARE_TOKEN = process.env.SUPPLIER_SHARE_TOKEN || '';
 const SLACK_BOT_TOKEN = process.env.SLACK_BOT_TOKEN || '';
-const SLACK_KPI_CHANNEL = 'C0AN0BPN0NA'; // supply-chain alerts channel
+// Supply-chain alerts channel: storeConfig.slackChannels().kpi (env SLACK_KPI_CHANNEL), read at call time.
 
 // Track already-alerted unknown products to avoid spam
 const alertedUnknownProducts = new Set();
@@ -2571,12 +2572,13 @@ router.get('/export', authenticate, async (req, res) => {
 let autoSyncCount = 0;
 
 async function sendKpiSlackAlert(text) {
-  if (!SLACK_BOT_TOKEN || !SLACK_KPI_CHANNEL) return;
+  const kpiChannel = storeConfig.slackChannels().kpi;
+  if (!SLACK_BOT_TOKEN || !kpiChannel) return;
   try {
     await fetch('https://slack.com/api/chat.postMessage', {
       method: 'POST',
       headers: { 'Authorization': `Bearer ${SLACK_BOT_TOKEN}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ channel: SLACK_KPI_CHANNEL, text, username: 'Mineblock Bot', icon_url: 'https://i.imgur.com/PJCRE4g.png' }),
+      body: JSON.stringify({ channel: kpiChannel, text, username: 'Mineblock Bot', icon_url: 'https://i.imgur.com/PJCRE4g.png' }),
     });
   } catch {}
 }
@@ -2793,7 +2795,7 @@ setTimeout(() => {
 }, 30_000); // Start 30s after boot
 
 // ── Daily P&L Slack Report ──────────────────────────────────────────────────
-const SLACK_DAILY_PNL_CHANNEL = 'C0AF724MJPR';
+// Daily P&L channel: storeConfig.slackChannels().pnl (env SLACK_PNL_CHANNEL), read at call time.
 // Operations & Teams removed from P&L report per request
 
 // Track sent reports to prevent duplicates within the same server instance
@@ -2802,6 +2804,10 @@ const sentReports = new Set();
 async function sendDailyPnlReport(dateStr, { force = false } = {}) {
   if (!SLACK_BOT_TOKEN) {
     throw new Error('No SLACK_BOT_TOKEN configured');
+  }
+  const SLACK_DAILY_PNL_CHANNEL = storeConfig.slackChannels().pnl;
+  if (!SLACK_DAILY_PNL_CHANNEL) {
+    throw new Error('No SLACK_PNL_CHANNEL configured — daily P&L report skipped');
   }
 
   await ensureTables();

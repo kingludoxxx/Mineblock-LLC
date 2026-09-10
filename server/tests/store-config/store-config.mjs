@@ -248,3 +248,27 @@ test('adAccounts(): valid → [{id,name}] verbatim; adAccountNames() map; adAcco
   assert.equal(w.length, 0, String(w));
   assert.deepEqual(sc.snapshot().meta.adAccounts, [{ id: 'act_11', name: 'Store X8' }, { id: 'act_22', name: 'Store CC 4' }]);
 });
+
+// ── item 10: Slack channels ─────────────────────────────────────────────────
+test('slackChannels(): unset → nulls / {} with ONE warning per key; set → values; editors map validated', () => {
+  clearEnv();
+  let w = captureWarnings(() => {
+    assert.deepEqual(sc.slackChannels(), { pnl: null, kpi: null, rejection: null, editors: {} });
+    sc.slackChannels();
+  });
+  assert.equal(w.length, 4, String(w)); // one per key, once
+  clearEnv();
+  Object.assign(process.env, { SLACK_PNL_CHANNEL: 'C0PNL', SLACK_KPI_CHANNEL: 'C0KPI', SLACK_REJECTION_CHANNEL: 'C0REJ', SLACK_EDITOR_CHANNELS_JSON: '{"Ann":"C0ANN","Bob":"C0BOB"}' });
+  w = captureWarnings(() => {
+    assert.deepEqual(sc.slackChannels(), { pnl: 'C0PNL', kpi: 'C0KPI', rejection: 'C0REJ', editors: { Ann: 'C0ANN', Bob: 'C0BOB' } });
+  });
+  assert.equal(w.length, 0, String(w));
+  assert.deepEqual(sc.snapshot().slack, { pnl: 'C0PNL', kpi: 'C0KPI', rejection: 'C0REJ', editors: { Ann: 'C0ANN', Bob: 'C0BOB' } });
+  process.env.SLACK_EDITOR_CHANNELS_JSON = '["C0ANN"]'; // not an object of strings
+  w = captureWarnings(() => { assert.deepEqual(sc.slackChannels().editors, {}); sc.slackChannels(); });
+  assert.equal(w.length, 1, String(w)); assert.match(w[0], /SLACK_EDITOR_CHANNELS_JSON/);
+  process.env.SLACK_EDITOR_CHANNELS_JSON = '{bad';
+  sc.resetWarnings();
+  w = captureWarnings(() => { assert.deepEqual(sc.slackChannels().editors, {}); });
+  assert.equal(w.length, 1, String(w));
+});

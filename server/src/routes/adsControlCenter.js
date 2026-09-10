@@ -16,7 +16,7 @@ const TW_API_KEY = process.env.TRIPLEWHALE_API_KEY || '';
 // Triple Whale shop id: storeConfig.tripleWhaleShopId() at call time (unset = dormant).
 const TW_SQL_URL = 'https://api.triplewhale.com/api/v2/orcabase/api/sql';
 const SLACK_BOT_TOKEN = process.env.SLACK_BOT_TOKEN || '';
-const SLACK_PNL_CHANNEL = 'C0AF724MJPR';
+// P&L Slack channel: storeConfig.slackChannels().pnl (env SLACK_PNL_CHANNEL), read at call time.
 
 // Ad-account display names: storeConfig.adAccountNames() at call time from
 // env META_AD_ACCOUNTS_JSON ([{id, name}]); no account or brand literal here.
@@ -357,7 +357,7 @@ async function sendSlackAlert(logEntry) {
     method: 'POST',
     headers: { 'Authorization': `Bearer ${SLACK_BOT_TOKEN}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      channel: SLACK_PNL_CHANNEL,
+      channel: storeConfig.slackChannels().pnl,
       text: `Ad Automation: ${logEntry.action} - ${logEntry.ad_name}`,
       blocks,
       username: process.env.BRAND_NAME ? `${process.env.BRAND_NAME} Bot` : 'Ads Bot',
