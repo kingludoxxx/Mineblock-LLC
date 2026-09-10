@@ -1236,6 +1236,7 @@ router.post('/admin-migration-status', async (req, res) => {
 // migrations "look" already-applied: the caller states them, this validates
 // each against the migrations directory and refuses the whole batch on any
 // unknown name, so a typo cannot silently mark the wrong thing.
+// LEDGER WRITER: server/migrations/run.js (`npm run migrate` / `--mark-applied`) is the single writer of the _migrations ledger (S0b-3); this endpoint's filename-only insert is the one known exception, left in place pending the lead's decision (swap to run.js markApplied() or delete it), and its "restart to run pending migrations" note is stale: boot no longer applies migrations.
 router.post('/admin-reconcile-migrations', async (req, res) => {
   const cronSecret = process.env.CRON_SECRET;
   if (!cronSecret || req.headers['x-cron-secret'] !== cronSecret) {
