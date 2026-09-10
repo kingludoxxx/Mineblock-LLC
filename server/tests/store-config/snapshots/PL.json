@@ -20,7 +20,7 @@
     "shopId": null
   },
   "meta": {
-    "apiVersion": "v21.0",
+    "apiVersion": "v23.0",
     "adAccounts": []
   },
   "slack": {
@@ -36,7 +36,7 @@
       "aliases": [
         "PUURE"
       ],
-      "default": false,
+      "default": true,
       "namingCode": "PL",
       "fbPage": "Puure",
       "clickup": {

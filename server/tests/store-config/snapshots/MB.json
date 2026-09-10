@@ -20,7 +20,7 @@
     "shopId": "17cca0-2.myshopify.com"
   },
   "meta": {
-    "apiVersion": "v21.0",
+    "apiVersion": "v23.0",
     "adAccounts": [
       {
         "id": "act_938489175321542",

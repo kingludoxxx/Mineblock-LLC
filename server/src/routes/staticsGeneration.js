@@ -7181,7 +7181,8 @@ router.patch('/creatives/bulk-status', authenticate, async (req, res) => {
 async function _doRepairThumbnails(req, res) {
   try {
     const META_ACCESS_TOKEN = process.env.META_ACCESS_TOKEN || '';
-    const META_GRAPH_URL = 'https://graph.facebook.com/v21.0';
+    // Graph version is store data: storeConfig.metaGraphUrl() (env META_API_VERSION).
+    const META_GRAPH_URL = storeConfig.metaGraphUrl();
 
     // Match every URL type that can go stale:
     //   - tempfile.aiquickdraw.com         → Kie.ai temp URLs that expire after a few hours
@@ -9734,7 +9735,7 @@ async function resolveMetaAccountNames(rawIds) {
   // for read calls; we expect <10 accounts so a flat Promise.all is fine).
   await Promise.all(toFetch.map(async (bare) => {
     try {
-      const url = `https://graph.facebook.com/v22.0/act_${bare}?fields=name&access_token=${encodeURIComponent(token)}`;
+      const url = `${storeConfig.metaGraphUrl()}/act_${bare}?fields=name&access_token=${encodeURIComponent(token)}`;
       const r = await fetch(url, { signal: AbortSignal.timeout(8000) });
       if (!r.ok) return;
       const j = await r.json();
@@ -10292,7 +10293,8 @@ router.get('/meta-ads/last-sync', authenticate, async (req, res) => {
 async function _doMetaAdsRepairThumbnails(req, res) {
   try {
     const META_ACCESS_TOKEN = process.env.META_ACCESS_TOKEN || '';
-    const META_GRAPH_URL = 'https://graph.facebook.com/v21.0';
+    // Graph version is store data: storeConfig.metaGraphUrl() (env META_API_VERSION).
+    const META_GRAPH_URL = storeConfig.metaGraphUrl();
     if (!META_ACCESS_TOKEN) {
       return res.status(503).json({ success: false, error: { message: 'META_ACCESS_TOKEN not set' } });
     }
