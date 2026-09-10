@@ -91,6 +91,16 @@ Counters are keyed by product code now; the code still keys them by integer id /
 - `brief_pipeline_winners` carries 114 `PUURE` rows (pre-fork Puure residue, 2026-07-14..08-07). Reported only.
 - `image_store` 794 rows are referenced by no creative (all 147 referenced ids are absent); untagged.
 
+## Independent re-verification (second Lane C session, same day, at bdec6fb)
+- Two Lane C sessions ran concurrently in this worktree; the second re-created `lane_store_code_mb` from the
+  template and re-ran A2/A3 + the full suite (9/9, 0 skipped). Numbers matched `bdec6fb` exactly
+  (dry=283, apply#1=283, apply#2=0; per-table counts and untagged samples identical). Stamp + verbatim suite
+  output in the proof pack, last section.
+- P1 on the Mineblock copy: 0 rows by every rule (profile short_name/name, `P1 - B####` naming, ClickUp task
+  id/url, P1 product id in URL, `/tmp-img` refs). Only the seeded counter row (`id 3, P1, value 0`) carries P1.
+- Step 5c (ad-name evidence) still joins on the brief NUMBER; on a store where PL and P1 numbers collide only the
+  CONFLICT path protects it. Flagged for the lead before staged/123 ships.
+
 ## Open questions for the lead (not for Ludo)
 - `product_profiles.id = 3` product_code NULL (see above): set it to `MR` (its short_name) or not?
 - Puure residue in `brief_pipeline_winners` (114 rows): leave, or a data migration on the Mineblock DB?
