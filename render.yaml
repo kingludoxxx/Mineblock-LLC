@@ -11,6 +11,10 @@ services:
     plan: starter
     buildCommand: npm install && npx playwright install chromium && cd client && npm install && npm run build
     startCommand: npm start
+    # S0b-3: boot no longer applies migrations. Render runs this from its own checkout of the
+    # deployed commit before the new instance starts; a failure fails the deploy and the
+    # previous instance keeps serving. Contract: docs/MIGRATIONS.md.
+    preDeployCommand: npm run migrate
     envVars:
       - key: NODE_ENV
         value: production
