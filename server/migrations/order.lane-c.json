@@ -1,19 +1,19 @@
 {
   "lane": "C",
   "slice": "S1-1 store-code tagging + per-product-code counters",
-  "base": "edc1030",
-  "after": "120",
+  "base": "95fc741 (hub/main, Lane A S0b-3 runner + 120/121/122)",
+  "after": "122_creative_analysis_fresh_shape.sql (appended at the END of order.json)",
   "migrations": [
-    "121_store_code_tagging.sql",
-    "122_store_code_lazy_tables.sql"
+    "123_store_code_tagging.sql",
+    "124_store_code_lazy_tables.sql"
   ],
   "staged": [
     {
-      "file": "staged/123_clickup_brief_resolutions_rekey.sql",
+      "file": "staged/125_clickup_brief_resolutions_rekey.sql",
       "precondition": "server/src/routes/adsReporting.js:714 upserts ON CONFLICT (product_code, brief_number) in the same release",
       "why_staged": "the current ON CONFLICT (brief_number) write cannot be planned after the key swap (SQLSTATE 42P10)"
     }
   ],
-  "runner_requirement": "inside each migration transaction: SELECT set_config('app.store_code', $STORE_CODE, true); unset/empty => MB",
-  "backfill": "node server/scripts/backfill-store-codes.mjs --dry-run  (then without the flag); STORE_CODE env selects the store, default MB"
+  "runner_requirement": "SATISFIED in run.js since C2: resolveStoreCode() validates env STORE_CODE against ^[A-Z0-9]{2,4}$ and REFUSES the run when it is unset or invalid; applyOne() then runs SELECT set_config('app.store_code', $1, true) inside each migration transaction, plus SET LOCAL lock_timeout.",
+  "backfill": "node server/scripts/backfill-store-codes.mjs --dry-run  (then without the flag); STORE_CODE env selects the store and is REQUIRED; an existing store_code is never overwritten without --relabel-store <CODE>"
 }

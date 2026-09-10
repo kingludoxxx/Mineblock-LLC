@@ -1,4 +1,4 @@
--- 121_store_code_tagging.sql — Lane C (S1-1) store-code tagging. ADDITIVE ONLY (R6).
+-- 123_store_code_tagging.sql — Lane C (S1-1) store-code tagging. ADDITIVE ONLY (R6).
 --
 -- Adds `store_code TEXT NOT NULL DEFAULT <store>` and, where a product is
 -- identifiable, `product_code TEXT` to every PER-STORE / PER-PRODUCT table of
@@ -6,66 +6,24 @@
 -- no row is moved; existing rows take the default and are refined by
 -- server/scripts/backfill-store-codes.mjs.
 --
--- Default store code: the session setting `app.store_code`, which the runner
--- sets from env STORE_CODE (SELECT set_config('app.store_code', $STORE_CODE, true)
--- inside the migration transaction). Unset or empty => 'MB'. The value is
--- validated (^[A-Z0-9]{1,8}$) and the migration RAISES on anything else.
+-- Store code: the transaction-local setting `app.store_code`, which
+-- server/migrations/run.js sets from env STORE_CODE
+-- (SELECT set_config('app.store_code', $STORE_CODE, true)) inside the migration
+-- transaction. There is NO fallback: unset, empty, or not ^[A-Z0-9]{2,4}$ RAISES
+-- (review F1 — a default would have tagged every Puure row 'MB').
 --
--- Tables the app creates LAZILY (data-map §1b) are created here first with DDL
--- copied verbatim from the owning route (same pattern as 024a), so the tag
--- column exists before the route's CREATE TABLE IF NOT EXISTS ever runs.
--- Both sides are IF NOT EXISTS; whichever runs first wins.
+-- Tables the app creates LAZILY (data-map §1b) are created here first, so the tag
+-- column exists before the route's CREATE TABLE IF NOT EXISTS ever runs. The DDL
+-- is the owning route's base CREATE TABLE as of this commit (same pattern as
+-- 024a); later columns the route adds with its own ALTER ... IF NOT EXISTS
+-- (e.g. crm_orders.fulfillments, orders.js) still arrive from the route, and
+-- both sides are IF NOT EXISTS, so whichever runs first wins (review F8).
 
 -- ── 1. Lazily-created tables (verbatim DDL) ──────────────────────────────────
 
--- server/src/routes/productProfiles.js:341 (ensureTable)
-CREATE TABLE IF NOT EXISTS product_profiles (
-  id SERIAL PRIMARY KEY,
-  name TEXT NOT NULL,
-  description TEXT,
-  price TEXT,
-  category TEXT DEFAULT 'supplement',
-  logo_url TEXT,
-  product_code TEXT,
-  logos JSONB DEFAULT '[]',
-  fonts JSONB DEFAULT '[]',
-  product_images JSONB DEFAULT '[]',
-  oneliner TEXT,
-  tagline TEXT,
-  customer_avatar TEXT,
-  customer_frustration TEXT,
-  customer_dream TEXT,
-  big_promise TEXT,
-  mechanism TEXT,
-  differentiator TEXT,
-  voice TEXT,
-  guarantee TEXT,
-  benefits JSONB DEFAULT '[]',
-  angles JSONB DEFAULT '[]',
-  scripts JSONB DEFAULT '[]',
-  offers JSONB DEFAULT '[]',
-  target_demographics TEXT,
-  brand_colors JSONB DEFAULT '{}',
-  short_name TEXT,
-  product_type TEXT,
-  product_group TEXT,
-  unit_details TEXT,
-  product_url TEXT,
-  pain_points TEXT,
-  common_objections TEXT,
-  winning_angles TEXT,
-  custom_angles_text TEXT,
-  compliance_restrictions TEXT,
-  competitive_edge TEXT,
-  offer_details TEXT,
-  max_discount TEXT,
-  discount_codes TEXT,
-  bundle_variants TEXT,
-  created_at TIMESTAMP DEFAULT NOW(),
-  updated_at TIMESTAMP DEFAULT NOW()
-);
-ALTER TABLE product_profiles ADD COLUMN IF NOT EXISTS product_code TEXT;
-ALTER TABLE product_profiles ADD COLUMN IF NOT EXISTS short_name TEXT;
+-- product_profiles is NOT re-created here: 120_create_product_profiles.sql (Lane A)
+-- runs earlier in order.json and owns that DDL. Duplicating it made 123 lag the
+-- route's column list (review F8).
 
 -- server/src/routes/orders.js:48 (createTables)
 CREATE TABLE IF NOT EXISTS crm_orders (
@@ -215,7 +173,7 @@ CREATE TABLE IF NOT EXISTS brief_pipeline_analysis_cache (
 -- ── 2. Tag columns ───────────────────────────────────────────────────────────
 DO $$
 DECLARE
-  sc TEXT := COALESCE(NULLIF(current_setting('app.store_code', true), ''), 'MB');
+  sc TEXT := NULLIF(current_setting('app.store_code', true), '');
   t  TEXT;
   -- store_code only: the product is not identifiable per row, or the table
   -- already carries product_code (product_profiles, brief_pipeline_*,
@@ -239,14 +197,21 @@ DECLARE
     'clickup_brief_resolutions', 'statics_im_counter'
   ];
 BEGIN
-  IF sc !~ '^[A-Z0-9]{1,8}$' THEN
-    RAISE EXCEPTION '121: app.store_code % is not a valid store_code (expected ^[A-Z0-9]{1,8}$); set it from env STORE_CODE or leave it unset for MB', quote_literal(sc);
+  -- FAIL CLOSED (review F1). No fallback code lives in this file: a default here
+  -- would tag every row of whichever store forgot the variable, and 'MB' in engine
+  -- SQL is a store literal (R15). server/migrations/run.js sets app.store_code from
+  -- env STORE_CODE inside this transaction and REFUSES the run when it is unset.
+  IF sc IS NULL THEN
+    RAISE EXCEPTION '123: app.store_code is not set. This migration tags every row with the deploying store''s code; running it without one would label this database as another store. Run it through server/migrations/run.js with STORE_CODE set (^[A-Z0-9]{2,4}$).';
   END IF;
-  RAISE NOTICE '[121] store_code default = %', sc;
+  IF sc !~ '^[A-Z0-9]{2,4}$' THEN
+    RAISE EXCEPTION '123: app.store_code % is not a valid store_code (expected ^[A-Z0-9]{2,4}$)', quote_literal(sc);
+  END IF;
+  RAISE NOTICE '[123] store_code default = %', sc;
 
   FOREACH t IN ARRAY store_only || tag_both LOOP
     IF to_regclass(t) IS NULL THEN
-      RAISE EXCEPTION '121: table % does not exist; it is created by 001-099 and must be present', t;
+      RAISE EXCEPTION '123: table % does not exist; it is created by 001-099 and must be present', t;
     END IF;
     EXECUTE format('ALTER TABLE %I ADD COLUMN IF NOT EXISTS store_code TEXT NOT NULL DEFAULT %L', t, sc);
   END LOOP;
@@ -263,15 +228,26 @@ END $$;
 -- later slice (see docs/lanes/lane-c.md).
 CREATE UNIQUE INDEX IF NOT EXISTS ux_brief_number_counter_product_code
   ON brief_number_counter (product_code) WHERE product_code IS NOT NULL;
-CREATE UNIQUE INDEX IF NOT EXISTS ux_product_im_counters_product_code
-  ON product_im_counters (product_code) WHERE product_code IS NOT NULL;
 CREATE UNIQUE INDEX IF NOT EXISTS ux_statics_im_counter_product_code
   ON statics_im_counter (product_code) WHERE product_code IS NOT NULL;
+
+-- product_im_counters is the exception (review F2). It is keyed PER PRODUCT
+-- (product_id, 099:41), and product_profiles.product_code is NOT unique
+-- (069_add_puure_product.sql:6) — one code legitimately covers several products,
+-- which is Puure's shape. A UNIQUE (product_code) here therefore aborts the
+-- backfill on a perfectly legal database. The key is (product_code, product_id):
+-- it can never be violated (product_id is already the primary key), and it is the
+-- index the per-code lookup of a later slice will use. Making one counter row per
+-- CODE instead of per PRODUCT is a design decision the lead has not taken; until
+-- then this index states the real key rather than a wished-for one.
+DROP INDEX IF EXISTS ux_product_im_counters_product_code;
+CREATE UNIQUE INDEX IF NOT EXISTS ux_product_im_counters_code_product
+  ON product_im_counters (product_code, product_id) WHERE product_code IS NOT NULL;
 
 -- clickup_brief_resolutions keeps its PRIMARY KEY (brief_number) here because
 -- adsReporting.js:714 upserts with ON CONFLICT (brief_number), which can only
 -- be planned while that unique index exists. The key swap to
--- (product_code, brief_number) is server/migrations/staged/123_*.sql and ships
+-- (product_code, brief_number) is server/migrations/staged/125_*.sql and ships
 -- together with the keyed upsert.
 CREATE INDEX IF NOT EXISTS idx_clickup_brief_resolutions_code_number
   ON clickup_brief_resolutions (product_code, brief_number);
@@ -281,6 +257,6 @@ COMMENT ON COLUMN clickup_brief_resolutions.product_code IS
 COMMENT ON COLUMN brief_number_counter.product_code IS
   'Product code this counter row serves. Unique per code. NULL = legacy row not yet attributed.';
 COMMENT ON COLUMN product_im_counters.product_code IS
-  'Product code of product_id, copied from product_profiles by the backfill.';
+  'Product code of product_id, copied from product_profiles by the backfill. NOT unique on its own: one code may cover several products (review F2).';
 COMMENT ON COLUMN statics_im_counter.product_code IS
   'Legacy global IM counter. CHECK (id = 1) still limits it to one row; keyed use needs the increment code to change first.';

@@ -62,13 +62,19 @@ export async function dbExists(name) {
   });
 }
 
-// Lane C's migration files, in filename order (121+ only; the numbered files
-// this lane owns). `staged/` is NOT applied here: it is opt-in.
+export const LANE_ORDER = path.join(MIGRATIONS_DIR, 'order.lane-c.json');
+
+// Lane C's OWN migration files, named by order.lane-c.json — NOT a numeric
+// filter. After the rebase onto hub/main the directory also holds Lane A's
+// 120/121/122, which a `^1[2-9]\d_` regex would have swept in (review F4).
+// `staged/` is NOT applied here: it is opt-in.
 export function laneMigrationFiles() {
-  return fs.readdirSync(MIGRATIONS_DIR)
-    .filter((f) => /^1[2-9]\d_.*\.sql$/.test(f))
-    .sort()
-    .map((f) => path.join(MIGRATIONS_DIR, f));
+  const manifest = JSON.parse(fs.readFileSync(LANE_ORDER, 'utf8'));
+  return manifest.migrations.map((f) => {
+    const p = path.join(MIGRATIONS_DIR, f);
+    if (!fs.existsSync(p)) throw new Error(`order.lane-c.json lists ${f} but it is not on disk`);
+    return p;
+  });
 }
 
 export function stagedMigrationFiles() {
@@ -79,8 +85,11 @@ export function stagedMigrationFiles() {
 // Apply SQL files the same way server/migrations/run.js does: one transaction
 // per file, ledger row in _migrations. `settings` are applied inside the
 // transaction (SET LOCAL) so `app.store_code` reaches the migration exactly
-// as a runner would pass it.
-export async function applySqlFiles(c, files, { settings = {} } = {}) {
+// as a runner would pass it. STORE_CODE from the environment wins, so the whole
+// suite can be run as another store (review F9).
+export const TEST_STORE_CODE = process.env.STORE_CODE || 'MB';
+
+export async function applySqlFiles(c, files, { settings = {}, storeCode = TEST_STORE_CODE } = {}) {
   await c.query(`CREATE TABLE IF NOT EXISTS _migrations (
     id SERIAL PRIMARY KEY, filename VARCHAR(255) UNIQUE NOT NULL, executed_at TIMESTAMPTZ DEFAULT NOW())`);
   const applied = [];
@@ -88,7 +97,10 @@ export async function applySqlFiles(c, files, { settings = {} } = {}) {
     const sql = fs.readFileSync(file, 'utf8');
     await c.query('BEGIN');
     try {
-      for (const [k, v] of Object.entries(settings)) await c.query(`SELECT set_config($1, $2, true)`, [k, v]);
+      // run.js always sets app.store_code (and REFUSES without it), so the default
+      // here mirrors the real runner. `storeCode: null` reproduces "no runner setting".
+      const all = { ...(storeCode ? { 'app.store_code': storeCode } : {}), ...settings };
+      for (const [k, v] of Object.entries(all)) await c.query(`SELECT set_config($1, $2, true)`, [k, v]);
       await c.query(sql);
       await c.query('INSERT INTO _migrations (filename) VALUES ($1) ON CONFLICT (filename) DO NOTHING', [path.basename(file)]);
       await c.query('COMMIT');
@@ -116,7 +128,7 @@ export async function columnInfo(c, table, column) {
 export function runBackfill(dbname, args = [], env = {}) {
   const res = spawnSync(process.execPath, [BACKFILL_SCRIPT, ...args], {
     cwd: REPO_ROOT,
-    env: { ...process.env, DATABASE_URL: connectionString(dbname), ...env },
+    env: { ...process.env, DATABASE_URL: connectionString(dbname), STORE_CODE: TEST_STORE_CODE, ...env },
     encoding: 'utf8',
   });
   if (process.env.LANE_DEBUG) process.stderr.write(`\n--- backfill ${args.join(' ') || '(apply)'} on ${dbname} exit=${res.status} ---\n${res.stdout}${res.stderr}`);

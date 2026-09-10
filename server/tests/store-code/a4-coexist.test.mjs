@@ -4,7 +4,7 @@
 // Today the table's PRIMARY KEY is brief_number alone (adsReporting.js:62), and
 // the cache write at adsReporting.js:714 is `ON CONFLICT (brief_number)`. That
 // insert form can only be planned while a unique index on (brief_number) alone
-// exists, so the key swap and the code change must ship together. 121 expands
+// exists, so the key swap and the code change must ship together. 123 expands
 // (adds the columns); the swap lives in server/migrations/staged/ and is
 // applied here explicitly. Both states are asserted.
 import { test } from 'node:test';
@@ -16,7 +16,7 @@ const LEGACY_INSERT = `INSERT INTO clickup_brief_resolutions (brief_number, task
   SELECT n, u FROM unnest($1::int[], $2::text[]) AS t(n, u)
   ON CONFLICT (brief_number) DO UPDATE SET task_url = EXCLUDED.task_url, resolved_at = NOW()`;
 
-test('A4: after 121 alone the legacy write still works and same-number coexistence is still blocked', async () => {
+test('A4: after 123 alone the legacy write still works and same-number coexistence is still blocked', async () => {
   const db = await freshDb('lane_store_code_a4a');
   await withClient(db, async (c) => {
     await loadEmptyFixture(c);
@@ -53,7 +53,7 @@ test('A4: after the staged rekey, P1 and PL share a brief number; duplicates and
     const upd = await c.query(`SELECT task_url FROM clickup_brief_resolutions WHERE product_code='P1' AND brief_number=12`);
     assert.equal(upd.rows[0].task_url, 'https://app.clickup.com/t/p1-new');
     // FAILURE PATH: the legacy insert form can no longer be planned. This is the
-    // exact reason adsReporting.js:714 must change before staged/123 runs live.
+    // exact reason adsReporting.js:714 must change before staged/125 runs live.
     await c.query(LEGACY_INSERT, [[13], ['x']])
       .then(() => assert.fail('legacy ON CONFLICT (brief_number) should fail after the rekey'),
             (err) => assert.equal(err.code, '42P10'));

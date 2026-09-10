@@ -31,6 +31,30 @@ The first `npm run migrate` on a live database backfills the checksum of every l
 4. Deploy with an explicit `commitId` (R37). In the deploy log expect `Backfilled checksum + applied_order for N legacy ledger row(s)` and `Successfully ran K migration(s)`; at boot expect `Migrations: ledger matches order.json (M applied, 0 pending, 0 mismatches)`.
 5. Only then set `STRICT_MIGRATIONS=1` on the service (one restart). From that point a pending, mismatched, or (for `npm run migrate`) orphaned migration refuses instead of logging.
 
+## 2b. STORE_CODE — required on every service (Lane C, review F1)
+
+`npm run migrate` REFUSES to run without `STORE_CODE` (`^[A-Z0-9]{2,4}$`). It is not optional and it
+has no default. The runner sets it as the transaction-local `app.store_code` for every migration, and
+the store-tagging migrations (123/124) tag every row with it. A default would have labelled every
+Puure row as Mineblock's store, silently and self-reinforcingly.
+
+| Service | STORE_CODE |
+|---|---|
+| mineblock-admin / mineblock-dashboard | `MB` |
+| puure-dashboard | `PL` |
+| any new store | its code from the manifest, before the first deploy |
+
+**Set it BEFORE the first `npm run migrate` on that service, or the pre-deploy command fails and the
+deploy is refused (which is the intended behaviour, not a bug).** `render.yaml` does not yet carry it:
+the lead adds `STORE_CODE` to `mineblock-admin`'s `envVars` and to every service's environment in the
+Render dashboard as part of merging this branch. A dry run does not require it; it prints
+`STORE_CODE: …REFUSING…` so a preflight tells you before the deploy does.
+
+Each migration transaction also runs `SET LOCAL lock_timeout` (`MIGRATION_LOCK_TIMEOUT`, default `5s`,
+`0` disables). 123 takes ACCESS EXCLUSIVE on 39 tables in one transaction; behind a long read it would
+otherwise wait forever and queue every later reader behind it. On a timeout the transaction rolls back,
+the ledger is untouched and the same command is simply re-run at a quieter moment.
+
 ## 3. STRICT
 
 `STRICT_MIGRATIONS=1` (env) or `--strict` (flag) means:
@@ -43,7 +67,9 @@ Renamed applied files (a pending file whose sha256 equals an orphan row's checks
 
 - File + `order.json` entry in the SAME commit. `run.js` refuses an unlisted, absent, duplicated, or non-`.sql` entry before touching the database.
 - Append at the END of `order` unless the file must precede an existing dependent (then directly before it). The numeric prefix is documentation, not the order.
-- Numbering: 100-119 tracking/Puure sessions, 120+ HUB. Lane A used 120, 121, 122; the next free HUB number is 123.
+- Numbering: 100-119 tracking/Puure sessions, 120+ HUB. Lane A used 120, 121, 122; Lane C uses 123, 124
+  (and reserves 125 for `staged/125_clickup_brief_resolutions_rekey.sql`, which is NOT auto-run — `run.js`
+  and `server.js` read only `*.sql` directly under `server/migrations/`). The next free HUB number is 126.
 - Never rename or edit an applied file. Fix forward with a new file. (Checksum mismatch and rename are both refusals.)
 - Never delete an applied file. Under STRICT the orphan row refuses the run; without STRICT it is a printed warning and the file silently never runs on a fresh database.
 - A migration must run on an EMPTY database (R6) and be a no-op where the route already created the shape. Guard with the catalog (`IF NOT EXISTS`, `information_schema`, `pg_constraint`), not with `EXCEPTION WHEN OTHERS`: a swallowed error is how 017/061 hid a missing table for months. `RAISE WARNING` when you decline to act; `run.js` prints database warnings in the deploy log.
@@ -54,7 +80,8 @@ Renamed applied files (a pending file whose sha256 equals an orphan row's checks
 
 ```
 node server/migrations/run.js [--dry-run [--allow-pending]] [--strict] [--dir <migrationsDir>] [--mark-applied a.sql,b.sql]
-env: DATABASE_URL (required), MIGRATIONS_DIR (= --dir), STRICT_MIGRATIONS=1 (= --strict), MIGRATE_SSL=0|1
+env: DATABASE_URL (required), STORE_CODE (required for a real run, ^[A-Z0-9]{2,4}$), MIGRATIONS_DIR (= --dir),
+     STRICT_MIGRATIONS=1 (= --strict), MIGRATION_LOCK_TIMEOUT (default 5s), MIGRATE_SSL=0|1
 npm run migrate            = node server/migrations/run.js
 npm run migrate:dry-run    = node server/migrations/run.js --dry-run   (extra flags after --, e.g. -- --allow-pending)
 ```
@@ -68,7 +95,10 @@ npm run migrate:dry-run    = node server/migrations/run.js --dry-run   (extra fl
 | orphan row, non-STRICT | warns, continues, 0 | warns, 0 | warns, 0 |
 | orphan row, STRICT | refuses, 1 | 1 | 1 |
 | manifest broken / DB unreachable / no DATABASE_URL | 1 before any write | 1 | 1 |
+| STORE_CODE unset or malformed | refuses, 1, before any write | warns, 0 | warns, 0 |
+| a migration cannot take its locks within `lock_timeout` | that file rolls back, run exits 1, ledger untouched | n/a | n/a |
 
 Ledger: `_migrations(id, filename UNIQUE, executed_at, checksum sha256-hex-of-bytes, applied_order)`. `applied_order` is the per-database apply sequence (1-based, monotonic), not the manifest index; re-ordering the manifest never invalidates history.
 
-Tests: `node server/tests/migrations/migrations.mjs` (A1-A8; A7/A8 need the read-only `mineblock_copy` on the local Postgres, they SKIP otherwise).
+Tests: `node server/tests/migrations/migrations.mjs` (A1-A8; A7/A8 need the read-only `mineblock_copy` on the local Postgres, they SKIP otherwise)
+and `node --test server/tests/store-code/*.test.mjs` (Lane C A1-A7: tagging, backfill, the STORE_CODE refusal and the lock timeout).

@@ -1,10 +1,14 @@
 // Minimal stand-in for the post-099 schema on an EMPTY database.
 //
 // The real 001-099 chain does not apply on an empty DB today (061 needs
-// creative_analysis.meta_ad_id, which only the app adds lazily), and Lane A's
-// 120 is not merged yet. Per the brief, the test creates the minimal tables
-// Lane C's migrations ALTER. Column subsets mirror the real DDL cited in
+// creative_analysis.meta_ad_id, which only the app adds lazily). Per the brief,
+// the test creates the minimal tables Lane C's migrations ALTER. Lane A's
+// 120_create_product_profiles.sql IS merged and is applied here for real. Column subsets mirror the real DDL cited in
 // discovery/data-map.md §1a; nothing here is read by the app.
+import fs from 'node:fs';
+import path from 'node:path';
+import { MIGRATIONS_DIR } from './_db.mjs';
+
 export const EMPTY_FIXTURE_SQL = `
 CREATE TABLE IF NOT EXISTS users (id UUID PRIMARY KEY DEFAULT gen_random_uuid(), email TEXT);
 CREATE TABLE IF NOT EXISTS integrations (id UUID PRIMARY KEY DEFAULT gen_random_uuid(), workspace_id UUID, provider TEXT);
@@ -45,6 +49,13 @@ CREATE TABLE IF NOT EXISTS statics_composer_imports (id UUID PRIMARY KEY DEFAULT
 CREATE TABLE IF NOT EXISTS statics_iteration_configs (account_id TEXT PRIMARY KEY, enabled BOOLEAN NOT NULL DEFAULT TRUE);
 `;
 
+// Lane A's 120 is merged now, so product_profiles comes from the REAL file that
+// will precede Lane C's in order.json — not from a stand-in (review A1 note, F8).
+export const PRECEDING_REAL_MIGRATIONS = ['120_create_product_profiles.sql'];
+
 export async function loadEmptyFixture(c) {
+  for (const f of PRECEDING_REAL_MIGRATIONS) {
+    await c.query(fs.readFileSync(path.join(MIGRATIONS_DIR, f), 'utf8'));
+  }
   await c.query(EMPTY_FIXTURE_SQL);
 }

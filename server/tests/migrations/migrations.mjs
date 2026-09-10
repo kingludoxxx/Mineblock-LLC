@@ -40,9 +40,15 @@ const skipped = (m, why) => { skip++; console.log('SKIP ', m, `— ${why}`); };
 const sha256 = (buf) => createHash('sha256').update(buf).digest('hex');
 const tail = (s, n = 1200) => (s.length > n ? '…' + s.slice(-n) : s);
 
+// Lane C: run.js REFUSES a real run without STORE_CODE (review F1 — the store code
+// is what every migrated row is tagged with). Every call here supplies one, exactly
+// as a Render service does; a caller can override it, and A9 below exercises the
+// refusal path itself.
+export const TEST_STORE_CODE = process.env.STORE_CODE || 'MB';
+
 function runMigrate(env, args = []) {
   const r = spawnSync(process.execPath, [RUN_JS, ...args], {
-    env: { ...process.env, ...env },
+    env: { ...process.env, STORE_CODE: TEST_STORE_CODE, ...env },
     encoding: 'utf8',
     timeout: 120000,
   });
@@ -350,7 +356,7 @@ console.log('\n── A6 failure paths ──');
   const f6 = runMigrate({ DATABASE_URL: `postgres://${PG.user}@127.0.0.1:1/nowhere` });
   ok(f6.code !== 0 && /ECONNREFUSED|connect|unreachable/i.test(f6.out), 'A6.6 DB unreachable → non-zero exit with a connection message', tail(f6.out, 400));
 
-  const env7 = { ...process.env }; delete env7.DATABASE_URL;
+  const env7 = { ...process.env, STORE_CODE: TEST_STORE_CODE }; delete env7.DATABASE_URL;
   const r7 = spawnSync(process.execPath, [RUN_JS], { env: env7, encoding: 'utf8' });
   ok(r7.status !== 0 && /DATABASE_URL/.test((r7.stdout || '') + (r7.stderr || '')), 'A6.7 no DATABASE_URL → non-zero exit, message names DATABASE_URL', tail((r7.stdout || '') + (r7.stderr || ''), 400));
 
@@ -423,7 +429,12 @@ async function shape(url) {
                        FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'creative_analysis' ORDER BY column_name`;
   } finally { await sql.end(); }
 }
-const shapeLines = (rows) => rows.map((r) => [r.column_name, r.data_type, r.character_maximum_length, r.numeric_precision, r.numeric_scale, r.is_nullable, r.column_default].map((v) => v ?? '-').join('|'));
+// Lane C's 123 adds creative_analysis.store_code. `mineblock_copy` is a restore of
+// the LIVE database, which has not run 123, so the tag column is legitimately
+// fresh-only and is not evidence that 120-122 changed the live shape — which is
+// what A8.1/A8.4 exist to check. Excluded by name, not by count.
+const TAG_COLUMNS = new Set(['store_code', 'product_code']);
+const shapeLines = (rows) => rows.filter((r) => !TAG_COLUMNS.has(r.column_name)).map((r) => [r.column_name, r.data_type, r.character_maximum_length, r.numeric_precision, r.numeric_scale, r.is_nullable, r.column_default].map((v) => v ?? '-').join('|'));
 const shapeDiff = (fresh, live) => [
   ...fresh.filter((l) => !live.includes(l)).map((l) => `fresh-only: ${l}`),
   ...live.filter((l) => !fresh.includes(l)).map((l) => `live-only:  ${l}`),

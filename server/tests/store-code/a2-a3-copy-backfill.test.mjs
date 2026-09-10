@@ -7,7 +7,9 @@ import assert from 'node:assert/strict';
 import { dbExists, freshDb, withClient, applySqlFiles, laneMigrationFiles, runBackfill } from './_db.mjs';
 
 const TEMPLATE = 'mineblock_copy';
-const COPY = 'lane_store_code_mb';
+// Review F9: NOT `lane_store_code_mb` — that is the lane's own inspection copy,
+// and a reviewer running the suite used to destroy it without noticing.
+const COPY = 'lane_store_code_a2a3_copy';
 
 test('A2/A3: dry-run report + idempotent apply on a copy of mineblock_copy', async (t) => {
   if (!(await dbExists(TEMPLATE))) {

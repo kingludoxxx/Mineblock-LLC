@@ -93,8 +93,12 @@ test('A5: dry-run changes nothing and reports; apply tags known + P1, leaves unk
     assert.deepEqual(bl.rows.map((r) => [r.brief_number, r.product_code]), [[11, 'MR'], [12, 'P1']]);
     const cbr = await c.query(`SELECT brief_number, product_code FROM clickup_brief_resolutions ORDER BY brief_number`);
     assert.deepEqual(cbr.rows.map((r) => [r.brief_number, r.product_code]), [[11, 'MR'], [12, 'P1'], [97, null], [98, null], [99, 'MR']]);
+    // Review F6: this run is store MB, which owns MR only. The positional map
+    // (id 2 = PL) is evidence on the store that OWNS PL and a guess anywhere else,
+    // so id 2 stays untagged here and no P1 counter is invented. The PL-store run
+    // below is where the seeding is asserted.
     const bnc = await c.query(`SELECT id, product_code, value FROM brief_number_counter ORDER BY id`);
-    assert.deepEqual(bnc.rows.map((r) => [r.id, r.product_code, r.value]), [[1, 'MR', 500], [2, 'PL', 21], [3, 'P1', 13]]);
+    assert.deepEqual(bnc.rows.map((r) => [r.id, r.product_code, r.value]), [[1, 'MR', 500], [2, null, 21]]);
     const pic = await c.query(`SELECT product_id, product_code FROM product_im_counters ORDER BY product_id`);
     assert.deepEqual(pic.rows.map((r) => [r.product_id, r.product_code]), [[2, 'P1'], [3, null]]);
     const sic = await c.query(`SELECT product_code FROM statics_im_counter`);
@@ -115,11 +119,43 @@ test('A5: dry-run changes nothing and reports; apply tags known + P1, leaves unk
   assert.equal(t.product_profiles.untagged, 2);
   assert.equal(t.statics_im_counter.untagged, 1);
   assert.ok(run1.summary.conflicts.some((x) => x.table === 'brief_pipeline_generated' && x.reason.includes('P1')), 'PUURE row with a P1 naming prefix must be reported as a conflict, not overwritten');
+  // Review F6: a row carrying a code this store does not own is FOREIGN — it has a
+  // tag, so it is not UNTAGGED, and nothing disagrees, so it is not a CONFLICT.
+  assert.deepEqual(run1.summary.owned_product_codes, ['MR']);
+  assert.ok(run1.summary.foreign.some((x) => x.table === 'brief_pipeline_generated' && x.product_code === 'PUURE' && x.rows === 2), 'PUURE briefs on an MB store must be listed as FOREIGN\n' + JSON.stringify(run1.summary.foreign));
+  assert.ok(run1.summary.foreign.some((x) => x.table === 'spy_creatives' && x.product_code === 'P1'), 'P1 creatives on an MB store must be listed as FOREIGN');
+  assert.ok(run1.summary.notes.some((n) => /counter id 2 maps to 'PL'/.test(n)), 'the skipped positional counter tag must be reported');
+  assert.match(run1.stdout, /^FOREIGN \(product_code not owned by store MB/m);
+  // Review F3: store_code is never rewritten on the ordinary path.
+  assert.equal(run1.summary.relabel_store, null);
+  assert.equal(run1.summary.steps.filter((x) => x.step.startsWith('0.store_code')).length, 0, 'no store_code row was touched');
 
   // ── idempotent ──
   const run2 = runBackfill(db, []);
   assert.equal(run2.code, 0, run2.stderr);
   assert.equal(run2.summary.changed_rows, 0, 'second run must change 0 rows\n' + run2.stdout);
+});
+
+test('A5: on the store that OWNS the codes, the counters ARE seeded (review F6 map, other side)', async () => {
+  const db = await freshDb('lane_store_code_a5pl');
+  await withClient(db, async (c) => {
+    await loadEmptyFixture(c);
+    await applySqlFiles(c, laneMigrationFiles(), { storeCode: 'PL' });
+    await seed(c);
+  });
+  const run = runBackfill(db, [], { STORE_CODE: 'PL' });
+  assert.equal(run.code, 0, run.stderr);
+  assert.deepEqual(run.summary.owned_product_codes, ['PL', 'PUURE', 'P1']);
+  await withClient(db, async (c) => {
+    const bnc = await c.query(`SELECT id, product_code, value FROM brief_number_counter ORDER BY id`);
+    // id 1 = MR is NOT owned by PL, so it stays untagged; id 2 = PL is tagged and
+    // its value is raised (never lowered); the P1 row is seeded from MAX(P1 brief).
+    assert.deepEqual(bnc.rows.map((r) => [r.id, r.product_code, r.value]), [[1, null, 500], [2, 'PL', 21], [3, 'P1', 13]]);
+  });
+  // MR data now reads as FOREIGN on the Puure store — the mirror of the MB run.
+  assert.ok(run.summary.foreign.some((x) => x.product_code === 'MR'), 'MR rows must be FOREIGN on a PL store\n' + JSON.stringify(run.summary.foreign));
+  const run2 = runBackfill(db, [], { STORE_CODE: 'PL' });
+  assert.equal(run2.summary.changed_rows, 0, 'idempotent on the PL store too');
 });
 
 test('A5 failure paths: missing DATABASE_URL and an unreachable database exit non-zero with a clear message', () => {

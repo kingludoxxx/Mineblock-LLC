@@ -1,4 +1,4 @@
--- 122_store_code_lazy_tables.sql — Lane C (S1-1). ADDITIVE ONLY (R6).
+-- 124_store_code_lazy_tables.sql — Lane C (S1-1). ADDITIVE ONLY (R6).
 --
 -- The remaining PER-STORE tables of data-map §1b exist only if their owning
 -- route/service has been hit at least once (created lazily inside server/src).
@@ -8,7 +8,7 @@
 -- not fail on an empty database (R6).
 DO $$
 DECLARE
-  sc TEXT := COALESCE(NULLIF(current_setting('app.store_code', true), ''), 'MB');
+  sc TEXT := NULLIF(current_setting('app.store_code', true), '');
   t TEXT;
   n_added INT := 0;
   n_skipped INT := 0;
@@ -35,17 +35,21 @@ DECLARE
     'lb_postback_queue', 'lb_postback_breakers', 'lb_pixels', 'lb_consent'
   ];
 BEGIN
-  IF sc !~ '^[A-Z0-9]{1,8}$' THEN
-    RAISE EXCEPTION '122: app.store_code % is not a valid store_code (expected ^[A-Z0-9]{1,8}$)', quote_literal(sc);
+  -- Fail closed, like 123: no store literal and no fallback in engine SQL (F1/R15).
+  IF sc IS NULL THEN
+    RAISE EXCEPTION '124: app.store_code is not set; run this through server/migrations/run.js with STORE_CODE set (^[A-Z0-9]{2,4}$)';
+  END IF;
+  IF sc !~ '^[A-Z0-9]{2,4}$' THEN
+    RAISE EXCEPTION '124: app.store_code % is not a valid store_code (expected ^[A-Z0-9]{2,4}$)', quote_literal(sc);
   END IF;
   FOREACH t IN ARRAY lazy LOOP
     IF to_regclass(t) IS NULL THEN
       n_skipped := n_skipped + 1;
-      RAISE NOTICE '[122] % not present (lazily created) - skipped; its ensureTable must add store_code', t;
+      RAISE NOTICE '[124] % not present (lazily created) - skipped; its ensureTable must add store_code', t;
       CONTINUE;
     END IF;
     EXECUTE format('ALTER TABLE %I ADD COLUMN IF NOT EXISTS store_code TEXT NOT NULL DEFAULT %L', t, sc);
     n_added := n_added + 1;
   END LOOP;
-  RAISE NOTICE '[122] store_code=% tagged % present table(s), skipped % absent', sc, n_added, n_skipped;
+  RAISE NOTICE '[124] store_code=% tagged % present table(s), skipped % absent', sc, n_added, n_skipped;
 END $$;

@@ -24,7 +24,18 @@
  * OUTPUT  Database WARNINGs raised by a migration are printed (`WARNING (database): …`).
  *
  * CLI     node server/migrations/run.js [--dry-run [--allow-pending]] [--strict] [--dir <path>] [--mark-applied a.sql,b.sql]
- * ENV     DATABASE_URL (required) · MIGRATIONS_DIR (= --dir) · STRICT_MIGRATIONS=1 (= --strict)
+ * STORE   STORE_CODE (required for a real run, ^[A-Z0-9]{2,4}$) is set as the
+ *         transaction-local `app.store_code` for every migration, so a store-tagging
+ *         migration labels rows with THIS store's code. Unset or malformed REFUSES
+ *         the run before anything is written (Lane C review F1) — a silent default
+ *         would tag a Puure database 'MB'. A dry run only warns.
+ * LOCKS   Every migration transaction runs `SET LOCAL lock_timeout`
+ *         (MIGRATION_LOCK_TIMEOUT, default 5s, "0" disables): a migration that cannot
+ *         take its ACCESS EXCLUSIVE locks fails fast and re-runnably instead of
+ *         stalling the app behind it (review F7).
+ *
+ * ENV     DATABASE_URL (required) · STORE_CODE (required) · MIGRATIONS_DIR (= --dir)
+ *         STRICT_MIGRATIONS=1 (= --strict) · MIGRATION_LOCK_TIMEOUT (default 5s)
  *         MIGRATE_SSL=0|1 (default auto: off for localhost/127.0.0.1/sslmode=disable, on otherwise)
  * EXIT    0 clean · 1 any error or refusal. A dry run exits 1 when the database is
  *         NOT current: pending files (unless --allow-pending, the pre-apply
@@ -197,9 +208,51 @@ const INSERT_LEDGER_ROW = `
   INSERT INTO _migrations (filename, checksum, applied_order)
   VALUES ($1, $2, (SELECT COALESCE(MAX(applied_order), 0) + 1 FROM _migrations))`;
 
-async function applyOne(client, filename, file) {
+/**
+ * STORE_CODE — which store's database this run is tagging (Lane C, review F1).
+ * FAIL-CLOSED: unset or malformed REFUSES the run. Migrations read it through
+ * `current_setting('app.store_code', true)`; a silent fallback there would label
+ * every Puure row 'MB', which is exactly the failure this guard exists to stop.
+ * ^[A-Z0-9]{2,4}$ is the store-code shape of RULES.md R5 (MB, PL, P1, R2, MR).
+ */
+export const STORE_CODE_RE = /^[A-Z0-9]{2,4}$/;
+export function resolveStoreCode(env = process.env) {
+  const raw = env.STORE_CODE;
+  if (raw === undefined || String(raw).trim() === '') {
+    throw new MigrationError(
+      'STORE_CODE is not set — REFUSING to run migrations. Every migrated row is tagged with this store\'s code '
+      + `(app.store_code); running without it would label this database's rows with another store's code. `
+      + `Set STORE_CODE (${STORE_CODE_RE}) on the service, e.g. MB for mineblock-dashboard, PL for puure-dashboard.`);
+  }
+  const v = String(raw).trim();
+  if (!STORE_CODE_RE.test(v)) {
+    throw new MigrationError(`STORE_CODE ${JSON.stringify(v)} is not a valid store code (expected ${STORE_CODE_RE}) — REFUSING to run migrations.`);
+  }
+  return v;
+}
+
+/**
+ * Per-migration lock timeout (review F7). Every ALTER TABLE takes an
+ * ACCESS EXCLUSIVE lock; 123 takes 39 of them in one transaction. Behind a long
+ * read the migration would wait forever AND queue every later reader behind it.
+ * SET LOCAL: a migration that cannot get its locks fails fast, rolls back, and
+ * leaves the ledger untouched, so it is simply re-runnable at a quieter moment.
+ */
+export const DEFAULT_LOCK_TIMEOUT = '5s';
+export function resolveLockTimeout(env = process.env) {
+  const v = (env.MIGRATION_LOCK_TIMEOUT ?? '').trim();
+  if (!v) return DEFAULT_LOCK_TIMEOUT;
+  if (!/^\d+\s*(ms|s|min)?$/.test(v)) throw new MigrationError(`MIGRATION_LOCK_TIMEOUT ${JSON.stringify(v)} is not a PostgreSQL interval like "5s", "500ms" or "0" (0 disables the timeout)`);
+  return v;
+}
+
+async function applyOne(client, filename, file, { storeCode, lockTimeout = DEFAULT_LOCK_TIMEOUT } = {}) {
   await client.query('BEGIN');
   try {
+    // Transaction-local (SET LOCAL / is_local = true): both settings are gone at
+    // COMMIT or ROLLBACK and never leak into the next migration or the app.
+    await client.query(`SET LOCAL lock_timeout = ${quoteLiteral(lockTimeout)}`);
+    if (storeCode) await client.query(`SELECT set_config('app.store_code', $1, true)`, [storeCode]);
     await client.query(file.sql);
     await client.query(INSERT_LEDGER_ROW, [filename, file.checksum]);
     await client.query('COMMIT');
@@ -208,6 +261,9 @@ async function applyOne(client, filename, file) {
     throw err;
   }
 }
+
+/** SET LOCAL takes no parameters; the value is validated by resolveLockTimeout before it gets here. */
+const quoteLiteral = (s) => `'${String(s).replace(/'/g, "''")}'`;
 
 async function withLock(client, fn, log) {
   await client.query('SELECT pg_advisory_lock($1)', [LOCK_KEY]);
@@ -231,9 +287,21 @@ export async function migrate(client, { dir = DEFAULT_DIR, dryRun = false, stric
     for (const line of renameLines(report)) log(`RENAMED APPLIED FILE (would be re-executed):${line}`);
     for (const f of report.legacy.map((r) => r.filename)) log(`legacy ledger row (checksum will be backfilled on the next real run): ${f}`);
     for (const f of report.orphans) log(`${strict ? 'STRICT would REFUSE: ' : 'WARNING: '}${orphanLine(f)}`);
+    // A dry run writes nothing, so it stays usable as a preflight without the
+    // variable — but it says out loud that the real run would refuse (F1).
+    try {
+      const sc = resolveStoreCode();
+      log(`store code for a real run (app.store_code): ${sc} · lock_timeout: ${resolveLockTimeout()}`);
+    } catch (err) {
+      log(`STORE_CODE: ${err.message}`);
+    }
     log(formatSummary(report, { dryRun: true }));
     return report;
   }
+
+  // Fail-closed BEFORE anything is written, ledger backfill included (review F1/F7).
+  const storeCode = resolveStoreCode();
+  const lockTimeout = resolveLockTimeout();
 
   return withLock(client, async () => {
     await ensureLedger(client);
@@ -267,10 +335,11 @@ export async function migrate(client, { dir = DEFAULT_DIR, dryRun = false, stric
     for (const f of report.orphans) log(`WARNING: ${orphanLine(f)}`);
 
     let ran = 0;
+    if (report.pending.length) log(`store code for this run (app.store_code): ${storeCode} · lock_timeout: ${lockTimeout}`);
     for (const f of report.pending) {
       log(`Running migration: ${f}`);
       try {
-        await applyOne(client, f, report.files.get(f));
+        await applyOne(client, f, report.files.get(f), { storeCode, lockTimeout });
       } catch (err) {
         throw new MigrationError(`Failed: ${f} — ${err.message}`);
       }
@@ -348,7 +417,8 @@ const USAGE = `usage: node server/migrations/run.js [--dry-run [--allow-pending]
   --dry-run        report only, no writes; exit 1 unless the database is current
   --allow-pending  (dry-run only) pending files do not fail the dry run — the pre-apply rehearsal
   --strict         orphan ledger rows refuse instead of warn (= STRICT_MIGRATIONS=1)
-  env: DATABASE_URL (required), MIGRATIONS_DIR, STRICT_MIGRATIONS=1 (= --strict), MIGRATE_SSL=0|1`;
+  env: DATABASE_URL (required), STORE_CODE (required for a real run, ^[A-Z0-9]{2,4}$),
+       MIGRATIONS_DIR, STRICT_MIGRATIONS=1 (= --strict), MIGRATION_LOCK_TIMEOUT (default 5s), MIGRATE_SSL=0|1`;
 
 function parseArgs(argv) {
   const opts = {

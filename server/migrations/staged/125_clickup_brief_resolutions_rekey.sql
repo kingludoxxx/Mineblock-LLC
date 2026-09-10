@@ -1,4 +1,4 @@
--- staged/123_clickup_brief_resolutions_rekey.sql — Lane C (S1-1). CONTRACT STEP, STAGED.
+-- staged/125_clickup_brief_resolutions_rekey.sql — Lane C (S1-1). CONTRACT STEP, STAGED.
 --
 -- NOT auto-run: server/src/server.js and server/migrations/run.js read only
 -- *.sql directly under server/migrations/. Move this file there (keeping its
@@ -22,7 +22,7 @@ BEGIN
    WHERE conrelid = 'clickup_brief_resolutions'::regclass AND contype = 'p';
   IF pk IS NOT NULL THEN
     EXECUTE format('ALTER TABLE clickup_brief_resolutions DROP CONSTRAINT %I', pk);
-    RAISE NOTICE '[123] dropped primary key % on clickup_brief_resolutions', pk;
+    RAISE NOTICE '[125] dropped primary key % on clickup_brief_resolutions', pk;
   END IF;
 END $$;
 
