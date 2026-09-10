@@ -355,26 +355,40 @@ export const refresh = async (req, res, next) => {
       return res.status(401).json({ error: 'User not found' });
     }
 
-    // New tokens
-    const accessToken = signAccessToken({
-      userId: user.id,
-      email: user.email,
-      roles: user.roles,
-    });
+    // HUB SSO: a session that STARTED at the hub keeps its marks across rotation (services/hubSession.js).
+    // Without this the rotated token is unmarked, middleware/auth.js puts it back on the 5-minute cached
+    // path, and revoking the session stops taking effect on the next request — the hole S1-4's A4 line exists
+    // to close, re-opened ~15 minutes after every hop. The claim is read off the REFRESH token, which was
+    // just VERIFIED above (the access cookie is usually gone by then: its maxAge is 15 minutes).
+    // A local login carries no such claim and is untouched by everything below.
+    const isHubSso = decoded.hub_sso === true;
 
     const newTokenId = crypto.randomUUID();
     const newRefreshToken = signRefreshToken({
       userId: user.id,
       tokenId: newTokenId,
+      ...(isHubSso ? { hub_sso: true } : {}),
     });
 
     const ip = req.ip;
     const userAgent = req.headers['user-agent'] || '';
-    await createSession(user.id, newRefreshToken, ip, userAgent);
+    // The session row FIRST for a hub session: its id is the `sid` that makes the token revocable per request.
+    // It must be the NEW row — the one this refresh rotated in — because the old row was just deleted.
+    const newSession = await createSession(user.id, newRefreshToken, ip, userAgent);
 
-    // Cache new session in Redis
-    const accessHash = crypto.createHash('sha256').update(accessToken).digest('hex');
-    await cacheSession(accessHash, user);
+    const accessToken = signAccessToken({
+      userId: user.id,
+      email: user.email,
+      roles: user.roles,
+      ...(isHubSso ? { hub_sso: true, sid: newSession.id } : {}),
+    });
+
+    // Cache new session in Redis — never for a hub-SSO session (middleware/auth.js skips the read for
+    // these tokens, so a cached copy would be dead weight, and writing one is the habit that caused the bug).
+    if (!isHubSso) {
+      const accessHash = crypto.createHash('sha256').update(accessToken).digest('hex');
+      await cacheSession(accessHash, user);
+    }
 
     setAccessCookie(res, accessToken);
     setRefreshCookie(res, newRefreshToken);

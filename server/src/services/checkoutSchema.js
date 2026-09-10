@@ -24,10 +24,136 @@ export function ensureCheckoutTables() {
   return tablesReadyPromise;
 }
 
+// ---------------------------------------------------------------------------
+// ensureTable — CREATE TABLE IF NOT EXISTS is CREATE-ONLY.
+//
+// A table that predates a column never gains it: the column list inside
+// `CREATE TABLE IF NOT EXISTS` is silently ignored the moment the table exists,
+// so the next `CREATE INDEX ... ON co_sessions (last_failed_payment_id)` throws
+// SQLSTATE 42703 and every consumer of the money path 500s. That is R6's mirror
+// image — a migration that cannot run on an empty database is a bug, and an
+// ensure that cannot run on an EXISTING one is the same bug facing the other way.
+//
+// So every declared column is also emitted as an additive
+// `ALTER TABLE … ADD COLUMN IF NOT EXISTS`, generated FROM THE SAME DDL TEXT that
+// creates the table. Generated, not hand-listed: a hand-listed set drifts the
+// first time somebody adds a column to the CREATE TABLE and forgets the ALTER,
+// which is exactly how this bug was born.
+//
+// What is and is not carried onto an existing table:
+//   columns          yes — type + DEFAULT, so a NOT NULL DEFAULT column is backfilled
+//   NOT NULL         yes, but GUARDED: only when the column holds no NULLs. Re-adding a
+//                    NOT NULL column with no default to a table that already has rows
+//                    cannot be marked NOT NULL (23502); the column still gets added, so
+//                    consumers stop throwing 42703, and a later ensure finishes the job
+//                    once the offending rows are gone.
+//   UNIQUE           yes — as `CREATE UNIQUE INDEX IF NOT EXISTS <table>_<cols>_key`,
+//                    which is Postgres's own auto-name for the constraint index, so on a
+//                    freshly created table the statement is a no-op. This is what keeps
+//                    the money invariants (co_orders.idempotency_key, the upsell TRIPLE)
+//                    true on a repaired database, not only a new one.
+//   PRIMARY KEY      no. A table that exists already has its primary key, and inventing
+//                    one on live rows is not a repair. Left to a migration.
+// ---------------------------------------------------------------------------
+
+/** Split a DDL column list on top-level commas (NUMERIC(12,2) must not split). */
+function splitTopLevel(body) {
+  const out = [];
+  let depth = 0;
+  let cur = '';
+  for (const ch of body) {
+    if (ch === '(') depth += 1;
+    else if (ch === ')') depth -= 1;
+    if (ch === ',' && depth === 0) { out.push(cur); cur = ''; continue; }
+    cur += ch;
+  }
+  out.push(cur);
+  return out.map((s) => s.trim().replace(/\s+/g, ' ')).filter(Boolean);
+}
+
+const CONSTRAINT_WORD = /^(PRIMARY|UNIQUE|FOREIGN|CHECK|CONSTRAINT|EXCLUDE)$/i;
+
+/** Parse `CREATE TABLE IF NOT EXISTS t ( … )` into { table, columns[], uniques[] }. */
+export function parseTableDdl(ddl) {
+  const head = ddl.match(/CREATE TABLE IF NOT EXISTS\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(/i);
+  if (!head) throw new Error('ensureTable: not a CREATE TABLE IF NOT EXISTS statement');
+  const open = ddl.indexOf('(', head.index);
+  const close = ddl.lastIndexOf(')');
+  if (open < 0 || close < open) throw new Error('ensureTable: unbalanced DDL');
+  const table = head[1];
+  const columns = [];
+  const uniques = [];
+  for (const def of splitTopLevel(ddl.slice(open + 1, close))) {
+    const name = def.split(' ')[0];
+    if (CONSTRAINT_WORD.test(name)) {
+      const u = def.match(/^UNIQUE\s*\(([^)]*)\)$/i);
+      if (u) uniques.push(u[1].split(',').map((c) => c.trim()));
+      continue;
+    }
+    const rest = def.slice(name.length).trim();
+    const notNull = /\bNOT NULL\b/i.test(rest);
+    if (/\bUNIQUE\b/i.test(rest)) uniques.push([name]);
+    // Type + DEFAULT only. NOT NULL is applied separately (guarded); PRIMARY KEY and
+    // UNIQUE are constraints an existing table already owns or gets as an index below.
+    const type = rest
+      .replace(/\bPRIMARY KEY\b/gi, '')
+      .replace(/\bNOT NULL\b/gi, '')
+      .replace(/\bUNIQUE\b/gi, '')
+      .replace(/\s+/g, ' ')
+      .trim();
+    columns.push({ name, type, notNull });
+  }
+  return { table, columns, uniques };
+}
+
+/**
+ * Run a CREATE TABLE IF NOT EXISTS, then make an already-existing table match the
+ * columns that DDL declares. Idempotent: on a table that is already correct every
+ * statement below is a no-op.
+ */
+async function ensureTable(ddl) {
+  await pgQuery(ddl);
+  const { table, columns, uniques } = parseTableDdl(ddl);
+
+  const existing = await pgQuery(
+    `SELECT column_name, is_nullable FROM information_schema.columns
+      WHERE table_schema = current_schema() AND table_name = $1`,
+    [table],
+  );
+  const nullability = new Map(existing.map((r) => [r.column_name, r.is_nullable]));
+
+  for (const col of columns) {
+    if (!nullability.has(col.name)) {
+      await pgQuery(`ALTER TABLE ${table} ADD COLUMN IF NOT EXISTS ${col.name} ${col.type}`);
+    }
+  }
+
+  // NOT NULL, only where it is missing AND can be taken without a 23502. The IF NOT EXISTS
+  // probe is what keeps this off the hot path: on a healthy table nothing here runs at all.
+  for (const col of columns) {
+    if (!col.notNull) continue;
+    if (nullability.get(col.name) === 'NO') continue; // already NOT NULL — no scan, no statement
+    await pgQuery(`
+      DO $ensure$
+      BEGIN
+        IF NOT EXISTS (SELECT 1 FROM ${table} WHERE ${col.name} IS NULL) THEN
+          ALTER TABLE ${table} ALTER COLUMN ${col.name} SET NOT NULL;
+        END IF;
+      END
+      $ensure$;
+    `);
+  }
+
+  for (const cols of uniques) {
+    const idx = `${table}_${cols.join('_')}_key`; // Postgres's own name for the constraint index
+    await pgQuery(`CREATE UNIQUE INDEX IF NOT EXISTS ${idx} ON ${table} (${cols.join(', ')})`);
+  }
+}
+
 async function createTables() {
   // The spine of the money path. `status`: 'processing' = payment INTENT only;
   // 'paid' = money moved. Every revenue query filters on 'paid'.
-  await pgQuery(`
+  await ensureTable(`
     CREATE TABLE IF NOT EXISTS co_sessions (
       id TEXT PRIMARY KEY,
       funnel_id TEXT,
@@ -69,7 +195,7 @@ async function createTables() {
 
   // Per-session event trail (created, settled, upsell shown, …). Analytics
   // side of the line: writes are non-fatal to the money path.
-  await pgQuery(`
+  await ensureTable(`
     CREATE TABLE IF NOT EXISTS co_events (
       id BIGSERIAL PRIMARY KEY,
       session_id TEXT NOT NULL,
@@ -86,7 +212,7 @@ async function createTables() {
   // Orders written by settlement. idempotency_key UNIQUE is the exactly-once
   // gate: the webhook, the sweep and an operator retry can all race the same
   // write and the database arbitrates — never read-then-write.
-  await pgQuery(`
+  await ensureTable(`
     CREATE TABLE IF NOT EXISTS co_orders (
       id TEXT PRIMARY KEY,
       session_id TEXT NOT NULL,
@@ -133,7 +259,7 @@ async function createTables() {
   // create a second Shopify refund for the same gateway refund ref. status:
   // 'reflected' (done) | 'needs_reconcile' (Shopify call failed — a human owns
   // it; never auto-retried, matching the order-create stance).
-  await pgQuery(`
+  await ensureTable(`
     CREATE TABLE IF NOT EXISTS co_shopify_refunds (
       session_id TEXT NOT NULL,
       ref TEXT NOT NULL,
@@ -150,7 +276,7 @@ async function createTables() {
 
   // Upsell offer definitions. variant_id '' = "charge whatever the on-page
   // selection control resolves to" (reference semantics).
-  await pgQuery(`
+  await ensureTable(`
     CREATE TABLE IF NOT EXISTS co_upsells (
       id TEXT PRIMARY KEY,
       funnel_id TEXT,
@@ -167,7 +293,7 @@ async function createTables() {
   // One row per upsell charge ATTEMPT — accept AND decline. Uniqueness on the
   // TRIPLE (session, offer, charge), never the pair: a $0 decline marker
   // written pair-unique would get settled/dunned/refund-routed as real money.
-  await pgQuery(`
+  await ensureTable(`
     CREATE TABLE IF NOT EXISTS co_upsell_charges (
       id TEXT PRIMARY KEY,
       session_id TEXT NOT NULL,
@@ -212,7 +338,7 @@ async function createTables() {
 
   // Raw inbound gateway webhooks, for replay and forensics. (gateway, id) PK
   // makes intake idempotent: a replayed event upserts, never duplicates.
-  await pgQuery(`
+  await ensureTable(`
     CREATE TABLE IF NOT EXISTS co_webhook_events (
       gateway TEXT NOT NULL,
       id TEXT NOT NULL,
@@ -234,7 +360,7 @@ async function createTables() {
   // Per-funnel gateway credentials (operator data). Secret values inside
   // `config` are AES-256-GCM ciphertext (gatewayConfigs.js); reads only ever
   // surface `*_set` booleans.
-  await pgQuery(`
+  await ensureTable(`
     CREATE TABLE IF NOT EXISTS co_gateway_configs (
       funnel_id TEXT NOT NULL,
       gateway TEXT NOT NULL,
@@ -246,7 +372,7 @@ async function createTables() {
 
   // Real money the system could not attribute to a session — an operator
   // queue, never a silent drop. PK on the webhook id keeps it idempotent.
-  await pgQuery(`
+  await ensureTable(`
     CREATE TABLE IF NOT EXISTS co_unmatched_payments (
       webhook_id TEXT PRIMARY KEY,
       gateway TEXT,
