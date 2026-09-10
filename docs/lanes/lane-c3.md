@@ -1,4 +1,4 @@
-# Lane handoff — C3 (store identity in the migration ledger, the Puure gate)   last session 2026-09-10   commit <this branch's HEAD>
+# Lane handoff — C3 (store identity in the migration ledger, the Puure gate)   last session 2026-09-10   commit `0e40bcd`
 
 Worktree `/Users/ludo/wt-c3-identity`, branch `day2/c3-identity`, off `hub/main` `64a40d8`. Nothing pushed,
 nothing deployed, no Render / Shopify / Whop / Atlas / R2 call. Local Postgres only.
