@@ -38,7 +38,17 @@ test('A1: lane migration files exist, are numbered 123+, are registered in order
   for (const a of ['120_create_product_profiles.sql', '121_creative_analysis_route_columns.sql', '122_creative_analysis_fresh_shape.sql']) {
     assert.ok(runOrder.indexOf(a) < first, `${a} (Lane A) must run before Lane C's files`);
   }
-  assert.equal(runOrder.length - files.length, runOrder.indexOf(files[0]), 'Lane C files must be the LAST entries of order.json');
+  // Merge-time relaxation (integrator, 2026-09-10): the lane asserted its files were the LAST
+  // entries of order.json. Once a LATER lane appends its own migration (Lane E's 126) that is
+  // false by design. The invariant that survives a merge: Lane C's files are CONTIGUOUS, and
+  // everything listed after them is a strictly HIGHER-numbered HUB migration (appended after,
+  // never inserted before Lane C's).
+  const idxs = files.map((f) => runOrder.indexOf(f)).sort((a, b) => a - b);
+  assert.deepEqual(idxs, idxs.map((_, i) => idxs[0] + i), 'Lane C files must be contiguous in order.json');
+  const lastC = Number(files[files.length - 1].slice(0, 3));
+  for (const later of runOrder.slice(idxs[idxs.length - 1] + 1)) {
+    assert.ok(Number(later.slice(0, 3)) > lastC, `${later} is listed after Lane C's files but is not a later HUB migration`);
+  }
   // No duplicate entries and every .sql on disk is listed (run.js refuses otherwise).
   assert.equal(new Set(runOrder).size, runOrder.length, 'duplicate entry in order.json');
   for (const f of rootSql) assert.ok(runOrder.includes(f), `${f} on disk but not in order.json`);

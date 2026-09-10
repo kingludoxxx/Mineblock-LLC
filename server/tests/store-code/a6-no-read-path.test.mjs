@@ -14,11 +14,18 @@ import { REPO_ROOT, MIGRATIONS_DIR } from './_db.mjs';
 
 const BASE = process.env.LANE_BASE_COMMIT
   || execFileSync('git', ['merge-base', 'HEAD', 'hub/main'], { cwd: REPO_ROOT, encoding: 'utf8' }).trim();
+// Merge-time addition (integrator, 2026-09-10): once hub/main CONTAINS the lane,
+// merge-base(HEAD, hub/main) === HEAD, the diff is empty and the guard can no longer
+// see the lane at all. LANE_HEAD_COMMIT lets it be evaluated over the lane's own range
+// (BASE..<lane merge commit>) after the merge. Nothing it forbids has changed.
+const LANE_HEAD = process.env.LANE_HEAD_COMMIT || 'HEAD';
 const FORBIDDEN = [/^server\/src\//, /^client\//, /^server\/migrations\/0\d\d/, /^server\/migrations\/(1[01]\d|12[0-2])_/];
 
 test('A6: only migrations/scripts/tests/docs changed since the lane base', () => {
-  const out = execFileSync('git', ['diff', '--name-only', BASE], { cwd: REPO_ROOT, encoding: 'utf8' });
-  const untracked = execFileSync('git', ['ls-files', '--others', '--exclude-standard'], { cwd: REPO_ROOT, encoding: 'utf8' });
+  const out = execFileSync('git', ['diff', '--name-only', BASE, LANE_HEAD], { cwd: REPO_ROOT, encoding: 'utf8' });
+  const untracked = LANE_HEAD === 'HEAD'
+    ? execFileSync('git', ['ls-files', '--others', '--exclude-standard'], { cwd: REPO_ROOT, encoding: 'utf8' })
+    : '';
   const files = [...out.split('\n'), ...untracked.split('\n')].map((s) => s.trim()).filter(Boolean);
   assert.ok(files.length > 0, 'expected the lane to have changed something');
   const bad = files.filter((f) => FORBIDDEN.some((rx) => rx.test(f)));
