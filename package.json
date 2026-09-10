@@ -8,6 +8,7 @@
         "start": "PLAYWRIGHT_BROWSERS_PATH=./playwright-browsers node server/src/server.js",
         "dev": "PLAYWRIGHT_BROWSERS_PATH=./playwright-browsers node --watch server/src/server.js",
         "migrate": "node server/migrations/run.js",
+        "migrate:dry-run": "node server/migrations/run.js --dry-run",
         "seed": "node server/seeds/run.js",
         "build": "cd client && npm run build && node scripts/setup-ytdlp.js",
         "sync:lasso": "node server/scripts/sync-lasso.mjs",

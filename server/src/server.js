@@ -4,7 +4,6 @@ import pool, { testConnection } from './config/db.js';
 import { pgQuery } from './db/pg.js';
 import redis from './db/redis.js';
 import logger from './utils/logger.js';
-import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { hashPassword } from './utils/hash.js';
@@ -14,6 +13,7 @@ import {
   requestShutdown as requestStaticsQueueShutdown,
 } from './workers/staticsQueueWorker.js';
 import { closeBrowser as closeThumbBrowser } from './routes/pageThumbnails.js';
+import { checkPending } from '../migrations/run.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -26,66 +26,18 @@ if (!process.env.PLAYWRIGHT_BROWSERS_PATH) {
 }
 
 // ---------------------------------------------------------------------------
-// Auto-migration (reads .sql files from server/migrations/)
-// Uses the legacy pg Pool for migrations since it supports transactional DDL
-// with explicit BEGIN/COMMIT via client.query.
+// Migration ledger check — READ-ONLY (S0b-3).
+// server/migrations/run.js is the ONLY writer of `_migrations`. The server no
+// longer applies migrations at boot: it compares the ledger with
+// server/migrations/order.json and reports. With STRICT_MIGRATIONS=1 a pending
+// or checksum-mismatched migration refuses boot; otherwise it is logged so a
+// developer can still work against a partial database.
+//   Apply:   npm run migrate          Preview:  npm run migrate:dry-run
 // ---------------------------------------------------------------------------
-async function runMigrations() {
+async function checkMigrations() {
   const client = await pool.connect();
   try {
-    await client.query(`
-      CREATE TABLE IF NOT EXISTS _migrations (
-        id SERIAL PRIMARY KEY,
-        filename VARCHAR(255) UNIQUE NOT NULL,
-        executed_at TIMESTAMPTZ DEFAULT NOW()
-      )
-    `);
-    const { rows } = await client.query('SELECT filename FROM _migrations');
-    const executed = new Set(rows.map(r => r.filename));
-
-    const migrationsDir = path.resolve(__dirname, '../migrations');
-    const files = fs.readdirSync(migrationsDir).filter(f => f.endsWith('.sql')).sort();
-    const skipped = [];
-
-    for (const file of files) {
-      if (executed.has(file)) continue;
-      const sql = fs.readFileSync(path.join(migrationsDir, file), 'utf-8');
-      logger.info(`Running migration: ${file}`);
-      await client.query('BEGIN');
-      try {
-        await client.query(sql);
-        await client.query('INSERT INTO _migrations (filename) VALUES ($1)', [file]);
-        await client.query('COMMIT');
-        logger.info(`Migration complete: ${file}`);
-      } catch (err) {
-        await client.query('ROLLBACK');
-        // 42P01 = undefined_table. Several legacy migrations are DATA fixes
-        // (UPDATE/DELETE/ALTER) against tables this app creates LAZILY at
-        // first request (e.g. brief_pipeline_*), never via a migration. On a
-        // fresh database those tables do not exist yet, so the statement threw
-        // and — because the whole run is sequential — every LATER migration was
-        // skipped, including the permission grants this dashboard needs. The
-        // result was a server that booted "healthy" with an empty schema.
-        // Skipping is safe for exactly this class: with no table there is no
-        // data to fix, and the lazy creator builds the CURRENT shape.
-        // 42703 = undefined_column, same story for a column added lazily.
-        // GUARD: only ever skip a migration that creates NO schema of its own.
-        // If a file contains CREATE TABLE/INDEX/TYPE or ADD COLUMN, a failure
-        // is a genuine schema problem and must still halt the run — masking
-        // that is exactly how this repo ended up booting on an empty database.
-        const isDataOnly = !/\b(CREATE\s+(TABLE|INDEX|UNIQUE\s+INDEX|TYPE|SCHEMA)|ADD\s+COLUMN)\b/i.test(sql);
-        if ((err.code === '42P01' || err.code === '42703') && isDataOnly) {
-          skipped.push({ file, reason: err.message });
-          logger.warn(`Migration SKIPPED (data-only fix against a lazily-created object): ${file} — ${err.message}`);
-          await client.query('INSERT INTO _migrations (filename) VALUES ($1)', [file]);
-          continue;
-        }
-        throw err;
-      }
-    }
-    if (skipped.length) {
-      logger.warn(`${skipped.length} migration(s) skipped as no-ops on this database: ${skipped.map((s) => s.file).join(', ')}`);
-    }
+    return await checkPending(client, { dir: path.resolve(__dirname, '../migrations') });
   } finally {
     client.release();
   }
@@ -162,29 +114,33 @@ const start = async () => {
     logger.warn(`Redis connection failed: ${err.message}. Continuing without Redis.`);
   }
 
-  // 4. Run migrations & seeds.
+  // 4. Check migrations (read-only) & run seeds.
   // Seeds are deliberately OUTSIDE the migration try: they were previously in
   // the same block, so one failing migration also skipped role/superadmin
   // seeding and produced a running server with no way to log in.
   let migrationsOk = true;
   try {
-    await runMigrations();
-    logger.info('Migrations complete');
+    const report = await checkMigrations();
+    if (report.clean) {
+      logger.info(`Migrations: ledger matches order.json (${report.applied.length} applied, 0 pending, 0 mismatches`
+        + (report.legacy.length ? `, ${report.legacy.length} legacy row(s) awaiting checksum backfill by npm run migrate)` : ')'));
+    } else {
+      migrationsOk = false;
+      // A half-migrated schema is a silent data-integrity hazard: the app boots,
+      // the health check goes green, and features whose tables/permissions live
+      // in the pending migrations fail at runtime with confusing errors.
+      logger.error(`MIGRATIONS NOT APPLIED: ${report.pending.length} pending [${report.pending.join(', ')}], `
+        + `${report.mismatches.length} checksum mismatch(es) [${report.mismatches.map((m) => m.filename).join(', ')}]. `
+        + 'This server does not apply migrations at boot — run `npm run migrate` against this database.');
+      if (process.env.STRICT_MIGRATIONS === '1') {
+        logger.error('STRICT_MIGRATIONS=1 — refusing to start with pending or mismatched migrations.');
+        process.exit(1);
+      }
+    }
   } catch (err) {
     migrationsOk = false;
-    // A half-migrated schema is a silent data-integrity hazard: the app boots,
-    // the health check goes green, and features whose tables/permissions live
-    // in the skipped migrations fail at runtime with confusing errors. In
-    // production that must stop the deploy; locally, warn and continue so a
-    // developer can still work against a partial DB.
-    logger.error(`MIGRATIONS FAILED: ${err.message}`);
-    logger.error('SCHEMA IS INCOMPLETE — features whose tables or permissions live in the '
-      + 'skipped migrations will fail at runtime. Fix the migration and redeploy.');
-    // Refusing to boot is the *correct* posture for a half-migrated schema, but
-    // it is opt-in (STRICT_MIGRATIONS=1): this catch also sees transient errors
-    // (a DB connection blip at migration time), and turning those into a failed
-    // deploy would be a worse outage than the one it prevents. Enable it once
-    // the migration set is known clean on the target database.
+    // Also reached on a broken/missing order.json or a DB blip at check time.
+    logger.error(`MIGRATION CHECK FAILED: ${err.message}`);
     if (process.env.STRICT_MIGRATIONS === '1') {
       logger.error('STRICT_MIGRATIONS=1 — refusing to start.');
       process.exit(1);

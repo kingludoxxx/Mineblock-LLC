@@ -1449,8 +1449,11 @@ router.get('/admin-pgdump-data-status', (req, res) => {
   return res.json(job);
 });
 
-// ─── /admin-init-puure-schema — run all SQL migrations against Puure DB ─
-// Idempotent: uses _migrations tracking table like npm run migrate does.
+// ─── /admin-init-puure-schema — READ-ONLY migration report for the target DB ─
+// S0b-3: this endpoint no longer applies migrations or writes `_migrations`;
+// server/migrations/run.js is the only ledger writer. It reports what
+// `npm run migrate` would do against PUURE_DATABASE_URL (pending, checksum
+// mismatches, legacy rows), so the operator applies deliberately.
 router.post('/admin-init-puure-schema', async (req, res) => {
   const cronSecret = process.env.CRON_SECRET;
   const provided   = req.headers['x-cron-secret'];
@@ -1461,34 +1464,22 @@ router.post('/admin-init-puure-schema', async (req, res) => {
   if (!targetUrl) return res.status(400).json({ success: false, error: { message: 'PUURE_DATABASE_URL not set' } });
   try {
     const { default: pg } = await import('pg');
-    const { readdirSync, readFileSync } = await import('node:fs');
-    const path = await import('node:path');
-    const { fileURLToPath } = await import('node:url');
-    const migrationsDir = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', '..', 'migrations');
+    const { checkPending } = await import('../../migrations/run.js');
     const pool = new pg.Pool({ connectionString: targetUrl, ssl: { rejectUnauthorized: false } });
     const client = await pool.connect();
-    const result = { ran: [], skipped: [], failed: null };
-    try {
-      await client.query(`CREATE TABLE IF NOT EXISTS _migrations (id SERIAL PRIMARY KEY, filename VARCHAR(255) UNIQUE NOT NULL, executed_at TIMESTAMPTZ DEFAULT NOW())`);
-      const executed = new Set((await client.query('SELECT filename FROM _migrations')).rows.map(r => r.filename));
-      const files = readdirSync(migrationsDir).filter(f => f.endsWith('.sql')).sort();
-      for (const file of files) {
-        if (executed.has(file)) { result.skipped.push(file); continue; }
-        const sql = readFileSync(path.join(migrationsDir, file), 'utf-8');
-        try {
-          await client.query('BEGIN');
-          await client.query(sql);
-          await client.query('INSERT INTO _migrations (filename) VALUES ($1)', [file]);
-          await client.query('COMMIT');
-          result.ran.push(file);
-        } catch (err) {
-          await client.query('ROLLBACK').catch(() => {});
-          result.failed = { file, error: err.message };
-          break;
-        }
-      }
-    } finally { client.release(); await pool.end(); }
-    return res.json({ success: !result.failed, ...result });
+    let report;
+    try { report = await checkPending(client); } finally { client.release(); await pool.end(); }
+    return res.json({
+      success: report.clean,
+      readOnly: true,
+      applied: report.applied.length,
+      pendingCount: report.pending.length,
+      pending: report.pending,
+      mismatches: report.mismatches,
+      legacyRows: report.legacy.length,
+      orphans: report.orphans,
+      note: 'This endpoint no longer applies migrations. Run `npm run migrate` with DATABASE_URL pointing at the target database.',
+    });
   } catch (err) {
     console.error('[admin-init-puure-schema] error:', err);
     return res.status(500).json({ success: false, error: { message: err.message } });
