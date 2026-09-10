@@ -288,7 +288,8 @@ export async function migrate(client, { dir = DEFAULT_DIR, dryRun = false, stric
 /**
  * Mark migrations as applied WITHOUT running them (for a database whose schema
  * arrived by pg_dump). Validates every name against order.json; refuses the
- * whole batch on an unknown name. Records checksum + applied_order like a real run.
+ * whole batch on an unknown name. Records checksum + applied_order like a real run,
+ * after backfilling any legacy rows so history order is preserved.
  */
 export async function markApplied(client, filenames, { dir = DEFAULT_DIR, dryRun = false, log = console.log } = {}) {
   if (!Array.isArray(filenames) || filenames.length === 0) throw new MigrationError('markApplied: filenames[] is required');
@@ -296,13 +297,25 @@ export async function markApplied(client, filenames, { dir = DEFAULT_DIR, dryRun
   const unknown = filenames.filter((f) => !order.includes(f));
   if (unknown.length) throw new MigrationError(`Unknown migration filename(s) — nothing was written: ${unknown.join(', ')}`);
   const files = readMigrationFiles(dir, filenames);
-  const ledger = await readLedger(client);
-  const present = new Set(ledger.rows.map((r) => r.filename));
-  const toInsert = filenames.filter((f) => !present.has(f));
-  const alreadyPresent = filenames.filter((f) => present.has(f));
-  if (dryRun) return { dryRun: true, inserted: [], wouldInsert: toInsert, alreadyPresent };
+  const split = (ledgerRows) => {
+    const present = new Set(ledgerRows.map((r) => r.filename));
+    return { toInsert: filenames.filter((f) => !present.has(f)), alreadyPresent: filenames.filter((f) => present.has(f)) };
+  };
+  if (dryRun) {
+    const { toInsert, alreadyPresent } = split((await readLedger(client)).rows);
+    return { dryRun: true, inserted: [], wouldInsert: toInsert, alreadyPresent };
+  }
   return withLock(client, async () => {
     await ensureLedger(client);
+    // P2-1: on a legacy ledger (filename-only rows) backfill FIRST, exactly as a real
+    // run does, so the marked file continues the history (N+1) instead of taking
+    // applied_order 1 and pushing the real history to 2..N+1 on the next run.
+    const report = await computeReport(client, { dir });
+    if (report.legacy.length) {
+      const n = await backfillLegacy(client, report);
+      log(`Backfilled checksum + applied_order for ${n} legacy ledger row(s) before marking`);
+    }
+    const { toInsert, alreadyPresent } = split((await readLedger(client)).rows);
     await client.query('BEGIN');
     try {
       for (const f of toInsert) await client.query(INSERT_LEDGER_ROW, [f, files.get(f).checksum]);

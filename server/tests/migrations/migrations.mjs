@@ -4,7 +4,7 @@
 // against databases this file creates on the local Postgres 16 server
 // (host 127.0.0.1, port 5433, user postgres, trust). Nothing here talks to a
 // live service. Databases created: lane_migrations, lane_migrations_legacy,
-// lane_migrations_068, lane_a2_dry, lane_a2_ca, lane_a2_mbcopy (TEMPLATE mineblock_copy, only if it exists).
+// lane_migrations_068, lane_a2_mark, lane_a2_dry, lane_a2_ca, lane_a2_mbcopy (TEMPLATE mineblock_copy, only if it exists).
 //
 // Acceptance lines (brief LANE-A-MIGRATIONS.md):
 //   A1 empty DB migrates 001→N with 0 errors, in the order of order.json
@@ -240,6 +240,24 @@ ok(r3d.code === 0 && /pending:\s*0\b/.test(r3d.out) && /mismatches:\s*0\b/.test(
   'A3.10 --dry-run afterwards: 0 pending, 0 mismatches, exit 0', tail(r3d.out, 500));
 const r3c = runMigrate({ DATABASE_URL: DB3 });
 ok(r3c.code === 0 && snapshot(await ledger(DB3)) === snapshot(led3), 'A3.11 backfill happened ONCE: a further run leaves every row byte-identical', tail(r3c.out, 300));
+
+// A3.12 (review P2-1): --mark-applied on a LEGACY ledger must backfill the legacy
+// rows first, so history order is preserved (legacy 1..N, marked file N+1) instead
+// of the marked file taking applied_order 1 and the real history becoming 2..N+1.
+{
+  const DBM = dbUrl('lane_a2_mark');
+  await recreate('lane_a2_mark');
+  const sql = postgres(DBM, { ssl: false, onnotice: () => {} });
+  await sql.unsafe(`CREATE TABLE _migrations (id SERIAL PRIMARY KEY, filename VARCHAR(255) UNIQUE NOT NULL, executed_at TIMESTAMPTZ DEFAULT NOW())`);
+  for (const f of manifest.slice(0, 3)) await sql.unsafe(`INSERT INTO _migrations (filename) VALUES ($1)`, [f]);
+  await sql.end();
+  const rm = runMigrate({ DATABASE_URL: DBM }, ['--mark-applied', manifest[3]]);
+  const lm = (await ledger(DBM)) || [];
+  const want = manifest.slice(0, 4).map((f, i) => `${f}|${i + 1}`).join(',');
+  const got = lm.map((r) => `${r.filename}|${r.applied_order}`).join(',');
+  ok(rm.code === 0 && got === want && lm.every((r) => typeof r.checksum === 'string' && r.checksum.length === 64),
+    `A3.12 --mark-applied on a legacy ledger: legacy rows backfilled FIRST (applied_order 1..3), marked file = 4, every row checksummed`, `exit=${rm.code} got: ${got}\n${tail(rm.out, 300)}`);
+}
 
 // ═══════════════════════════════════════════════════════════════════════════
 // A4 — ONE ledger writer (grep)
