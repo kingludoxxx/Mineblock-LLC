@@ -5216,3 +5216,60 @@ Number; postgres.js returns int8 as a string, which made one path's id !== anoth
 for the same row and produced a test that passed for the wrong reason.
 STATUS: COMPLETE
 ---
+
+---
+TIMESTAMP: 2026-09-11 03:55
+TASK: S4-SB2 — close the adversarial review of the Store Brain (REVIEW-S4-SB.md: BLOCK, 3xP0 + 4xP1 + P2)
+BUILT: Resumed a stalled lane (two half-edited files, no working code) on day2/s4-brain2 over
+a680936. P0-1: insights are now embedded into kb_embeddings.insight_id — on approve, plus a
+bounded on-demand backfill on the vector search path — so the search join stops matching zero
+rows; nothing had ever written insight_id, which made the whole approval layer invisible in
+vector mode with no error. P0-2: the per-pair service token is READ-ONLY (403
+service_read_only) on ingest/insights/extract/playbook-write/lock/unlock, and every write needs
+a session carrying brain:read / brain:write / brain:approve — three permissions split out of the
+flat brain:access by new migration 131; approved_by must be a real users row. P0-3:
+approved_only=false now requires brain:approve, decided from the credential, never the query
+string. P1-4: a real lock (PUT while locked -> 423, version does not move, new POST .../unlock
+gated on brain:approve and logged). P1-5: playbook entries may cite only APPROVED insights (422).
+P1-6: ext and body_object_key are refused (422) and the key is derived server-side against an
+anchored grammar. P1-7: r2.js reads its config at request time, the Brain refuses the shared
+fallback bucket and refuses to mirror with STORE_CODE unset, every key carries stores/<CODE>/,
+and BRAIN_SERVICE_TOKEN + the five R2_* keys got slots in render.yaml, .env.example and
+env.SB.example. P2: migration 129's EXCEPTION now wraps the whole vector block; new idempotent
+npm run brain:vector-enable for a store that gains pgvector later; brain-import counts embedding
+failures instead of swallowing them; BRAIN.md states that Render PG16 pgvector is UNPROVEN.
+TESTED: RED BEFORE GREEN throughout. The predecessor's two edits were git-stashed so every
+probe ran against a680936 exactly, using the reviewer's OWN probe scripts; all nine findings
+reproduced byte-for-byte, then the identical scripts were re-run after the fix. Migration 129's
+EXCEPTION was proved with a non-superuser role on the pgvector server (:5434): the old file
+ERRORs "permission denied to create extension" and fails the whole migration; the new one keeps
+the portable shape and a NOTICE, exit 0. brain:vector-enable was run down all four of its
+failure paths (DATABASE_URL unset, unreachable DB, server without pgvector, no kb_embeddings) —
+each exit 1 with a real reason — plus the happy path twice for idempotency. Suites: brain-routes
+92/0/1skip (58 -> 92; B10.1-B10.34 added, one per finding), brain-isolation 14/14 (ingest moved
+to a session), brain-import 18/18, brain-vector 31/0 on pgvector 0.8.0 (19 -> 31; V6, V7 added),
+migrations 76/0, sandbox 5/0 and 3/0, run-all brain/ 7 passed. 115 migrations on a fresh DB and
+on a mineblock_copy clone, both idempotent; 131 verified idempotent by re-running it by hand.
+OUTPUT: Verbatim in ~/tasks/multistore-hub/briefs/out/PROOF-S4-SB2.md. Headline before/after:
+vector mode ["document:1"] -> ["document:1","insight:1"] and type=insight [] -> ["insight:1"];
+service PATCH 200 approved_by="service" -> 403 service_read_only; PUT on a locked playbook 200
++ rewritten -> 423 with content and version unchanged; the traversal ext payload 201 with the
+escaped key -> 422 ext_not_yours; the honest key knowledge/raw/... -> stores/SA/knowledge/raw/...
+DECISIONS: DECISION MADE — migration 131 grants read + write to every role that already had
+brain, and brain:approve to NO role (SuperAdmin has it via {"*":["*"]}); the conservative
+reading of P2-14 is fewer approvers by default, with each reviewing role named deliberately.
+DECISION MADE — the store-identity read for the bucket lives in a new
+services/brain/brainBucket.js rather than in routes/brain.js, because the isolation suite's
+I1.2 greps the router and brainSearch for storeCode and must find nothing. DECISION MADE —
+r2.js keeps its legacy fallback bucket for the pre-existing callers (statics, advertorial,
+brief) and the Brain asks for isR2Configured({requireBucket:true}), so the fix has no blast
+radius outside this lane. DECISION MADE — the backfill RAISES on a provider failure rather
+than returning fewer results, because a silently incomplete index is the exact bug P0-1 is.
+CAUGHT MYSELF — an R15 grep first reported "ZERO HITS" while actually failing: zsh does not
+word-split an unquoted $FILES, so grep got one bogus filename. Re-run with an array and a
+positive control that proves the regex matches when a literal is present.
+NOT DONE, flagged for the integrator — Render PG16 pgvector is still verified NOWHERE, and it
+decides which search path production takes; and no real R2 round-trip has been watched. Both
+are called out in docs/BRAIN.md and in the proof pack.
+STATUS: COMPLETE
+---
