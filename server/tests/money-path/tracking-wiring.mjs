@@ -65,13 +65,13 @@ globalThis.fetch = async (url, init) => {
   return realFetch(url, init);
 };
 
-const { default: app } = await import('/Users/ludo/Puure-integrator/server/src/app.js');
+const { default: app } = await import(new URL('../../src/app.js', import.meta.url));
 const server = app.listen(PORT);
 await new Promise((r) => setTimeout(r, 4000));
 
 const sql = postgres(DB, { ssl: false });
-const { ensureCheckoutTables } = await import('/Users/ludo/Puure-integrator/server/src/services/checkoutSchema.js');
-const { ensureTrackingTables } = await import('/Users/ludo/Puure-integrator/server/src/services/trackingSchema.js');
+const { ensureCheckoutTables } = await import(new URL('../../src/services/checkoutSchema.js', import.meta.url));
+const { ensureTrackingTables } = await import(new URL('../../src/services/trackingSchema.js', import.meta.url));
 await ensureCheckoutTables(); await ensureTrackingTables();
 
 // ---- fixtures: funnel + page + offer product so create-session mints
@@ -156,7 +156,7 @@ async function mint(cookieVid) {
   const chg = await sql`INSERT INTO co_upsell_charges (id, session_id, offer_id, charge_id, amount, currency, status)
                         VALUES ('uc_w4', ${sid}, 'of_1', 'chg_w4', 19.00, 'USD', 'pending_settlement') RETURNING id`;
   const chargeRowId = chg[0].id;
-  const { settleUpsellCharge } = await import('/Users/ludo/Puure-integrator/server/src/services/checkoutSettle.js');
+  const { settleUpsellCharge } = await import(new URL('../../src/services/checkoutSettle.js', import.meta.url));
   const before = delivered.length;
   const r1 = await settleUpsellCharge({ chargeRowId, gatewayPaymentId: 'pay_w4', expectedSessionId: sid });
   ok(r1.ok === true && r1.settled === true, 'W4 settle ok', JSON.stringify(r1));
@@ -176,7 +176,7 @@ async function mint(cookieVid) {
 
 // W5 — null value refused
 {
-  const { fireUpsellPurchaseConversion } = await import('/Users/ludo/Puure-integrator/server/src/services/trackingService.js');
+  const { fireUpsellPurchaseConversion } = await import(new URL('../../src/services/trackingService.js', import.meta.url));
   const r = await fireUpsellPurchaseConversion('co_nonexistent', 999, null);
   ok(r.ok === false && r.reason === 'no_value', 'W5 null value refused pre-lookup', JSON.stringify(r));
 }

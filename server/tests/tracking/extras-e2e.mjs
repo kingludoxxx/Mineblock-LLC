@@ -15,7 +15,7 @@ process.env.DATABASE_URL = 'postgres://puure@127.0.0.1:5433/puure_tracking_extra
 process.env.NODE_ENV = 'development';
 process.env.JWT_ACCESS_SECRET = process.env.JWT_ACCESS_SECRET || 'dev-access-secret-change-me';
 
-const NM = '/Users/ludo/Mineblock-LLC/node_modules';
+const NM = new URL('../../../node_modules', import.meta.url).pathname.replace(/\/$/, '');
 const express = (await import(`${NM}/express/index.js`)).default;
 const jwt = (await import(`${NM}/jsonwebtoken/index.js`)).default;
 const postgres = (await import(`${NM}/postgres/src/index.js`)).default;

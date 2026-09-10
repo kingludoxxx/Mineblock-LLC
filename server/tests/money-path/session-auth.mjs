@@ -34,11 +34,11 @@ Object.assign(process.env, {
   TRACKING_SWEEPS_DISABLED: '1', DOMAIN_SWEEP_DISABLED: '1',
 });
 
-const { default: app } = await import('/Users/ludo/Puure-integrator/server/src/app.js');
+const { default: app } = await import(new URL('../../src/app.js', import.meta.url));
 const server = app.listen(PORT);
 await new Promise((r) => setTimeout(r, 4000));
 const sql = postgres(DB, { ssl: false });
-const { ensureCheckoutTables } = await import('/Users/ludo/Puure-integrator/server/src/services/checkoutSchema.js');
+const { ensureCheckoutTables } = await import(new URL('../../src/services/checkoutSchema.js', import.meta.url));
 await ensureCheckoutTables();
 
 // a PAID session with a saved PM, minted the way create-session does

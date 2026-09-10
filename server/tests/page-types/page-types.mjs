@@ -25,7 +25,7 @@ import { fileURLToPath } from 'url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '../../..');
-const NM = '/Users/ludo/Mineblock-LLC/node_modules';
+const NM = new URL('../../../node_modules', import.meta.url).pathname.replace(/\/$/, '');
 const PORT = 4024;
 const MOCK_WHOP_PORT = 4112;
 const DB = 'postgres://puure@127.0.0.1:5433/puure_pagetypes';

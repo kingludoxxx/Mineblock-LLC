@@ -15,7 +15,7 @@ import crypto from 'crypto';
 import http from 'http';
 
 const ROOT = new URL('../../..', import.meta.url).pathname.replace(/\/$/, '');
-const NM = '/Users/ludo/Mineblock-LLC/node_modules';
+const NM = new URL('../../../node_modules', import.meta.url).pathname.replace(/\/$/, '');
 const express = (await import(`${NM}/express/index.js`)).default;
 const jwt = (await import(`${NM}/jsonwebtoken/index.js`)).default;
 const postgres = (await import(`${NM}/postgres/src/index.js`)).default;

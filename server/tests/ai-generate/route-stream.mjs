@@ -19,7 +19,7 @@ process.env.AI_GENERATE_CALL_TIMEOUT_MS = '1500'; // exercise the timeout path f
 process.env.JWT_SECRET = process.env.JWT_SECRET || 'test-secret';
 process.env.JWT_REFRESH_SECRET = process.env.JWT_REFRESH_SECRET || 'test-secret-2';
 
-const NM = '/Users/ludo/Mineblock-LLC/node_modules';
+const NM = new URL('../../../node_modules', import.meta.url).pathname.replace(/\/$/, '');
 const express = (await import(`${NM}/express/index.js`)).default;
 const postgres = (await import(`${NM}/postgres/src/index.js`)).default;
 

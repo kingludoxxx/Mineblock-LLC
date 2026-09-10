@@ -12,7 +12,7 @@ process.env.DATABASE_URL = 'postgres://puure@127.0.0.1:5433/puure_shoporder';
 process.env.NODE_ENV = 'development';
 process.env.MONEY_SWEEP_DISABLED = '1';
 
-const NM = '/Users/ludo/Mineblock-LLC/node_modules';
+const NM = new URL('../../../node_modules', import.meta.url).pathname.replace(/\/$/, '');
 const express = (await import(`${NM}/express/index.js`)).default;
 
 const mod = await import('../../src/routes/shopifyVariants.js');

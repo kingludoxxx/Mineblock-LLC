@@ -17,7 +17,7 @@ process.env.NODE_ENV = 'development';
 process.env.MONEY_SWEEP_DISABLED = '1';
 process.env.JWT_ACCESS_SECRET = process.env.JWT_ACCESS_SECRET || 'dev-access-secret-change-me';
 
-const NM = '/Users/ludo/Mineblock-LLC/node_modules';
+const NM = new URL('../../../node_modules', import.meta.url).pathname.replace(/\/$/, '');
 const express = (await import(`${NM}/express/index.js`)).default;
 const jwt = (await import(`${NM}/jsonwebtoken/index.js`)).default;
 const postgres = (await import(`${NM}/postgres/src/index.js`)).default;

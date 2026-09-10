@@ -19,7 +19,7 @@ import { existsSync, statSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-const NM = '/Users/ludo/Mineblock-LLC/node_modules';
+const NM = new URL('../../../node_modules', import.meta.url).pathname.replace(/\/$/, '');
 const postgres = (await import(`${NM}/postgres/src/index.js`)).default;
 const sql = postgres(process.env.DATABASE_URL, { onnotice: () => {} });
 const q = (text, params = []) => sql.unsafe(text, params);

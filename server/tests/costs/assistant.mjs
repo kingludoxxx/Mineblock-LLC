@@ -41,7 +41,7 @@ const ok = (c, m, extra = '') => {
 };
 
 // ── scratch database ────────────────────────────────────────────────────────
-const NM = '/Users/ludo/Mineblock-LLC/node_modules';
+const NM = new URL('../../../node_modules', import.meta.url).pathname.replace(/\/$/, '');
 const postgres = (await import(`${NM}/postgres/src/index.js`)).default;
 const express = (await import(`${NM}/express/index.js`)).default;
 const jwt = (await import(`${NM}/jsonwebtoken/index.js`)).default;

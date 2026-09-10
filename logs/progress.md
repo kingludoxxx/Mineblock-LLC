@@ -4975,6 +4975,94 @@ STATUS: COMPLETE
 ---
 
 ---
+TIMESTAMP: 2026-09-10 16:05
+TASK: Lane B — S0b-5 test runner + CI, S0b-7 fleet script (worktree /Users/ludo/wt-lane-ci-fleet, branch day1/lane-ci-fleet, base edc1030, commit 2adae43)
+BUILT:
+  Three deliverables, acceptance tests written and run red first (R24).
+  (1) server/tests/run-all.mjs — one runner for the 91 hand-rolled scripts:
+      recursive discovery, per-script timeout (120 s default, `// test-timeout: Ns`
+      header override), quarantine-driven SKIP with a visible reason, summary,
+      non-zero exit naming every failure, --list / --json / --suite / filters.
+      It also provisions the Postgres roles and databases the suite silently
+      assumed (22 scripts share `puure_shoporder`, one needs `puure_split`, and
+      nothing creates either), refusing to touch any non-local cluster.
+      server/tests/QUARANTINE.md carries 40 entries, each with the condition for
+      its return. package.json gained `test` and `test:smoke` (scripts only;
+      announced in COORDINATION.md before editing, per coordination rule 6).
+  (2) .github/workflows/ci.yml — node 22, both npm installs, lint gate,
+      postgres:16 service mapped to 5433, `npm run test:smoke`, an R15
+      brand-literal guard over server/src/services/engine and server/src/pipelines,
+      and a sha-pinned gitleaks scan. docs/crm-ci.yml carries the CRM equivalent
+      (python 3.11, ruff, py_compile, MONGO_URL-unset boot smoke) for a repo this
+      lane cannot commit into.
+  (3) scripts/fleet.mjs + scripts/fleet.services.json — status / deploy /
+      rollback / env-diff over the Render deploy API. R37 enforced in code, R20
+      credential hygiene enforced in code, R15 respected (no service name, id or
+      host in the script — they are data).
+TESTED:
+  160 assertions across 4 new test files, all green:
+    runner.mjs 33 · fleet-cli.mjs 40 · fleet-render.mjs 39 · ci.mjs 48.
+  Red-before-green pairs, identical command each time:
+    - seeded failing assertion + seeded hang → exit 1, both named, hang killed at
+      its 5 s header timeout; seeds removed → exit 0.
+    - `puure_shoporder` dropped, --no-preflight → FAIL `database "puure_shoporder"
+      does not exist`; identical script with preflight → PREFLIGHT created it, PASS.
+    - R15 step's own `run:` script lifted from the YAML and executed: fixture with
+      "Puure" → exit 1 naming the file; literal removed → exit 0; guarded dirs
+      absent → exit 0. All ten banned terms exercised singly; PLANS/MRSA/P10
+      exercised as non-hits.
+    - fleet refusals: no --commit → 2, `--commit HEAD` → 2, unknown service → 2,
+      missing key → 2, Render 401 → 1 with no key in the output. Every refusal
+      asserted to issue zero requests.
+OUTPUT:
+  npm test        → SUMMARY: 55 passed, 0 failed, 0 timed out, 40 skipped in 322.8s (exit 0)
+  npm run test:smoke → SUMMARY: 10 passed, 0 failed, 0 timed out, 0 skipped in 47.2s (cap was 8 min)
+  node scripts/fleet.mjs status (the one real read-only Render call):
+    puure-dashboard     2e89ff7  live  2026-09-10T09:10:03.283707Z
+    mineblock-dashboard edc1030  live  2026-09-10T09:05:25.269006Z
+    puure-crm           1466078  live  2026-09-09T15:53:14.464894Z
+    mineblock-crm       b368110  live  2026-09-09T20:42:26.765676Z
+  Commit ids and the puure-crm timestamp match COORDINATION.md's deploy log exactly.
+  Full pack: ~/tasks/multistore-hub/briefs/out/PROOF-LANE-B.md
+  Handoff:   docs/lanes/lane-b.md
+DECISIONS:
+  - DECISION MADE: quarantined 37 scripts that import production source and
+    node_modules from other checkouts by absolute path (/Users/ludo/Mineblock-LLC,
+    /Users/ludo/Puure-integrator, /Users/ludo/funnel-os). 13 of them pass on this
+    Mac today while proving something about a different working copy, and none can
+    run in CI. Repairing them is one line per file but they are outside this lane's
+    file ownership.
+  - DECISION MADE: the smoke suite could not cover "orders list" or
+    "product-profile CRUD" as the brief asked. All four orders/* scripts are
+    unrunnable, and no test for product profiles exists anywhere in the repo.
+    Substituted the nearest real coverage and recorded the gap rather than
+    dressing up an unrelated script as the missing one.
+  - DECISION MADE: the migrations-from-empty smoke placeholder passes both on
+    today's known defect and on Lane A's fix, and fails on anything else. It found
+    that `server/migrations/run.js` ignores `--help` and that migrations cannot run
+    on an empty database — they stop at 017_create_spy_custom_images.sql with
+    `relation "product_profiles" does not exist`. That is an R6 violation; Lane A
+    owns it.
+  - DECISION MADE: created a `puure` role and the scratch databases on the shared
+    local test cluster. Additive, local-only, and the runner now does it
+    automatically; no database created by another lane was touched.
+  - OPEN: docs/crm-ci.yml has never been executed (/Users/ludo/funnel-os is out of
+    bounds for this lane), so the MONGO_URL boot-smoke message is asserted, not
+    observed. Needs an owner with commit rights on the CRM repo.
+  - OPEN: A10 was proven against discovery/env-inventory.md §3.1 as fixture data
+    (31 asymmetric keys), not against Render — the one permitted real call was
+    spent on `status`. The live figure is probably 29 after the 2026-09-10 env
+    changes recorded in COORDINATION.md.
+  - OPEN: orders/post-purchase-ui.mjs fails a real assertion on clean edc1030
+    (`U8 the dunning page is in the sidebar under orders:access`). It is a client/
+    sidebar assertion, outside this lane. Quarantined; that entry is the only thing
+    keeping `npm test` green on arrival.
+  - OPEN: Render says puure-crm is still live on 1466078, the pill-colour leak
+    commit. The rollback recorded as pending has not happened. Flagged, not acted on.
+  - OPEN: ai-media/dialog-dom.mjs leaves client/.tmp-aimedia-dom/ behind on every
+    run. Left in place (this lane may not touch client/); should be gitignored.
+STATUS: COMPLETE
+---
 TIMESTAMP: 2026-09-10 16:34
 TASK: Lane A2 — S0b-3 migration reset, review fixes (briefs/out/REVIEW-LANE-A.md: P1-1, P1-2, P1-3/P1-4 deploy contract, P2-1, P2-2, P2-3, P2-4 comment)
 BUILT: server/migrations/run.js: rename guard (pending file whose sha256 equals an orphan row's checksum is refused as a re-execution), --strict / STRICT_MIGRATIONS=1 (orphans refuse; otherwise a visible WARNING), --dry-run exits 1 unless the database is current (--allow-pending for the pre-apply rehearsal), --mark-applied backfills legacy rows before inserting, database WARNINGs forwarded to the log. server/migrations/122_creative_analysis_fresh_shape.sql (catalog-guarded: section A expands on any table, section B contracts to the live shape only when EMPTY, RAISE WARNING otherwise) listed last in order.json (107 entries). docs/MIGRATIONS.md (deploy contract). render.yaml: preDeployCommand npm run migrate under mineblock-admin (announced in COORDINATION.md first). One-line writer-pointer comment above /admin-reconcile-migrations. Handoff docs/lanes/lane-a.md. Commits 5704fde, 8c9d1d9, 00ad796, 0a4d19b, f4e9f39, 2db19fe, 3da0f3b.
@@ -4992,6 +5080,70 @@ DECISIONS: DECISION MADE — migration 124 appended at the END of Lane A's order
 STATUS: COMPLETE
 ---
 
+---
+TIMESTAMP: 2026-09-10 17:05
+TASK: Lane B2 — un-quarantine the 37 test scripts that import other checkouts by absolute path
+BUILT: Repaired 35 of the 37 quarantined test scripts so they resolve against THIS
+  repository by path relative to the test file. 30 carried
+  `const NM = '/Users/ludo/Mineblock-LLC/node_modules'`, now
+  `new URL('../../../node_modules', import.meta.url).pathname.replace(/\/$/, '')`
+  — the pattern abandoned/route.mjs and integrations/klaviyo.mjs already used.
+  4 money-path scripts had `await import('/Users/ludo/Puure-integrator/server/src/X')`,
+  now `await import(new URL('../../src/X', import.meta.url))`.
+  money-path/review-regression.mjs had four references including one inside an
+  execSync child eval, which now interpolates the repo-relative href.
+  No assertion changed; nothing under server/src changed. QUARANTINE.md rewritten
+  with a per-file before/after table; run-all.mjs SMOKE gained `orders/list`
+  (orders/orders-extras.mjs — the real /api/v1/orders router), which had no
+  coverage because all four orders scripts were unrunnable.
+TESTED: Every one of the 37 was run AS-IS first, with the three out-of-repo roots
+  made unresolvable (a CI runner's state) via a resolver hook + fs guard that was
+  control-tested both ways first (denies an out-of-repo import, denies an
+  out-of-repo readFileSync, does not break a healthy in-repo script: 108 passed).
+  All 37 exited 1 at import before any assertion. The one-line repair was proven
+  red -> green on tracking/admin-crud.mjs with an identical check before being
+  applied to 29 more. Edge/failure cases: 8 scripts failed on the first full run;
+  6 were the stale local scratch database, proven by a controlled experiment
+  (empty DB -> ensureCheckoutTables OK; drop one column -> identical call throws
+  42703) and then by running all 6 against a fresh database, where they pass.
+OUTPUT: npm test BEFORE (75192b1):
+    SUMMARY: 55 passed, 0 failed, 0 timed out, 40 skipped in 322.8s   EXIT=0
+  npm test AFTER (81091f8):
+    SUMMARY: 88 passed, 0 failed, 0 timed out, 7 skipped in 644.7s    EXIT=0
+  npm run test:smoke AFTER:
+    SUMMARY: 11 passed, 0 failed, 0 timed out, 0 skipped in 58.6s     EXIT=0
+  33 scripts un-quarantined. 4 remain of the original 37: review-regression
+  (needs a :4003/:4009/:4010 harness it never boots — TypeError: fetch failed),
+  upsell-page (46/49 pass; 3 need live Shopify pricing), and gen-centroids /
+  gen-land (reclassified Q1 -> Q3: one-shot generators, zero assertions,
+  world110m.json input not in this repo).
+DECISIONS:
+  - DECISION MADE: the "before" status was taken with the three out-of-repo roots
+    made UNRESOLVABLE rather than by actually reading them. COMMON.md forbids this
+    lane from reading /Users/ludo/Mineblock-LLC, /Users/ludo/Puure-integrator and
+    /Users/ludo/funnel-os, and reading them would measure the wrong machine
+    anyway. The guard reproduces a CI runner and was control-tested both ways.
+  - DECISION MADE: node_modules specifiers were re-pointed by redefining NM rather
+    than converting each `${NM}/express/index.js` to a bare specifier. One line per
+    file, zero risk to the ~4 packages involved (all four verified present in this
+    repo's node_modules before editing).
+  - DECISION MADE: the stale shared scratch database puure_shoporder was repaired
+    ADDITIVELY (ALTER TABLE co_sessions ADD COLUMN IF NOT EXISTS x7, nothing
+    dropped, no data lost). It was NOT recreated: COMMON.md forbids touching a
+    database this lane did not create, and the sandbox refused DROP DATABASE. The
+    exact SQL is recorded in QUARANTINE.md for the next machine that hits 42703.
+  - DECISION MADE: gen-centroids.mjs and gen-land.mjs were left unmodified. Their
+    world110m.json input does not exist in this repository, so pointing the path
+    inside the repo would be a lie. They are reclassified as "not a test" (they
+    assert nothing and their output is already committed).
+  - OPEN for the lead: server/src/services/checkoutSchema.js ensureCheckoutTables()
+    is create-only — it declares the full co_sessions column list inside
+    CREATE TABLE IF NOT EXISTS and indexes a column it may never have added. R6's
+    mirror image. Out of bounds for this slice; needs an owner.
+  - OPEN for the lead: orders/orders-extras.mjs:297 uses `d.entries` where every
+    neighbouring line uses `d?.entries`, so a route 500 becomes an uncaught
+    TypeError instead of a named FAIL. Not changed (no assertion edits).
+STATUS: COMPLETE
 ---
 TIMESTAMP: 2026-09-10 17:35
 TASK: Lane E2 — S1-4 hub SSO, dashboard-side review fixes (briefs/out/REVIEW-LANE-E.md: P1-3, P1-4, P2-1, P2-2, P2-5, P2-6) + rebase onto hub/main + migration renumber

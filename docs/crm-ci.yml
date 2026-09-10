@@ -1,0 +1,114 @@
+# CRM CI — intended for the CRM repository as .github/workflows/ci.yml.
+#
+# This lane cannot commit into that repository (it is a different repo, and
+# ~/tasks/multistore-hub/briefs/COMMON.md puts /Users/ludo/funnel-os out of
+# bounds for Lane B), so the workflow lives here and is copied over by whoever
+# owns that repo. It has therefore been validated as YAML and reviewed against
+# the CRM's env inventory, but it has NOT been executed against the CRM tree.
+#
+# ── the boot smoke, and what is actually being asserted ───────────────────────
+# `MONGO_URL` is a REQUIRED field on the CRM's pydantic `Settings`
+# (backend/app/core/config.py:32, per ~/tasks/multistore-hub/discovery/env-inventory.md
+# section 2.7). A required pydantic-settings field with no value raises
+# ValidationError when `Settings()` is constructed, and that construction happens
+# at import time, so `uvicorn app.main:app` should die during import rather than
+# bind a port and serve requests against no database.
+#
+# The step below does not assume that. It asserts the property that matters and
+# fails loudly if the property does not hold:
+#   * the process must EXIT (non-zero) within 20 seconds, and
+#   * its output must name MONGO_URL.
+# A process that is still alive after 20 seconds fails the step, with its output
+# printed — which is exactly the finding you want if the CRM turns out to boot
+# happily with no database configured.
+#
+# ⚠ UNVERIFIED BY LANE B: the exact message has not been observed by this lane.
+# The first person to run this workflow must paste the real output into
+# docs/lanes/lane-b.md and replace this paragraph with the observed behaviour.
+name: ci
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  crm:
+    name: crm — lint, compile, boot smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Set up python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.11'
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          set -eu
+          python -m pip install --upgrade pip
+          pip install -r backend/requirements.txt
+          pip install ruff
+
+      - name: Lint (ruff)
+        run: ruff check backend
+
+      - name: Compile (py_compile over backend/app)
+        run: |
+          set -eu
+          find backend/app -name '*.py' -print0 | xargs -0 python -m py_compile
+          echo "py_compile clean over $(find backend/app -name '*.py' | wc -l) files"
+
+      - name: Boot smoke — uvicorn with MONGO_URL unset must fail fast
+        working-directory: backend
+        run: |
+          set -uo pipefail
+          unset MONGO_URL || true
+          echo "starting uvicorn with MONGO_URL unset; it must exit within 20s"
+          set +e
+          timeout 20s python -m uvicorn app.main:app --host 127.0.0.1 --port 8099 > boot.log 2>&1
+          rc=$?
+          set -e
+          echo "--- uvicorn output ---"
+          cat boot.log
+          echo "--- exit code: $rc ---"
+          if [ "$rc" -eq 124 ]; then
+            echo ""
+            echo "BOOT SMOKE FAILED: the app was still running after 20s with MONGO_URL unset."
+            echo "A service that boots with no database configured will serve requests it cannot"
+            echo "answer, and on a multi-store deployment it may silently fall back to another"
+            echo "store's credentials (RULES.md R39). Make Settings() fail closed at import."
+            exit 1
+          fi
+          if [ "$rc" -eq 0 ]; then
+            echo ""
+            echo "BOOT SMOKE FAILED: uvicorn exited 0 with MONGO_URL unset — a clean exit hides the"
+            echo "misconfiguration from every restart loop and every health check."
+            exit 1
+          fi
+          if ! grep -qi 'MONGO_URL' boot.log; then
+            echo ""
+            echo "BOOT SMOKE FAILED: the app died (exit $rc) but never named MONGO_URL."
+            echo "An operator reading this log cannot tell what is missing. Name the variable."
+            exit 1
+          fi
+          echo "BOOT SMOKE OK: exited $rc and named MONGO_URL."
+
+      - name: Secret scan (gitleaks)
+        uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7 # v2.3.9
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

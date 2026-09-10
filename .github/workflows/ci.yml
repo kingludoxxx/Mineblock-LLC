@@ -1,0 +1,122 @@
+# Dashboard CI. Nothing here deploys: this repository's Render services all have
+# autoDeploy off and are deployed by scripts/fleet.mjs with an explicit commitId
+# (RULES.md R37). CI's job is to make a red branch visible before a human
+# decides to ship it.
+#
+# Every third-party action is pinned to a commit sha, not a tag: a tag is
+# mutable and this workflow reads the repository with a token.
+name: ci
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  dashboard:
+    name: dashboard — smoke, secrets, R15
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_HOST_AUTH_METHOD: trust
+          POSTGRES_DB: postgres
+        # the suite's scripts hardcode port 5433, so map it here rather than
+        # rewriting 58 test files (see server/tests/QUARANTINE.md)
+        ports:
+          - 5433:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      NODE_ENV: test
+      PGURL: postgres://postgres@127.0.0.1:5433/lane_ci_fleet
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0            # gitleaks needs history to scan commits
+
+      - name: Set up node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22'
+          cache: npm
+
+      # --ignore-scripts skips the root postinstall, which downloads Playwright
+      # browsers. No script in the smoke suite drives a browser; the scripts that
+      # do are listed in server/tests/QUARANTINE.md under "you need to know".
+      - name: Install server dependencies
+        run: npm ci --ignore-scripts --no-audit --no-fund
+
+      - name: Install client dependencies
+        run: cd client && npm ci --ignore-scripts --no-audit --no-fund
+
+      - name: Lint (client, if configured)
+        run: |
+          set -eu
+          if [ -f client/package.json ] && node -e "process.exit(require('./client/package.json').scripts?.lint?0:1)"; then
+            npm --prefix client run lint
+          else
+            echo "no lint script configured — skipped"
+          fi
+
+      - name: Smoke suite
+        run: npm run test:smoke
+
+      - name: R15 no brand literals in engine code
+        # RULES.md R15: store identity is data. Engine code and pipelines never
+        # name a brand, a store, a product code or an ad account. The guarded
+        # directories may not exist yet — that is a pass, not an error.
+        run: |
+          set -uo pipefail
+          ROOT="${R15_ROOT:-.}"
+          DIRS=""
+          for d in "$ROOT/server/src/services/engine" "$ROOT/server/src/pipelines"; do
+            if [ -d "$d" ]; then DIRS="$DIRS $d"; fi
+          done
+          if [ -z "$DIRS" ]; then
+            echo "R15: neither server/src/services/engine nor server/src/pipelines exists yet — nothing to guard."
+            exit 0
+          fi
+          # TWO greps, because the two halves need different case rules.
+          # Brand words are case-insensitive: a brand is a brand however it is
+          # spelled. Short codes and ad-account ids are CASE-SENSITIVE, because
+          # lowercased they are ordinary code and the guard cries wolf on the
+          # day the engine directory is created:  `const p1 = points[0]`,
+          # `const pl = payload.length`, `"/pl/checkout"`, `// Mr. Smith`.
+          # act_ also needs a LEFT boundary, or `require("react")` compiled to
+          # `react_1` is a hit.
+          BRANDS='(\bPuure\b|\bMineblock\b|\bMinerForge\b|\bReevo\b)'
+          CODES='(\bPL\b|\bP1\b|\bMR\b|\bact_[0-9]+\b|\b17cca0-2\b|\b9jn59g-x7\b)'
+          echo "R15: scanning$DIRS"
+          rc=0
+          if grep -rIniE "$BRANDS" $DIRS; then rc=1; fi
+          if grep -rInE  "$CODES"  $DIRS; then rc=1; fi
+          if [ "$rc" -ne 0 ]; then
+            echo ""
+            echo "R15 VIOLATION: a brand, store, product or ad-account literal is present in engine code."
+            echo "Store identity is DATA (RULES.md R5 and R15). Put the value in the store manifest or the"
+            echo "recipe and read it at request time; do not branch on it in shared code."
+            exit 1
+          fi
+          echo "R15: clean."
+
+      - name: Secret scan (gitleaks)
+        uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7 # v2.3.9
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

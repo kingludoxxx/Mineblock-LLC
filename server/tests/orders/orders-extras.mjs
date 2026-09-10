@@ -27,7 +27,7 @@ import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
-const NM = '/Users/ludo/Mineblock-LLC/node_modules';
+const NM = new URL('../../../node_modules', import.meta.url).pathname.replace(/\/$/, '');
 const express = (await import(`${NM}/express/index.js`)).default;
 const jwt = (await import(`${NM}/jsonwebtoken/index.js`)).default;
 const postgres = (await import(`${NM}/postgres/src/index.js`)).default;

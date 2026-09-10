@@ -73,13 +73,13 @@ globalThis.fetch = async (url, init) => {
   return realFetch(url, init);
 };
 
-const { default: app } = await import('/Users/ludo/Puure-integrator/server/src/app.js');
+const { default: app } = await import(new URL('../../src/app.js', import.meta.url));
 const server = app.listen(PORT);
 await new Promise((r) => setTimeout(r, 4000));
 
 const sql = postgres(DB, { ssl: false });
-const { ensureCheckoutTables } = await import('/Users/ludo/Puure-integrator/server/src/services/checkoutSchema.js');
-const { ensureTables: ensureFunnelTables } = await import('/Users/ludo/Puure-integrator/server/src/routes/funnels.js');
+const { ensureCheckoutTables } = await import(new URL('../../src/services/checkoutSchema.js', import.meta.url));
+const { ensureTables: ensureFunnelTables } = await import(new URL('../../src/routes/funnels.js', import.meta.url));
 await ensureCheckoutTables();
 await ensureFunnelTables();
 

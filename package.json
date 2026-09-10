@@ -13,7 +13,8 @@
         "build": "cd client && npm run build && node scripts/setup-ytdlp.js",
         "sync:lasso": "node server/scripts/sync-lasso.mjs",
         "postinstall": "PLAYWRIGHT_BROWSERS_PATH=./playwright-browsers npx playwright install chromium chromium-headless-shell",
-        "test": "echo \"Error: no test specified\" && exit 1"
+        "test": "node server/tests/run-all.mjs",
+        "test:smoke": "node server/tests/run-all.mjs --suite smoke"
     },
     "keywords": [],
     "author": "",

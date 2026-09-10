@@ -20,7 +20,7 @@ process.env.DATABASE_URL = process.env.COMMERCE_TEST_DB
 process.env.NODE_ENV = 'development';
 process.env.MONEY_SWEEP_DISABLED = '1';
 
-const NM = '/Users/ludo/Mineblock-LLC/node_modules';
+const NM = new URL('../../../node_modules', import.meta.url).pathname.replace(/\/$/, '');
 const express = (await import(`${NM}/express/index.js`)).default;
 
 const route = await import('../../src/routes/funnelCommerce.js');

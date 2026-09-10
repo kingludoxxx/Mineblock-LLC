@@ -1,0 +1,69 @@
+{
+  "$comment": "Fleet registry. DATA, not code (R5/R15): the fleet script holds no service name, no id, no host and no STORE name. Ids come from the Render dashboard; `live: true` means real customer traffic. Placeholders carry a null id until the sandbox project is provisioned. `protection` is the R1/R3 guard as data: any service whose name starts with `prefix` refuses deploy/rollback unless --i-typed-the-store-name=<store> is passed, matched case-sensitively.",
+  "api": "https://api.render.com/v1",
+  "protection": [
+    {
+      "prefix": "puure",
+      "store": "Puure",
+      "rule": "R1/R3: deployed last, always, never in the same hour as another store, and only through the bracket (snapshots, robot purchase before and after, health, 30 min observed, Ludo's typed store name in chat)."
+    }
+  ],
+  "services": [
+    {
+      "name": "puure-dashboard",
+      "id": "srv-d9r4elcs728c73d01gug",
+      "kind": "dashboard",
+      "live": true,
+      "url": "https://puure-dashboard.onrender.com",
+      "healthPath": "/api/health",
+      "notes": "R1/R3: deployed last, always, and only through the bracket.",
+      "protected": true,
+      "store": "Puure"
+    },
+    {
+      "name": "mineblock-dashboard",
+      "id": "srv-d6qavvf5gffc73em69n0",
+      "kind": "dashboard",
+      "live": true,
+      "url": "https://mineblock-dashboard.onrender.com",
+      "healthPath": "/api/health"
+    },
+    {
+      "name": "puure-crm",
+      "id": "srv-d9suceks728c738bu320",
+      "kind": "crm",
+      "live": true,
+      "url": "https://puure-crm.onrender.com",
+      "healthPath": "/api/health",
+      "notes": "R1/R3: deployed last, always, and only through the bracket.",
+      "protected": true,
+      "store": "Puure"
+    },
+    {
+      "name": "mineblock-crm",
+      "id": "srv-da8ug60ae00c73dbmk4g",
+      "kind": "crm",
+      "live": true,
+      "url": "https://mineblock-crm.onrender.com",
+      "healthPath": "/api/health"
+    },
+    {
+      "name": "sb-dashboard",
+      "id": null,
+      "kind": "dashboard",
+      "live": false,
+      "url": null,
+      "healthPath": "/api/health",
+      "notes": "placeholder \u2014 sandbox dashboard, not provisioned yet"
+    },
+    {
+      "name": "sb-crm",
+      "id": null,
+      "kind": "crm",
+      "live": false,
+      "url": null,
+      "healthPath": "/api/health",
+      "notes": "placeholder \u2014 sandbox CRM, not provisioned yet"
+    }
+  ]
+}
