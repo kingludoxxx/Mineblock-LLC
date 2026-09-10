@@ -63,3 +63,44 @@ Not proven: behaviour on a Render deploy with the example env (no deploys from a
 
 ## Next action for the next session (one line)
 Lead: review the 14 commits, set the `env.{PL,MB}.example` keys on the SANDBOX services (PRODUCT_CODES_JSON included), deploy with an explicit commitId (R37), hit `GET /api/v1/store-config` and diff it against `snapshots/<store>.json`.
+
+---
+
+# Lane F2 — adversarial-review fixes (2026-09-10)
+
+Branch rebased onto `hub/main` **95fc741**. Pre-rebase tip kept at `backup/lane-constants-pre-f2`.
+Proof pack: `~/tasks/multistore-hub/briefs/out/PROOF-LANE-F2.md`. 911 tests green (97 Lane F + 814 existing).
+
+| review item | commit | what changed |
+|---|---|---|
+| **P1-1** fail-OPEN on unset `PRODUCT_CODES_JSON` | `3ad369d` | the key is now REQUIRED. `productCodes()` throws `StoreConfigError` on unset / blank / malformed / two defaults / empty `{}`; `assertBootConfig()` runs as step 0 of `server.js start()` and `process.exit(1)`s with a named, actionable error. |
+| **P1-2** Meta version unification | `3ad369d` + `b53e62d` | `META_API_VERSION_DEFAULT` v21.0 → **v23.0**; the last three Graph pins in `staticsGeneration.js` (`:7184`, `:9737`, `:10295`) read `storeConfig.metaGraphUrl()`; `env.{PL,MB}.example` pin v23.0. `git grep -nE "graph\.facebook\.com/v[0-9]" -- server/src` is now **0** (was 3). |
+| **P2-1** Slack null channel | `e132273` | `sendSlackAlert()` returns when the P&L channel is null instead of POSTing `{"channel": null}`. Exported so it is testable. |
+| **P2-3** PL had no default product | `b53e62d` | `env.PL.example` marks PL's own `PL` entry `"default": true` — unknown codes resolve to the store's OWN pipeline, never another store's, never a mid-request throw. MB unchanged. |
+
+## Deviations 5 and 7 above are now SUPERSEDED
+- **Deviation 5** said the ClickUp/Frame.io pipelines are "DORMANT until `PRODUCT_CODES_JSON` is set".
+  They were not dormant, they were misrouted (the reviewer proved it). They are now a **boot refusal**.
+- **Deviation 7** (v21.0 default) is replaced by v23.0.
+
+## HARD PRECONDITION for the lead
+`PRODUCT_CODES_JSON` must be set on **every** service in the same env change as, or **before**,
+the deploy of this branch. After this commit a service without it **will not start** — that is
+the intended behaviour, and it is the reason the ordering is no longer a preference.
+
+## Still open after F2
+- **P2-2** (not done, deliberately): seven Shopify call sites produce `…/admin/api/null/…` → 404
+  instead of a clear `shopify_not_configured` when `SHOPIFY_API_VERSION` is malformed
+  (`orders.js:332`, `:650`, `abandonedCheckouts.js:199`, `funnelCommerce.js:201`,
+  `checkoutPricing.js:96`, `checkoutDiscount.js:41`, `shopifyOrderCreate.js:238`). Cosmetic per
+  the reviewer, spans other lanes' files, needs its own slice. Behaviour is already safer than
+  baseline (the malformed value is refused, not interpolated into a path).
+- **Meta v23.0 field check** — cannot be done from a lane. Before deploying, confirm
+  `adsReporting`'s FIELDS and `staticsGeneration`'s `creative{image_url,thumbnail_url}` at v23.
+- **A1 residues 1-3** unchanged and still pinned in `wiring.mjs` in both directions.
+
+## Next action for the next session (one line)
+Lead: review `e132273`, `3ad369d`, `b53e62d` on top of the rebase; set the `env.{PL,MB}.example`
+keys (PRODUCT_CODES_JSON FIRST) on the SANDBOX services, deploy with an explicit commitId (R37),
+confirm the boot log line `Store config OK (PRODUCT_CODES_JSON)`, then hit
+`GET /api/v1/store-config` and diff against `snapshots/<store>.json`.
