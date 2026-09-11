@@ -23,6 +23,7 @@
 // Any change to authController's cookie options must be repeated here; tests/hub-sso/hub-sso.mjs asserts the attributes.
 import crypto from 'crypto';
 import pool from '../config/db.js';
+import logger from '../utils/logger.js';
 import env from '../config/env.js';
 import { signAccessToken, signRefreshToken } from '../utils/jwt.js';
 import { createSession } from '../services/authService.js';
@@ -50,6 +51,81 @@ export const setRefreshCookie = (res, token) => {
   });
 };
 
+// ── W6/W6b: the switcher list the hub signed into the ticket ────────────────────────────────────────────
+// The hub knows which stores this operator may hop into; the dashboard must never guess, and must never take
+// the list from the browser. It arrives INSIDE the HMAC-signed ticket and is parked on the session row
+// (migration 132), which is the row middleware/auth.js already re-reads on every hub-SSO request.
+//
+// FAIL SOFT, NEVER REFUSE: an entry this dashboard cannot make sense of is dropped, and the hop still succeeds.
+// Losing a dropdown is a cosmetic failure; refusing the ticket would lock an operator out of a live store.
+//
+// W6b CLOSES W6's DEVIATION 6. Validation is PER ENTRY: a bad entry is SKIPPED and the rest of the list is
+// kept. W6 dropped the whole list on one bad entry, which meant one odd store could cost an operator every
+// other store's row, silently. A partially-trusted list is not a thing — but each entry is validated whole,
+// so what survives is fully trusted; nothing is repaired, only kept or dropped.
+//
+// CODE GRAMMAR, DELIBERATELY WIDER THAN THIS STORE'S OWN. Entries in the LIST match ^[A-Z0-9]{1,8}$, which is
+// the HUB's grammar (store-hub src/repo/scope.js STORE_CODE_RE): the hub is the authority on what a store code
+// is, and this dashboard is only rendering the hub's answer. This store's OWN identity (env STORE_CODE,
+// server/migrations/run.js) is unchanged and still 2-4 characters — the two are different questions, and
+// under W6 the narrower one silently deleted any hub store outside 2-4 characters from the dropdown.
+//
+// Strict on the way in, because what goes in comes back out to a browser: exactly the four known keys, a code
+// shaped like a HUB store code, a name of at most 80 characters, a role of at most 24 (a LABEL for a pill,
+// never a permission — every gate is taken at the hub), and a boolean can_hop. `role` and `can_hop` are
+// OPTIONAL: a W6 ticket carries neither, and defaults to role '' (no pill) and can_hop true (the W6 claim
+// listed only hoppable stores). At most 50 entries; a longer list is CUT, not refused (the hub caps at 50 too).
+export const HUB_STORES_MAX = 50;
+export const HUB_STORE_NAME_MAX = 80;
+export const HUB_STORE_ROLE_MAX = 24;
+const HUB_STORE_CODE_RE = /^[A-Z0-9]{1,8}$/;
+// W6c / R10 P1-1: AN UNKNOWN KEY IS IGNORED, NOT A REASON TO DROP THE ENTRY.
+// W6 rejected any entry carrying a key outside the four known ones. Measured on the real function: an unknown
+// key on ONE entry cost that entry; an unknown key on EVERY entry — which is exactly what the first hub release
+// that adds a fifth field looks like — returned 0 entries and emptied every store's dropdown, with no error, no
+// log line and no failing test on either side. The hub deploys FIRST by design (that is what the C1 check in
+// hub-sso/w6-switcher-claim.mjs exists to prove for the ticket), so this had to be true for the LIST too.
+// This is not a weaker posture: the four known fields are each validated on their own, whatever else the object
+// carries, and the object that leaves here is BUILT from them — nothing unknown is copied, so nothing unknown
+// can reach a browser. Recovery from the old behaviour would have been a dashboard deploy per store.
+//
+// W6c / R10 P2-2: NAMES ARE NORMALISED, not just length-checked. A store name is operator free text that the
+// dropdown renders verbatim, and the dropdown is now the thing an operator reads before choosing which LIVE
+// store to enter. U+202E and friends reverse the rendered text (`Safe<RLO>erots-live` reads as a different
+// store); zero-width characters make two different names look identical. Both are stripped, then runs of
+// whitespace are collapsed and the ends trimmed, so a name cannot be padded into a different-looking row.
+// An entry whose name is NOTHING BUT those characters has no name and is dropped.
+// REVIEW-W6C P2-B: the CLASS, not a list. Unicode Cf (format) covers every bidi control incl. U+061C, every
+// zero-width and joiner (U+200B-U+200F, U+2060-U+2064, U+180E, U+FEFF), the isolates/overrides and tag characters.
+const BIDI_AND_ZERO_WIDTH = /\p{Cf}/gu;
+
+/** Strip the characters that spoof a rendered row, collapse whitespace, trim. R10 P2-2. */
+export const cleanHubStoreName = (value) => String(value).replace(BIDI_AND_ZERO_WIDTH, '').replace(/\s+/g, ' ').trim();
+
+/** @returns {{code:string,name:string,role:string,can_hop:boolean}|null} the entry to keep, or null to skip it. */
+const sanitizeHubStore = (entry) => {
+  if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return null;
+  const { code, name, role, can_hop: canHop } = entry;                // P1-1: read the four we know, ignore the rest
+  if (typeof code !== 'string' || !HUB_STORE_CODE_RE.test(code)) return null;
+  if (typeof name !== 'string' || name.length === 0 || name.length > HUB_STORE_NAME_MAX) return null;
+  if (role !== undefined && (typeof role !== 'string' || role.length > HUB_STORE_ROLE_MAX)) return null;
+  if (canHop !== undefined && typeof canHop !== 'boolean') return null;
+  const cleanName = cleanHubStoreName(name);
+  if (cleanName.length === 0) return null;                            // P2-2: a name made only of invisible characters
+  return { code, name: cleanName, role: role === undefined ? '' : cleanHubStoreName(role), can_hop: canHop ?? true };
+};
+
+/** @returns {{code:string,name:string,role:string,can_hop:boolean}[]} [] whenever the CLAIM itself is not a list. */
+export const sanitizeHubStores = (claim) => {
+  if (!Array.isArray(claim)) return [];
+  const out = [];
+  for (const entry of claim.slice(0, HUB_STORES_MAX)) {
+    const keep = sanitizeHubStore(entry);
+    if (keep) out.push(keep);
+  }
+  return out;
+};
+
 /** Roles in the shape login puts into the JWT (authController.js:213-225). Uses the given client so it can run inside a transaction. */
 export const loadRoles = async (userId, client = pool) => {
   const rolesResult = await client.query(
@@ -65,10 +141,10 @@ export const loadRoles = async (userId, client = pool) => {
 /**
  * @param {import('express').Response} res
  * @param {{id:string,email:string,first_name:string,last_name:string,must_change_password:boolean,email_verified:boolean}} user  a users row
- * @param {{ip:string,userAgent:string,roles?:object[]}} ctx
+ * @param {{ip:string,userAgent:string,roles?:object[],hubStores?:{code:string,name:string}[]}} ctx
  * @returns {Promise<{accessToken:string,user:object}>} the same object login answers with (authController.js:264-267)
  */
-export const issueSession = async (res, user, { ip, userAgent, roles }) => {
+export const issueSession = async (res, user, { ip, userAgent, roles, hubStores }) => {
   const userRoles = roles ?? await loadRoles(user.id);
   const tokenId = crypto.randomUUID();
   // hub_sso on the REFRESH token as well: it is the only credential the SPA still holds when the 15-minute
@@ -76,6 +152,8 @@ export const issueSession = async (res, user, { ip, userAgent, roles }) => {
   const refreshToken = signRefreshToken({ userId: user.id, tokenId, hub_sso: true });
   // The session row FIRST: its id goes into the access token, which is what makes the session revocable per request.
   const session = await createSession(user.id, refreshToken, ip, userAgent || '');
+  // W6: the switcher list belongs to THIS session, not to the user and not to the token (see migration 132).
+  await writeHubStores(session.id, hubStores);
   const accessToken = signAccessToken({ userId: user.id, email: user.email, roles: userRoles, hub_sso: true, sid: session.id });
   const userData = {
     id: user.id,
@@ -108,14 +186,46 @@ export const peekHubSsoClaims = (token) => {
   }
 };
 
-/** True while the sessions row this token was issued for still exists, belongs to the user and has not expired. */
-export const hubSessionIsLive = async (sid, userId, client = pool) => {
-  if (typeof sid !== 'string' || !/^[0-9a-fA-F-]{36}$/.test(sid)) return false;
-  const { rows } = await client.query(
-    'SELECT 1 FROM sessions WHERE id = $1 AND user_id = $2 AND expires_at > NOW()',
-    [sid, userId],
-  );
-  return rows.length === 1;
+/**
+ * Parks the list on a session row. FAIL SOFT, on purpose and in two directions:
+ *  • this runs INSIDE a login. A dropdown that cannot be stored must never cost an operator a live store.
+ *  • a service running this code against a database that has not had migration 132 yet (a rollback, or a
+ *    preDeployCommand that did not run) gets one warning per session, not a 500 on the SSO door.
+ */
+const writeHubStores = async (sessionId, stores, client = pool) => {
+  const list = sanitizeHubStores(stores);
+  try {
+    await client.query('UPDATE sessions SET hub_stores = $2 WHERE id = $1', [sessionId, JSON.stringify(list)]);
+  } catch (e) {
+    logger.warn('hub_stores_not_stored', { code: e.code });     // 42703 = migration 132 has not run here yet
+    return [];
+  }
+  return list;
 };
 
-export default { issueSession, setAccessCookie, setRefreshCookie, loadRoles, peekHubSsoClaims, hubSessionIsLive };
+/**
+ * The live sessions row for a hub-SSO token, or null when it is gone / not this user's / expired.
+ * ONE query answers both questions middleware/auth.js has: is this session still valid (revocation, no grace
+ * period) and what switcher list did it arrive with. Reading the list is therefore free.
+ */
+export const loadHubSession = async (sid, userId, client = pool) => {
+  if (typeof sid !== 'string' || !/^[0-9a-fA-F-]{36}$/.test(sid)) return null;
+  // `to_jsonb(s.*)->'hub_stores'` instead of naming the column: on a database that has not had migration 132
+  // the key is simply absent (null), where `SELECT hub_stores` would throw and 401 every hub session on the store.
+  const { rows } = await client.query(
+    "SELECT id, to_jsonb(s.*)->'hub_stores' AS hub_stores FROM sessions s WHERE s.id = $1 AND s.user_id = $2 AND s.expires_at > NOW()",
+    [sid, userId],
+  );
+  return rows.length === 1 ? rows[0] : null;
+};
+
+/** True while the sessions row this token was issued for still exists, belongs to the user and has not expired. */
+export const hubSessionIsLive = async (sid, userId, client = pool) => Boolean(await loadHubSession(sid, userId, client));
+
+/**
+ * Rotation (authController.refresh) DELETES the old session row and creates a new one, so without this the
+ * switcher would quietly disappear ~15 minutes after every hop. Carries the list the hub signed, nothing else.
+ */
+export const carryHubStores = async (stores, toSessionId, client = pool) => writeHubStores(toSessionId, stores, client);
+
+export default { issueSession, setAccessCookie, setRefreshCookie, loadRoles, peekHubSsoClaims, hubSessionIsLive, loadHubSession, carryHubStores, sanitizeHubStores };

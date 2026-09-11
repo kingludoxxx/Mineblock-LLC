@@ -10,6 +10,7 @@ import {
   createUser,
   updatePassword,
 } from '../services/authService.js';
+import { carryHubStores } from '../services/hubSession.js';
 import logger from '../utils/logger.js';
 import env from '../config/env.js';
 
@@ -375,6 +376,9 @@ export const refresh = async (req, res, next) => {
     // The session row FIRST for a hub session: its id is the `sid` that makes the token revocable per request.
     // It must be the NEW row — the one this refresh rotated in — because the old row was just deleted.
     const newSession = await createSession(user.id, newRefreshToken, ip, userAgent);
+    // W6: the rotation above deleted the row that held this session's switcher list, so carry it onto the new
+    // row. Without this the sidebar's store dropdown disappears ~15 minutes after every hop, for no visible reason.
+    if (isHubSso) await carryHubStores(session.hub_stores, newSession.id);
 
     const accessToken = signAccessToken({
       userId: user.id,

@@ -58,7 +58,29 @@ if (process.env.LANE_BASE_COMMIT || process.env.LANE_HEAD_COMMIT) {
 }
 const INTEGRATION = MODE.startsWith('integration');
 
+// ── SCOPE: this guard belongs to the store-code lane, and only that lane ─────────────────────────────────
+// W6c / R10 P1-3, lead decision 2026-09-11. FORBIDDEN/ALLOWED above are written for lane C2: every file a
+// DIFFERENT lane legitimately touches under server/src or client/ is a violation BY CONSTRUCTION. Measured on
+// day2/w6-sidebar-switcher, it named all 13 of the sidebar switcher's files and made `run-all` red on a branch
+// with no defect in it, which under R24 ("a slice is not done until its tests pass in CI") blocks every lane
+// that is not C2. A guard that is red for everyone is a guard nobody reads.
+//
+// So the FILE-SCOPE assertion now runs only where it means something:
+//   • A6_ENFORCE=1                      — always, anywhere. This is what CI sets on the integration branch,
+//                                         and what proves the guard still bites (it is how W6c re-proved it).
+//   • a branch whose name contains 'store-code' — the lane it was written for, unchanged behaviour.
+// Anywhere else it prints one line and passes. It is NOT deleted and NOT weakened: the same assertion, one
+// env var away, on any tree. The SECOND test below (the runner's store-code + lock-timeout contract) is a
+// statement about a FILE, not about a diff, so it is true on every branch and always runs.
+const BRANCH = tryGit('rev-parse', '--abbrev-ref', 'HEAD') || '';
+const A6_ENFORCED = process.env.A6_ENFORCE === '1' || /store-code/.test(BRANCH);
+
 test('A6: only migrations/scripts/tests/docs changed since the lane base', () => {
+  if (!A6_ENFORCED) {
+    console.log('SKIP A6 scope guard: not the store-code lane (set A6_ENFORCE=1 to force)');
+    console.log(`# A6 scope guard: branch ${BRANCH || '(unknown)'} does not match /store-code/`);
+    return;
+  }
   assert.ok(BASE, 'could not derive a base commit: neither hub/main nor origin/main is reachable');
   const out = git('diff', '--name-only', BASE, LANE_HEAD);
   const untracked = LANE_HEAD === 'HEAD' ? git('ls-files', '--others', '--exclude-standard') : '';

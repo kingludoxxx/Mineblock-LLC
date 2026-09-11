@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { NavLink, useLocation } from 'react-router-dom';
 import { useSidebar } from './AppLayout';
-import { BRAND_SHORT_NAME, BRAND_LOGO_WHITE, BRAND_LOGO_SYMBOL } from '../../config/brand';
+import StoreSwitcher from './StoreSwitcher';
 import {
   ChevronLeft,
   ChevronRight,
@@ -48,8 +48,10 @@ const navGroups = [
   // ─────────────────────────────────────────────────────────────────────────
   // ONE MENU (2026-08-10). Organised by what the operator is DOING, not by
   // which backend serves it. `/app/crm/*` entries are the Funnel OS CRM
-  // embedded in this shell; everything else is native Puure. The operator
-  // should not be able to tell the difference — that is the whole point.
+  // embedded in this shell; everything else is this store's own dashboard. The
+  // operator should not be able to tell the difference — that is the whole point.
+  // (W6c / R10 P2-7: the store name that used to be on the line above is gone. R15
+  // is about engine code naming a store, and a comment is engine code.)
   //
   // The legacy native CRM pages (/app/orders, /app/funnels, …) still exist and
   // still work by URL. They are off the menu so there is ONE of everything.
@@ -173,14 +175,9 @@ export default function Sidebar() {
       style={{ width: collapsed ? 'var(--sidebar-collapsed-w)' : 'var(--sidebar-w)' }}
     >
       <div className="flex items-center justify-between px-3 h-[var(--topbar-h)] border-b border-border-subtle shrink-0">
-        {!collapsed && (
-          <div className="flex items-center gap-2.5">
-            <img src={BRAND_LOGO_WHITE} alt={BRAND_SHORT_NAME} className="h-5 w-auto" />
-          </div>
-        )}
-        {collapsed && (
-          <img src={BRAND_LOGO_SYMBOL} alt={BRAND_SHORT_NAME} className="h-4 w-auto mx-auto" />
-        )}
+        {/* W6: the brand block IS the store switcher when this deployment has a hub and something to switch
+            into; with no hub it renders the same logo it always did (StoreSwitcher, R21). */}
+        <StoreSwitcher collapsed={collapsed} />
         <button
           onClick={() => setCollapsed(!collapsed)}
           className="p-1 rounded-md text-text-muted hover:text-text-primary hover:bg-bg-hover transition-colors cursor-pointer"

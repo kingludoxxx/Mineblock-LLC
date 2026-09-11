@@ -26,6 +26,9 @@
 //    hub_sso + sid, so `authenticate` re-reads Postgres on EVERY request and skips the 5-minute session cache. Deleting
 //    the sessions row (logout, "log out other devices", an admin revoke) or deactivating the user is enforced on the
 //    very next request. See services/hubSession.js.
+//  • `stores` (W6, optional): [{code,name}] the hub signed — which stores this operator may switch into. Validated
+//    and persisted on the session row (migration 132) so the sidebar can render a switcher; NEVER taken from the
+//    client, and a malformed list is ignored rather than refused (a cosmetic list must not lock anyone out).
 //  • `next` must be a relative path ('/x', not '//x', not '/\x', not a scheme) or the request is a 400 before any write.
 //  • Nothing here calls the hub, or anything, over the network: with the hub gone every store still logs in on its own.
 //  • Logs never carry the ticket, the signature, the nonce or the secret.
@@ -34,7 +37,7 @@ import crypto from 'node:crypto';
 import pool from '../config/db.js';
 import logger from '../utils/logger.js';
 import { hashPassword } from '../utils/hash.js';
-import { issueSession, loadRoles } from '../services/hubSession.js';
+import { issueSession, loadRoles, sanitizeHubStores } from '../services/hubSession.js';
 
 const router = Router();
 
@@ -71,10 +74,23 @@ const countFailure = (req) => {
 const b64uDecode = (s) => Buffer.from(String(s).replace(/-/g, '+').replace(/_/g, '/'), 'base64');
 const isB64u = (s) => typeof s === 'string' && s.length > 0 && /^[A-Za-z0-9_-]+$/.test(s);
 
-/** Only a path inside the SPA. '//host' is protocol-relative and '/\host' is read the same way by browsers. */
+/**
+ * Only a path inside the SPA. '//host' is protocol-relative and '/\host' is read the same way by browsers.
+ *
+ * W6c / R10 P0-1: the C0-plus-space class is refused too. A URL parser DELETES tab, LF and CR out of a URL
+ * before parsing it, so `/<TAB>/evil.example` passes a startsWith('//') test and is then read as
+ * `//evil.example` — protocol-relative, off-site. `next` ends up in a res.redirect() here, and express's
+ * encodeurl neutralises it on the way out (measured), so this side was never exploitable; it is refused
+ * anyway because the SAME string is guarded by three functions in two repos and three guards that disagree
+ * about what a path is are three chances to be wrong. The hub's twins carry the identical class:
+ * store-hub src/ui/switcher.mjs NEXT_BAD_CHARS (the one that WAS exploitable) and src/routes/switcher.js.
+ * Shared list of the forms all three must refuse: server/tests/hub-sso/next-forms.mjs.
+ */
+export const NEXT_BAD_CHARS = /[\u0000-\u0020]/;
 export function safeNext(raw) {
   if (raw === undefined || raw === null || raw === '') return '/';
-  if (typeof raw !== 'string' || !raw.startsWith('/') || raw.startsWith('//') || raw.startsWith('/\\')) return null;
+  if (typeof raw !== 'string' || NEXT_BAD_CHARS.test(raw)) return null;
+  if (!raw.startsWith('/') || raw.startsWith('//') || raw.startsWith('/\\')) return null;
   return raw;
 }
 
@@ -214,7 +230,9 @@ router.post('/exchange', async (req, res, next) => {
       throw e;
     } finally { client.release(); }
 
-    await issueSession(res, outcome.user, { ip: req.ip, userAgent: req.headers['user-agent'] || '', roles: outcome.roles });
+    // W6: the switcher list the hub SIGNED into this ticket. Validated here and parked on the session row; a list
+    // this dashboard cannot read is dropped and the hop still succeeds (services/hubSession.js explains why).
+    await issueSession(res, outcome.user, { ip: req.ip, userAgent: req.headers['user-agent'] || '', roles: outcome.roles, hubStores: sanitizeHubStores(payload.stores) });
     logger.info('hub_sso_ok', { userId: outcome.user.id, created: outcome.created });
     return res.redirect(302, nextPath);
   } catch (err) {

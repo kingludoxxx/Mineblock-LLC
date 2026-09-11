@@ -58,6 +58,8 @@ const { default: express } = await import('express');
 const { default: cookieParser } = await import('cookie-parser');
 const { default: authRoutes } = await import('../../src/routes/auth.js');
 const { default: hubSsoRoutes } = await import('../../src/routes/hubSso.js');
+const { safeNext } = await import('../../src/routes/hubSso.js');
+const { BAD_NEXT_FORMS, GOOD_NEXT_FORMS, EMPTY_NEXT } = await import('./next-forms.mjs');
 const app = express();
 // The auth rate limiter keys on req.ip (25 FAILED attempts / 15 min). This file refuses far more than 25 tickets on purpose,
 // so each request carries its own X-Forwarded-For (trust proxy, as app.js:41 does on Render); one block below pins the
@@ -219,10 +221,20 @@ let firstCookies;
 
 // ── A6 next validation ──────────────────────────────────────────────────────
 {
-  for (const bad of ['//evil.example', 'https://evil.example/x', '/\\evil.example', 'javascript:alert(1)', 'funnels']) {
+  // W6c / R10 P0-1: the bad list is the SHARED one (server/tests/hub-sso/next-forms.mjs), the twin of the hub's
+  // test/next-forms.mjs. Five forms written out here is how the whitespace class survived W6 on all three guards.
+  for (const { label, raw, why } of BAD_NEXT_FORMS) {
     const t = mint({ email: 'redir@example.test' }); minted.push(t);
-    const r = await exchange({ ticket: t.ticket, next: bad });
-    ok(r.status === 400 && r.cookies.length === 0, `A6 next=${JSON.stringify(bad)} -> 400, no cookies`, r.status + ' ' + r.text);
+    const r = await exchange({ ticket: t.ticket, next: raw });
+    ok(r.status === 400 && r.cookies.length === 0, `A6 next=${label} -> 400, no cookies (${why})`, r.status + ' ' + r.text);
+  }
+  // POSITIVE CONTROL, and the unit-level twin: safeNext itself, on the same list, plus the paths it must KEEP.
+  for (const { label, raw } of BAD_NEXT_FORMS) ok(safeNext(raw) === null, `A6 safeNext refuses ${label}`, JSON.stringify(safeNext(raw)));
+  for (const good of GOOD_NEXT_FORMS) ok(safeNext(good) === good, `A6 safeNext keeps ${good}`, JSON.stringify(safeNext(good)));
+  ok(safeNext(EMPTY_NEXT) === '/', "A6 safeNext('') is the SPA root, not a refusal");
+  // THE BUG ITSELF, asserted against the URL parser rather than remembered.
+  for (const raw of ['/\t/evil.example', '/\n/evil.example', '/\r/evil.example']) {
+    ok(new URL(raw, 'https://store.example.test').origin === 'https://evil.example', `A6 ${JSON.stringify(raw)} really does resolve off-site`);
   }
   ok((await q("SELECT count(*)::int n FROM users WHERE email='redir@example.test'"))[0].n === 0, 'A6 a refused next creates no user (validated before any write)');
   const t = mint({ email: 'redir@example.test' }); minted.push(t);

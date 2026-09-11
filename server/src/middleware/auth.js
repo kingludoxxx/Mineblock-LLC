@@ -2,7 +2,7 @@ import crypto from 'crypto';
 import { verifyAccessToken } from '../utils/jwt.js';
 import pool from '../config/db.js';
 import logger from '../utils/logger.js';
-import { peekHubSsoClaims, hubSessionIsLive } from '../services/hubSession.js';
+import { peekHubSsoClaims, loadHubSession, sanitizeHubStores } from '../services/hubSession.js';
 
 // ---------------------------------------------------------------------------
 // Redis import — another agent creates db/redis.js; gracefully degrade if
@@ -134,9 +134,14 @@ export const authenticate = async (req, res, next) => {
 
     // Hub-SSO session: the sessions row must still be there. Deleting it (logout, "log out other devices", an admin
     // revoke, or the hub removing the operator) ends the session on this request, with no grace window.
-    if (hubSso && !(await hubSessionIsLive(decoded.sid, decoded.userId))) {
-      logger.warn('Hub SSO session revoked', { userId: decoded.userId });
-      return res.status(401).json({ error: 'Authentication required' });
+    // The same read returns the switcher list this session arrived with (W6) — one query, both answers.
+    let hubSession = null;
+    if (hubSso) {
+      hubSession = await loadHubSession(decoded.sid, decoded.userId);
+      if (!hubSession) {
+        logger.warn('Hub SSO session revoked', { userId: decoded.userId });
+        return res.status(401).json({ error: 'Authentication required' });
+      }
     }
 
     const row = result.rows[0];
@@ -148,6 +153,11 @@ export const authenticate = async (req, res, next) => {
       roles: row.roles || [],
       mustChangePassword: row.must_change_password,
       emailVerified: row.email_verified,
+      // W6: [] for a local login — a store with no hub behind it shows no switcher, it does not break (R21).
+      // W6b: sanitized on the way OUT as well as on the way in, so a row written by the W6 code ({code,name},
+      // no role, no can_hop) reads back in the current shape instead of reaching the browser half-filled.
+      // It is the same pure function, so this cannot disagree with what the exchange decided to store.
+      hubStores: sanitizeHubStores(hubSession?.hub_stores),
     };
 
     // ---- 5. Cache in Redis (never for a hub-SSO session) -------------------
