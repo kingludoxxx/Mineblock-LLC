@@ -19,9 +19,15 @@
 //  • Single use: the nonce is burned in hub_sso_used_tickets under its primary key inside the same transaction that
 //    creates the user/session; two parallel exchanges cannot both win.
 //  • JIT: an unknown email is created with the role hub_role_map gives the hub role, else the '*' fallback (least
-//    privileged; W8b: the map's seeded targets are the PAGE roles, migration 133). An existing user is never
-//    re-roled in either direction — and since W8b a disagreement between what the hub thinks this operator is
-//    and what the store gave them is written to audit_logs as HUB_SSO_ROLE_UNCHANGED instead of being invisible.
+//    privileged; W8b: the map's seeded targets are the PAGE roles, migration 133). The row is stamped
+//    created_via = 'hub_sso' (W8f, migration 135) — provenance only, never a permission, never sent to a client.
+//    An existing user is never re-roled in either direction — and since W8b a disagreement between what the hub
+//    thinks this operator is and what the store gave them is written to audit_logs as HUB_SSO_ROLE_UNCHANGED
+//    instead of being invisible. W8f adds the ONE exception, and only to undo a bug this codebase shipped: a user
+//    THE HUB ITSELF CREATED, holding EXACTLY migration 126's broken default ('Admin', which opens no page) and
+//    nothing else, who has never become a local account, is moved ONCE onto the role the CURRENT map gives their
+//    hub role and the move is audited as HUB_SSO_ROLE_UPGRADED with the old and new roles. Every other user keeps
+//    the old behaviour exactly. See the block above upgradeStrandedHubUser() for the full predicate.
 //    An inactive user is refused, a LOCKED one is refused with the
 //    same 423 the local login answers, and an email that matches more than one row (the users.email UNIQUE is
 //    case-sensitive) is refused with 409 rather than picking one (review P2-1 / P2-5).
@@ -129,6 +135,115 @@ async function mappedRoleName(client, hubRole) {
   return hit ? hit.dashboard_role : null;
 }
 
+// ─────────────────────────────────────────────────────────────────────────────────────────────────
+// W8f — THE ONE-TIME REPAIR OF A USER STRANDED ON MIGRATION 126's MAP.
+//
+// THE DEFECT, measured live 2026-09-11 14:41Z on the MB and SB databases: migration 126 seeded
+// `owner -> 'Admin'`, and 'Admin' is the platform's USER-TABLE administrator — it carries not one of
+// the page keys migration 031 seeds. A hub owner created by a hop before 2026-09-11 therefore lands
+// on an empty sidebar and a locked KPI card. Migrations 133/134 fixed the MAP; by design they do not
+// re-role a user that already exists, so those users are still stranded.
+//
+// W8b's rule — AN EXISTING USER IS NEVER RE-ROLED — is not being repealed. It is being given its one
+// exception, and the exception is written so narrowly that it can only ever undo a bug this codebase
+// shipped itself. All THREE of these must hold, and anything outside them keeps the old behaviour
+// (untouched, HUB_SSO_ROLE_UNCHANGED):
+//
+//   (a) THE HUB CREATED THIS ROW.  users.created_via = 'hub_sso' (migration 135; set below on every
+//       JIT creation from now on, and backfilled by 135 off the HUB_SSO_JIT_CREATE audit row).
+//   (b) THEY HOLD EXACTLY MIGRATION 126's DEFAULT AND NOTHING ELSE.  One role, named 'Admin'. That is
+//       the value the broken map wrote, and a user holding it ALONGSIDE anything else is a user the
+//       store has since made a decision about — left alone.
+//   (c) THEY HAVE NEVER BECOME A LOCAL ACCOUNT.  Five facts, each of which the schema can answer, and
+//       every one of them fails CLOSED. The reasoning is written out in full in migration 135's
+//       header; the short form is: the invite flow never touched this row, must_change_password is
+//       false (both creators of a store's own SuperAdmin set it TRUE — this is the guard that keeps a
+//       SuperAdmin out even if everything else somehow matched), no password reset is in flight,
+//       `updated_at <= created_at` so the row has not been written since the hub created it (every
+//       local password path names updated_at - authService.updatePassword:85 and forgotPassword:435;
+//       the hub's own hop deliberately does not, and `users`
+//       has no updated_at trigger on this schema), and last_login is not later than the newest
+//       HUB_SSO_LOGIN row, so no login was served by this store's own front door.
+//
+// SCOPE, DELIBERATE: only 'Admin'. Migration 126 also mapped operator/editor onto 'Manager', which is
+// equally page-less, but the defect measured on the live databases is the OWNER, and a repair that
+// moves more rows than the one that was measured is not a repair. A 'Manager' row is left to a lane
+// that measures one.
+//
+// NOTHING NEW IS EXPOSED TO THE CLIENT: created_via is read here and nowhere else, and the only thing
+// that reaches the browser is the session it already got — with the roles it should have had.
+// ─────────────────────────────────────────────────────────────────────────────────────────────────
+
+/** Migration 126's seeded target for hub `owner` / `admin`: the account-administration role. */
+export const LEGACY_126_DEFAULT_ROLE = 'Admin';
+
+/**
+ * (a) + (b) + (c) as ONE predicate, so the census script and the exchange cannot drift apart.
+ * $1 = the legacy role name. Add `AND u.id = $2` to ask it about a single user.
+ * MUST be evaluated BEFORE this request's `last_login = NOW()` write, or (c5) reads its own footprint.
+ */
+export const REMAP_CANDIDATE_SQL = `
+  SELECT u.id, u.email
+    FROM users u
+   WHERE u.created_via = 'hub_sso'                                    -- (a) the hub created this row
+     AND u.invited_at IS NULL AND u.invited_by IS NULL                -- (c1) never invited by the store
+     AND u.must_change_password = false                               -- (c2) not a SuperAdmin-shaped row
+     AND u.password_reset_token IS NULL
+     AND u.password_reset_expires IS NULL                             -- (c3) no local claim in flight
+     AND u.updated_at <= u.created_at                                 -- (c4) untouched since creation
+     AND (u.last_login IS NULL OR u.last_login <= (                   -- (c5) every login was a hub hop
+           SELECT max(a.created_at) FROM audit_logs a
+            WHERE a.resource_id = u.id AND a.resource_type = 'user'
+              AND a.action = 'HUB_SSO_LOGIN'))
+     AND (SELECT count(*) FROM user_roles ur WHERE ur.user_id = u.id) = 1          -- (b) exactly one role
+     AND EXISTS (SELECT 1 FROM user_roles ur JOIN roles r ON r.id = ur.role_id
+                  WHERE ur.user_id = u.id AND r.name = $1)                         -- (b) and it is that one
+`;
+
+/**
+ * Move a stranded hub user onto the role the CURRENT map gives their ticket's hub role, once.
+ *
+ * THE POSTGRES TRAP THIS IS SHAPED AROUND: a failed statement inside a transaction aborts the WHOLE
+ * transaction, and the later COMMIT silently behaves as a ROLLBACK — no error, no exception, the work
+ * simply gone. The re-map and its audit row share this route's one transaction, so the OPTIONAL half
+ * (the audit row) is wrapped in SAVEPOINT / ROLLBACK TO SAVEPOINT: an audit row that cannot be written
+ * costs the audit row and says so loudly, never the repair, and never the hop.
+ *
+ * @returns {Promise<boolean>} true when the roles were actually changed.
+ */
+async function upgradeStrandedHubUser(client, { user, mappedName, held, storeCode, hubRole }) {
+  const { rows } = await client.query(`${REMAP_CANDIDATE_SQL} AND u.id = $2`, [LEGACY_126_DEFAULT_ROLE, user.id]);
+  if (rows.length !== 1) return false;
+
+  // The mapped name must exist, exactly as the JIT branch demands: a dangling name would leave the
+  // user with NO role at all, which is worse than the stranded state we are repairing.
+  const role = await client.query('SELECT id, name FROM roles WHERE name = $1', [mappedName]);
+  if (!role.rows[0]) return false;
+
+  // (b) guarantees there is exactly one row to replace.
+  await client.query('DELETE FROM user_roles WHERE user_id = $1', [user.id]);
+  await client.query('INSERT INTO user_roles (user_id, role_id) VALUES ($1, $2) ON CONFLICT DO NOTHING',
+    [user.id, role.rows[0].id]);
+
+  try {
+    await client.query('SAVEPOINT hub_sso_upgrade_audit');
+    await client.query(
+      `INSERT INTO audit_logs (user_id, action, resource_type, resource, resource_id, old_values, new_values)
+       VALUES ($1, 'HUB_SSO_ROLE_UPGRADED', 'user', 'user', $1, $2, $3)`,
+      [user.id,
+        JSON.stringify({ roles: held }),
+        JSON.stringify({ roles: [role.rows[0].name], store_code: storeCode, hub_role: hubRole, reason: 'migration 126 default role, repaired by W8f' })]);
+    await client.query('RELEASE SAVEPOINT hub_sso_upgrade_audit');
+  } catch (e) {
+    // ROLLBACK TO SAVEPOINT is what keeps the failed INSERT from turning the COMMIT into a ROLLBACK.
+    await client.query('ROLLBACK TO SAVEPOINT hub_sso_upgrade_audit');
+    await client.query('RELEASE SAVEPOINT hub_sso_upgrade_audit');
+    logger.error('hub_sso_role_upgrade_not_audited', { userId: user.id, code: e.code });
+  }
+  logger.info('hub_sso_role_upgraded', { userId: user.id });
+  return true;
+}
+
 router.post('/exchange', async (req, res, next) => {
   try {
     // The flag first, before the bucket and before any read: while dark this route is indistinguishable from a
@@ -209,6 +324,13 @@ router.post('/exchange', async (req, res, next) => {
       }
       let user = found.rows[0] || null;
       let created = false;
+      // W8f — HAS MIGRATION 135 RUN ON *THIS* DATABASE? Free: `SELECT *` describes its columns even when it
+      // matched no row. A service booted against a database that has not had 135 (a rollback, a
+      // preDeployCommand that did not run) must still let its operators in — the SSO door is not the place
+      // to discover a missing column, which is the same rule services/hubSession.js takes for migration 132.
+      // Without the column there is no provenance, so the repair below cannot be safe and is not attempted.
+      const hasCreatedVia = (found.fields || []).some((f) => f.name === 'created_via');
+      if (!hasCreatedVia) logger.warn('hub_sso_created_via_missing');
       if (!user) {
         // JIT: role from hub_role_map, else the '*' fallback; the role NAME must exist or nothing is created.
         const mappedName = await mappedRoleName(client, hubRole);
@@ -217,9 +339,14 @@ router.post('/exchange', async (req, res, next) => {
         if (!role.rows[0]) { await client.query('ROLLBACK'); return refuse(req, res, 403, `dashboard role ${mappedName} does not exist`); }
         // An unusable password: random 32 bytes, bcrypt-hashed. The user logs in through the hub (or resets via forgot-password).
         const unusable = await hashPassword(crypto.randomBytes(32).toString('hex'));
+        // W8f: created_via records that THIS path made the row (migration 135). Provenance only —
+        // never a permission, never sent to a client — and the one fact the repair below cannot infer.
         const ins = await client.query(
-          `INSERT INTO users (email, password_hash, first_name, last_name, is_active, email_verified)
-           VALUES ($1, $2, '', '', true, true) RETURNING *`, [email, unusable]);
+          hasCreatedVia
+            ? `INSERT INTO users (email, password_hash, first_name, last_name, is_active, email_verified, created_via)
+               VALUES ($1, $2, '', '', true, true, 'hub_sso') RETURNING *`
+            : `INSERT INTO users (email, password_hash, first_name, last_name, is_active, email_verified)
+               VALUES ($1, $2, '', '', true, true) RETURNING *`, [email, unusable]);
         user = ins.rows[0]; created = true;
         await client.query('INSERT INTO user_roles (user_id, role_id) VALUES ($1, $2) ON CONFLICT DO NOTHING', [user.id, role.rows[0].id]);
         await client.query(
@@ -233,32 +360,44 @@ router.post('/exchange', async (req, res, next) => {
         // (authController.js:176-179 answers the same 423). Review P2-1.
         await client.query('ROLLBACK'); logger.warn('hub_sso_locked_user'); return refuse(req, res, 423, 'Account locked');
       }
+      // W8f — THE REPAIR RUNS BEFORE THE last_login WRITE, DELIBERATELY.
+      // Its (c5) test asks whether every login this user has had was a hub hop, by comparing
+      // users.last_login with the newest HUB_SSO_LOGIN audit row. The UPDATE below sets last_login to
+      // THIS transaction's timestamp while this hop's own HUB_SSO_LOGIN row is not written until the
+      // end, so evaluating the predicate after it would have the request read its own footprint and
+      // refuse every user. Order is load-bearing; server/tests/hub-sso/w8f-jit-remap.mjs R3 is the
+      // test that bites if it moves.
+      if (!created) {
+        const mapped = await mappedRoleName(client, hubRole);
+        const held = (await loadRoles(user.id, client)).map((r) => r.name);
+        if (mapped && !held.includes(mapped)) {
+          const upgraded = hasCreatedVia
+            && await upgradeStrandedHubUser(client, { user, mappedName: mapped, held, storeCode, hubRole });
+          if (!upgraded) {
+            // W8b — AN EXISTING USER IS NEVER RE-ROLED, AND NEVER SILENTLY.
+            //
+            // The store's own decision about an account outranks the hub's: a user the store demoted
+            // (or promoted) keeps exactly the roles the store gave them, and a hop can neither raise
+            // nor lower them. That was already true; what was missing is that it was INVISIBLE — a
+            // store owner whose dashboard roles disagree with the hub's idea of their role had no way
+            // to see it, and "why does my owner see nothing" had no trail to read. So when the roles
+            // held differ from the roles the map would have created, write ONE audit row saying so.
+            // Nothing is changed by it. A user whose roles already match the map writes no row, which
+            // is what keeps the row meaningful (a log that always fires says nothing).
+            await client.query(
+              `INSERT INTO audit_logs (user_id, action, resource_type, resource, resource_id, new_values)
+               VALUES ($1, 'HUB_SSO_ROLE_UNCHANGED', 'user', 'user', $1, $2)`,
+              [user.id, JSON.stringify({ store_code: storeCode, hub_role: hubRole, mapped_role: mapped, held_roles: held })]);
+            logger.info('hub_sso_role_divergence', { userId: user.id });
+          }
+        }
+      }
+
       // What login records on success (authController.js:203-206): the counters and last_login are what an
       // offboarding / inactivity report reads, and a hub hop is a login.
       await client.query('UPDATE users SET failed_login_attempts = 0, locked_until = NULL, last_login = NOW() WHERE id = $1', [user.id]);
+      // AFTER the repair, so the session this hop issues carries the roles the user should have had.
       const roles = await loadRoles(user.id, client);
-
-      // W8b — AN EXISTING USER IS NEVER RE-ROLED, AND NEVER SILENTLY.
-      //
-      // The store's own decision about an account outranks the hub's: a user the store demoted
-      // (or promoted) keeps exactly the roles the store gave them, and a hop can neither raise
-      // nor lower them. That was already true; what was missing is that it was INVISIBLE — a
-      // store owner whose dashboard roles disagree with the hub's idea of their role had no way
-      // to see it, and "why does my owner see nothing" had no trail to read. So when the roles
-      // held differ from the roles the map would have created, write ONE audit row saying so.
-      // Nothing is changed by it. A user whose roles already match the map writes no row, which
-      // is what keeps the row meaningful (a log that always fires says nothing).
-      if (!created) {
-        const mapped = await mappedRoleName(client, hubRole);
-        const held = roles.map((r) => r.name);
-        if (mapped && !held.includes(mapped)) {
-          await client.query(
-            `INSERT INTO audit_logs (user_id, action, resource_type, resource, resource_id, new_values)
-             VALUES ($1, 'HUB_SSO_ROLE_UNCHANGED', 'user', 'user', $1, $2)`,
-            [user.id, JSON.stringify({ store_code: storeCode, hub_role: hubRole, mapped_role: mapped, held_roles: held })]);
-          logger.info('hub_sso_role_divergence', { userId: user.id });
-        }
-      }
 
       await client.query(
         `INSERT INTO audit_logs (user_id, action, resource_type, resource, resource_id, new_values)

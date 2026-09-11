@@ -5273,3 +5273,57 @@ decides which search path production takes; and no real R2 round-trip has been w
 are called out in docs/BRAIN.md and in the proof pack.
 STATUS: COMPLETE
 ---
+
+---
+TIMESTAMP: 2026-09-11 19:30
+TASK: W8f — the hub user stranded on migration 126's map is repaired, once (branch day2/w8f-jit-remap)
+BUILT: Migration 135 adds users.created_via TEXT (NULL default), additive and idempotent, and
+backfills 'hub_sso' for rows carrying an HUB_SSO_JIT_CREATE audit row that show no local login.
+server/src/routes/hubSso.js stamps created_via on every JIT creation and, when (a) the hub created
+the row, (b) it holds exactly migration 126's default role 'Admin' and nothing else, and (c) it has
+never become a local account (invited_* NULL, must_change_password false, no reset token,
+updated_at <= created_at, last_login not past the newest HUB_SSO_LOGIN), moves the user ONCE onto the
+role the CURRENT hub_role_map gives their ticket's hub role and writes HUB_SSO_ROLE_UPGRADED with old
+and new roles. Anything outside (a)+(b)+(c) is untouched and keeps writing HUB_SSO_ROLE_UNCHANGED.
+The optional audit insert is wrapped in SAVEPOINT / ROLLBACK TO SAVEPOINT. Nothing new is exposed to
+the client. scripts/w8f-remap-census.mjs (read-only) imports the predicate from the route and prints
+the users a database would re-map.
+TESTED: server/tests/hub-sso/w8f-jit-remap.mjs (new, 36 assertions) RED 26/10 -> GREEN 36/0, the RED
+being the identical file run against `git show HEAD:...hubSso.js` restored over the working file.
+Edge cases run down, not reasoned about: the Postgres aborted-transaction trap executed on a
+throwaway table (COMMIT reports ROLLBACK, the good UPDATE lost); the same route with the SAVEPOINT
+removed (status=500, roles still ["Admin"], "current transaction is aborted"); an audit insert refused
+by a CHECK constraint with the savepoint in place (hop 302, re-map present on a re-read from a NEW
+connection after the commit, logger.error hub_sso_role_upgrade_not_audited); a database with no
+migration 135 at all (JIT still succeeds, repair not attempted). Negative controls all untouched:
+Admin plus another role, a row written since creation, a local login after the last hop, the store's
+own SuperAdmin, a SuperAdmin-shaped row, a locally created Admin, an invited user, a second hop.
+OUTPUT: run-all 127 passed / 0 failed / 0 timed out / 8 skipped, exit 0 (W8c's 126 plus this lane's
+script). w8-jit-role.mjs 37/0. Migration runner on an empty database: "Successfully ran 119
+migration(s)" / "applied: 119 | pending: 0 | mismatches: 0", second run "All migrations are up to
+date". On dash_w8f_mbclone (TEMPLATE mineblock_copy, migrated to 119): the rule would re-map 0 of 17
+users, because mineblock_copy PREDATES the hub SSO deploy (no hub_role_map, zero HUB_SSO_% audit
+rows). With the 2026-09-10 row reconstructed on that clone exactly as the exchange wrote it, the
+census answers exactly 1: info@trypuure.co, and none of the 17 real Mineblock accounts.
+DECISIONS: DECISION MADE — a column, not the audit row, for signal (a): audit_logs is swept and
+truncated by operators and its user_id is ON DELETE SET NULL, so a privilege decision must not rest
+on a row somebody is entitled to delete. The audit row is still what the backfill reads, once.
+DECISION MADE — the backfill matches action = 'HUB_SSO_JIT_CREATE', not LIKE 'HUB\_SSO\_%': a
+HUB_SSO_LOGIN row proves a hop, not a creation, and stamping a store's own user 'hub_sso' would be a
+lie the repair then acts on. DECISION MADE — only 'Admin'. Migration 126 also stranded
+operator/editor on 'Manager', but the defect measured live is the OWNER, and a repair wider than the
+measurement is not a repair. DECISION MADE — updated_at <= created_at is the decisive conjunct of
+(c), justified by users having NO updated_at trigger on this schema and by every local password path
+naming the column; it is stricter than "never set a password" and that direction is fail-closed.
+DECISION MADE — the audit row is the optional half under the savepoint: an audit failure costs the
+row and a loud logger.error, never the repair and never the hop. DECISION MADE — a database without
+migration 135 is served, not refused, the same rule services/hubSession.js takes for migration 132.
+CAUGHT MYSELF — adding created_via to the JIT INSERT made the exchange depend on migration 135; the
+sibling test w8-jit-role.mjs went red with a 500 on the SSO door. Fixed by reading the column list off
+the SELECT * result (free) and degrading to the pre-W8f INSERT; proved by a test (M1) that rebuilds
+the schema without 135. Also corrected a file reference in the migration header by execution:
+updatePassword lives in services/authService.js:85, not models/User.js.
+NOT DEPLOYED, NOT PUSHED. No live service, no live database, no Render call. All five databases
+created by this lane were dropped at the end (R43); mineblock_copy was read as a TEMPLATE only.
+STATUS: COMPLETE
+---
