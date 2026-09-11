@@ -114,6 +114,10 @@ await sql`CREATE TABLE users (
   is_active BOOLEAN DEFAULT TRUE)`;
 await sql`CREATE TABLE roles (id TEXT PRIMARY KEY, name TEXT, permissions JSONB)`;
 await sql`CREATE TABLE user_roles (user_id TEXT, role_id TEXT)`;
+// REVIEW-W9 P1-1: the hand-off writes here. Shaped like the real table's used columns (server/migrations).
+await sql`CREATE TABLE audit_logs (
+  id SERIAL PRIMARY KEY, user_id TEXT, action TEXT NOT NULL, resource_type TEXT NOT NULL,
+  resource TEXT, resource_id TEXT, new_values JSONB, created_at TIMESTAMPTZ NOT NULL DEFAULT now())`;
 await sql`INSERT INTO roles (id, name, permissions) VALUES
   ('r_prod','Team - Production', ${sql.json({ 'brief-pipeline': ['access'] })}),
   ('r_view','Viewer',            ${sql.json({ departments: ['read'] })})`;
@@ -229,6 +233,22 @@ process.env.VIDEO_LAUNCHER_TOKEN = TOKEN;
   OK(!d6.body.includes(TOKEN), 'D9 the RESPONSE BODY of /open/app contains no token', d6.body.slice(0, 200));
   OK(/no-store/.test(d6.cache || '') && /private/.test(d6.cache || ''),
     'D10 the redirect is Cache-Control: no-store, private (its Location carries a credential)', String(d6.cache));
+
+  // REVIEW-W9 P1-1: the hand-off is on the record. The row names WHO took the credential and for which target,
+  // and it must never carry the token itself.
+  {
+    const db = postgres(DB, { ssl: false });
+    try {
+      const rows = await db`SELECT action, resource, resource_id, new_values FROM audit_logs WHERE action = 'VIDEO_LAUNCHER_HANDOFF' ORDER BY created_at DESC`;
+      OK(rows.length >= 1, 'D13 P1-1 the credential hand-off writes an audit row', `rows=${rows.length}`);
+      const row = rows[0] ?? {};
+      OK(row.resource === 'video_launcher' && row.new_values?.target === 'app',
+        'D14 …naming the integration and the target', JSON.stringify(row.new_values ?? null));
+      OK(!JSON.stringify(row).includes(TOKEN), 'D15 …and carrying no token', JSON.stringify(row).slice(0, 200));
+      const refusedRows = await db`SELECT count(*)::int AS n FROM audit_logs WHERE action = 'VIDEO_LAUNCHER_HANDOFF'`;
+      OK(refusedRows[0].n === rows.length, 'D16 …one row per hand-off, none for a refusal', String(refusedRows[0].n));
+    } finally { await db.end(); }
+  }
 
   const d11 = await get('/open/health', H_PROD);
   OK(d11.status === 200 && d11.body.includes('"ok":true'),

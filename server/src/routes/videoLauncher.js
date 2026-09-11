@@ -58,6 +58,7 @@ import { requirePermission } from '../middleware/rbac.js';
 import { videoLauncherUrl, videoLauncherToken, videoLauncher } from '../config/storeConfig.js';
 import { endpointAllowed } from '../services/trackingDelivery.js';
 import logger from '../utils/logger.js';
+import pool from '../config/db.js';
 
 const router = Router();
 
@@ -165,6 +166,18 @@ router.get('/open/:target', ...guard, async (req, res) => {
     // `Found. Redirecting to <the full url>` — which put the token in the
     // response body. Caught red by D9 in server/tests/video-launcher/route.mjs.
     // The Location header is the entire answer; there is no body.
+    // REVIEW-W9 P1-1: the hand-off is AUDITED. This route is the only remaining way to obtain the launcher's
+    // admin credential, and W9 exists because nobody could answer "who took it". The row names the operator and
+    // the target; it never carries the token. A failed audit insert must not deny an authorised operator the
+    // page, so it is caught and logged — the refusal path above is what protects the credential, not this row.
+    try {
+      await pool.query(
+        `INSERT INTO audit_logs (user_id, action, resource_type, resource, resource_id, new_values)
+         VALUES ($1, 'VIDEO_LAUNCHER_HANDOFF', 'integration', 'video_launcher', $1, $2)`,
+        [req.user?.id ?? null, JSON.stringify({ target: req.params.target, path: target.path, email: req.user?.email ?? null })]);
+    } catch (e) {
+      logger.warn(`[videoLauncher] hand-off audit row failed: ${e.message}`);
+    }
     return res
       .status(302)
       .location(`${base}${target.path}?access=${encodeURIComponent(token)}`)
