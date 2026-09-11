@@ -1,3 +1,4 @@
+import { rolesGrant } from '../utils/permissions';
 import { useAuth } from './useAuth';
 
 export function usePermissions() {
@@ -12,32 +13,9 @@ export function usePermissions() {
    *
    * Wildcard support: if any role has "*": ["*"], it grants everything.
    */
-  const hasPermission = (permission) => {
-    if (!user || !user.roles || !Array.isArray(user.roles)) return false;
-
-    const [resource, action] = permission.split(':');
-    if (!resource || !action) return false;
-
-    return user.roles.some((role) => {
-      let perms = role?.permissions;
-      if (!perms) return false;
-
-      // Handle JSONB returned as string
-      if (typeof perms === 'string') {
-        try { perms = JSON.parse(perms); } catch { return false; }
-      }
-      if (typeof perms !== 'object' || Array.isArray(perms)) return false;
-
-      // Wildcard: "*": ["*"] grants everything
-      if (Array.isArray(perms['*']) && perms['*'].includes('*')) return true;
-
-      // Check specific resource
-      const actions = perms[resource];
-      if (!Array.isArray(actions)) return false;
-
-      return actions.includes(action) || actions.includes('*');
-    });
-  };
+  // REVIEW-W8 P1-2: one matcher, shared with the tests and mirroring server/src/middleware/rbac.js
+  // (stored keys may be camelCase; route keys are kebab-case; both sides normalise the same way).
+  const hasPermission = (permission) => rolesGrant(user?.roles, permission);
 
   /**
    * Check if the user has a specific role by name.

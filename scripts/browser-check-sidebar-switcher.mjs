@@ -88,6 +88,8 @@ const BRAND_SHORT = 'Throwaway';
 const BRAND_FIXTURES = {
   logo:   { name: 'Throwaway Ltd', shortName: BRAND_SHORT, logoWhite: '/fixture-logo-white.png', logoSymbol: '/fixture-logo-symbol.png', logoBlack: null, emailDomain: 'throwaway.test' },
   nologo: { name: 'Throwaway Ltd', shortName: BRAND_SHORT, logoWhite: null, logoSymbol: null, logoBlack: null, emailDomain: 'throwaway.test' },
+  // REVIEW-W8 P1-1: a long name must be CLAMPED inside the sidebar, never overprint the topbar.
+  longname: { name: 'Throwaway Ltd', shortName: 'The Great Throwaway Store Of Tomorrow', logoWhite: null, logoSymbol: null, logoBlack: null, emailDomain: 'throwaway.test' },
 };
 
 const storeConfigBody = () => ({
@@ -427,6 +429,17 @@ try {
   log(`8c. no logo, no hub, plain brand block: ${JSON.stringify(plainNoLogo)}`);
   check('W8a: the plain brand block answers the same way (the wordmark is in ONE component)',
     plainNoLogo.surface === 'brand-block' && plainNoLogo.wordmark === BRAND_SHORT && plainNoLogo.imgs.length === 0);
+
+  // 8e — REVIEW-W8 P1-1: a 39-char short name with no logo stays INSIDE the sidebar (truncated), never overprints the topbar
+  mode = 'hub'; brandMode = 'longname';
+  await cdp.send('Page.navigate', { url: BASE + PAGE }, sid);
+  await until('the sidebar with a long logo-less brand', async () => await evaluate(`!!document.querySelector('[data-testid="store-switcher-button"]')`));
+  await settle(async () => Boolean((await readBrandBlock())?.wordmark));
+  const longBox = await evaluate(`(()=>{const b=document.querySelector('[data-testid="store-switcher-button"]');const n=b.querySelector('[data-testid="brand-wordmark-name"]');const a=document.querySelector('aside');const rb=b.getBoundingClientRect(),rn=n.getBoundingClientRect(),ra=a.getBoundingClientRect();return {button:Math.round(rb.width),name:Math.round(rn.width),nameRight:Math.round(rn.right),sidebar:Math.round(ra.width),overflow:getComputedStyle(n).textOverflow,scrollW:n.scrollWidth,clientW:n.clientWidth}})()`);
+  log(`8e. long name, no logo: ${JSON.stringify(longBox)}`);
+  check('W8 P1-1: the trigger never grows past the sidebar', longBox.button <= longBox.sidebar);
+  check('W8 P1-1: the name is truncated with an ellipsis inside the sidebar', longBox.nameRight <= longBox.sidebar && longBox.overflow === 'ellipsis' && longBox.scrollW > longBox.clientW);
+  await shot('10-long-name-clamped');
 
   // 8d — POSITIVE CONTROL: the very same page, with a store that HAS a logo, still draws the image
   mode = 'hub'; brandMode = 'logo';

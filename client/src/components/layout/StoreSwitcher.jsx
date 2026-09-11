@@ -73,7 +73,7 @@ function BrandMark({ collapsed, brand }) {
     return <span className={INITIAL_SQUARE} data-testid="brand-initial" aria-label={label} title={label}>{initialOf(label)}</span>;
   }
   return (
-    <span className="flex items-center gap-2 min-w-0" data-testid="brand-wordmark">
+    <span className="flex items-center gap-2 min-w-0 max-w-[150px]" data-testid="brand-wordmark">
       <span className={INITIAL_SQUARE} aria-hidden="true">{initialOf(label)}</span>
       <span className="truncate text-sm font-semibold tracking-tight text-text-primary" data-testid="brand-wordmark-name">{label}</span>
     </span>
