@@ -14,16 +14,31 @@ import api from '../services/api';
 
 const EMPTY = Object.freeze({ loading: false, enabled: false, hubOrigin: null, ssoEnabled: false, current: null, stores: [] });
 
-const STORE_CODE_RE = /^[A-Z0-9]{2,4}$/;
+// W6b: the HUB is the authority on what a store code is (store-hub src/repo/scope.js STORE_CODE_RE is
+// ^[A-Z0-9]{1,8}$), and this list is the hub's answer, not this store's identity. This dashboard's OWN
+// STORE_CODE stays 2-4 characters; the two are different questions, and under W6 the narrower rule here
+// silently deleted any hub store outside 2-4 characters from the dropdown.
+const STORE_CODE_RE = /^[A-Z0-9]{1,8}$/;
+const ROLE_MAX = 24;
 
-/** Defensive read of the server's answer: the server validates, the client refuses to render anything odd. */
+/**
+ * Defensive read of the server's answer: the server validates, the client refuses to render anything odd.
+ * W6b, per ENTRY: an unusable entry is dropped and the rest of the list is rendered — one odd store must not
+ * cost the operator every other row. `role` is a LABEL for a pill (never a permission: every gate is taken at
+ * the hub), `can_hop` false means the row is shown greyed instead of being hidden.
+ */
 export function readStoreConfig(data) {
   const hub = data && typeof data === 'object' ? data.hub : null;
   const sw = data && typeof data === 'object' ? data.switcher : null;
   const hubOrigin = hub && typeof hub.origin === 'string' && /^https?:\/\//.test(hub.origin) ? hub.origin.replace(/\/+$/, '') : null;
   const stores = Array.isArray(sw?.stores)
     ? sw.stores.filter((s) => s && typeof s.code === 'string' && STORE_CODE_RE.test(s.code) && typeof s.name === 'string' && s.name.length > 0 && s.name.length <= 80)
-      .map((s) => ({ code: s.code, name: s.name }))
+      .map((s) => ({
+        code: s.code,
+        name: s.name,
+        role: typeof s.role === 'string' && s.role.length <= ROLE_MAX ? s.role : '',
+        can_hop: typeof s.can_hop === 'boolean' ? s.can_hop : true,
+      }))
     : [];
   const current = typeof sw?.current === 'string' && sw.current ? sw.current : null;
   return {

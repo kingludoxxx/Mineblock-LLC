@@ -8,7 +8,10 @@
 //       fields are ignored. That is what makes the hub's change safe to deploy first.)
 //   S1  a valid ticket's `stores` list is persisted on the SESSION row (migration 132), never on the client
 //   S2  a malformed list is IGNORED — the ticket is still accepted, the session simply carries no list
-//   S3  the cap (50) and the field shape ({code,name} only) are enforced on the way in
+//   S3  the cap (50) and the field shape ({code,name,role,can_hop}) are enforced on the way in
+//   W6b W6 deviation 6 closed: validation is PER ENTRY. One unusable entry is skipped and the rest of the list
+//       is kept, where W6 dropped the whole dropdown. Plus the wider code grammar (^[A-Z0-9]{1,8}$: the HUB is
+//       the authority on codes) and the backward-compatible defaults for a W6-shaped ticket.
 //   S4  GET /api/v1/store-config carries hub{origin, sso_enabled} + switcher{current, stores} for that session,
 //       read at REQUEST time (R7): flipping the env between two requests changes the answer
 //   S5  a plain (non-hub) session sees switcher.stores = [] — a local login never invents a list (R21)
@@ -76,7 +79,12 @@ function mint(over = {}) {
     email: `w6-${crypto.randomBytes(4).toString('hex')}@example.test`,
     store_code: 'MB', exp: Math.floor(Date.now() / 1000) + 30,
     nonce: crypto.randomBytes(16).toString('hex'), role: 'owner',
-    stores: [{ code: 'MB', name: 'Mineblock' }, { code: 'SB', name: 'Sandbox' }, { code: 'TW', name: 'Third Wave' }],
+    stores: [
+      { code: 'MB', name: 'Mineblock', role: 'owner', can_hop: true },
+      { code: 'SB', name: 'Sandbox', role: 'owner', can_hop: true },
+      { code: 'TW', name: 'Third Wave', role: 'admin', can_hop: true },
+      { code: 'PL', name: 'Puure', role: 'owner', can_hop: false },
+    ],
     ...over,
   };
   const bytes = Buffer.from(JSON.stringify(payload), 'utf8');
@@ -130,33 +138,64 @@ let hubAccess = null;
   ok(JSON.stringify(s.hub_stores) === JSON.stringify(t.payload.stores), 'S1 the signed list is persisted on the SESSION row', JSON.stringify(s.hub_stores));
 }
 
-// ── S2/S3: malformed lists are ignored, never refused; the cap and the shape bite ──
+// ── S2/S3/W6b: malformed lists are ignored, never refused; the cap, the shape and PER-ENTRY skipping ──
+const GOOD = { code: 'SB', name: 'Sandbox', role: 'owner', can_hop: true };
 {
-  const cases = [
-    ['not an array', 'a-string'],
-    ['an object', { MB: 'Mineblock' }],
-    ['null', null],
-    ['an entry that is not an object', ['MB']],
-    ['a code that is not a store code', [{ code: 'mb', name: 'Mineblock' }]],
-    ['a code with punctuation', [{ code: 'M-B', name: 'Mineblock' }]],
-    ['a name that is not a string', [{ code: 'MB', name: 42 }]],
-    ['a name over 80 characters', [{ code: 'MB', name: 'x'.repeat(81) }]],
-    ['an entry carrying an extra field', [{ code: 'MB', name: 'Mineblock', dashboard_origin: 'https://evil.example' }]],
-  ];
-  for (const [label, stores] of cases) {
+  // (a) the CLAIM itself is unusable: there is no list to salvage, so the session carries none.
+  for (const [label, stores] of [['not an array', 'a-string'], ['an object', { MB: 'Mineblock' }], ['null', null]]) {
     const t = mint({ stores });
     const r = await exchange({ ticket: t.ticket, next: '/' });
-    const s = await lastSession();
+    const sess = await lastSession();
     ok(r.status === 302, `S2 ${label}: the ticket is still accepted`, `${r.status} ${r.text}`);
-    ok(Array.isArray(s.hub_stores) && s.hub_stores.length === 0, `S2 ${label}: the field is ignored, the session carries no list`, JSON.stringify(s.hub_stores));
+    ok(Array.isArray(sess.hub_stores) && sess.hub_stores.length === 0, `S2 ${label}: the field is ignored, the session carries no list`, JSON.stringify(sess.hub_stores));
   }
-  const many = Array.from({ length: 60 }, (_, i) => ({ code: `S${String(i).padStart(2, '0')}`.slice(0, 4), name: `Store ${i}` }));
+
+  // (b) W6b, the fix for W6's deviation 6: ONE unusable ENTRY is skipped, the rest of the list survives.
+  //     Under W6 every one of these cost the operator the WHOLE dropdown.
+  const perEntry = [
+    ['an entry that is not an object', 'MB'],
+    ['a code that is not a store code', { code: 'mb', name: 'Mineblock', role: 'owner', can_hop: true }],
+    ['a code with punctuation', { code: 'M-B', name: 'Mineblock', role: 'owner', can_hop: true }],
+    ['a code over 8 characters', { code: 'ABCDEFGHI', name: 'Too long', role: 'owner', can_hop: true }],
+    ['a name that is not a string', { code: 'MB', name: 42, role: 'owner', can_hop: true }],
+    ['a name over 80 characters', { code: 'MB', name: 'x'.repeat(81), role: 'owner', can_hop: true }],
+    ['an entry carrying an extra field', { code: 'MB', name: 'Mineblock', role: 'owner', can_hop: true, dashboard_origin: 'https://evil.example' }],
+    ['a role that is not a string', { code: 'MB', name: 'Mineblock', role: 5, can_hop: true }],
+    ['a role over 24 characters', { code: 'MB', name: 'Mineblock', role: 'r'.repeat(25), can_hop: true }],
+    ['can_hop that is not a boolean', { code: 'MB', name: 'Mineblock', role: 'owner', can_hop: 'yes' }],
+  ];
+  for (const [label, bad] of perEntry) {
+    const t = mint({ stores: [bad, GOOD] });
+    const r = await exchange({ ticket: t.ticket, next: '/' });
+    const sess = await lastSession();
+    ok(r.status === 302, `W6b ${label}: the ticket is still accepted`, `${r.status} ${r.text}`);
+    ok(JSON.stringify(sess.hub_stores) === JSON.stringify([GOOD]), `W6b ${label}: that ENTRY is skipped and the rest of the list is kept`, JSON.stringify(sess.hub_stores));
+  }
+
+  // (c) backward compatibility with a W6 ticket: no role, no can_hop -> role '' and can_hop true.
+  {
+    const t = mint({ stores: [{ code: 'MB', name: 'Mineblock' }, { code: 'SB', name: 'Sandbox' }] });
+    const r = await exchange({ ticket: t.ticket, next: '/' });
+    const sess = await lastSession();
+    ok(r.status === 302, 'W6b a W6-shaped ticket ({code,name} only) is still accepted', `${r.status}`);
+    ok(JSON.stringify(sess.hub_stores) === JSON.stringify([{ code: 'MB', name: 'Mineblock', role: '', can_hop: true }, { code: 'SB', name: 'Sandbox', role: '', can_hop: true }]),
+      'W6b a W6-shaped entry defaults to role "" and can_hop true', JSON.stringify(sess.hub_stores));
+  }
+
+  // (d) the HUB is the authority on codes: the dashboard's LIST grammar is the hub's ^[A-Z0-9]{1,8}$,
+  //     not this dashboard's own 2-4 character STORE_CODE. A 1- and an 8-character code both survive.
+  {
+    const t = mint({ stores: [{ code: 'X', name: 'One char', role: 'viewer', can_hop: true }, { code: 'ABCDEFGH', name: 'Eight chars', role: 'owner', can_hop: false }] });
+    const r = await exchange({ ticket: t.ticket, next: '/' });
+    const sess = await lastSession();
+    ok(r.status === 302 && sess.hub_stores.length === 2, 'W6b the dashboard accepts the HUB\'s code grammar for the list (1..8 characters)', JSON.stringify(sess.hub_stores));
+  }
+
+  const many = Array.from({ length: 60 }, (_, i) => ({ code: `S${String(i).padStart(2, '0')}`.slice(0, 4), name: `Store ${i}`, role: 'owner', can_hop: true }));
   const t = mint({ stores: many });
   const r = await exchange({ ticket: t.ticket, next: '/' });
-  const s = await lastSession();
-  ok(r.status === 302 && s.hub_stores.length === 50, 'S3 a list longer than 50 is capped at 50, not refused', `${r.status} ${s.hub_stores?.length}`);
-  const missing = mint({ stores: undefined });
-  delete missing.payload.stores;
+  const sess = await lastSession();
+  ok(r.status === 302 && sess.hub_stores.length === 50, 'S3 a list longer than 50 is capped at 50, not refused', `${r.status} ${sess.hub_stores?.length}`);
   const t2 = mint({ stores: undefined, nonce: crypto.randomBytes(16).toString('hex') });
   const r2 = await exchange({ ticket: t2.ticket, next: '/' });
   ok(r2.status === 302 && Array.isArray((await lastSession()).hub_stores), 'S3 a ticket with no list at all is accepted (an older hub) and the session carries an empty list', `${r2.status}`);
@@ -168,7 +207,14 @@ let hubAccess = null;
   ok(r.status === 200, 'S4 GET /store-config with a hub session -> 200', `${r.status} ${r.text.slice(0, 200)}`);
   ok(r.json?.data?.hub?.origin === 'https://hub.example.test' && r.json.data.hub.sso_enabled === true, 'S4 it carries hub{origin, sso_enabled}', JSON.stringify(r.json?.data?.hub));
   ok(r.json?.data?.switcher?.current === 'MB', 'S4 switcher.current is this store\'s code', JSON.stringify(r.json?.data?.switcher?.current));
-  ok(JSON.stringify(r.json?.data?.switcher?.stores) === JSON.stringify([{ code: 'MB', name: 'Mineblock' }, { code: 'SB', name: 'Sandbox' }, { code: 'TW', name: 'Third Wave' }]), 'S4 switcher.stores is exactly what the SIGNED ticket carried', JSON.stringify(r.json?.data?.switcher?.stores));
+  ok(JSON.stringify(r.json?.data?.switcher?.stores) === JSON.stringify([
+    { code: 'MB', name: 'Mineblock', role: 'owner', can_hop: true },
+    { code: 'SB', name: 'Sandbox', role: 'owner', can_hop: true },
+    { code: 'TW', name: 'Third Wave', role: 'admin', can_hop: true },
+    { code: 'PL', name: 'Puure', role: 'owner', can_hop: false },
+  ]), 'S4 switcher.stores is exactly what the SIGNED ticket carried, role and can_hop included', JSON.stringify(r.json?.data?.switcher?.stores));
+  ok(r.json?.data?.switcher?.stores?.length === 4 && r.json.data.switcher.stores.every((x) => Object.keys(x).sort().join(',') === 'can_hop,code,name,role'), 'W6b every store-config entry is exactly {code,name,role,can_hop}', JSON.stringify(r.json?.data?.switcher?.stores));
+  ok(r.json?.data?.switcher?.stores?.filter((x) => x.can_hop === false).length === 1, 'W6b a store the operator cannot hop into is SERVED, so the sidebar can grey it', JSON.stringify(r.json?.data?.switcher?.stores));
 
   const savedOrigin = process.env.HUB_ORIGIN; const savedFlag = process.env.HUB_SSO_ENABLED;
   delete process.env.HUB_ORIGIN; process.env.HUB_SSO_ENABLED = '0';
@@ -218,7 +264,7 @@ let hubAccess = null;
   ok(newSession.id !== oldSession.id, 'R1 rotation really made a NEW session row (the old one is deleted)', `${oldSession.id} -> ${newSession.id}`);
   ok(JSON.stringify(newSession.hub_stores) === JSON.stringify(t.payload.stores), 'R1 the switcher list is carried onto the new row', JSON.stringify(newSession.hub_stores));
   const after = await storeConfig(newAccess);
-  ok(after.json?.data?.switcher?.stores?.length === 3, 'R1 store-config still answers with the list after rotation', JSON.stringify(after.json?.data?.switcher));
+  ok(after.json?.data?.switcher?.stores?.length === 4, 'R1 store-config still answers with the list after rotation', JSON.stringify(after.json?.data?.switcher));
 }
 
 // ── R2: revocation is unchanged — deleting the session row still ends it on the next request ──

@@ -43,6 +43,15 @@ const SECRET_VALUES = Object.entries(process.env)
   .filter(([k]) => /TOKEN|SECRET|API_KEY|PASSWORD|DATABASE_URL/i.test(k))
   .map(([k, v]) => [k, v]);
 
+// W6b: the list a hub session arrives with. Store identity is DATA (R5/R15): these codes live in this fixture
+// and nowhere in engine code. PL is the can_hop=false row the sidebar greys.
+const HUB_SID = '3f6c1b7e-2b21-4f6a-9d4e-5a1c8e0b7d42';
+const HUB_LIST = [
+  { code: 'ZZ', name: 'Acme Co', role: 'owner', can_hop: true },
+  { code: 'QQ', name: 'Second Store', role: 'viewer', can_hop: true },
+  { code: 'PL', name: 'Unarmed Store', role: 'owner', can_hop: false },
+];
+
 const admin = postgres('postgres://postgres@127.0.0.1:5433/postgres', { ssl: false });
 await admin`DROP DATABASE IF EXISTS lane_constants`;
 await admin`CREATE DATABASE lane_constants`;
@@ -55,6 +64,11 @@ await sql`CREATE TABLE user_roles (user_id TEXT, role_id TEXT)`;
 await sql`INSERT INTO users (id, email, first_name, last_name) VALUES ('u1','sc@local.test','S','C')`;
 await sql`INSERT INTO roles (id, name, permissions) VALUES ('r1','viewer','{}')`;
 await sql`INSERT INTO user_roles VALUES ('u1','r1')`;
+// W6b: the sessions row a hub-SSO token is checked against, with the switcher list migration 132 parks on it.
+// This is the ONLY way to make /store-config answer with a non-empty list, which is what the scanner must scan.
+await sql`CREATE TABLE sessions (id TEXT PRIMARY KEY, user_id TEXT, expires_at TIMESTAMPTZ, hub_stores JSONB)`;
+await sql`INSERT INTO sessions (id, user_id, expires_at, hub_stores) VALUES
+  (${HUB_SID}, 'u1', NOW() + INTERVAL '1 hour', ${sql.json(HUB_LIST)})`;
 await sql.end();
 
 const router = (await import('../../src/routes/storeConfig.js')).default;
@@ -128,6 +142,47 @@ test('W6: the store list is never taken from the client', async () => {
   assert.equal(r.status, 200, r.text);
   assert.deepEqual(r.json.data.switcher.stores, []);
   assert.ok(!r.text.includes('Injected'), r.text);
+});
+
+test('W6b: switcher.stores passes role and can_hop through, and the scanner sees the richer answer', async () => {
+  const hubToken = jwt.sign({ userId: 'u1', hub_sso: true, sid: HUB_SID }, process.env.JWT_ACCESS_SECRET, { expiresIn: '10m' });
+  const r = await get('/store-config', { Authorization: `Bearer ${hubToken}` });
+  assert.equal(r.status, 200, r.text);
+  assert.deepEqual(r.json.data.switcher.stores, HUB_LIST, 'exactly the session row\'s list, role and can_hop included');
+  for (const entry of r.json.data.switcher.stores) assert.deepEqual(Object.keys(entry).sort(), ['can_hop', 'code', 'name', 'role']);
+  assert.equal(r.json.data.switcher.stores.filter((x) => x.can_hop === false).length, 1, 'the greyed row is served, not hidden');
+  scan(r.text, 'store-config with a hub session and a full switcher list');
+});
+
+test('W6b: a W6-shaped row ({code,name}) read back from a session gains the defaults, and still leaks nothing', async () => {
+  const sid = '8b2d4c10-6a77-4f2b-8e39-0c5d7a1b9e64';
+  const sql2 = postgres(DB, { ssl: false, onnotice: () => {} });
+  await sql2`INSERT INTO sessions (id, user_id, expires_at, hub_stores) VALUES
+    (${sid}, 'u1', NOW() + INTERVAL '1 hour', ${sql2.json([{ code: 'ZZ', name: 'Acme Co' }])})`;
+  await sql2.end();
+  const hubToken = jwt.sign({ userId: 'u1', hub_sso: true, sid }, process.env.JWT_ACCESS_SECRET, { expiresIn: '10m' });
+  const r = await get('/store-config', { Authorization: `Bearer ${hubToken}` });
+  assert.equal(r.status, 200, r.text);
+  assert.deepEqual(r.json.data.switcher.stores, [{ code: 'ZZ', name: 'Acme Co', role: '', can_hop: true }]);
+  scan(r.text, 'store-config with a W6-shaped session row');
+});
+
+test('W6b NEGATIVE CONTROL: a role that carries the hub secret IS caught by the scanner', async () => {
+  const sid = 'c1a9f4d3-70b6-4e58-9a2c-3d8f6b0e5217';
+  const sql2 = postgres(DB, { ssl: false, onnotice: () => {} });
+  await sql2`INSERT INTO sessions (id, user_id, expires_at, hub_stores) VALUES
+    (${sid}, 'u1', NOW() + INTERVAL '1 hour', ${sql2.json([{ code: 'ZZ', name: 'Acme Co', role: process.env.HUB_SSO_SECRET, can_hop: true }])})`;
+  await sql2.end();
+  const hubToken = jwt.sign({ userId: 'u1', hub_sso: true, sid }, process.env.JWT_ACCESS_SECRET, { expiresIn: '10m' });
+  const r = await get('/store-config', { Authorization: `Bearer ${hubToken}` });
+  assert.equal(r.status, 200, r.text);
+  // The 24-character role cap is what stops a 42-character credential ever reaching a pill: the entry is
+  // dropped whole on the way out, so the value is not in the answer at all.
+  assert.ok(process.env.HUB_SSO_SECRET.length > 24, 'the planted value is longer than a role may be');
+  assert.deepEqual(r.json.data.switcher.stores, [], 'a value long enough to hide a credential is not a role');
+  assert.ok(!r.text.includes(process.env.HUB_SSO_SECRET), 'and it is nowhere in the answer');
+  // and the scanner itself still bites on a planted leak, proving it is not asleep
+  assert.throws(() => scan(JSON.stringify({ leak: process.env.HUB_SSO_SECRET }), 'planted'), /leaks the value of HUB_SSO_SECRET/);
 });
 
 test('GET /brand is public → 200, six fields, no leak', async () => {

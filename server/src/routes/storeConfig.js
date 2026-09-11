@@ -26,6 +26,10 @@ router.get('/brand', (_req, res) => {
 //   hub SIGNED into the SSO ticket this session was opened with, parked on the session row by the exchange and
 //   put on req.user by authenticate. It is NEVER read from the request: a client that sends its own list, in a
 //   header, a query or a body, changes nothing here.
+//   W6b: each entry is {code, name, role, can_hop}. `role` is the actor's role on that store, a LABEL for the
+//   dropdown's pill and nothing more; `can_hop` false means the sidebar greys that row (the store is real, the
+//   SSO door on it is not open yet). Both are already normalised by authenticate (sanitizeHubStores), so this
+//   handler forwards them and invents nothing.
 //   No hub / a local login -> stores: [] and the sidebar stays the plain brand block it is today (R21).
 router.get('/store-config', authenticate, (req, res) => {
   res.set('Cache-Control', 'no-store');

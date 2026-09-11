@@ -51,32 +51,57 @@ export const setRefreshCookie = (res, token) => {
   });
 };
 
-// ── W6: the switcher list the hub signed into the ticket ────────────────────────────────────────────────
+// ── W6/W6b: the switcher list the hub signed into the ticket ────────────────────────────────────────────
 // The hub knows which stores this operator may hop into; the dashboard must never guess, and must never take
 // the list from the browser. It arrives INSIDE the HMAC-signed ticket and is parked on the session row
 // (migration 132), which is the row middleware/auth.js already re-reads on every hub-SSO request.
 //
-// FAIL SOFT, NEVER REFUSE: a list this dashboard cannot make sense of is dropped, and the hop still succeeds.
+// FAIL SOFT, NEVER REFUSE: an entry this dashboard cannot make sense of is dropped, and the hop still succeeds.
 // Losing a dropdown is a cosmetic failure; refusing the ticket would lock an operator out of a live store.
-// Strict on the way in, because what goes in comes back out to a browser: exactly {code, name}, a code shaped
-// like a store code, a name of at most 80 characters, at most 50 of them. One bad entry drops the WHOLE list
-// (a partially-trusted list is not a thing), a list longer than the cap is CUT (the hub caps at 50 too).
+//
+// W6b CLOSES W6's DEVIATION 6. Validation is PER ENTRY: a bad entry is SKIPPED and the rest of the list is
+// kept. W6 dropped the whole list on one bad entry, which meant one odd store could cost an operator every
+// other store's row, silently. A partially-trusted list is not a thing — but each entry is validated whole,
+// so what survives is fully trusted; nothing is repaired, only kept or dropped.
+//
+// CODE GRAMMAR, DELIBERATELY WIDER THAN THIS STORE'S OWN. Entries in the LIST match ^[A-Z0-9]{1,8}$, which is
+// the HUB's grammar (store-hub src/repo/scope.js STORE_CODE_RE): the hub is the authority on what a store code
+// is, and this dashboard is only rendering the hub's answer. This store's OWN identity (env STORE_CODE,
+// server/migrations/run.js) is unchanged and still 2-4 characters — the two are different questions, and
+// under W6 the narrower one silently deleted any hub store outside 2-4 characters from the dropdown.
+//
+// Strict on the way in, because what goes in comes back out to a browser: exactly the four known keys, a code
+// shaped like a HUB store code, a name of at most 80 characters, a role of at most 24 (a LABEL for a pill,
+// never a permission — every gate is taken at the hub), and a boolean can_hop. `role` and `can_hop` are
+// OPTIONAL: a W6 ticket carries neither, and defaults to role '' (no pill) and can_hop true (the W6 claim
+// listed only hoppable stores). At most 50 entries; a longer list is CUT, not refused (the hub caps at 50 too).
 export const HUB_STORES_MAX = 50;
 export const HUB_STORE_NAME_MAX = 80;
-const HUB_STORE_CODE_RE = /^[A-Z0-9]{2,4}$/;
+export const HUB_STORE_ROLE_MAX = 24;
+const HUB_STORE_CODE_RE = /^[A-Z0-9]{1,8}$/;
+const HUB_STORE_KEYS = new Set(['code', 'name', 'role', 'can_hop']);
 
-/** @returns {{code:string,name:string}[]} the list to persist — [] whenever the claim is absent or unusable. */
+/** @returns {{code:string,name:string,role:string,can_hop:boolean}|null} the entry to keep, or null to skip it. */
+const sanitizeHubStore = (entry) => {
+  if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return null;
+  const keys = Object.keys(entry);
+  if (!keys.includes('code') || !keys.includes('name')) return null;
+  if (keys.some((k) => !HUB_STORE_KEYS.has(k))) return null;          // an unknown key is an unknown contract
+  const { code, name, role, can_hop: canHop } = entry;
+  if (typeof code !== 'string' || !HUB_STORE_CODE_RE.test(code)) return null;
+  if (typeof name !== 'string' || name.length === 0 || name.length > HUB_STORE_NAME_MAX) return null;
+  if (role !== undefined && (typeof role !== 'string' || role.length > HUB_STORE_ROLE_MAX)) return null;
+  if (canHop !== undefined && typeof canHop !== 'boolean') return null;
+  return { code, name, role: role ?? '', can_hop: canHop ?? true };
+};
+
+/** @returns {{code:string,name:string,role:string,can_hop:boolean}[]} [] whenever the CLAIM itself is not a list. */
 export const sanitizeHubStores = (claim) => {
   if (!Array.isArray(claim)) return [];
   const out = [];
   for (const entry of claim.slice(0, HUB_STORES_MAX)) {
-    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return [];
-    const keys = Object.keys(entry);
-    if (keys.length !== 2 || !keys.includes('code') || !keys.includes('name')) return [];
-    const { code, name } = entry;
-    if (typeof code !== 'string' || !HUB_STORE_CODE_RE.test(code)) return [];
-    if (typeof name !== 'string' || name.length === 0 || name.length > HUB_STORE_NAME_MAX) return [];
-    out.push({ code, name });
+    const keep = sanitizeHubStore(entry);
+    if (keep) out.push(keep);
   }
   return out;
 };

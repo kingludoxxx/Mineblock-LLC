@@ -6,7 +6,8 @@
 // directory, serves it next to a REAL GET /api/v1/store-config, and then:
 //
 //   1. asserts the brand block became a switcher, opens it, and reads the menu
-//   2. asserts the three stores the fake store-config carries, the current one marked, Add store + Manage stores
+//   2. asserts the four stores the fake store-config carries, the current one marked, the ROLE pills, the
+//      greyed "not connected" row, New store + Manage stores
 //   3. CLICKS another store and intercepts the navigation: it must go to <hub>/switch/<code>?next=/app/dashboard
 //   4. 375 px: the open menu causes no horizontal scroll and fits the viewport
 //   5. keyboard: Escape closes, ArrowDown walks the menu
@@ -33,10 +34,19 @@ const shotDir = (() => { const i = ARGV.indexOf('--shots'); return i >= 0 ? path
 
 const HUB_ORIGIN = 'https://hub.example.test';
 const PAGE = '/dev/switcher-check.html';
-// Store identity is DATA here too (R5/R15): these three codes live in this check's fake API answer, nowhere else.
-const FAKE_STORES = [{ code: 'MB', name: 'Mineblock' }, { code: 'SB', name: 'Sandbox' }, { code: 'TW', name: 'Third Wave' }];
+// Store identity is DATA here too (R5/R15): these four codes live in this check's fake API answer, nowhere else.
+// W6b: PL is the store whose single sign-on is not armed — the row that must be SHOWN, greyed and unclickable.
+// TW carries a role this dashboard has never heard of, which is the point: the role is the HUB's word, printed.
+const FAKE_STORES = [
+  { code: 'MB', name: 'Mineblock', role: 'owner', can_hop: true },
+  { code: 'SB', name: 'Sandbox', role: 'owner', can_hop: true },
+  { code: 'TW', name: 'Third Wave', role: 'admin', can_hop: true },
+  { code: 'PL', name: 'Puure', role: 'owner', can_hop: false },
+];
 const CURRENT = 'MB';
 const CLICKED = 'SB';
+const OFF = 'PL';                       // the can_hop:false store
+const NOT_CONNECTED_TITLE = 'Single sign-on is not enabled for this store yet';
 
 const log = (...a) => console.log(...a);
 const fail = (msg) => { throw new Error(msg); };
@@ -144,7 +154,7 @@ async function shot(name) {
   if (!shotDir) return null;
   await mkdir(shotDir, { recursive: true });
   const { data } = await cdp.send('Page.captureScreenshot', { format: 'png' }, sid);
-  const file = path.join(shotDir, `${name}.png`);
+  const file = path.join(shotDir, `w6b-${name}.png`);
   await writeFile(file, Buffer.from(data, 'base64'));
   log(`   screenshot: ${file}`);
   return file;
@@ -200,15 +210,29 @@ try {
   // ── 2. the menu: the stores the server sent, the current one marked ───────
   await click('[data-testid="store-switcher-button"]');
   await until('the menu', open);
-  const rows = await evaluate(`[...document.querySelectorAll('[data-testid="store-switcher-menu"] [role="menuitem"]')].map(a=>({code:a.dataset.storeCode||null,testid:a.dataset.testid||null,text:a.innerText.replace(/\\n/g,' ').trim(),href:a.getAttribute('href'),target:a.getAttribute('target'),current:a.getAttribute('aria-current'),check:!!a.querySelector('svg.lucide-check')}))`);
+  const rows = await evaluate(`[...document.querySelectorAll('[data-testid="store-switcher-menu"] [role="menuitem"]')].map(a=>({tag:a.tagName,code:a.dataset.storeCode||null,canHop:a.dataset.canHop||null,testid:a.dataset.testid||null,text:a.innerText.replace(/\\n/g,' ').trim(),pill:a.querySelector('[data-testid="store-pill"]')?.innerText.trim()||null,pillCase:(()=>{const p=a.querySelector('[data-testid="store-pill"]');return p?getComputedStyle(p).textTransform:null})(),href:a.getAttribute('href'),target:a.getAttribute('target'),current:a.getAttribute('aria-current'),disabled:a.getAttribute('aria-disabled'),title:a.getAttribute('title'),opacity:(()=>{const o=getComputedStyle(a).opacity;return Math.round(Number(o)*100)/100})(),check:!!a.querySelector('svg.lucide-check')}))`);
   log('2. menu rows:'); for (const r of rows) log(`   ${JSON.stringify(r)}`);
   const storeRows = rows.filter((r) => r.code);
+  const byCode = Object.fromEntries(storeRows.map((r) => [r.code, r]));
   check('the menu lists exactly the stores the server sent', storeRows.length === FAKE_STORES.length && FAKE_STORES.every((s) => storeRows.some((r) => r.code === s.code && r.text.includes(s.name))));
+  check(`W6b: all ${FAKE_STORES.length} rows are there, the unarmed store included`, storeRows.length === 4);
   check('the current store is the one marked', storeRows.filter((r) => r.current === 'true').length === 1 && storeRows.find((r) => r.current === 'true').code === CURRENT);
   check('the mark is a visible check, not only an attribute', storeRows.find((r) => r.code === CURRENT).check === true);
-  check('"Add store" is there and points at the hub wizard', rows.some((r) => r.testid === 'add-store' && r.href === `${HUB_ORIGIN}/#add-store`));
-  check('"Manage stores" is there and points at the hub', rows.some((r) => r.testid === 'manage-stores' && r.href === `${HUB_ORIGIN}/`));
-  check('every row navigates the TOP window', rows.every((r) => r.target === '_top'));
+  check('W6b: only the current store carries a check', storeRows.filter((r) => r.check).length === 1);
+  // the pills: each hoppable row prints the role the SERVER sent, uppercased by CSS (the text itself is the hub's word)
+  check('W6b: every hoppable row carries its role pill, with the role the server sent', FAKE_STORES.filter((s) => s.can_hop).every((s) => byCode[s.code]?.pill?.toLowerCase() === s.role));
+  check('W6b: the role pill is rendered uppercase', FAKE_STORES.filter((s) => s.can_hop).every((s) => byCode[s.code]?.pillCase === 'uppercase'));
+  // innerText comes back already uppercased by the CSS, so compare case-insensitively, the way the role pills are.
+  check('W6b: the unarmed store shows a "not connected" pill instead of a role', byCode[OFF]?.pill?.toLowerCase() === 'not connected' && byCode[OFF]?.pill?.toLowerCase() !== FAKE_STORES.find((x) => x.code === OFF).role);
+  check('W6b: the unarmed store is greyed (opacity below 1) and marked aria-disabled', byCode[OFF]?.opacity < 1 && byCode[OFF]?.disabled === 'true');
+  check('W6b: the unarmed store explains itself on hover', byCode[OFF]?.title === NOT_CONNECTED_TITLE);
+  check('W6b: the unarmed store is NOT a link (no href to follow)', byCode[OFF]?.href === null && byCode[OFF]?.tag !== 'A');
+  check('W6b: "New store" is there, with a Plus icon, pointing at the hub wizard', rows.some((r) => r.testid === 'add-store' && r.text === 'New store' && r.href === `${HUB_ORIGIN}/#add-store`));
+  check('W6b: "Manage stores" stays as a quieter second footer row', rows.some((r) => r.testid === 'manage-stores' && r.text === 'Manage stores' && r.href === `${HUB_ORIGIN}/`));
+  check('W6b: the footer is separated by a hairline', (await evaluate(`document.querySelectorAll('[data-testid="store-switcher-menu"] div.border-t').length`)) === 1);
+  check('W6b: the word "workspace" appears nowhere in the menu', !/workspace/i.test(await evaluate(`document.querySelector('[data-testid="store-switcher-menu"]').innerText`)));
+  check('every navigable row navigates the TOP window', rows.filter((r) => r.href).every((r) => r.target === '_top'));
+  check('W6b: the plus icon is on the New store row', (await evaluate(`!!document.querySelector('[data-testid="add-store"] svg.lucide-plus')`)) === true);
   check('the expanded state is announced', (await evaluate(`document.querySelector('[data-testid="store-switcher-button"]').getAttribute('aria-expanded')`)) === 'true');
   await shot('02-menu-open');
 
@@ -222,6 +246,7 @@ try {
   await click('[data-testid="store-switcher-button"]');
   await until('the menu to close', async () => !(await open()));
   const closedWidth = await evaluate(`document.documentElement.scrollWidth`);
+  await shot('04-sidebar-closed-375px');
   await click('[data-testid="store-switcher-button"]');
   await until('the menu to open again', open);
   const widest = await evaluate(`[...document.querySelectorAll('body *')].map(el=>({t:el.tagName+(el.className&&typeof el.className==='string'?'.'+el.className.split(' ')[0]:''),r:Math.round(el.getBoundingClientRect().right)})).filter(x=>x.r>375).slice(0,4)`);
@@ -246,9 +271,20 @@ try {
   check('ArrowDown walks the menu', focusAfterDown !== focusAfterOpen);
   check('Escape closes the menu', closedByEscape);
 
-  // ── 3. clicking another store goes to the hub, and nowhere else ───────────
+  // ── 3a. W6b: clicking the UNARMED store does nothing at all ───────────────
   await click('[data-testid="store-switcher-button"]');
   await until('the menu again', open);
+  const beforeOff = intercepted.length;
+  const hrefBeforeOff = await evaluate(`location.href`);
+  const clickedOff = await click(`[data-store-code="${OFF}"]`);
+  await sleep(600);
+  const afterOff = { navigations: intercepted.length - beforeOff, href: await evaluate(`location.href`), menuStillOpen: await open() };
+  log(`3a. clicking ${OFF} (can_hop false): found=${clickedOff}, navigations=${afterOff.navigations}, href unchanged=${afterOff.href === hrefBeforeOff}, menu still open=${afterOff.menuStillOpen}`);
+  check('W6b: the row was really there to be clicked', clickedOff === true);
+  check('W6b: clicking the unarmed store does not navigate', afterOff.navigations === 0 && afterOff.href === hrefBeforeOff);
+
+  // ── 3. clicking another store goes to the hub, and nowhere else ───────────
+  if (!(await open())) { await click('[data-testid="store-switcher-button"]'); await until('the menu again', open); }
   const before = intercepted.length;
   await click(`[data-store-code="${CLICKED}"]`);
   await until('the navigation to the hub', async () => intercepted.length > before);
@@ -269,8 +305,8 @@ try {
   const collapsedMenu = await evaluate(`(()=>{const r=document.querySelector('[data-testid="store-switcher-menu"]').getBoundingClientRect();return {left:Math.round(r.left),right:Math.round(r.right),rows:document.querySelectorAll('[data-testid="store-switcher-menu"] [role="menuitem"]').length}})()`);
   log(`7. collapsed sidebar (${collapsed.sidebar}px): trigger ${JSON.stringify(collapsed)}, menu ${JSON.stringify(collapsedMenu)}`);
   check('collapsed: the symbol logo is still the trigger', collapsed.sidebar <= 60 && Boolean(collapsed.img));
-  check('collapsed: the same menu opens and stays on screen', collapsedMenu.rows === FAKE_STORES.length + 2 && collapsedMenu.left >= 0);
-  await shot('04-collapsed-open');
+  check('collapsed: the same menu opens and stays on screen', collapsedMenu.rows === FAKE_STORES.length + 2 && collapsedMenu.left >= 0);   // 4 stores + New store + Manage stores
+  await shot('05-collapsed-open');
 
   // ── 6. R21 THE FAILURE PATH: no hub -> the brand block, exactly as before ──
   mode = 'nohub';
@@ -289,7 +325,7 @@ try {
   await cdp.send('Emulation.clearDeviceMetricsOverride', {}, sid);
   log(`6b. 375 px control: scrollWidth with NO switcher at all = ${noHubWidth} (with the menu open it was ${mobile.scrollWidth})`);
   check('375 px: the shell is exactly as wide with the switcher as without it', noHubWidth === mobile.scrollWidth);
-  await shot('05-no-hub');
+  await shot('06-no-hub');
 
   log('\nRESULT');
   for (const [what, ok] of checks) log(`   ${ok ? 'PASS' : 'FAIL'}  ${what}`);

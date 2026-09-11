@@ -2,7 +2,7 @@ import crypto from 'crypto';
 import { verifyAccessToken } from '../utils/jwt.js';
 import pool from '../config/db.js';
 import logger from '../utils/logger.js';
-import { peekHubSsoClaims, loadHubSession } from '../services/hubSession.js';
+import { peekHubSsoClaims, loadHubSession, sanitizeHubStores } from '../services/hubSession.js';
 
 // ---------------------------------------------------------------------------
 // Redis import — another agent creates db/redis.js; gracefully degrade if
@@ -154,7 +154,10 @@ export const authenticate = async (req, res, next) => {
       mustChangePassword: row.must_change_password,
       emailVerified: row.email_verified,
       // W6: [] for a local login — a store with no hub behind it shows no switcher, it does not break (R21).
-      hubStores: Array.isArray(hubSession?.hub_stores) ? hubSession.hub_stores : [],
+      // W6b: sanitized on the way OUT as well as on the way in, so a row written by the W6 code ({code,name},
+      // no role, no can_hop) reads back in the current shape instead of reaching the browser half-filled.
+      // It is the same pure function, so this cannot disagree with what the exchange decided to store.
+      hubStores: sanitizeHubStores(hubSession?.hub_stores),
     };
 
     // ---- 5. Cache in Redis (never for a hub-SSO session) -------------------
