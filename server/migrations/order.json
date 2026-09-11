@@ -1,5 +1,5 @@
 {
-  "_doc": "RUN-ORDER MANIFEST for server/migrations (S0b-3). run.js applies files in exactly this order; the numeric filename prefix is NOT the run order (six prefixes are duplicated: 014, 024/024a, 033, 053, 081, 094). Every .sql file in this directory must appear here exactly once: run.js refuses to start on an unlisted, absent or duplicated entry. To add a migration: create the file, then append its name at the END of \"order\" unless it must run before an existing dependent (then insert it directly before that dependent, as 120_create_product_profiles.sql sits before 017). Never renumber or edit an applied file (checksummed). Numbering: tracking/Puure sessions 100-119, HUB 120+. Lane A used 120/121/122, Lane C 123/124, Lane E 126; 125 is reserved by server/migrations/staged/125_clickup_brief_resolutions_rekey.sql, which is NOT auto-run (see order.lane-c.json); Lane S4-SB used 128/129/130; the next free HUB number is 131.",
+  "_doc": "RUN-ORDER MANIFEST for server/migrations (S0b-3). run.js applies files in exactly this order; the numeric filename prefix is NOT the run order (six prefixes are duplicated: 014, 024/024a, 033, 053, 081, 094). Every .sql file in this directory must appear here exactly once: run.js refuses to start on an unlisted, absent or duplicated entry. To add a migration: create the file, then append its name at the END of \"order\" unless it must run before an existing dependent (then insert it directly before that dependent, as 120_create_product_profiles.sql sits before 017). Never renumber or edit an applied file (checksummed). Numbering: tracking/Puure sessions 100-119, HUB 120+. Lane A used 120/121/122, Lane C 123/124, Lane E 126; 125 is reserved by server/migrations/staged/125_clickup_brief_resolutions_rekey.sql, which is NOT auto-run (see order.lane-c.json); Lane S4-SB used 128/129/130, S4-SB2 131, W6 132, W8b 133, W8c 134; the next free HUB number is 135.",
   "order": [
     "001_create_roles.sql",
     "002_create_users.sql",
@@ -116,6 +116,8 @@
     "129_brain_embeddings.sql",
     "130_brain_playbook.sql",
     "131_brain_permissions.sql",
-    "132_session_hub_stores.sql"
+    "132_session_hub_stores.sql",
+    "133_hub_role_map_page_roles.sql",
+    "134_hub_owner_kpi_role.sql"
   ]
 }

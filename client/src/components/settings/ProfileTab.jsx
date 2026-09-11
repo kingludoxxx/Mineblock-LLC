@@ -4,7 +4,7 @@ import { Camera, Save, User } from 'lucide-react';
 export default function ProfileTab() {
   const [profile, setProfile] = useState({
     fullName: 'John Doe',
-    email: 'john@mineblock.io',
+    email: 'john@example.com',
     timezone: 'America/New_York',
   });
   const [avatarHover, setAvatarHover] = useState(false);

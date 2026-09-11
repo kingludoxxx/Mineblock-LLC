@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useId } from 'react';
 import api from '../services/api';
+import { usePermissions } from '../hooks/usePermissions';
 import DateRangePicker from '../components/ui/DateRangePicker';
 import {
   DollarSign,
@@ -18,6 +19,7 @@ import {
   Scale,
   ShoppingBag,
   PieChart,
+  Lock,
 } from 'lucide-react';
 import {
   ResponsiveContainer,
@@ -93,7 +95,7 @@ function KpiCard({ label, value, format, icon: Icon, color, sparkData, sparkKey,
 
   if (loading) {
     return (
-      <div className="animated-border-gradient rounded-xl h-full">
+      <div className="animated-border-gradient rounded-xl h-full" data-testid="kpi-card">
         <div className="glass-card border border-white/[0.05] rounded-xl p-5 relative z-10 shadow-[inset_0_1px_0_0_rgba(255,255,255,0.03)] min-h-[180px]">
           <div className="animate-pulse space-y-3">
             <div className="h-3 w-20 bg-white/[0.06] rounded" />
@@ -121,7 +123,7 @@ function KpiCard({ label, value, format, icon: Icon, color, sparkData, sparkKey,
   }
 
   return (
-    <div className="animated-border-gradient rounded-xl h-full" style={{ animationDelay: `${(index || 0) * 50}ms` }}>
+    <div className="animated-border-gradient rounded-xl h-full" data-testid="kpi-card" style={{ animationDelay: `${(index || 0) * 50}ms` }}>
       <div className="glass-card border border-white/[0.05] rounded-xl p-5 relative z-10 shadow-[inset_0_1px_0_0_rgba(255,255,255,0.03)] hover:border-white/[0.08] transition-all flex flex-col h-full">
         <div className="flex items-center gap-3 mb-4">
           <div className="w-6 h-6 rounded-md bg-white/[0.03] border border-white/[0.05] flex items-center justify-center">
@@ -588,6 +590,36 @@ function DailyBreakdown({ current, date }) {
   );
 }
 
+// ── The KPI block when this role may not read it ────────────────────────────
+//
+// W8b. GET /api/v1/kpi-system/home-dashboard sits behind requirePermission('kpi-system','access')
+// (server/src/routes/kpiSystem.js). This page used to ask for it whoever was looking, so the hub's
+// just-in-time user landing on a brand-new store met a red "Request failed with status code 403" on
+// the first screen of their first visit — an error message for something that is not an error.
+//
+// Not having a permission is a STATE, not a failure: it gets the page's own quiet surface, says so in
+// words, and names no status code. The retry banner above stays exactly what it was and is still shown
+// for a real failure — see the C fixture in scripts/browser-check-home-permissions.mjs.
+function KpiNoAccess() {
+  return (
+    <div
+      data-testid="kpi-no-access"
+      className="glass-card border border-white/[0.05] rounded-xl p-8 flex items-start gap-4"
+    >
+      <div className="w-9 h-9 shrink-0 rounded-lg bg-white/[0.03] border border-white/[0.05] flex items-center justify-center">
+        <Lock className="w-4 h-4 text-zinc-500" />
+      </div>
+      <div className="min-w-0">
+        <p className="text-sm font-medium text-zinc-200 mb-1">Performance figures are not available for your role</p>
+        <p className="text-sm text-zinc-500 max-w-prose">
+          Revenue, spend and profit on this page are limited to roles with access to the KPI system. Everything
+          else in the dashboard works as usual. Ask an administrator of this store if you need them.
+        </p>
+      </div>
+    </div>
+  );
+}
+
 // ── Main Dashboard ──────────────────────────────────────────────────────────
 
 export default function Dashboard() {
@@ -596,6 +628,12 @@ export default function Dashboard() {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
+  // W8b: `gated` is "this role may not read the KPI data", which is NOT an error. It is set from the
+  // user's own permissions BEFORE any request, and also from a 403 the server answers — the server is
+  // the authority, and the client's copy of the permission can be stale (a role changed mid-session).
+  const [gated, setGated] = useState(false);
+  const { hasPermission } = usePermissions();
+  const mayReadKpis = hasPermission('kpi-system:access');
 
   const handleDateChange = useCallback(({ startDate: sd, endDate: ed }) => {
     setStartDate(sd);
@@ -603,6 +641,9 @@ export default function Dashboard() {
   }, []);
 
   const fetchDashboard = useCallback(async (showLoading = true) => {
+    // The request this role is not allowed to make is not made. Nothing to retry, nothing to report.
+    if (!mayReadKpis) { setGated(true); setError(null); setData(null); setLoading(false); return; }
+    setGated(false);
     if (showLoading) setLoading(true);
     setError(null);
     // Retry transient network errors (deploy restarts, brief connectivity
@@ -623,13 +664,16 @@ export default function Dashboard() {
           await new Promise((r) => setTimeout(r, 1000 * attempt));  // 1s, 2s
           continue;
         }
+        // A 403 is the permission answer, not a failure: same quiet card, no red banner. Anything
+        // else (including 401, which the api client turns into a re-login) keeps the retry banner.
+        if (err.response?.status === 403) { setGated(true); setError(null); setData(null); setLoading(false); return; }
         console.error('[Dashboard] fetch error:', err);
         setError(err.response?.data?.error?.message || err.message || 'Failed to load');
         setLoading(false);
         return;
       }
     }
-  }, [startDate, endDate]);
+  }, [startDate, endDate, mayReadKpis]);
 
   useEffect(() => { fetchDashboard(true); }, [fetchDashboard]);
 
@@ -644,9 +688,10 @@ export default function Dashboard() {
     }
   }, [data?.serverDate, endDate]);
   useEffect(() => {
+    if (gated) return undefined;   // do not poll a door that is closed
     const interval = setInterval(() => fetchDashboard(false), 60000);
     return () => clearInterval(interval);
-  }, [fetchDashboard]);
+  }, [fetchDashboard, gated]);
 
   const current = data?.current || {};
   const previous = data?.previous || {};
@@ -661,7 +706,7 @@ export default function Dashboard() {
   };
 
   return (
-    <div className="flex-1 overflow-y-auto bg-transparent custom-scrollbar">
+    <div className="flex-1 overflow-y-auto bg-transparent custom-scrollbar" data-testid="home-dashboard">
       <div className="max-w-[1600px] mx-auto p-6 md:p-8 space-y-8 pb-20">
         {/* Header */}
         <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
@@ -670,20 +715,26 @@ export default function Dashboard() {
             <p className="text-sm text-zinc-500">Real-time business overview</p>
           </div>
 
-          <div className="flex items-center gap-3">
-            <div className="flex items-center gap-2 px-3 py-1.5 rounded-full border border-emerald-500/20 bg-emerald-500/10">
-              <div className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
-              <span className="text-xs font-medium text-emerald-400">Live</span>
+          {!gated && (
+            <div className="flex items-center gap-3">
+              <div className="flex items-center gap-2 px-3 py-1.5 rounded-full border border-emerald-500/20 bg-emerald-500/10">
+                <div className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
+                <span className="text-xs font-medium text-emerald-400">Live</span>
+              </div>
+              <DateRangePicker startDate={startDate} endDate={endDate} onChange={handleDateChange} />
             </div>
-            <DateRangePicker startDate={startDate} endDate={endDate} onChange={handleDateChange} />
-          </div>
+          )}
         </div>
 
+        {gated && <KpiNoAccess />}
+
+        {!gated && (
+        <>
         {/* Error state */}
         {error && !loading && (
-          <div className="bg-red-500/10 border border-red-500/20 rounded-xl p-4 flex items-center justify-between">
+          <div className="bg-red-500/10 border border-red-500/20 rounded-xl p-4 flex items-center justify-between" data-testid="dashboard-error">
             <p className="text-sm text-red-400">{error}</p>
-            <button onClick={() => fetchDashboard(true)} className="text-sm text-red-400 hover:text-red-300 font-medium cursor-pointer">
+            <button onClick={() => fetchDashboard(true)} data-testid="dashboard-retry" className="text-sm text-red-400 hover:text-red-300 font-medium cursor-pointer">
               Retry
             </button>
           </div>
@@ -807,6 +858,8 @@ export default function Dashboard() {
         {/* Revenue Overview Chart */}
         {!loading && chartData.length > 0 && (
           <RevenueChart sparklines={chartData} />
+        )}
+        </>
         )}
       </div>
     </div>

@@ -2,14 +2,18 @@ import { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { Mail, Lock, Eye, EyeOff } from 'lucide-react';
 import { useAuth } from '../hooks/useAuth';
-import { BRAND_SHORT_NAME, BRAND_LOGO_WHITE } from '../config/brand';
+import { useBrand } from '../hooks/useBrand';
 
-// Minimal, theme-aware login page. Every color goes through CSS vars so
-// dark (Mineblock) / light (Puure) themes both look right without branch
-// logic. No background animation — clean centered card.
+// Minimal, theme-aware login page. Every color goes through CSS vars so the
+// dark and light themes both look right without branch logic (R15: no store is
+// named here). No background animation — clean centered card.
+//
+// W8a: the brand is RUNTIME data. A store with no BRAND_LOGO_WHITE shows its
+// own name as a text wordmark instead of borrowing another store's image.
 export default function Login() {
   const navigate = useNavigate();
   const { login } = useAuth();
+  const brand = useBrand();
   const [form, setForm] = useState({ email: '', password: '' });
   const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState('');
@@ -46,11 +50,18 @@ export default function Login() {
       <div className="w-full max-w-md">
         {/* Brand */}
         <div className="text-center mb-10">
-          <img
-            src={BRAND_LOGO_WHITE}
-            alt={BRAND_SHORT_NAME}
-            className="h-10 w-auto mx-auto mb-5"
-          />
+          {brand.logoWhite ? (
+            <img
+              src={brand.logoWhite}
+              alt={brand.shortName}
+              className="h-10 w-auto mx-auto mb-5"
+              data-testid="login-logo"
+            />
+          ) : (
+            <h1 className="text-2xl font-semibold tracking-tight text-text-primary mb-5" data-testid="login-wordmark">
+              {brand.shortName}
+            </h1>
+          )}
           <p className="text-text-muted text-sm">Sign in to your account</p>
         </div>
 
@@ -73,7 +84,7 @@ export default function Login() {
                   value={form.email}
                   onChange={handleChange}
                   required
-                  placeholder={`you@${BRAND_SHORT_NAME?.toLowerCase() || 'example'}.co`}
+                  placeholder={`you@${brand.emailDomain}`}
                   className="bg-bg-elevated border border-border-default rounded-lg pl-10 pr-3 py-2.5 text-text-primary text-sm w-full placeholder:text-text-faint focus:outline-none focus:border-accent focus:ring-1 focus:ring-accent/30 transition"
                 />
               </div>
