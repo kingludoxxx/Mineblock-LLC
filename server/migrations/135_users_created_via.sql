@@ -13,7 +13,25 @@
 -- The repair is fail-closed and needs three independent facts about the user. This file provides the
 -- FIRST of them, which is the only one the schema could not already answer:
 --
---   (a) WAS THIS ROW CREATED BY THE HUB?  `users.created_via = 'hub_sso'`.
+--   (a) WAS THIS ROW CREATED BY THE HUB, AND HAS IT NOT BEEN REPAIRED YET?
+--       `users.created_via = 'hub_sso'`.
+--
+-- WHAT MAKES "ONCE" TRUE (W8g, REVIEW-W8F P0-1). THE COLUMN IS THE LATCH, NOT JUST THE MARK. The repair
+-- writes `created_via = 'hub_sso_repaired'` onto the row it repairs, in the same transaction, one
+-- statement before it moves the role. Nothing else in the codebase writes that value, and the
+-- predicate matches only 'hub_sso', so a repaired user can never be a candidate again.
+-- WHY IT HAS TO BE ON THE ROW: as W8f first shipped, nothing recorded that the repair had run.
+-- `created_via` stayed 'hub_sso' and the product's own role endpoints
+-- (controllers/teamController.js changeTeamMemberRole, controllers/userController.js assignRole)
+-- write user_roles and NEVER name users.updated_at, so the `updated_at <= created_at` test below
+-- stayed true forever. Measured over four rounds: a store administrator who set the hub user back to
+-- exactly 'Admin' had that decision silently reversed on the very next hop, four times, four
+-- HUB_SSO_ROLE_UPGRADED rows, always toward MORE privilege. With the latch: one upgrade row, and
+-- rounds 2-4 leave the store's choice alone.
+-- THE DELIBERATE CONSEQUENCE: the repair does NOT survive a restore from a pre-repair dump — a
+-- restored row carries 'hub_sso' again and gets its one repair again. That is the same answer this
+-- file gives everywhere else (the state on the row is the truth), and it is the one an operator can
+-- predict.
 --
 -- WHY A COLUMN AND NOT THE AUDIT ROW. The JIT branch already writes an `HUB_SSO_JIT_CREATE` audit row
 -- (resource_type 'user', resource_id = the new user's id), and that row is what the BACKFILL below
@@ -76,7 +94,7 @@ ALTER TABLE users
   ADD COLUMN IF NOT EXISTS created_via TEXT;
 
 COMMENT ON COLUMN users.created_via IS
-  'How this row was born. NULL = unknown / created locally before W8f. ''hub_sso'' = created by the hub SSO exchange (server/src/routes/hubSso.js). Provenance only: never a permission, never sent to a client.';
+  'How this row was born, and whether W8f''s one-time role repair has already run on it. NULL = unknown / created locally before W8f. ''hub_sso'' = created by the hub SSO exchange (server/src/routes/hubSso.js), repair still available. ''hub_sso_repaired'' = same, and the one-time repair has been spent (W8g): the exchange will never re-role this user again. Provenance only: never a permission, never sent to a client.';
 
 UPDATE users u
    SET created_via = 'hub_sso'

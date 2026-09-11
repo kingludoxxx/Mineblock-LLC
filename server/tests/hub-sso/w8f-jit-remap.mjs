@@ -18,6 +18,19 @@
 //   R5  every assertion above is RE-READ on a fresh connection AFTER the commit
 //   R6  a second hop writes no second upgrade row, and no divergence row either
 //
+// W8g (REVIEW-W8F P0-1 / P1-2 / P2-1 / P2-3) — WHAT MAKES "ONCE" TRUE IS THE LATCH:
+//   R7  FOUR ROUNDS, the store putting the user back on exactly ["Admin"] between hops THROUGH THE
+//       PRODUCT'S OWN ENDPOINT (teamController.changeTeamMemberRole, called as the real function):
+//       rounds 2-4 leave the store's choice alone, and there is still exactly ONE upgrade row.
+//       RED, before the latch: ["Hub Owner"] after every round and FOUR upgrade rows.
+//   R8  the latch is on the row — created_via = 'hub_sso_repaired', which (a) does not match
+//   U1  a ticket whose hub role the map does not name does NOT spend the repair (the '*' fallback
+//       used to move the user to Viewer, after which (b) refused them forever)
+//   X1  hub_role_map is not a lever on a REPAIRED user: re-pointed owner -> SuperAdmin, untouched,
+//       with the control that the same map DOES still decide what a NEW user gets
+//   D1  the predicate agrees with the door: a deactivated (401) or locked (423) user is not a
+//       candidate, so the census cannot name a user the exchange would turn away
+//
 //   N1  Admin PLUS another role            -> untouched, still HUB_SSO_ROLE_UNCHANGED   (b)
 //   N2  a row written since creation (what a password reset leaves) -> untouched        (c)
 //   N3  a local login after the last hop   -> untouched                                 (c)
@@ -313,6 +326,132 @@ try {
   ok(n6r.roles === LEGACY && n6r.upgrades === 0,
     'N6: a user the store invited is untouched, whatever else is true of the row (c)', JSON.stringify(n6r));
 
+  // ══ R7/R8 — W8g: THE REPAIR IS ONCE BECAUSE IT LATCHES ═══════════════════
+  // The store's own decision is made through the product's own endpoint, not by SQL this test writes:
+  // changeTeamMemberRole is the thing that writes user_roles and never touches users.updated_at, and
+  // that is exactly why nothing used to latch the repair off.
+  let storeSetsRole;                                           // hoisted: X2 below needs it too
+  {
+    const team = await import('../../src/controllers/teamController.js');
+    const actorId = (await userRow(saEmail)).id;               // the store's own SuperAdmin, from N4
+    storeSetsRole = async (email, roleName) => {
+      const target = await userRow(email);
+      const role = (await q('SELECT id FROM roles WHERE name = $1', [roleName]))[0];
+      let code = 200, body = null;
+      const res = { status(c) { code = c; return this; }, json(b) { body = b; return this; } };
+      await team.changeTeamMemberRole(
+        { params: { userId: target.id }, body: { roleId: role.id }, user: { id: actorId }, ip: '127.0.0.1', headers: {} },
+        res);
+      return { code, body };
+    };
+
+    const l = await strandedUser();
+    await hop({ role: 'owner', email: l });
+    ok((await rolesOf(l)).join() === HUB_OWNER && (await auditRows(l, 'HUB_SSO_ROLE_UPGRADED')).length === 1,
+      'R7: round 1 is the repair itself', `roles=${JSON.stringify(await rolesOf(l))}`);
+    ok((await userRow(l)).created_via === 'hub_sso_repaired',
+      'R8: the repair LATCHED on the row it repaired — created_via = hub_sso_repaired',
+      `created_via=${JSON.stringify((await userRow(l)).created_via)}`);
+
+    const rounds = [];
+    for (let n = 2; n <= 4; n++) {
+      const resp = await storeSetsRole(l, LEGACY);
+      const row = await userRow(l);
+      // The RED condition itself, asserted rather than assumed: the store's endpoint leaves the row
+      // looking exactly like a repair candidate. Only the latch separates it from one.
+      ok(resp.code === 200 && (await rolesOf(l)).join() === LEGACY && row.updated_at <= row.created_at,
+        `R7: round ${n} — the store sets ["${LEGACY}"] and the row still reads updated_at <= created_at`,
+        `code=${resp.code} roles=${JSON.stringify(await rolesOf(l))} c4=${row.updated_at <= row.created_at}`);
+      await hop({ role: 'owner', email: l });
+      rounds.push({ n, after: (await rolesOf(l)).join(), up: (await auditRows(l, 'HUB_SSO_ROLE_UPGRADED')).length });
+    }
+    for (const r of rounds) {
+      ok(r.after === LEGACY, `R7: round ${r.n} — THE STORE'S OWN ROLE DECISION SURVIVES THE HOP`,
+        `roles=["${r.after}"] upgradeRows=${r.up}`);
+    }
+    ok((await auditRows(l, 'HUB_SSO_ROLE_UPGRADED')).length === 1,
+      'R7: and after FOUR rounds there is still exactly ONE HUB_SSO_ROLE_UPGRADED row',
+      `n=${(await auditRows(l, 'HUB_SSO_ROLE_UPGRADED')).length}`);
+  }
+
+  // ══ U1 — an unknown hub role must not spend the one repair ═══════════════
+  {
+    const u = await strandedUser();
+    const unknown = await hop({ role: 'no-such-hub-role', email: u });
+    ok(unknown.status === 302, 'U1: a ticket whose hub role the map does not name is still served', `status=${unknown.status}`);
+    ok((await rolesOf(u)).join() === LEGACY && (await auditRows(u, 'HUB_SSO_ROLE_UPGRADED')).length === 0,
+      'U1: and it leaves the user exactly as they were — the repair is NOT spent on the "*" fallback',
+      `roles=${JSON.stringify(await rolesOf(u))}`);
+    ok((await userRow(u)).created_via === 'hub_sso', 'U1: the row is not latched either',
+      `created_via=${JSON.stringify((await userRow(u)).created_via)}`);
+    await hop({ role: 'owner', email: u });
+    ok((await rolesOf(u)).join() === HUB_OWNER,
+      'U1: so a later GENUINE owner hop still repairs them', `roles=${JSON.stringify(await rolesOf(u))}`);
+  }
+
+  // ══ X1 — hub_role_map is not a lever on a REPAIRED user (review P1-2) ════
+  {
+    const x = await strandedUser();
+    await hop({ role: 'owner', email: x });                    // the one repair
+    await setMap('owner', 'SuperAdmin');                       // the lever the review measured
+    await hop({ role: 'owner', email: x });
+    ok((await rolesOf(x)).join() === HUB_OWNER,
+      'X1: a REPAIRED user is untouched when the map is re-pointed owner -> SuperAdmin',
+      `roles=${JSON.stringify(await rolesOf(x))}`);
+    ok((await auditRows(x, 'HUB_SSO_ROLE_UPGRADED')).length === 1, 'X1: and still exactly one upgrade row');
+    const fresh = await hop({ role: 'owner' });
+    ok((await rolesOf(fresh.email)).join() === 'SuperAdmin',
+      'X1: CONTROL — the same re-pointed map DOES decide what a NEW user gets, so X1 is not a dead map',
+      `roles=${JSON.stringify(await rolesOf(fresh.email))}`);
+    await setMap('owner', HUB_OWNER);
+
+    // ── X2, THE SHARP ONE: P0-1 and P1-2 are the SAME defect seen twice ──────────────────────────
+    // X1 above passes even on the pre-W8g route, and for an accidental reason: a repaired user holds
+    // the MAPPED role, so (b) refuses them. That protection evaporates the moment the store puts
+    // them back on 'Admin' — which is precisely P0-1. So: repair, let the store demote through its
+    // own endpoint, THEN re-point the map at SuperAdmin and hop. Before W8g this ended on
+    // ["SuperAdmin"]: one row edited in a data table, one hop, and an existing account is the store's
+    // most privileged role. The latch is what makes it impossible.
+    const x2 = await strandedUser();
+    await hop({ role: 'owner', email: x2 });                   // the one repair
+    await storeSetsRole(x2, LEGACY);                           // the store's own decision
+    await setMap('owner', 'SuperAdmin');                       // the lever
+    await hop({ role: 'owner', email: x2 });
+    ok((await rolesOf(x2)).join() === LEGACY,
+      'X2: a repaired user the store then DEMOTED is still untouched by a map re-pointed at SuperAdmin',
+      `roles=${JSON.stringify(await rolesOf(x2))}`);
+    ok((await auditRows(x2, 'HUB_SSO_ROLE_UPGRADED')).length === 1,
+      'X2: and still exactly one upgrade row, ever',
+      `n=${(await auditRows(x2, 'HUB_SSO_ROLE_UPGRADED')).length}`);
+    await setMap('owner', HUB_OWNER);
+  }
+
+  // ══ D1 — the predicate agrees with the door (review P2-1) ════════════════
+  // The exchange refuses a deactivated user 401 and a locked one 423 before the repair is reached.
+  // The census reads REMAP_CANDIDATE_SQL, so the predicate has to know that too.
+  {
+    const { REMAP_CANDIDATE_SQL } = hubSsoModule;
+    const candidate = async (email) => (await q(`${REMAP_CANDIDATE_SQL} AND lower(u.email) = $2`,
+      [LEGACY, email.toLowerCase()])).length;
+
+    const d1 = await strandedUser();
+    ok(await candidate(d1) === 1, 'D1: POSITIVE CONTROL — a healthy stranded user IS a candidate');
+    await q('UPDATE users SET is_active = false WHERE lower(email) = $1', [d1]);
+    ok(await candidate(d1) === 0, 'D1: a DEACTIVATED user is not a candidate (the door answers 401)');
+    const dHop = await hop({ role: 'owner', email: d1 });
+    ok(dHop.status === 401 && (await rolesOf(d1)).join() === LEGACY,
+      'D1: and the exchange really does refuse them 401 without re-roling', `status=${dHop.status}`);
+
+    const d2 = await strandedUser();
+    await q("UPDATE users SET locked_until = NOW() + INTERVAL '1 hour' WHERE lower(email) = $1", [d2]);
+    ok(await candidate(d2) === 0, 'D1: a LOCKED user is not a candidate (the door answers 423)');
+    const d2Hop = await hop({ role: 'owner', email: d2 });
+    ok(d2Hop.status === 423 && (await rolesOf(d2)).join() === LEGACY,
+      'D1: and the exchange really does refuse them 423 without re-roling', `status=${d2Hop.status}`);
+    await q('UPDATE users SET locked_until = NULL WHERE lower(email) = $1', [d2]);
+    ok(await candidate(d2) === 1, 'D1: once the lock EXPIRES the same user is a candidate again — the guard is the lock, not a brand');
+  }
+
   // ══ T0 — THE TRAP ITSELF, shown failing on this very database ════════════
   // A failed statement inside a transaction aborts the WHOLE transaction and the later COMMIT is a
   // ROLLBACK. Demonstrated on a throwaway row so the reader does not have to take it on trust.
@@ -355,6 +494,29 @@ try {
   ok(t1login >= 1, 'T1: and the rest of the transaction committed too (the HUB_SSO_LOGIN row is there)', `n=${t1login}`);
   ok((await auditRows(t1, 'HUB_SSO_ROLE_UPGRADED')).length === 0,
     'T1: the upgrade row itself is genuinely absent — the constraint really bit');
+  ok((await userRow(t1)).created_via === 'hub_sso_repaired',
+    'T1: and the LATCH survived the commit too — a lost audit row must not hand the user a second repair',
+    `created_via=${JSON.stringify((await userRow(t1)).created_via)}`);
+
+  // ══ T2 — W8g: a repair that CANNOT complete must not be spent ════════════
+  // The target role is missing from `roles`, so the repair declines (W8f's guard against leaving a
+  // user with no role at all). The latch is written AFTER that check, deliberately: a user whose
+  // repair never happened still has it.
+  {
+    const t2 = await strandedUser();
+    await q(`UPDATE roles SET name = $2 WHERE name = $1`, [HUB_OWNER, 'Hub Owner (renamed away)']);
+    const t2hop = await hop({ role: 'owner', email: t2 });
+    ok(t2hop.status === 302 && (await rolesOf(t2)).join() === LEGACY,
+      'T2: a missing target role still serves the hop and leaves the user with their role',
+      `status=${t2hop.status} roles=${JSON.stringify(await rolesOf(t2))}`);
+    ok((await userRow(t2)).created_via === 'hub_sso',
+      'T2: and it does NOT latch — a repair that could not happen is not a repair that was spent',
+      `created_via=${JSON.stringify((await userRow(t2)).created_via)}`);
+    await q(`UPDATE roles SET name = $2 WHERE name = $1`, ['Hub Owner (renamed away)', HUB_OWNER]);
+    await hop({ role: 'owner', email: t2 });
+    ok((await rolesOf(t2)).join() === HUB_OWNER,
+      'T2: so once the role exists again, the repair still happens', `roles=${JSON.stringify(await rolesOf(t2))}`);
+  }
 
   // ══ M1 — FAILURE PATH, RUN DOWN: a database that has NOT had migration 135 ══
   // A rollback, or a preDeployCommand that did not run, must not turn the SSO door into a 500: the

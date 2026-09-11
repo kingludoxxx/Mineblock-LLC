@@ -5327,3 +5327,62 @@ NOT DEPLOYED, NOT PUSHED. No live service, no live database, no Render call. All
 created by this lane were dropped at the end (R43); mineblock_copy was read as a TEMPLATE only.
 STATUS: COMPLETE
 ---
+
+---
+TIMESTAMP: 2026-09-11 20:45
+TASK: W8g — close REVIEW-W8F (verdict BLOCK) on lane W8f, branch day2/w8f-jit-remap
+BUILT: The W8f repair is now ONCE because it LATCHES. The repair stamps
+users.created_via = 'hub_sso_repaired' on the row it repairs, inside the repair's own transaction,
+one statement before the role move, as a compare-and-set guarded on the old value; REMAP_CANDIDATE_SQL
+matches only 'hub_sso', so a repaired row can never be a candidate again. The exchange now takes
+SELECT ... FOR UPDATE on the user row before reading the predicate (for EVERY existing user, so the
+divergence path serialises too). mappedRoleName became mappedRole and reports whether hub_role_map
+named the ticket's hub role itself or the '*' fallback answered; the repair requires an exact hit, so
+a malformed ticket can no longer spend a user's one repair. REMAP_CANDIDATE_SQL gained (d)
+is_active = true AND (locked_until IS NULL OR locked_until <= NOW()), so the census cannot name a user
+the exchange refuses at the door (401 / 423). scripts/w8f-remap-census.mjs reads its DSN from
+DATABASE_URL only and REFUSES a DSN on argv (R20). Migration 135's header, the route comments, the
+census header and docs/lanes/w8f.md were corrected: no document now says "once" without naming the
+mechanism.
+TESTED: RED BEFORE GREEN on every finding, with the route restored to d2ce0017 for each RED and the
+fixed file md5-verified back afterwards. P0-1, own driver (briefs/out/w8g-logs/w8g-latch.mjs), four
+rounds with the store resetting the role through the product's own teamController.changeTeamMemberRole:
+RED 6 passed / 8 failed, upgradeRows=4, the store overridden every round; GREEN 14/0, upgradeRows=1,
+rounds 2-4 untouched. P1-1, own concurrent driver (w8g-race.mjs), 20 races of each kind: RED 1/4 —
+20/20 same-role races wrote two upgrade rows and 20/20 different-role races left the user holding
+["Hub Owner","Viewer"]; GREEN 5/0 at 20/20 and again at 50/50 (200 hops), zero non-302, no deadlock.
+P1-2, assertion X2 (repair, the store demotes, then re-point hub_role_map at SuperAdmin): RED
+roles=["SuperAdmin"] with n=2 upgrade rows; GREEN roles=["Admin"], one upgrade row ever. Suite
+w8f-jit-remap.mjs grew 36 -> 64 assertions: RED 52/12 on the reviewed route, GREEN 64/0. Edge cases
+run down: a lost audit row still latches (T1), a MISSING target role does NOT latch and the repair
+survives for later (T2), an expired lock makes a user a candidate again (D1), a database without
+migration 135 still serves the hop (M1, unchanged).
+OUTPUT: node server/tests/run-all.mjs -> SUMMARY: 127 passed, 0 failed, 0 timed out, 8 skipped in
+849.9s, EXIT=0 (script count unmoved; the two drivers live outside server/tests deliberately).
+w8-jit-role.mjs 37/0. The migration runner on an empty database twice: "Successfully ran 119
+migration(s)" / "applied: 119 | pending: 0 | mismatches: 0", then "All migrations are up to date".
+Clone census on CREATE DATABASE dash_w8g_mbclone TEMPLATE mineblock_copy: BEFORE 17 users / 17 roles /
+12 user_roles / no created_via column / zero HUB_SSO_% rows; migrated, per-user role sets diffed
+BEFORE vs AFTER with no difference; with the 2026-09-10 row reconstructed, WOULD BE RE-MAPPED = 1 and
+all 17 real accounts untouched, the store's own SuperAdmin included. cd client && npm run build ->
+2757 modules, EXIT=0, asset hashes byte-identical to the review's run.
+DECISIONS: DECISION MADE — the latch value is 'hub_sso_repaired', not NULL and not a second column:
+it fails (a) structurally, it stays recognisable as hub provenance, and it needs no new migration.
+DECISION MADE — the latch is written AFTER the "target role exists" guard and BEFORE the role move:
+a repair that cannot complete is not spent (T2), and a crash mid-repair leaves an unrepaired user
+latched rather than a repaired user unlatched (fail-closed). DECISION MADE — the repair does NOT
+survive a restore from a pre-repair dump; REVIEW-W8F asked for this to be chosen deliberately, and the
+state on the row is the truth everywhere else in this design. DECISION MADE — an unknown hub role
+leaves the user untouched rather than re-mapping without latching: not latching would not have helped,
+since the user would still be moved off 'Admin' and fail (b) forever. DECISION MADE — the row lock is
+taken for every existing user, not only candidates. LEFT OPEN, with reasons in PROOF-W8F.md W8g-6:
+P2-4 (b reads the role name, not its permissions), P2-5 (a missing hub_role_map is a 500 leaking the
+relation name — pre-existing, and the cause is the product-wide errorHandler), P2-7 (a is the only
+separator for never-logged-in local rows — now bounded to ONE re-map by the latch).
+WARNING RECORDED — W8g edits migration 135's body, so its checksum moved. Measured on a database that
+had already applied W8f's 135: the runner REFUSES, names the file and exits 1. Safe only because 135
+has never been applied outside throwaway test databases (branch unmerged, nothing pushed or deployed).
+NOT DEPLOYED, NOT PUSHED, NOT REBASED. No live service, no live database, no Render call. Every
+database this lane created was dropped at the end (R43); mineblock_copy was read as a TEMPLATE only.
+STATUS: COMPLETE
+---
