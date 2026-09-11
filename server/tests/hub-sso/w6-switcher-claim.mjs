@@ -212,15 +212,20 @@ const GOOD = { code: 'SB', name: 'Sandbox', role: 'owner', can_hop: true };
       { code: 'SB', name: 'Sand\u200Bbox\uFEFF', role: 'owner', can_hop: true },
       { code: 'TW', name: '  Padded\u2066   name  ', role: 'owner', can_hop: true },
       { code: 'XX', name: '\u200B\u202E\uFEFF', role: 'owner', can_hop: true },
+      // REVIEW-W6C P2-B: the enumerated class missed U+061C (ARABIC LETTER MARK, a Bidi_Control) and the Cf
+      // block (U+2060 WORD JOINER, U+180E, tag characters). \p{Cf} is the class, not a list.
+      { code: 'PL', name: 'arab\u061Cmark', role: 'owner', can_hop: true },
+      { code: 'P2', name: 'word\u2060joiner\u{E0041}', role: 'owner', can_hop: true },
+      { code: 'P3', name: '\u2060', role: 'owner', can_hop: true },
     ];
     const t = mint({ stores: spoof });
     const r = await exchange({ ticket: t.ticket, next: '/' });
     const sess = await lastSession();
     ok(r.status === 302, 'P2-2 a spoofed name does not refuse the ticket', `${r.status}`);
-    ok(JSON.stringify(sess.hub_stores.map((e) => e.name)) === JSON.stringify(['Safeerots-live', 'Sandbox', 'Padded name']),
+    ok(JSON.stringify(sess.hub_stores.map((e) => e.name)) === JSON.stringify(['Safeerots-live', 'Sandbox', 'Padded name', 'arabmark', 'wordjoiner']),
       'P2-2 bidi + zero-width are stripped, whitespace collapsed, and a name of nothing but those is dropped', JSON.stringify(sess.hub_stores));
-    ok(!/[\u200B-\u200F\u202A-\u202E\u2066-\u2069\uFEFF]/.test(JSON.stringify(sess.hub_stores)),
-      'P2-2 no bidi or zero-width character survives anywhere in the stored list');
+    ok(!/\p{Cf}/u.test(sess.hub_stores.map((e) => e.name).join('')),
+      'P2-2/P2-B no format character (Unicode Cf: bidi, zero-width, joiners, tags) survives in any stored name');
     // POSITIVE CONTROL: a name that needs no cleaning is untouched, punctuation and accents included.
     const t2 = mint({ stores: [{ code: 'MB', name: 'Ötzi & Co. (EU) - 2026', role: 'owner', can_hop: true }] });
     await exchange({ ticket: t2.ticket, next: '/' });

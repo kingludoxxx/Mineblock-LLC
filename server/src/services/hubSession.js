@@ -95,7 +95,9 @@ const HUB_STORE_CODE_RE = /^[A-Z0-9]{1,8}$/;
 // store); zero-width characters make two different names look identical. Both are stripped, then runs of
 // whitespace are collapsed and the ends trimmed, so a name cannot be padded into a different-looking row.
 // An entry whose name is NOTHING BUT those characters has no name and is dropped.
-const BIDI_AND_ZERO_WIDTH = /[\u200B-\u200F\u202A-\u202E\u2066-\u2069\uFEFF]/g;
+// REVIEW-W6C P2-B: the CLASS, not a list. Unicode Cf (format) covers every bidi control incl. U+061C, every
+// zero-width and joiner (U+200B-U+200F, U+2060-U+2064, U+180E, U+FEFF), the isolates/overrides and tag characters.
+const BIDI_AND_ZERO_WIDTH = /\p{Cf}/gu;
 
 /** Strip the characters that spoof a rendered row, collapse whitespace, trim. R10 P2-2. */
 export const cleanHubStoreName = (value) => String(value).replace(BIDI_AND_ZERO_WIDTH, '').replace(/\s+/g, ' ').trim();
