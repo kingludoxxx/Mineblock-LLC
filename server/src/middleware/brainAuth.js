@@ -12,6 +12,7 @@
 import crypto from 'node:crypto';
 import { authenticate } from './auth.js';
 import { requirePermission } from './rbac.js';
+import { readScope } from '../services/brain/brainScope.js';
 
 export const SERVICE_TOKEN_HEADER = 'x-brain-service-token';
 const MIN_TOKEN_LENGTH = 16;
@@ -76,21 +77,52 @@ export function requireBrainWriter(action) {
   };
 }
 
+/**
+ * NEW-6 — an operator who pastes the token into Render with a trailing newline
+ * used to pass the length gate (measured on `.trim()`), boot fine, and then get
+ * `401 bad_service_token` FOR EVER, because an HTTP header value cannot carry the
+ * surrounding whitespace. The message blamed the caller for a server-side typo.
+ *
+ * DECISION MADE — refuse the whitespace at 503 naming the variable, rather than
+ * trimming it and carrying on. Trimming is the friendlier-looking option and it
+ * is the wrong one: it makes the Brain accept a secret that is NOT the bytes in
+ * the secret store, so `"tok "` and `"tok"` become the same credential and two
+ * pairs whose tokens differ only in whitespace collapse into one — exactly the
+ * "credentials never cross stores" property R4 exists for. A 503 that names
+ * BRAIN_SERVICE_TOKEN is fail-closed (service access stops, nothing is granted)
+ * and turns an hour of client-side 401-hunting into a one-line fix.
+ */
+function serviceTokenProblem(expected) {
+  if (expected === undefined || expected === null || String(expected).trim() === '') {
+    return { code: 'service_token_unconfigured', error: 'Brain service access is not configured on this store' };
+  }
+  const raw = String(expected);
+  if (raw !== raw.trim()) {
+    return {
+      code: 'service_token_whitespace',
+      error: 'BRAIN_SERVICE_TOKEN on this store begins or ends with whitespace, so no HTTP header can ever match it. '
+           + 'Re-paste the value with no leading or trailing space or newline.',
+    };
+  }
+  if (raw.length < MIN_TOKEN_LENGTH) {
+    return { code: 'service_token_unconfigured', error: 'Brain service access is not configured on this store' };
+  }
+  return null;
+}
+
 export function brainAuth(req, res, next) {
   const presented = req.headers[SERVICE_TOKEN_HEADER];
 
   if (presented !== undefined && String(presented).trim() !== '') {
     const expected = process.env.BRAIN_SERVICE_TOKEN;
-    if (!expected || String(expected).trim().length < MIN_TOKEN_LENGTH) {
-      return res.status(503).json({
-        error: 'Brain service access is not configured on this store',
-        code: 'service_token_unconfigured',
-      });
-    }
+    const problem = serviceTokenProblem(expected);
+    if (problem) return res.status(503).json(problem);
     if (!tokensMatch(presented, expected)) {
       return res.status(401).json({ error: 'Invalid service token', code: 'bad_service_token' });
     }
     req.brainActor = 'service';
+    // A pipeline reads the APPROVED layer. Always, on every door (NEW-1).
+    req.brainScope = readScope({ mayReadUnapproved: false });
     return next();
   }
 
@@ -100,6 +132,10 @@ export function brainAuth(req, res, next) {
     if (err) return next(err);
     if (i >= sessionChain.length) {
       req.brainActor = req.user?.id ? `user:${req.user.id}` : 'user';
+      // The ONE place the answer to "may this caller see unapproved work?" is
+      // computed. Every read door downstream is handed this object; none of them
+      // re-derives it and none of them may run without it (brainScope.js).
+      req.brainScope = readScope({ mayReadUnapproved: sessionHasBrainPermission(req, 'approve') });
       return next();
     }
     const mw = sessionChain[i++];

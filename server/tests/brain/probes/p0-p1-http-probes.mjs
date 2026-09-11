@@ -9,10 +9,14 @@ if (process.env.BRAIN_PROBE !== '1') {
   process.exit(0);
 }
 
+import { fileURLToPath } from 'node:url';
 import postgres from 'postgres';
 import { spawnSync } from 'node:child_process';
 
-const REPO = '/Users/ludo/wt-s4-brain';
+// The worktree this file lives in — NOT a hard-coded one. (It named
+// /Users/ludo/wt-s4-brain, so a copy of this probe in any other worktree
+// imported the ORIGINAL lane's code and proved nothing about its own tree.)
+const REPO = fileURLToPath(new URL('../../../..', import.meta.url)).replace(/\/$/, '');
 const PG = 'postgres://postgres@127.0.0.1:5433';
 const DBNAME = 'sb2_httpprobe';
 const DB = `${PG}/${DBNAME}`;

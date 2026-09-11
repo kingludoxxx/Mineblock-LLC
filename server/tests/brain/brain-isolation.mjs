@@ -31,9 +31,14 @@ const PG = 'postgres://postgres@127.0.0.1:5433';
 let pass = 0, fail = 0;
 const ok = (c, m, x = '') => { if (c) { pass++; console.log('PASS ', m); } else { fail++; console.log('FAIL ', m, x ? `\n      ${String(x).split('\n').join('\n      ')}` : ''); } };
 
+// R43 (one test database per worktree): the database NAME carries an optional
+// prefix from BRAIN_TEST_DB_PREFIX, so two lanes running this suite at once do not
+// share a database and produce each other's failures. Default unchanged.
+const DBPREFIX = process.env.BRAIN_TEST_DB_PREFIX || '';
+
 const STORES = [
-  { name: 'A', db: 's4_brain_store_a', code: 'SA', token: 'token-store-a-aaaaaaaaaaaaaaaa', product: 'AAA' },
-  { name: 'B', db: 's4_brain_store_b', code: 'SB', token: 'token-store-b-bbbbbbbbbbbbbbbb', product: 'BBB' },
+  { name: 'A', db: `${DBPREFIX}s4_brain_store_a`, code: 'SA', token: 'token-store-a-aaaaaaaaaaaaaaaa', product: 'AAA' },
+  { name: 'B', db: `${DBPREFIX}s4_brain_store_b`, code: 'SB', token: 'token-store-b-bbbbbbbbbbbbbbbb', product: 'BBB' },
 ];
 
 const admin = postgres(`${PG}/postgres`, { ssl: false, onnotice: () => {} });

@@ -25,15 +25,42 @@ import { isR2Configured, uploadBuffer, r2Config } from '../r2.js';
  * Read at CALL time (R7) — both the store code and the R2 config.
  * @returns {{ok: boolean, reason: string|null, bucket: string|null, prefix: string|null}}
  */
-export function bucketTarget() {
+/**
+ * NEW-7 — the prefix was built by string concatenation from an UNVALIDATED
+ * `STORE_CODE`, so `STORE_CODE="../evil"` produced `stores/../EVIL/` and
+ * `STORE_CODE="sa/../sb"` produced `stores/SA/../SB/`, both `ok: true`. Ingest
+ * survived only because `rawObjectKey` runs the anchored grammar in a DIFFERENT
+ * module and throws first — so the containment did not live where the prefix is
+ * built, the refusal a misconfigured store actually saw named the wrong variable
+ * ("the object key is derived by the server…"), and any future caller of
+ * `keyPrefix()` (a listing route, a signed-URL route) inherited the traversal.
+ * The grammar is now checked HERE, where the prefix is made.
+ */
+export const STORE_CODE_RE = /^[A-Z0-9]{2,4}$/;
+
+/** The validated store code for a key prefix, or the reason there is none. */
+function prefixCode() {
   const code = storeCode();
   if (!code) {
     return {
-      ok: false,
+      code: null,
       reason: 'STORE_CODE is not set — the Brain will not write an unprefixed object into a bucket another store may share',
-      bucket: null,
-      prefix: null,
     };
+  }
+  if (!STORE_CODE_RE.test(code)) {
+    return {
+      code: null,
+      reason: `STORE_CODE ${JSON.stringify(code)} is not a store code (${STORE_CODE_RE.source}) — `
+            + 'the Brain will not build a bucket key prefix out of it',
+    };
+  }
+  return { code, reason: null };
+}
+
+export function bucketTarget() {
+  const { code, reason: codeReason } = prefixCode();
+  if (!code) {
+    return { ok: false, reason: codeReason, bucket: null, prefix: null };
   }
   if (!isR2Configured({ requireBucket: true })) {
     const cfg = r2Config();
@@ -45,10 +72,19 @@ export function bucketTarget() {
   return { ok: true, reason: null, bucket: r2Config().bucket, prefix: `stores/${code}/` };
 }
 
-/** The mandatory key prefix for this store, or null when STORE_CODE is unset. */
+/**
+ * The mandatory key prefix for this store, or null when STORE_CODE is unset OR
+ * is not a store code (NEW-7). Null means "do not write" — never "write without
+ * a prefix", which is the collision this module exists to prevent.
+ */
 export function keyPrefix() {
-  const code = storeCode();
+  const { code } = prefixCode();
   return code ? `stores/${code}/` : null;
+}
+
+/** Why there is no prefix, for a caller that wants to log or return the reason. */
+export function keyPrefixRefusal() {
+  return prefixCode().reason;
 }
 
 /**
@@ -71,4 +107,4 @@ export async function mirrorRawBody(document) {
   return { mirrored: true, bucket: target.bucket, key, url };
 }
 
-export default { bucketTarget, keyPrefix, mirrorRawBody };
+export default { bucketTarget, keyPrefix, keyPrefixRefusal, mirrorRawBody, STORE_CODE_RE };

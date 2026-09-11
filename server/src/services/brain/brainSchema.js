@@ -64,6 +64,20 @@ export function assertInsightType(t) {
   return v;
 }
 
+/**
+ * NEW-9 — Postgres text cannot hold a NUL byte, so one anywhere in a parameter is
+ * `invalid byte sequence for encoding "UTF8": 0x00` from the driver, which the
+ * route turns into a 500. A malformed request is a 400: the caller sent something
+ * this API cannot accept, and saying so costs one line.
+ */
+export function assertNoNul(value, field) {
+  if (value === undefined || value === null) return value;
+  if (String(value).includes('\u0000')) {
+    throw new BrainError('bad_text', `${field} contains a NUL byte (0x00), which text in this Brain cannot hold`);
+  }
+  return value;
+}
+
 export function assertStatus(s) {
   const v = String(s || '').trim();
   if (!INSIGHT_STATUSES.includes(v)) {

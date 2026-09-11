@@ -29,7 +29,11 @@ import { dirname, join } from 'node:path';
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO = join(HERE, '..', '..', '..');
 const PG = 'postgres://postgres@127.0.0.1:5433';
-const DBNAME = 's4_brain_routes';
+// R43 (one test database per worktree): the database NAME carries an optional
+// prefix from BRAIN_TEST_DB_PREFIX, so two lanes running this suite at once do not
+// share a database and produce each other's failures. Default unchanged.
+const DBPREFIX = process.env.BRAIN_TEST_DB_PREFIX || '';
+const DBNAME = `${DBPREFIX}s4_brain_routes`;
 const DB = `${PG}/${DBNAME}`;
 
 let pass = 0, fail = 0, skip = 0;
@@ -220,7 +224,7 @@ ok(typeof INS_ID === 'number', 'B4.1b …insight ids too', typeof INS_ID);
     process.env.OPENAI_API_KEY = 'test-key';
     const { search } = await import('../../src/services/brainSearch.js');
     const fake = { name: 'openai', model: 'text-embedding-3-small', dim: 1536, embed: async (t) => t.map(() => new Array(1536).fill(0.01)) };
-    const r = await search(sql, { q: 'braces', provider: fake });
+    const r = await search(sql, { q: 'braces' }, { mayReadUnapproved: false, provider: fake });
     ok(r.mode === 'vector', 'B5.2 vector path used when pgvector AND a provider are present', r.mode);
     delete process.env.OPENAI_API_KEY;
   }
@@ -529,6 +533,261 @@ ok(typeof INS_ID === 'number', 'B4.1b …insight ids too', typeof INS_ID);
     'B10.34 …and the R2 config is read at REQUEST time: rotating the var changes the next call', bucketTarget().bucket);
   for (const k of ['R2_ACCOUNT_ID', 'R2_ACCESS_KEY_ID', 'R2_SECRET_ACCESS_KEY', 'R2_BUCKET_NAME']) {
     if (saved[k] === undefined) delete process.env[k]; else process.env[k] = saved[k];
+  }
+}
+
+// ── B11 the S4-SB3 (SECOND-PASS) findings, each asserted so it cannot come back ─
+// Every one of these reproduced RED on 3c7957c before the fix; the probes that
+// showed them are kept under probes/sb3-*.mjs.
+
+// A THIRD session: brain:read only. The review's NEW-1 was visible to this one too.
+const [u3] = await sql`INSERT INTO users (id, email, first_name, last_name, is_active)
+          VALUES (gen_random_uuid(),'ro@t.co','R','O', TRUE) RETURNING id`;
+const [r3] = await sql`INSERT INTO roles (id, name, permissions)
+          VALUES (gen_random_uuid(),'brain-readonly', ${sql.json({ brain: ['access', 'read'] })}) RETURNING id`;
+await sql`INSERT INTO user_roles (user_id, role_id) VALUES (${u3.id}, ${r3.id})`;
+const READONLY = { Authorization: `Bearer ${signAccessToken({ userId: u3.id })}`, 'Content-Type': 'application/json' };
+
+// NEW-1 — GET /insights is a read door and obeys the SAME rule as /search.
+{
+  // one of each status, so "only approved" is a claim with something to exclude
+  const p = await call('POST', '/insights', { insight_type: 'pain', body: 'B11 proposed one', source_document_ids: [DOC_ID] });
+  const j = await call('POST', '/insights', { insight_type: 'pain', body: 'B11 rejected one', source_document_ids: [DOC_ID] });
+  await call('PATCH', `/insights/${j.j.insight.id}`, { status: 'rejected', reason: 'B11' }, SESSION);
+  const P_ID = p.j.insight.id; const J_ID = j.j.insight.id;
+
+  for (const [who, h] of [['service', SERVICE], ['brain:read', READONLY], ['brain:write', WRITER]]) {
+    const r = await call('GET', '/insights', undefined, h);
+    const seen = (r.j?.insights || []).map((i) => i.status);
+    ok(r.status === 200 && seen.length > 0 && seen.every((s) => s === 'approved'),
+      `B11.1 NEW-1 GET /insights DEFAULT for ${who} is the APPROVED layer only — never the proposed/rejected ones`,
+      `${r.status} ${JSON.stringify(seen)}`);
+    ok(!(r.j?.insights || []).some((i) => i.id === P_ID || i.id === J_ID),
+      `B11.2 …and neither the proposed nor the rejected row is in it (${who})`, JSON.stringify((r.j?.insights || []).map((i) => i.id)));
+    ok(r.j?.approved_only === true,
+      `B11.3 …and the response SAYS which layer it is (${who})`, JSON.stringify(r.j?.approved_only));
+  }
+  for (const [who, h] of [['service', SERVICE], ['brain:read', READONLY], ['brain:write', WRITER]]) {
+    for (const st of ['proposed', 'rejected']) {
+      const r = await call('GET', `/insights?status=${st}`, undefined, h);
+      ok(r.status === 403 && r.j?.code === 'approval_scope',
+        `B11.4 …and ?status=${st} is REFUSED for ${who} with the same code /search uses`, `${r.status} ${JSON.stringify(r.j)}`);
+    }
+  }
+  const rev = await call('GET', '/insights', undefined, SESSION);
+  ok(rev.status === 200 && (rev.j?.insights || []).some((i) => i.id === P_ID) && (rev.j?.insights || []).some((i) => i.id === J_ID),
+    'B11.5 …a REVIEWER (brain:approve) still sees the queue — the gate is the permission, not the route',
+    JSON.stringify((rev.j?.insights || []).map((i) => `${i.id}:${i.status}`)));
+  const revOne = await call('GET', '/insights?status=proposed', undefined, SESSION);
+  ok(revOne.status === 200 && (revOne.j?.insights || []).every((i) => i.status === 'proposed'),
+    'B11.6 …and may still filter to one status', JSON.stringify(revOne.j?.insights?.map((i) => i.status)));
+}
+
+// NEW-1, STRUCTURALLY — the rule is in the STORE layer, so a route cannot bypass
+// it by forgetting. This is the check that makes the next read door safe too.
+{
+  const { listInsights } = await import('../../src/services/brainStore.js');
+  const { search } = await import('../../src/services/brainSearch.js');
+  for (const [name, fn] of [
+    ['listInsights', () => listInsights(sql, {})],
+    ['search', () => search(sql, { q: 'braces' })],
+  ]) {
+    let threw = null;
+    try { await fn(); } catch (e) { threw = e; }
+    ok(threw && threw.code === 'scope_required' && threw.status === 500,
+      `B11.7 NEW-1 ${name}() called with NO actor scope RAISES (scope_required) instead of defaulting to something permissive`,
+      threw ? `${threw.code} ${threw.status}` : 'it returned normally');
+  }
+  // …and the scope object itself is what decides, not the caller's good intentions
+  const asService = await listInsights(sql, {}, { mayReadUnapproved: false });
+  ok(asService.insights.every((i) => i.status === 'approved'),
+    'B11.8 …and a false scope narrows to approved even when no status was asked for',
+    JSON.stringify(asService.insights.map((i) => i.status)));
+}
+
+// NEW-3 — a citation whose insight is no longer approved is DROPPED and FLAGGED.
+{
+  const i = await call('POST', '/insights', { insight_type: 'pain', body: 'B11 cited then withdrawn', source_document_ids: [DOC_ID] });
+  const CID = i.j.insight.id;
+  await call('PATCH', `/insights/${CID}`, { status: 'approved' }, SESSION);
+  const w = await call('PUT', '/playbook/BBB', { sections: { angles: [{ key: 'c1', value: { copy: 'cites it' }, cites: [CID] }] } }, SESSION);
+  ok(w.status === 200 && w.j?.playbook?.sections?.angles?.[0]?.cites?.includes(CID),
+    'B11.9 NEW-3 an APPROVED citation reads back normally', JSON.stringify(w.j?.playbook?.sections?.angles?.[0]));
+  await call('POST', '/playbook/BBB/lock', {}, SESSION);
+  const rej = await call('PATCH', `/insights/${CID}`, { status: 'rejected', reason: 'withdrawn after the lock' }, SESSION);
+  ok(rej.status === 200, 'B11.10 …rejecting a cited insight is ALLOWED (a playbook entry may not veto a review)', `${rej.status}`);
+  const g = await call('GET', '/playbook/BBB', undefined, SERVICE);
+  const entry = g.j?.playbook?.sections?.angles?.find((e) => e.key === 'c1');
+  ok(entry && !(entry.cites || []).includes(CID),
+    'B11.11 …and the LOCKED playbook no longer hands a pipeline that citation', JSON.stringify(entry?.cites));
+  ok(entry && (entry.stale_cites || []).some((c) => c.insight_id === CID && c.status === 'rejected'),
+    'B11.12 …it is FLAGGED instead, with the status that disqualified it, so the entry is visibly stale',
+    JSON.stringify(entry?.stale_cites));
+  await call('POST', '/playbook/BBB/unlock', {}, SESSION);
+}
+
+// NEW-5 — `provider` is configuration, not a query parameter.
+{
+  for (const v of ['', 'anything', '1']) {
+    const r = await call('GET', `/search?q=braces&provider=${v}`, undefined, SESSION);
+    ok(r.status === 400 && r.j?.code === 'unknown_parameter',
+      `B11.13 NEW-5 ?provider=${JSON.stringify(v)} is REFUSED 400 — never a 500, never a silent downgrade of the store's search mode`,
+      `${r.status} ${JSON.stringify(r.j)}`);
+  }
+  const clean = await call('GET', '/search?q=braces', undefined, SESSION);
+  ok(clean.status === 200, 'B11.14 …and the same query without it still works', `${clean.status}`);
+}
+
+// NEW-6 — a whitespace-wrapped BRAIN_SERVICE_TOKEN refuses at 503, naming the key.
+{
+  const saved = process.env.BRAIN_SERVICE_TOKEN;
+  const core = 'sb3-whitespace-token-0123456789';
+  for (const env of [`  ${core}  `, `\t${core}\n`, `${core} `]) {
+    process.env.BRAIN_SERVICE_TOKEN = env;
+    const r = await call('GET', '/search?q=braces', undefined, { 'X-Brain-Service-Token': core, 'Content-Type': 'application/json' });
+    ok(r.status === 503 && r.j?.code === 'service_token_whitespace' && /BRAIN_SERVICE_TOKEN/.test(r.j?.error || ''),
+      `B11.15 NEW-6 env=${JSON.stringify(env)} → 503 naming BRAIN_SERVICE_TOKEN, not a 401 that blames the caller`,
+      `${r.status} ${JSON.stringify(r.j)}`);
+  }
+  process.env.BRAIN_SERVICE_TOKEN = saved;
+  const good = await call('GET', '/search?q=braces', undefined, SERVICE);
+  ok(good.status === 200, 'B11.16 …and the clean token still works on the very next request (R7)', `${good.status}`);
+}
+
+// NEW-7 — STORE_CODE is validated where the PREFIX is built, not in another module.
+{
+  const { bucketTarget, keyPrefix, STORE_CODE_RE } = await import('../../src/services/brain/brainBucket.js');
+  const savedCode = process.env.STORE_CODE;
+  const savedR2 = { ...process.env };
+  process.env.R2_ACCOUNT_ID = 'acct'; process.env.R2_ACCESS_KEY_ID = 'akid';
+  process.env.R2_SECRET_ACCESS_KEY = 'secret'; process.env.R2_BUCKET_NAME = 'store-a-bucket';
+  for (const bad of ['../evil', 'sa/../sb', 'sa evil', 'A', 'TOOLONGCODE', 'S.A']) {
+    process.env.STORE_CODE = bad;
+    const t = bucketTarget();
+    ok(t.ok === false && /STORE_CODE/.test(t.reason || ''),
+      `B11.17 NEW-7 STORE_CODE=${JSON.stringify(bad)} REFUSES the mirror, and the reason names STORE_CODE`, JSON.stringify(t));
+    ok(keyPrefix() === null,
+      `B11.18 …and keyPrefix() is null, so a future listing / signed-URL route cannot inherit the traversal (${JSON.stringify(bad)})`,
+      JSON.stringify(keyPrefix()));
+  }
+  process.env.STORE_CODE = 'SA';
+  ok(bucketTarget().prefix === 'stores/SA/' && keyPrefix() === 'stores/SA/' && !!STORE_CODE_RE?.test('SA'),
+    'B11.19 …while a real store code still produces its prefix', JSON.stringify(bucketTarget()));
+  process.env.STORE_CODE = savedCode;
+  for (const k of ['R2_ACCOUNT_ID', 'R2_ACCESS_KEY_ID', 'R2_SECRET_ACCESS_KEY', 'R2_BUCKET_NAME']) {
+    if (savedR2[k] === undefined) delete process.env[k]; else process.env[k] = savedR2[k];
+  }
+}
+
+// NEW-9 / P2-10 — malformed input is a 400, never a 500.
+{
+  const nul = await fetch(`${BASE}/search?q=${encodeURIComponent(`${String.fromCharCode(0)} braces`)}`, { headers: SESSION });
+  const nulJ = await nul.json().catch(() => null);
+  ok(nul.status === 400 && nulJ?.code === 'bad_text',
+    'B11.20 NEW-9 a NUL byte in q is a 400 (it used to reach the driver and come back a 500)',
+    `${nul.status} ${JSON.stringify(nulJ)}`);
+  for (const qs of ['from=not-a-date', 'to=2026-13-99', 'from=2026-99-99', 'to=yesterday']) {
+    const r = await call('GET', `/search?q=braces&${qs}`, undefined, SESSION);
+    ok(r.status === 400 && r.j?.code === 'bad_date' && new RegExp(qs.split('=')[0]).test(r.j?.error || ''),
+      `B11.21 P2-10 ${qs} is a 400 naming the parameter`, `${r.status} ${JSON.stringify(r.j)}`);
+  }
+  const good = await call('GET', '/search?q=braces&from=2026-08-01&to=2026-12-31', undefined, SESSION);
+  ok(good.status === 200, 'B11.22 …and a real date range still works (the positive control)', `${good.status}`);
+  const alive = await call('GET', '/search?q=braces', undefined, SESSION);
+  ok(alive.status === 200, 'B11.23 …the connection is not poisoned by the refused NUL query');
+}
+
+// P2-8 — rejected → approved KEEPS the rejection on the record.
+{
+  const i = await call('POST', '/insights', { insight_type: 'pain', body: 'B11 history', source_document_ids: [DOC_ID] });
+  const ID = i.j.insight.id;
+  await call('PATCH', `/insights/${ID}`, { status: 'rejected', reason: 'THE ORIGINAL REASON' }, SESSION);
+  const [mid] = await sql`SELECT status, rejected_reason FROM kb_insights WHERE id = ${ID}`;
+  ok(mid.status === 'rejected' && mid.rejected_reason === 'THE ORIGINAL REASON',
+    'B11.24 P2-8 a rejection records its reason', JSON.stringify(mid));
+  const up = await call('PATCH', `/insights/${ID}`, { status: 'approved' }, SESSION);
+  ok(up.status === 200, 'B11.25 …and rejected → approved is ALLOWED (a rejection corrected by new evidence is normal review)', `${up.status}`);
+  const [after] = await sql`SELECT status, rejected_reason, metadata FROM kb_insights WHERE id = ${ID}`;
+  const hist = after.metadata?.review_history || [];
+  ok(after.status === 'approved' && after.rejected_reason === null,
+    'B11.26 …rejected_reason still means "why it is rejected RIGHT NOW", so it clears', JSON.stringify(after.rejected_reason));
+  ok(hist.length === 2 && hist[0].to === 'rejected' && hist[1].from === 'rejected' && hist[1].to === 'approved',
+    'B11.27 …and every transition is on the record in metadata.review_history', JSON.stringify(hist));
+  ok(hist[1]?.rejected_reason_before === 'THE ORIGINAL REASON',
+    'B11.28 …INCLUDING the reason the earlier rejection gave, which the approve used to silently NULL',
+    JSON.stringify(hist.map((h) => h.rejected_reason_before)));
+  ok(hist.length > 0 && hist.every((h) => h.by === u.id && h.at),
+    'B11.29 …with the reviewing user and the instant on each entry', JSON.stringify(hist.map((h) => h.by)));
+}
+
+// ── B12 NEW-2: the lock check is inside the transaction (TOCTOU) ────────────
+// TWO connections, a controlled interleave: connection 2 takes the LOCK at the
+// instant connection 1's lock CHECK resolves. Before the fix the lock was granted
+// and the write went through it. The harm is P1-4's: a locked version whose
+// content is not fixed. probes/sb3-lock-race.mjs prints the same run.
+{
+  const { putPlaybook, lockPlaybook, unlockPlaybook, getPlaybook } = await import('../../src/services/brainStore.js');
+  const conn1 = postgres(DB, { ssl: false, onnotice: () => {}, max: 4 });
+  const conn2 = postgres(DB, { ssl: false, onnotice: () => {}, max: 4 });
+  try {
+    const HEAD_READ = /locked_at[\s\S]*from\s+playbook_products|from\s+playbook_products[\s\S]*locked_at/i;
+    let fired = false; let lockGrantedAt = null; let lockPromise = null;
+    const proxy = (handle) => new Proxy(handle, {
+      apply(target, thisArg, args) {
+        const out = Reflect.apply(target, thisArg, args);
+        if (!Array.isArray(args[0]) || !HEAD_READ.test(args[0].join(' ? '))) return out;
+        return (async () => {
+          const rows = await out;
+          if (!fired) {
+            fired = true;
+            lockPromise = lockPlaybook(conn2, 'AAA', { actor: 'user:the-reviewer' })
+              .then((p) => { lockGrantedAt = Date.now(); return p; })
+              .catch((e) => { lockGrantedAt = Date.now(); return e; });
+            // Give the lock every chance to win. If it is still blocked when this
+            // expires, the row lock is holding it — which is the fix.
+            await Promise.race([lockPromise, new Promise((r) => setTimeout(r, 2000))]);
+          }
+          return rows;
+        })();
+      },
+      get(target, prop, recv) {
+        if (prop === 'begin') return (fn) => target.begin((tx) => fn(proxy(tx)));
+        const v = Reflect.get(target, prop, recv);
+        return typeof v === 'function' ? v.bind(target) : v;
+      },
+    });
+
+    await unlockPlaybook(conn1, 'AAA', { actor: 'setup' }).catch(() => {});
+    await putPlaybook(conn1, 'AAA', { sections: { angles: [{ key: 'race', value: { copy: 'before the race' } }] } }, { actor: 'setup' });
+
+    let putErr = null;
+    try {
+      await putPlaybook(proxy(conn1), 'AAA', { sections: { angles: [{ key: 'race', value: { copy: 'WRITTEN THROUGH THE RACE' } }] } }, { actor: 'user:the-writer' });
+    } catch (e) { putErr = e; }
+    const putSettledAt = Date.now();
+    if (lockPromise) await lockPromise;
+
+    ok(fired, 'B12.1 NEW-2 the interleave fired: a LOCK was attempted between the write\'s check and its write');
+    const final = await getPlaybook(conn2, 'AAA');
+    const lockWonFirst = lockGrantedAt !== null && lockGrantedAt < putSettledAt;
+    const contentChangedUnderLock = lockWonFirst && !putErr
+      && final.sections?.angles?.find((e) => e.key === 'race')?.value?.copy === 'WRITTEN THROUGH THE RACE';
+    ok(contentChangedUnderLock === false,
+      'B12.2 …and NO lock was granted that then had the playbook rewritten under it — the row lock serialises the two',
+      `lockGrantedAt=${lockGrantedAt} putSettledAt=${putSettledAt} put=${putErr ? putErr.code : 'ok'} copy=${JSON.stringify(final.sections?.angles?.find((e) => e.key === 'race')?.value?.copy)}`);
+    // Whichever won, the end state is CONSISTENT: either the write landed and the
+    // lock stamped THAT version, or the lock landed and the write was refused 423.
+    const copy = final.sections?.angles?.find((e) => e.key === 'race')?.value?.copy;
+    const consistent = putErr
+      ? (putErr.code === 'playbook_locked' && copy === 'before the race')
+      : (copy === 'WRITTEN THROUGH THE RACE');
+    ok(consistent,
+      'B12.3 …and the end state is one of the two SERIALISED outcomes, never a mixture',
+      `put=${putErr ? `${putErr.status} ${putErr.code}` : 'ok'} copy=${JSON.stringify(copy)} locked_at=${final.locked_at}`);
+    ok(final.locked_at !== null, 'B12.4 …the lock itself did land', String(final.locked_at));
+    await unlockPlaybook(conn1, 'AAA', { actor: 'cleanup' }).catch(() => {});
+  } finally {
+    await conn1.end(); await conn2.end();
   }
 }
 

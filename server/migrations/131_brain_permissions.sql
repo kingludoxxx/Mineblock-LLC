@@ -22,6 +22,24 @@
 --
 -- Additive + idempotent (R6): the concatenation is de-duplicated through a
 -- SELECT DISTINCT, so re-running changes nothing.
+--
+-- S4-SB2 / NEW-8 — THE GUARD IS A MIGRATION, NOT A POLICY. It used to read
+-- "anything that is not already read AND write", which is a statement about what
+-- a role LACKS, so every role an operator created later with FEWER brain actions
+-- was topped up to access+read+write the next time anyone ran this file by hand —
+-- and the header above invites exactly that hand-run. Measured on a clone of a
+-- live store's role table:
+--   {"brain":["access","read"]}  a deliberately READ-ONLY reviewer → gained write
+--   {"brain":[]}                 a deliberately empty brain role   → gained all three
+--   {"brain":["approve"]}        an approve-only role              → gained read+write
+-- The ledger stops the runner re-running it, so that was a foot-gun rather than a
+-- live escalation, but a foot-gun that fires on the documented procedure.
+--
+-- The guard now names the ONE shape migration 128 created — the flat
+-- `["access"]` this migration exists to split — so the statement means "expand
+-- 128's grant", which is what it is. Any other shape is an operator's decision and
+-- is left exactly alone. Still idempotent: after the split the role no longer
+-- equals `["access"]`, so a second run matches nothing at all.
 
 UPDATE roles r
 SET permissions = jsonb_set(
@@ -36,5 +54,4 @@ SET permissions = jsonb_set(
     )
 WHERE r.permissions ? 'brain'
   AND jsonb_typeof(r.permissions -> 'brain') = 'array'
-  AND NOT (r.permissions -> 'brain' @> '["read"]'::jsonb
-           AND r.permissions -> 'brain' @> '["write"]'::jsonb);
+  AND r.permissions -> 'brain' = '["access"]'::jsonb;

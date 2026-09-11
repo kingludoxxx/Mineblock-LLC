@@ -71,11 +71,11 @@ const wrap = (where, fn) => async (req, res) => {
 };
 
 // ── search ─────────────────────────────────────────────────────────────────
+// NEW-1: `req.brainScope` is built ONCE, in brainAuth, from the credential — not
+// here, and not in the next read door someone adds. The store layer refuses to run
+// without it, so a route that forgets to pass it raises instead of leaking.
 router.get('/search', requireReader, wrap('search', async (req, res) => {
-  const out = await search(sql, req.query, {
-    mayReadUnapproved: sessionHasBrainPermission(req, APPROVE),
-  });
-  res.json(out);
+  res.json(await search(sql, req.query, req.brainScope));
 }));
 
 // ── raw documents ──────────────────────────────────────────────────────────
@@ -114,7 +114,7 @@ router.post('/ingest', requireBrainWriter(WRITE), wrap('ingest', async (req, res
 
 // ── insights ───────────────────────────────────────────────────────────────
 router.get('/insights', requireReader, wrap('insights.list', async (req, res) => {
-  res.json(await listInsights(sql, req.query));
+  res.json(await listInsights(sql, req.query, req.brainScope));
 }));
 
 router.post('/insights', requireBrainWriter(WRITE), wrap('insights.create', async (req, res) => {

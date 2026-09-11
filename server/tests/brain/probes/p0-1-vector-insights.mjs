@@ -9,9 +9,13 @@ if (process.env.BRAIN_PROBE !== '1') {
   process.exit(0);
 }
 
+import { fileURLToPath } from 'node:url';
 import postgres from 'postgres';
 import { spawnSync } from 'node:child_process';
-const REPO = '/Users/ludo/wt-s4-brain';
+// The worktree this file lives in — NOT a hard-coded one. (It named
+// /Users/ludo/wt-s4-brain, so a copy of this probe in any other worktree
+// imported the ORIGINAL lane's code and proved nothing about its own tree.)
+const REPO = fileURLToPath(new URL('../../../..', import.meta.url)).replace(/\/$/, '');
 const VEC = process.env.BRAIN_VECTOR_PGURL || 'postgres://postgres@127.0.0.1:5434';
 const DBNAME = 'sb2_vecprobe';
 const admin = postgres(`${VEC}/postgres`, { ssl: false, onnotice: () => {} });
@@ -55,13 +59,13 @@ if (store.embedInsight) { try { await store.embedInsight(sql, ins.id, { provider
 
 const n = await sql`SELECT count(*)::int AS n FROM kb_embeddings WHERE insight_id IS NOT NULL`;
 console.log('kb_embeddings rows with insight_id:', n[0].n);
-const kw = await search(sql, { q: "alphaterm", provider: null }, { provider: null });
-const vc = await search(sql, { q: "alphaterm", provider }, { provider });
+const kw = await search(sql, { q: "alphaterm" }, { mayReadUnapproved: false, provider: null });
+const vc = await search(sql, { q: "alphaterm" }, { mayReadUnapproved: false, provider });
 const ids = (r) => r.results.map((x) => `${x.kind}:${x.id}`);
 console.log(`KEYWORD mode=${kw.mode} results=${JSON.stringify(ids(kw))}`);
 console.log(`VECTOR  mode=${vc.mode} results=${JSON.stringify(ids(vc))}`);
 console.log('approved insight visible in KEYWORD mode:', ids(kw).includes(`insight:${ins.id}`));
 console.log('approved insight visible in VECTOR  mode:', ids(vc).includes(`insight:${ins.id}`));
-const only = await search(sql, { q: "alphaterm", type: "insight", provider }, { provider });
+const only = await search(sql, { q: "alphaterm", type: "insight" }, { mayReadUnapproved: false, provider });
 console.log(`explicit type=insight in VECTOR mode: ${JSON.stringify(ids(only))}  (mode=${only.mode})`);
 await sql.end();
