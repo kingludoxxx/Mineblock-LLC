@@ -19,7 +19,10 @@
 //  • Single use: the nonce is burned in hub_sso_used_tickets under its primary key inside the same transaction that
 //    creates the user/session; two parallel exchanges cannot both win.
 //  • JIT: an unknown email is created with the role hub_role_map gives the hub role, else the '*' fallback (least
-//    privileged). An existing user is never re-roled. An inactive user is refused, a LOCKED one is refused with the
+//    privileged; W8b: the map's seeded targets are the PAGE roles, migration 133). An existing user is never
+//    re-roled in either direction — and since W8b a disagreement between what the hub thinks this operator is
+//    and what the store gave them is written to audit_logs as HUB_SSO_ROLE_UNCHANGED instead of being invisible.
+//    An inactive user is refused, a LOCKED one is refused with the
 //    same 423 the local login answers, and an email that matches more than one row (the users.email UNIQUE is
 //    case-sensitive) is refused with 409 rather than picking one (review P2-1 / P2-5).
 //  • Revocation has NO grace period (lead's decision, S1-4 plan line A4): the session this route issues is marked
@@ -110,6 +113,22 @@ export const requestOrigin = (req) => {
   return req.headers?.referer ? originOf(req.headers.referer) : null;
 };
 
+/**
+ * W8b — hub role -> dashboard role NAME, the ONE lookup both the JIT creation and the divergence
+ * audit take. The map is DATA (hub_role_map, migrations 126 + 133), so a store re-points a role
+ * without a deploy, and the hub role is only ever a KEY: a ticket that spells a dashboard role name
+ * selects nothing unless the map says so.
+ *
+ * FAIL CLOSED: a hub role this table does not know falls to the '*' row, which both migrations seed
+ * as the least-privileged role. null only when there is no '*' row either, and the caller refuses.
+ */
+async function mappedRoleName(client, hubRole) {
+  const { rows } = await client.query(
+    'SELECT hub_role, dashboard_role FROM hub_role_map WHERE hub_role = $1 OR hub_role = $2', [hubRole, '*']);
+  const hit = rows.find((r) => r.hub_role === hubRole) || rows.find((r) => r.hub_role === '*');
+  return hit ? hit.dashboard_role : null;
+}
+
 router.post('/exchange', async (req, res, next) => {
   try {
     // The flag first, before the bucket and before any read: while dark this route is indistinguishable from a
@@ -192,11 +211,10 @@ router.post('/exchange', async (req, res, next) => {
       let created = false;
       if (!user) {
         // JIT: role from hub_role_map, else the '*' fallback; the role NAME must exist or nothing is created.
-        const map = await client.query('SELECT hub_role, dashboard_role FROM hub_role_map WHERE hub_role = $1 OR hub_role = $2', [hubRole, '*']);
-        const mapped = map.rows.find((r) => r.hub_role === hubRole) || map.rows.find((r) => r.hub_role === '*');
-        if (!mapped) { await client.query('ROLLBACK'); return refuse(req, res, 403, 'hub_role_map has no entry for this role and no "*" fallback'); }
-        const role = await client.query('SELECT id, name FROM roles WHERE name = $1', [mapped.dashboard_role]);
-        if (!role.rows[0]) { await client.query('ROLLBACK'); return refuse(req, res, 403, `dashboard role ${mapped.dashboard_role} does not exist`); }
+        const mappedName = await mappedRoleName(client, hubRole);
+        if (!mappedName) { await client.query('ROLLBACK'); return refuse(req, res, 403, 'hub_role_map has no entry for this role and no "*" fallback'); }
+        const role = await client.query('SELECT id, name FROM roles WHERE name = $1', [mappedName]);
+        if (!role.rows[0]) { await client.query('ROLLBACK'); return refuse(req, res, 403, `dashboard role ${mappedName} does not exist`); }
         // An unusable password: random 32 bytes, bcrypt-hashed. The user logs in through the hub (or resets via forgot-password).
         const unusable = await hashPassword(crypto.randomBytes(32).toString('hex'));
         const ins = await client.query(
@@ -219,6 +237,29 @@ router.post('/exchange', async (req, res, next) => {
       // offboarding / inactivity report reads, and a hub hop is a login.
       await client.query('UPDATE users SET failed_login_attempts = 0, locked_until = NULL, last_login = NOW() WHERE id = $1', [user.id]);
       const roles = await loadRoles(user.id, client);
+
+      // W8b — AN EXISTING USER IS NEVER RE-ROLED, AND NEVER SILENTLY.
+      //
+      // The store's own decision about an account outranks the hub's: a user the store demoted
+      // (or promoted) keeps exactly the roles the store gave them, and a hop can neither raise
+      // nor lower them. That was already true; what was missing is that it was INVISIBLE — a
+      // store owner whose dashboard roles disagree with the hub's idea of their role had no way
+      // to see it, and "why does my owner see nothing" had no trail to read. So when the roles
+      // held differ from the roles the map would have created, write ONE audit row saying so.
+      // Nothing is changed by it. A user whose roles already match the map writes no row, which
+      // is what keeps the row meaningful (a log that always fires says nothing).
+      if (!created) {
+        const mapped = await mappedRoleName(client, hubRole);
+        const held = roles.map((r) => r.name);
+        if (mapped && !held.includes(mapped)) {
+          await client.query(
+            `INSERT INTO audit_logs (user_id, action, resource_type, resource, resource_id, new_values)
+             VALUES ($1, 'HUB_SSO_ROLE_UNCHANGED', 'user', 'user', $1, $2)`,
+            [user.id, JSON.stringify({ store_code: storeCode, hub_role: hubRole, mapped_role: mapped, held_roles: held })]);
+          logger.info('hub_sso_role_divergence', { userId: user.id });
+        }
+      }
+
       await client.query(
         `INSERT INTO audit_logs (user_id, action, resource_type, resource, resource_id, new_values)
          VALUES ($1, 'HUB_SSO_LOGIN', 'user', 'user', $1, $2)`,

@@ -18,7 +18,7 @@
 // R5/R15: no store name, code or url is written here. The list arrives from the server (useStoreSwitcher).
 import { useEffect, useRef, useState } from 'react';
 import { ChevronDown, Check, Plus, Settings2 } from 'lucide-react';
-import { BRAND_SHORT_NAME, BRAND_LOGO_WHITE, BRAND_LOGO_SYMBOL } from '../../config/brand';
+import { useBrand } from '../../hooks/useBrand';
 import { useStoreSwitcher, switchUrl, addStoreUrl, manageStoresUrl } from '../../hooks/useStoreSwitcher';
 
 const ROW = 'w-full flex items-center gap-2 px-2.5 py-1.5 rounded-md text-sm text-left transition-colors';
@@ -34,10 +34,50 @@ const PILL_OFF = `${PILL} bg-bg-hover text-text-faint`;
 export const NOT_CONNECTED_TITLE = 'Single sign-on is not enabled for this store yet';
 export const NOT_CONNECTED_PILL = 'not connected';
 
-function BrandMark({ collapsed }) {
-  return collapsed
-    ? <img src={BRAND_LOGO_SYMBOL} alt={BRAND_SHORT_NAME} className="h-4 w-auto" />
-    : <img src={BRAND_LOGO_WHITE} alt={BRAND_SHORT_NAME} className="h-5 w-auto" />;
+/**
+ * W8a — the store's mark, WITHOUT assuming the store has an image.
+ *
+ * A store provisioned by the hub gets BRAND_NAME / BRAND_SHORT_NAME and no
+ * BRAND_LOGO_*, so `logoWhite` / `logoSymbol` arrive null. Before this, the
+ * per-field fallback in config/brand.js filled those nulls with the bundled
+ * images of one particular store and every new store wore that store's
+ * wordmark. Now:
+ *
+ *   logo present -> the image, exactly as before (the VITE_BRAND_* / BRAND_*
+ *                   path an existing store ships is untouched)
+ *   logo absent  -> a NEUTRAL text wordmark: the store's own short name in the
+ *                   sidebar's own type. Collapsed, where there is no room for
+ *                   a name, the small rounded initial square the menu rows use.
+ *
+ * No image element is rendered in the no-logo case at all: a null `src` is a
+ * request for the current page and paints a broken-image glyph.
+ */
+export const INITIAL_SQUARE =
+  'shrink-0 w-5 h-5 rounded-md bg-bg-hover border border-border-subtle flex items-center justify-center '
+  + 'text-[10px] font-semibold uppercase text-text-muted';
+
+/** First character of the store's short name, or a dot when there is nothing to take. */
+const initialOf = (name) => {
+  const c = String(name || '').trim().charAt(0);
+  return c ? c.toUpperCase() : '\u00b7';
+};
+
+function BrandMark({ collapsed, brand }) {
+  const logo = collapsed ? brand.logoSymbol : brand.logoWhite;
+  const label = brand.shortName;
+
+  if (logo) {
+    return <img src={logo} alt={label} className={collapsed ? 'h-4 w-auto' : 'h-5 w-auto'} data-testid="brand-logo" />;
+  }
+  if (collapsed) {
+    return <span className={INITIAL_SQUARE} data-testid="brand-initial" aria-label={label} title={label}>{initialOf(label)}</span>;
+  }
+  return (
+    <span className="flex items-center gap-2 min-w-0" data-testid="brand-wordmark">
+      <span className={INITIAL_SQUARE} aria-hidden="true">{initialOf(label)}</span>
+      <span className="truncate text-sm font-semibold tracking-tight text-text-primary" data-testid="brand-wordmark-name">{label}</span>
+    </span>
+  );
 }
 
 /** The check slot. Always rendered, so every name starts at the same x whether or not it is the current store. */
@@ -51,6 +91,7 @@ function CurrentMark({ current }) {
 
 export default function StoreSwitcher({ collapsed }) {
   const { enabled, hubOrigin, current, stores } = useStoreSwitcher();
+  const brand = useBrand();
   const [open, setOpen] = useState(false);
   const [focus, setFocus] = useState(0);
   const wrapRef = useRef(null);
@@ -76,7 +117,7 @@ export default function StoreSwitcher({ collapsed }) {
   if (!enabled) {
     return (
       <div className="flex items-center gap-2.5" data-testid="brand-block">
-        <BrandMark collapsed={collapsed} />
+        <BrandMark collapsed={collapsed} brand={brand} />
       </div>
     );
   }
@@ -104,7 +145,7 @@ export default function StoreSwitcher({ collapsed }) {
         className={`flex items-center gap-2 rounded-md px-1.5 py-1 -ml-1.5 text-text-muted
           hover:text-text-primary hover:bg-bg-hover transition-colors cursor-pointer ${collapsed ? 'justify-center' : ''}`}
       >
-        <BrandMark collapsed={collapsed} />
+        <BrandMark collapsed={collapsed} brand={brand} />
         <ChevronDown className={`w-3 h-3 shrink-0 transition-transform ${open ? 'rotate-180' : ''}`} />
       </button>
 

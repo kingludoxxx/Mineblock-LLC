@@ -116,6 +116,7 @@
     "129_brain_embeddings.sql",
     "130_brain_playbook.sql",
     "131_brain_permissions.sql",
-    "132_session_hub_stores.sql"
+    "132_session_hub_stores.sql",
+    "133_hub_role_map_page_roles.sql"
   ]
 }

@@ -8,18 +8,18 @@ import {
 } from 'lucide-react';
 
 const apiLogs = [
-  { id: 1, timestamp: '2026-03-13T10:42:18Z', endpoint: '/api/v1/campaigns', method: 'GET', status: 200, duration: 124, user: 'sarah@mineblock.io' },
+  { id: 1, timestamp: '2026-03-13T10:42:18Z', endpoint: '/api/v1/campaigns', method: 'GET', status: 200, duration: 124, user: 'sarah@example.com' },
   { id: 2, timestamp: '2026-03-13T10:41:55Z', endpoint: '/api/v1/scrapes', method: 'POST', status: 201, duration: 342, user: 'system' },
-  { id: 3, timestamp: '2026-03-13T10:41:30Z', endpoint: '/api/v1/users/me', method: 'GET', status: 200, duration: 45, user: 'mike@mineblock.io' },
+  { id: 3, timestamp: '2026-03-13T10:41:30Z', endpoint: '/api/v1/users/me', method: 'GET', status: 200, duration: 45, user: 'mike@example.com' },
   { id: 4, timestamp: '2026-03-13T10:40:12Z', endpoint: '/api/v1/auth/login', method: 'POST', status: 401, duration: 89, user: 'unknown' },
-  { id: 5, timestamp: '2026-03-13T10:39:48Z', endpoint: '/api/v1/campaigns/42', method: 'PUT', status: 200, duration: 210, user: 'sarah@mineblock.io' },
-  { id: 6, timestamp: '2026-03-13T10:38:22Z', endpoint: '/api/v1/reports/export', method: 'GET', status: 500, duration: 5012, user: 'jordan@mineblock.io' },
+  { id: 5, timestamp: '2026-03-13T10:39:48Z', endpoint: '/api/v1/campaigns/42', method: 'PUT', status: 200, duration: 210, user: 'sarah@example.com' },
+  { id: 6, timestamp: '2026-03-13T10:38:22Z', endpoint: '/api/v1/reports/export', method: 'GET', status: 500, duration: 5012, user: 'jordan@example.com' },
   { id: 7, timestamp: '2026-03-13T10:37:10Z', endpoint: '/api/v1/scrapes/run', method: 'POST', status: 202, duration: 156, user: 'system' },
   { id: 8, timestamp: '2026-03-13T10:36:44Z', endpoint: '/api/v1/users', method: 'GET', status: 403, duration: 32, user: 'guest@external.com' },
-  { id: 9, timestamp: '2026-03-13T10:35:18Z', endpoint: '/api/v1/ai/generate', method: 'POST', status: 200, duration: 2840, user: 'sarah@mineblock.io' },
-  { id: 10, timestamp: '2026-03-13T10:34:02Z', endpoint: '/api/v1/campaigns', method: 'DELETE', status: 404, duration: 67, user: 'mike@mineblock.io' },
+  { id: 9, timestamp: '2026-03-13T10:35:18Z', endpoint: '/api/v1/ai/generate', method: 'POST', status: 200, duration: 2840, user: 'sarah@example.com' },
+  { id: 10, timestamp: '2026-03-13T10:34:02Z', endpoint: '/api/v1/campaigns', method: 'DELETE', status: 404, duration: 67, user: 'mike@example.com' },
   { id: 11, timestamp: '2026-03-13T10:33:15Z', endpoint: '/api/v1/webhooks', method: 'POST', status: 500, duration: 8200, user: 'system' },
-  { id: 12, timestamp: '2026-03-13T10:32:00Z', endpoint: '/api/v1/dashboard/stats', method: 'GET', status: 200, duration: 98, user: 'jordan@mineblock.io' },
+  { id: 12, timestamp: '2026-03-13T10:32:00Z', endpoint: '/api/v1/dashboard/stats', method: 'GET', status: 200, duration: 98, user: 'jordan@example.com' },
 ];
 
 const mockDetail = {

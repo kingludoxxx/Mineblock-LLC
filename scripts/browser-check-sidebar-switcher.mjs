@@ -13,6 +13,11 @@
 //   5. keyboard: Escape closes, ArrowDown walks the menu
 //   6. R21 (the failure path): a store-config with no hub renders the plain brand block — no chevron, no menu
 //   7. collapsed sidebar: the symbol logo is still the trigger
+//   8. W8a: a runtime brand with NO logo (which is what the provisioner creates: BRAND_NAME set,
+//      BRAND_LOGO_* unset) renders a NEUTRAL TEXT WORDMARK — the store's own short name — and NO <img>
+//      anywhere in the brand block. Before W8a the per-field fallback in config/brand.js filled those
+//      nulls with one particular store's bundled images, so every new store wore that store's logo.
+//      The paired fixture, a runtime brand WITH a logo, asserts the image is still used.
 //
 // NOTHING LEAVES THE MACHINE: Chromium runs with --host-resolver-rules=MAP * 127.0.0.1:9 (every hostname
 // resolves to a dead local port) AND the hub navigation is caught by CDP Fetch at requestStage=Request, before
@@ -74,11 +79,22 @@ let mode = 'hub';
 // with a secret in it, on every click, silently. The client normalises it now; this fixture proves it in the
 // browser rather than in a unit test, because the href is what a person actually clicks.
 const HOSTILE_ORIGIN = 'https://hub.example.test/?token=LEAK-not-a-real-secret#frag';
+// W8a — the two brand fixtures. `logo` is a store that ships its own images (BRAND_LOGO_* set on its
+// service, or VITE_BRAND_LOGO_* baked into its bundle); `nologo` is a brand-new store exactly as the
+// provisioner creates it: a NAME and no images at all. The image paths here are this fixture's own
+// (served as a 1x1 PNG below) — no store's real asset is named anywhere in this file (R15).
+let brandMode = 'logo';
+const BRAND_SHORT = 'Throwaway';
+const BRAND_FIXTURES = {
+  logo:   { name: 'Throwaway Ltd', shortName: BRAND_SHORT, logoWhite: '/fixture-logo-white.png', logoSymbol: '/fixture-logo-symbol.png', logoBlack: null, emailDomain: 'throwaway.test' },
+  nologo: { name: 'Throwaway Ltd', shortName: BRAND_SHORT, logoWhite: null, logoSymbol: null, logoBlack: null, emailDomain: 'throwaway.test' },
+};
+
 const storeConfigBody = () => ({
   success: true,
   data: {
     storeCode: CURRENT,
-    brand: { name: null, shortName: null, logoWhite: null, logoSymbol: null, logoBlack: null, emailDomain: null },
+    brand: BRAND_FIXTURES[brandMode],
     hub: mode === 'hub' ? { origin: HUB_ORIGIN, sso_enabled: true }
       : mode === 'hostile-origin' ? { origin: HOSTILE_ORIGIN, sso_enabled: true }
       : { origin: null, sso_enabled: false },
@@ -355,6 +371,76 @@ try {
   log(`6b. 375 px control: scrollWidth with NO switcher at all = ${noHubWidth} (with the menu open it was ${mobile.scrollWidth})`);
   check('375 px: the shell is exactly as wide with the switcher as without it', noHubWidth === mobile.scrollWidth);
   await shot('06-no-hub');
+
+  // ── 8. W8a: the brand block when this store has NO logo of its own ────────
+  //
+  // The provisioner sets BRAND_NAME / BRAND_SHORT_NAME / BRAND_EMAIL_DOMAIN on a new dashboard service and
+  // no BRAND_LOGO_*, so /api/v1/brand answers logoWhite:null. What must appear is the STORE'S OWN NAME as
+  // a text wordmark — never another store's image, and never a broken <img> with a null src.
+  // Non-throwing wait: on a tree where the wordmark does not exist this must produce a FAILED CHECK
+  // with the actual DOM printed, not a harness timeout that hides every other result.
+  const settle = async (fn, timeoutMs = 4000) => {
+    const end = Date.now() + timeoutMs;
+    for (;;) { if (await fn()) return true; if (Date.now() > end) return false; await sleep(120); }
+  };
+  const readBrandBlock = () => evaluate(`(() => {
+    const b = document.querySelector('[data-testid="store-switcher-button"], [data-testid="brand-block"]');
+    if (!b) return null;
+    return {
+      surface: b.dataset.testid,
+      imgs: [...b.querySelectorAll('img')].map((i) => i.getAttribute('src')),
+      wordmark: b.querySelector('[data-testid="brand-wordmark-name"]')?.innerText.trim() || null,
+      wordmarkBlock: !!b.querySelector('[data-testid="brand-wordmark"]'),
+      initial: b.querySelector('[data-testid="brand-initial"]')?.innerText.trim() || null,
+      logo: b.querySelector('[data-testid="brand-logo"]')?.getAttribute('src') || null,
+      text: b.innerText.replace(/\\n/g, ' ').trim(),
+    };
+  })()`);
+
+  // 8a — the switcher trigger, no logo
+  mode = 'hub'; brandMode = 'nologo';
+  await cdp.send('Page.navigate', { url: BASE + PAGE }, sid);
+  await until('the sidebar with a logo-less brand', async () => await evaluate(`!!document.querySelector('[data-testid="store-switcher-button"]')`));
+  await settle(async () => Boolean((await readBrandBlock())?.wordmark));
+  const noLogo = await readBrandBlock();
+  log(`8a. no logo, switcher trigger: ${JSON.stringify(noLogo)}`);
+  check('W8a: with no logo the trigger renders the store\'s SHORT NAME as text', noLogo.wordmark === BRAND_SHORT);
+  check('W8a: and renders no <img> at all (a null src is a broken image, not a blank one)', noLogo.imgs.length === 0 && noLogo.logo === null);
+  check('W8a: the wordmark carries the initial square next to the name', noLogo.text.startsWith(BRAND_SHORT.charAt(0)));
+  await shot('07-no-logo-wordmark');
+
+  // 8b — the same store, collapsed: the initial square, still no image
+  await click('aside button[title="Collapse sidebar"]');
+  await sleep(250);
+  const noLogoCollapsed = await readBrandBlock();
+  log(`8b. no logo, collapsed: ${JSON.stringify(noLogoCollapsed)}`);
+  check('W8a: collapsed with no logo, the initial square stands in for the symbol', noLogoCollapsed.initial === BRAND_SHORT.charAt(0).toUpperCase());
+  check('W8a: collapsed with no logo there is still no <img>', noLogoCollapsed.imgs.length === 0);
+  await shot('08-no-logo-collapsed');
+
+  // 8c — the R21 plain brand block (no hub) with no logo: same answer, other surface
+  mode = 'nohub';
+  await cdp.send('Page.navigate', { url: BASE + PAGE }, sid);
+  await until('the plain brand block', async () => await evaluate(`!!document.querySelector('[data-testid="brand-block"]')`));
+  await settle(async () => Boolean((await readBrandBlock())?.wordmark));
+  const plainNoLogo = await readBrandBlock();
+  log(`8c. no logo, no hub, plain brand block: ${JSON.stringify(plainNoLogo)}`);
+  check('W8a: the plain brand block answers the same way (the wordmark is in ONE component)',
+    plainNoLogo.surface === 'brand-block' && plainNoLogo.wordmark === BRAND_SHORT && plainNoLogo.imgs.length === 0);
+
+  // 8d — POSITIVE CONTROL: the very same page, with a store that HAS a logo, still draws the image
+  mode = 'hub'; brandMode = 'logo';
+  await cdp.send('Page.navigate', { url: BASE + PAGE }, sid);
+  await until('the sidebar with a logo brand', async () => await evaluate(`!!document.querySelector('[data-testid="store-switcher-button"]')`));
+  await settle(async () => Boolean((await readBrandBlock())?.logo));
+  const withLogo = await readBrandBlock();
+  log(`8d. POSITIVE CONTROL — runtime brand WITH a logo: ${JSON.stringify(withLogo)}`);
+  check('W8a: a store that HAS a logo still renders the image, from the url the server sent',
+    withLogo.logo === BRAND_FIXTURES.logo.logoWhite && withLogo.imgs.length === 1);
+  check('W8a: and then there is no text wordmark competing with it', withLogo.wordmark === null);
+  const alt = await evaluate(`document.querySelector('[data-testid="brand-logo"]')?.getAttribute('alt') ?? null`);
+  check('W8a: the image is labelled with the store\'s own short name', alt === BRAND_SHORT);
+  await shot('09-with-logo-control');
 
   log('\nRESULT');
   for (const [what, ok] of checks) log(`   ${ok ? 'PASS' : 'FAIL'}  ${what}`);

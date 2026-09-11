@@ -1,17 +1,22 @@
 import { useState } from 'react';
 import { Upload, UserPlus, Trash2, Save, Building2 } from 'lucide-react';
+import { useBrand } from '../../hooks/useBrand';
 
 export default function WorkspaceTab() {
-  const [workspace, setWorkspace] = useState({ name: 'Mineblock LLC', logo: null });
+  // W8a: the store's own name, from the runtime brand — never another store's, which is what a
+  // brand-new store used to read here. The member list below is still placeholder data (this tab is
+  // not wired to the team API yet); its example addresses are on the lane's REPORTED list.
+  const brand = useBrand();
+  const [workspace, setWorkspace] = useState({ name: brand.name, logo: null });
   const [invite, setInvite] = useState({ email: '', role: 'member' });
   const [saving, setSaving] = useState(false);
   const [confirmRemove, setConfirmRemove] = useState(null);
 
   const [members, setMembers] = useState([
-    { id: 1, name: 'John Doe', email: 'john@mineblock.io', role: 'owner', status: 'active' },
-    { id: 2, name: 'Jane Smith', email: 'jane@mineblock.io', role: 'admin', status: 'active' },
-    { id: 3, name: 'Bob Wilson', email: 'bob@mineblock.io', role: 'member', status: 'active' },
-    { id: 4, name: 'Alice Brown', email: 'alice@mineblock.io', role: 'member', status: 'pending' },
+    { id: 1, name: 'John Doe', email: 'john@example.com', role: 'owner', status: 'active' },
+    { id: 2, name: 'Jane Smith', email: 'jane@example.com', role: 'admin', status: 'active' },
+    { id: 3, name: 'Bob Wilson', email: 'bob@example.com', role: 'member', status: 'active' },
+    { id: 4, name: 'Alice Brown', email: 'alice@example.com', role: 'member', status: 'pending' },
   ]);
 
   const roles = ['owner', 'admin', 'member', 'viewer'];
