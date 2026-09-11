@@ -1,0 +1,16 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>W9 video launcher check</title>
+  </head>
+  <body>
+    <!-- Harness page for scripts/browser-check-video-launcher.mjs: it mounts the REAL
+         ClickupPipeline page against a REAL /api/v1/video-launcher/status served by that
+         script. Never shipped: built into a temporary directory by the check, and not an
+         entry of the app's own build. -->
+    <div id="root"></div>
+    <script type="module" src="./w9-launcher-check.jsx"></script>
+  </body>
+</html>

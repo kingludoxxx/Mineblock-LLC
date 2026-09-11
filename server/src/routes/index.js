@@ -56,6 +56,7 @@ import dunningRoutes from './dunning.js';
 import funnelThemesRoutes from './funnelThemes.js';
 import hubSsoRoutes from './hubSso.js';
 import storeConfigRoutes from './storeConfig.js';
+import videoLauncherRoutes from './videoLauncher.js';
 import brainRoutes from './brain.js';
 
 const mountRoutes = (app) => {
@@ -145,6 +146,11 @@ const mountRoutes = (app) => {
   app.use('/api/v1/health-alerts', healthAlertsRoutes); // PLATFORM: operational alert feed + ack (authed, audit:read; 5-min sweep starts on load, HEALTH_ALERTS_SWEEP_DISABLED=1 off)
   app.use('/api/v1/hub-sso', hubSsoRoutes); // HUB SSO (S1-4): exchanges a hub-minted ticket for this dashboard's own session; 404 unless HUB_SSO_ENABLED='1'
   app.use('/api/v1/crm-sso', crmSsoRoutes); // CRM SWITCH-OVER: mints the SSO ticket for the embedded Funnel OS CRM (authed; 503 unless SSO_SHARED_SECRET is set)
+  // VIDEO LAUNCHER (W9 / R20): the ClickUp Pipeline page's only door to this store's
+  // video-launcher tool. The URL and the admin token are store data read at request
+  // time and never leave the server; the client holds neither. Authed +
+  // brief-pipeline:access; 503 unless VIDEO_LAUNCHER_URL and VIDEO_LAUNCHER_TOKEN are both set.
+  app.use('/api/v1/video-launcher', videoLauncherRoutes);
   // METRICS ENGINE — the one query API + presets + dashboard composite (authed,
   // funnels permission; read-only, isolated analytics pool, REPORT_TZ buckets).
   app.use('/api/v1/funnel-metrics', funnelMetricsRoutes);

@@ -1,6 +1,7 @@
 // LaunchTemplatesListModal.jsx
 // Templates list view for the Statics Launcher — mirrors the video launcher
-// (mineblock-video-launcher tool)'s Templates tab UX: card-per-template with
+// tool's Templates tab UX (R15: the tool's host is store data, not a literal,
+// not even in a comment): card-per-template with
 // edit / duplicate / delete actions plus a prominent "+ New Template" button.
 //
 // Triggered from the TEMPLATES button at the top of the Pipeline view. Before
