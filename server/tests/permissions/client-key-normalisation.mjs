@@ -12,4 +12,12 @@ ok(rolesGrant([{ permissions: '{"briefAgent":["*"]}' }], 'brief-agent:access') =
 ok(rolesGrant([{ permissions: { '*': ['*'] } }], 'anything:access') === true, 'the global wildcard grants');
 ok(rolesGrant(undefined, 'x:y') === false && rolesGrant(camel, 'nocolon') === false, 'malformed input never grants');
 ok(toKebab('briefAgent') === 'brief-agent' && toKebab('kpi-system') === 'kpi-system', 'toKebab matches rbac.js');
+// REVIEW-W8C P1-B: the matcher being right proves nothing if the HOOK does not use it. Pin the hook to the
+// shared function at the source level (the hook is React and has no node harness): it must import rolesGrant
+// and must not carry a raw-key compare of its own.
+import { readFileSync } from 'node:fs';
+const hook = readFileSync(new URL('../../../client/src/hooks/usePermissions.js', import.meta.url), 'utf8');
+ok(/import \{ rolesGrant \} from '\.\.\/utils\/permissions'/.test(hook) && /rolesGrant\(user\?\.roles, permission\)/.test(hook),
+  'P1-B usePermissions delegates to the shared matcher (source pin)');
+ok(!/perms\[resource\]/.test(hook), 'P1-B the hook carries no raw-key compare of its own');
 console.log(`\n${pass} passed, ${fail} failed`); process.exit(fail ? 1 : 0);
