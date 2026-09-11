@@ -103,6 +103,23 @@ export function brand() {
   };
 }
 
+// ── Hub (multi-store) ───────────────────────────────────────────────────
+
+/**
+ * Where this store's hub lives and whether the SSO door is open. Both read at REQUEST time (R7), both
+ * non-secret: HUB_ORIGIN is a public url and the flag is a boolean. The SECRET that signs hub tickets
+ * (HUB_SSO_SECRET) is deliberately NOT read here and never appears in the snapshot.
+ *
+ * origin null = no hub configured on this deployment. The client renders its plain brand block and no
+ * switcher: a store must work on its own login with the hub gone (R21).
+ */
+export function hub() {
+  return {
+    origin: readString('HUB_ORIGIN', { silent: true }),
+    sso_enabled: raw('HUB_SSO_ENABLED') === '1',
+  };
+}
+
 // ── Shopify ─────────────────────────────────────────────────────────────
 
 /** `<shop>.myshopify.com`; unset → null (one warning). */
@@ -445,6 +462,7 @@ export function snapshot() {
   return {
     storeCode: storeCode(),
     brand: brand(),
+    hub: hub(),
     shopify: {
       storeDomain: shopifyStoreDomain(),
       storeUrl: shopifyStoreUrl(),
@@ -468,7 +486,7 @@ export function snapshot() {
 
 const storeConfig = {
   setStoreConfigSource, resetWarnings,
-  storeCode, brand, shopifyStoreDomain, shopifyStoreUrl, shopifyApiVersion, SHOPIFY_API_VERSION_DEFAULT, whopCompanyId, tripleWhaleShopId,
+  storeCode, brand, hub, shopifyStoreDomain, shopifyStoreUrl, shopifyApiVersion, SHOPIFY_API_VERSION_DEFAULT, whopCompanyId, tripleWhaleShopId,
   metaApiVersion, metaGraphUrl, META_API_VERSION_DEFAULT, adAccounts, adAccountNames, adAccountName, frameioToken,
   timezone, TIMEZONE_DEFAULT, slackChannels,
   productCodes, defaultProduct, productFor, productForClickupProductRef,

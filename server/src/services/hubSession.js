@@ -23,6 +23,7 @@
 // Any change to authController's cookie options must be repeated here; tests/hub-sso/hub-sso.mjs asserts the attributes.
 import crypto from 'crypto';
 import pool from '../config/db.js';
+import logger from '../utils/logger.js';
 import env from '../config/env.js';
 import { signAccessToken, signRefreshToken } from '../utils/jwt.js';
 import { createSession } from '../services/authService.js';
@@ -50,6 +51,36 @@ export const setRefreshCookie = (res, token) => {
   });
 };
 
+// ── W6: the switcher list the hub signed into the ticket ────────────────────────────────────────────────
+// The hub knows which stores this operator may hop into; the dashboard must never guess, and must never take
+// the list from the browser. It arrives INSIDE the HMAC-signed ticket and is parked on the session row
+// (migration 132), which is the row middleware/auth.js already re-reads on every hub-SSO request.
+//
+// FAIL SOFT, NEVER REFUSE: a list this dashboard cannot make sense of is dropped, and the hop still succeeds.
+// Losing a dropdown is a cosmetic failure; refusing the ticket would lock an operator out of a live store.
+// Strict on the way in, because what goes in comes back out to a browser: exactly {code, name}, a code shaped
+// like a store code, a name of at most 80 characters, at most 50 of them. One bad entry drops the WHOLE list
+// (a partially-trusted list is not a thing), a list longer than the cap is CUT (the hub caps at 50 too).
+export const HUB_STORES_MAX = 50;
+export const HUB_STORE_NAME_MAX = 80;
+const HUB_STORE_CODE_RE = /^[A-Z0-9]{2,4}$/;
+
+/** @returns {{code:string,name:string}[]} the list to persist — [] whenever the claim is absent or unusable. */
+export const sanitizeHubStores = (claim) => {
+  if (!Array.isArray(claim)) return [];
+  const out = [];
+  for (const entry of claim.slice(0, HUB_STORES_MAX)) {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return [];
+    const keys = Object.keys(entry);
+    if (keys.length !== 2 || !keys.includes('code') || !keys.includes('name')) return [];
+    const { code, name } = entry;
+    if (typeof code !== 'string' || !HUB_STORE_CODE_RE.test(code)) return [];
+    if (typeof name !== 'string' || name.length === 0 || name.length > HUB_STORE_NAME_MAX) return [];
+    out.push({ code, name });
+  }
+  return out;
+};
+
 /** Roles in the shape login puts into the JWT (authController.js:213-225). Uses the given client so it can run inside a transaction. */
 export const loadRoles = async (userId, client = pool) => {
   const rolesResult = await client.query(
@@ -65,10 +96,10 @@ export const loadRoles = async (userId, client = pool) => {
 /**
  * @param {import('express').Response} res
  * @param {{id:string,email:string,first_name:string,last_name:string,must_change_password:boolean,email_verified:boolean}} user  a users row
- * @param {{ip:string,userAgent:string,roles?:object[]}} ctx
+ * @param {{ip:string,userAgent:string,roles?:object[],hubStores?:{code:string,name:string}[]}} ctx
  * @returns {Promise<{accessToken:string,user:object}>} the same object login answers with (authController.js:264-267)
  */
-export const issueSession = async (res, user, { ip, userAgent, roles }) => {
+export const issueSession = async (res, user, { ip, userAgent, roles, hubStores }) => {
   const userRoles = roles ?? await loadRoles(user.id);
   const tokenId = crypto.randomUUID();
   // hub_sso on the REFRESH token as well: it is the only credential the SPA still holds when the 15-minute
@@ -76,6 +107,8 @@ export const issueSession = async (res, user, { ip, userAgent, roles }) => {
   const refreshToken = signRefreshToken({ userId: user.id, tokenId, hub_sso: true });
   // The session row FIRST: its id goes into the access token, which is what makes the session revocable per request.
   const session = await createSession(user.id, refreshToken, ip, userAgent || '');
+  // W6: the switcher list belongs to THIS session, not to the user and not to the token (see migration 132).
+  await writeHubStores(session.id, hubStores);
   const accessToken = signAccessToken({ userId: user.id, email: user.email, roles: userRoles, hub_sso: true, sid: session.id });
   const userData = {
     id: user.id,
@@ -108,14 +141,46 @@ export const peekHubSsoClaims = (token) => {
   }
 };
 
-/** True while the sessions row this token was issued for still exists, belongs to the user and has not expired. */
-export const hubSessionIsLive = async (sid, userId, client = pool) => {
-  if (typeof sid !== 'string' || !/^[0-9a-fA-F-]{36}$/.test(sid)) return false;
-  const { rows } = await client.query(
-    'SELECT 1 FROM sessions WHERE id = $1 AND user_id = $2 AND expires_at > NOW()',
-    [sid, userId],
-  );
-  return rows.length === 1;
+/**
+ * Parks the list on a session row. FAIL SOFT, on purpose and in two directions:
+ *  • this runs INSIDE a login. A dropdown that cannot be stored must never cost an operator a live store.
+ *  • a service running this code against a database that has not had migration 132 yet (a rollback, or a
+ *    preDeployCommand that did not run) gets one warning per session, not a 500 on the SSO door.
+ */
+const writeHubStores = async (sessionId, stores, client = pool) => {
+  const list = sanitizeHubStores(stores);
+  try {
+    await client.query('UPDATE sessions SET hub_stores = $2 WHERE id = $1', [sessionId, JSON.stringify(list)]);
+  } catch (e) {
+    logger.warn('hub_stores_not_stored', { code: e.code });     // 42703 = migration 132 has not run here yet
+    return [];
+  }
+  return list;
 };
 
-export default { issueSession, setAccessCookie, setRefreshCookie, loadRoles, peekHubSsoClaims, hubSessionIsLive };
+/**
+ * The live sessions row for a hub-SSO token, or null when it is gone / not this user's / expired.
+ * ONE query answers both questions middleware/auth.js has: is this session still valid (revocation, no grace
+ * period) and what switcher list did it arrive with. Reading the list is therefore free.
+ */
+export const loadHubSession = async (sid, userId, client = pool) => {
+  if (typeof sid !== 'string' || !/^[0-9a-fA-F-]{36}$/.test(sid)) return null;
+  // `to_jsonb(s.*)->'hub_stores'` instead of naming the column: on a database that has not had migration 132
+  // the key is simply absent (null), where `SELECT hub_stores` would throw and 401 every hub session on the store.
+  const { rows } = await client.query(
+    "SELECT id, to_jsonb(s.*)->'hub_stores' AS hub_stores FROM sessions s WHERE s.id = $1 AND s.user_id = $2 AND s.expires_at > NOW()",
+    [sid, userId],
+  );
+  return rows.length === 1 ? rows[0] : null;
+};
+
+/** True while the sessions row this token was issued for still exists, belongs to the user and has not expired. */
+export const hubSessionIsLive = async (sid, userId, client = pool) => Boolean(await loadHubSession(sid, userId, client));
+
+/**
+ * Rotation (authController.refresh) DELETES the old session row and creates a new one, so without this the
+ * switcher would quietly disappear ~15 minutes after every hop. Carries the list the hub signed, nothing else.
+ */
+export const carryHubStores = async (stores, toSessionId, client = pool) => writeHubStores(toSessionId, stores, client);
+
+export default { issueSession, setAccessCookie, setRefreshCookie, loadRoles, peekHubSsoClaims, hubSessionIsLive, loadHubSession, carryHubStores, sanitizeHubStores };

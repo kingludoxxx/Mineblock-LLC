@@ -22,3 +22,6 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# W6: the sidebar-switcher browser check builds here when W6_OUT_DIR is not set
+dist-w6-check

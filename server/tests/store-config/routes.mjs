@@ -34,6 +34,10 @@ Object.assign(process.env, {
   STORE_CODE: 'ZZ', BRAND_NAME: 'Acme Co', BRAND_SHORT_NAME: 'Acme',
   BRAND_LOGO_WHITE: '/w.png', BRAND_LOGO_SYMBOL: '/s.png', BRAND_LOGO_BLACK: '/b.svg',
   BRAND_EMAIL_DOMAIN: 'acme.example', SHOPIFY_STORE_DOMAIN: 'zz-store.myshopify.com',
+  // W6: the hub block. HUB_SSO_SECRET is set here ON PURPOSE — it is the credential that signs hub tickets,
+  // it is matched by the SECRET_VALUES filter below, and the scan must catch it if this surface ever echoes it.
+  HUB_ORIGIN: 'https://hub.example.test', HUB_SSO_ENABLED: '1',
+  HUB_SSO_SECRET: 'LEAK-hub-sso-secret-w6x1-at-least-32-bytes',
 });
 const SECRET_VALUES = Object.entries(process.env)
   .filter(([k]) => /TOKEN|SECRET|API_KEY|PASSWORD|DATABASE_URL/i.test(k))
@@ -93,6 +97,37 @@ test('GET /store-config with a session → 200, non-secret snapshot, no leak (A4
   assert.equal(r.json.data.shopify.storeDomain, 'zz-store.myshopify.com');
   scan(r.text, 'store-config');
   assert.match(r.headers.get('cache-control') || '', /no-store/);
+});
+
+test('W6: GET /store-config carries hub{origin,sso_enabled} and switcher{current,stores}, and no secret', async () => {
+  const r = await get('/store-config', { Authorization: `Bearer ${token}` });
+  assert.equal(r.status, 200, r.text);
+  assert.deepEqual(r.json.data.hub, { origin: 'https://hub.example.test', sso_enabled: true });
+  assert.deepEqual(r.json.data.switcher, { current: 'ZZ', stores: [] });
+  scan(r.text, 'store-config with a hub');                       // catches HUB_SSO_SECRET if it ever leaks here
+});
+
+test('W6 R7: the hub block is read at REQUEST time, and the flag is only ever the string "1"', async () => {
+  const saved = { o: process.env.HUB_ORIGIN, f: process.env.HUB_SSO_ENABLED };
+  try {
+    process.env.HUB_SSO_ENABLED = 'true';                        // the flag is "1" or it is off, like every other R7 flag
+    assert.equal((await get('/store-config', { Authorization: `Bearer ${token}` })).json.data.hub.sso_enabled, false);
+    delete process.env.HUB_ORIGIN;
+    const off = await get('/store-config', { Authorization: `Bearer ${token}` });
+    assert.deepEqual(off.json.data.hub, { origin: null, sso_enabled: false }, 'no hub configured: the client renders no switcher');
+    assert.deepEqual(off.json.data.switcher.stores, []);
+  } finally { process.env.HUB_ORIGIN = saved.o; process.env.HUB_SSO_ENABLED = saved.f; }
+  const back = await get('/store-config', { Authorization: `Bearer ${token}` });
+  assert.equal(back.json.data.hub.origin, 'https://hub.example.test', 'and back, on the next request, with no restart');
+});
+
+test('W6: the store list is never taken from the client', async () => {
+  const r = await get('/store-config?stores=%5B%7B%22code%22%3A%22XX%22%2C%22name%22%3A%22Injected%22%7D%5D', {
+    Authorization: `Bearer ${token}`, 'x-hub-stores': '[{"code":"XX","name":"Injected"}]',
+  });
+  assert.equal(r.status, 200, r.text);
+  assert.deepEqual(r.json.data.switcher.stores, []);
+  assert.ok(!r.text.includes('Injected'), r.text);
 });
 
 test('GET /brand is public → 200, six fields, no leak', async () => {

@@ -115,6 +115,7 @@
     "128_brain_kb_core.sql",
     "129_brain_embeddings.sql",
     "130_brain_playbook.sql",
-    "131_brain_permissions.sql"
+    "131_brain_permissions.sql",
+    "132_session_hub_stores.sql"
   ]
 }

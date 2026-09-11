@@ -8,6 +8,10 @@
     "logoBlack": "/logo-puure-black.svg",
     "emailDomain": "trypuure.co"
   },
+  "hub": {
+    "origin": null,
+    "sso_enabled": false
+  },
   "shopify": {
     "storeDomain": "9jn59g-x7.myshopify.com",
     "storeUrl": "https://trypuure.co",

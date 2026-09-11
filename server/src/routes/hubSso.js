@@ -26,6 +26,9 @@
 //    hub_sso + sid, so `authenticate` re-reads Postgres on EVERY request and skips the 5-minute session cache. Deleting
 //    the sessions row (logout, "log out other devices", an admin revoke) or deactivating the user is enforced on the
 //    very next request. See services/hubSession.js.
+//  • `stores` (W6, optional): [{code,name}] the hub signed — which stores this operator may switch into. Validated
+//    and persisted on the session row (migration 132) so the sidebar can render a switcher; NEVER taken from the
+//    client, and a malformed list is ignored rather than refused (a cosmetic list must not lock anyone out).
 //  • `next` must be a relative path ('/x', not '//x', not '/\x', not a scheme) or the request is a 400 before any write.
 //  • Nothing here calls the hub, or anything, over the network: with the hub gone every store still logs in on its own.
 //  • Logs never carry the ticket, the signature, the nonce or the secret.
@@ -34,7 +37,7 @@ import crypto from 'node:crypto';
 import pool from '../config/db.js';
 import logger from '../utils/logger.js';
 import { hashPassword } from '../utils/hash.js';
-import { issueSession, loadRoles } from '../services/hubSession.js';
+import { issueSession, loadRoles, sanitizeHubStores } from '../services/hubSession.js';
 
 const router = Router();
 
@@ -214,7 +217,9 @@ router.post('/exchange', async (req, res, next) => {
       throw e;
     } finally { client.release(); }
 
-    await issueSession(res, outcome.user, { ip: req.ip, userAgent: req.headers['user-agent'] || '', roles: outcome.roles });
+    // W6: the switcher list the hub SIGNED into this ticket. Validated here and parked on the session row; a list
+    // this dashboard cannot read is dropped and the hop still succeeds (services/hubSession.js explains why).
+    await issueSession(res, outcome.user, { ip: req.ip, userAgent: req.headers['user-agent'] || '', roles: outcome.roles, hubStores: sanitizeHubStores(payload.stores) });
     logger.info('hub_sso_ok', { userId: outcome.user.id, created: outcome.created });
     return res.redirect(302, nextPath);
   } catch (err) {
