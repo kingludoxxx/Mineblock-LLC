@@ -38,6 +38,29 @@ import logger from '../utils/logger.js';
 const router = Router();
 router.use(brainAuth);
 
+// NEW-10 (third pass): a NUL byte is refused ONCE, here, for every door — path,
+// query and body alike. Postgres text cannot hold 0x00; letting it reach the
+// driver is a 500 from whichever parameter forgot its own check, and the second
+// pass proved that per-parser checks miss doors (NEW-9 covered 2 of 13). A guard
+// on the router is the same shape as the read scope: a door added later inherits
+// the refusal instead of the 500.
+const hasNul = (v, depth = 0) => {
+  if (v === null || v === undefined || depth > 8) return false;
+  if (typeof v === 'string') return v.includes('\u0000');
+  if (Array.isArray(v)) return v.some((x) => hasNul(x, depth + 1));
+  if (typeof v === 'object') return Object.entries(v).some(([k, x]) => k.includes('\u0000') || hasNul(x, depth + 1));
+  return false;
+};
+const rejectNulBytes = (req, res, next) => {
+  let path = req.originalUrl || req.url || '';
+  try { path = decodeURIComponent(path); } catch { return res.status(400).json({ error: 'the request path is not valid percent-encoding', code: 'bad_text' }); }
+  if (path.includes('\u0000') || hasNul(req.query) || hasNul(req.body)) {
+    return res.status(400).json({ error: 'the request contains a NUL byte (0x00), which text in this Brain cannot hold', code: 'bad_text' });
+  }
+  return next();
+};
+router.use(rejectNulBytes);
+
 // Who is asking, and what may they do? The service token is a READ credential:
 // every state change below carries requireBrainWriter, which refuses it outright
 // and then checks the session's own brain:<action> permission (P0-2).

@@ -697,6 +697,44 @@ const READONLY = { Authorization: `Bearer ${signAccessToken({ userId: u3.id })}`
   ok(alive.status === 200, 'B11.23 …the connection is not poisoned by the refused NUL query');
 }
 
+// NEW-10 (third pass) — a NUL byte is refused at the ROUTER, on every door, not
+// per parser. The second-pass fix (NEW-9) lived in the search parser; 11 of 13
+// doors still handed a NUL to the driver and answered 500.
+{
+  const NUL = String.fromCharCode(0);
+  const doors = [
+    ['GET', `/documents?source=${encodeURIComponent(`${NUL}x`)}`, undefined, SESSION],
+    ['GET', `/documents?source=${encodeURIComponent(`${NUL}x`)}`, undefined, SERVICE],
+    ['GET', `/insights?status=${encodeURIComponent(`approved${NUL}`)}`, undefined, SESSION],
+    ['GET', `/playbook/${encodeURIComponent(`AAA${NUL}`)}`, undefined, SESSION],
+    ['POST', '/insights', { product_code: 'AAA', type: 'claim', text: `with ${NUL} inside`, cites: [] }, SESSION],
+    ['POST', '/ingest', { source: 'operator-research', product_code: 'AAA', title: `t${NUL}`, body: 'x', ext: 'txt' }, SESSION],
+  ];
+  for (const [m, pth, body, hdr] of doors) {
+    const r = await call(m, pth, body, hdr);
+    ok(r.status === 400 && r.j?.code === 'bad_text',
+      `B11.40 NEW-10 ${m} ${decodeURIComponent(pth).replace(NUL, '\\0')} with a NUL byte is a 400 bad_text, never a 500`,
+      `${r.status} ${JSON.stringify(r.j)}`);
+  }
+  const alive = await call('GET', '/insights', undefined, SESSION);
+  ok(alive.status === 200, 'B11.41 …and the doors still answer afterwards (positive control)', `${alive.status}`);
+}
+
+// NEW-11 (third pass) — ONE store-code grammar. The object-key grammar allowed a
+// 1-32 char store segment with _ and -; STORE_CODE allows 2-4 alnum. A code the
+// bucket refuses must not produce a valid-looking key.
+{
+  const { assertObjectKey } = await import(join(REPO, 'server/src/services/brain/brainSchema.js'));
+  const sha = 'a'.repeat(64);
+  const bad = `stores/REEVO/knowledge/raw/operator-research/2026-09-11/${sha}.txt`;
+  let threw = false; try { assertObjectKey(bad); } catch { threw = true; }
+  ok(threw, 'B11.42 NEW-11 a 5-char store segment (REEVO) is refused by the object-key grammar, like STORE_CODE refuses it');
+  let threw2 = false; try { assertObjectKey(`stores/R-V/knowledge/raw/operator-research/2026-09-11/${sha}.txt`); } catch { threw2 = true; }
+  ok(threw2, 'B11.43 NEW-11 a store segment with a hyphen is refused');
+  let okKey = true; try { assertObjectKey(`stores/RV/knowledge/raw/operator-research/2026-09-11/${sha}.txt`); } catch { okKey = false; }
+  ok(okKey, 'B11.44 …and a real 2-4 char code still passes (positive control)');
+}
+
 // P2-8 — rejected → approved KEEPS the rejection on the record.
 {
   const i = await call('POST', '/insights', { insight_type: 'pain', body: 'B11 history', source_document_ids: [DOC_ID] });

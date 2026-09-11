@@ -141,11 +141,13 @@ export function extForContentType(contentType) {
  * bucket-isolation half (P1-7): two stores that share a bucket cannot collide,
  * because the prefix is built from STORE_CODE and nothing else.
  *   [stores/<CODE>/]knowledge/raw/<source-slug>/<YYYY-MM-DD>/<sha256>.<ext>
+ *   <CODE> is the SAME grammar STORE_CODE has ([A-Z0-9]{2,4}, brainBucket.STORE_CODE_RE): a code
+ *   the bucket refuses must not produce a valid-looking key (third pass, NEW-11).
  * There is no `.` or `..` segment anywhere in that grammar, so a key that
  * matches it cannot traverse.
  */
 export const OBJECT_KEY_RE =
-  /^(?:stores\/[A-Z0-9][A-Z0-9_-]{0,31}\/)?knowledge\/raw\/[a-z0-9]+(?:-[a-z0-9]+)*\/\d{4}-\d{2}-\d{2}\/[0-9a-f]{64}\.[a-z0-9]{1,8}$/;
+  /^(?:stores\/[A-Z0-9]{2,4}\/)?knowledge\/raw\/[a-z0-9]+(?:-[a-z0-9]+)*\/\d{4}-\d{2}-\d{2}\/[0-9a-f]{64}\.[a-z0-9]{1,8}$/;
 
 /** Belt and braces: the regex forbids traversal, this states it as a rule. */
 export function assertObjectKey(key) {
