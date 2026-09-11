@@ -18,39 +18,75 @@
 // one (R16).
 
 import {
-  BrainError, assertProductCode, assertInsightType, clampLimit,
+  BrainError, assertProductCode, assertInsightType, clampLimit, assertNoNul,
 } from './brain/brainSchema.js';
 import { getEmbeddingProvider, vectorColumnAvailable, toVectorLiteral } from './brain/embeddingProvider.js';
-import { citationsFor } from './brainStore.js';
+import { citationsFor, backfillInsightEmbeddings } from './brainStore.js';
+import { requireReadScope, assertMayReadUnapproved } from './brain/brainScope.js';
 
 const KINDS = ['document', 'insight'];
 
-function endOfDay(v) {
-  if (!v) return null;
+/**
+ * NEW-5 — `provider` is an INJECTED DEPENDENCY (the tests' fake, the real OpenAI
+ * client), not a filter, and `opts` is `req.query`. A caller who sent
+ * `?provider=anything` therefore reached `provider.embed is not a function`
+ * (a 500), and `?provider=` (empty, falsy) silently downgraded a vector store to
+ * keyword mode while the response still reported `mode` as if that were the
+ * store's real configuration. It now travels in the ctx argument, and the name is
+ * refused on the query string rather than ignored: a caller sending it has a
+ * wrong model of the API and should hear so.
+ */
+const RESERVED_QUERY_KEYS = Object.freeze(['provider']);
+
+/**
+ * P2-10 — `from=not-a-date` and `to=2026-13-99` reached the driver and came back
+ * as a 500. A date this API cannot parse is a malformed request: 400, naming the
+ * parameter and the accepted shapes.
+ */
+function boundary(v, name, { end = false } = {}) {
+  if (v === undefined || v === null) return null;
   const s = String(v).trim();
-  return /^\d{4}-\d{2}-\d{2}$/.test(s) ? `${s}T23:59:59.999Z` : s;
-}
-function startOf(v) {
-  if (!v) return null;
-  const s = String(v).trim();
-  return /^\d{4}-\d{2}-\d{2}$/.test(s) ? `${s}T00:00:00.000Z` : s;
+  if (s === '') return null;
+  assertNoNul(s, name);
+  const iso = /^\d{4}-\d{2}-\d{2}$/.test(s) ? `${s}T${end ? '23:59:59.999' : '00:00:00.000'}Z` : s;
+  if (Number.isNaN(new Date(iso).getTime())) {
+    throw new BrainError('bad_date',
+      `${name}=${JSON.stringify(s)} is not a date — use YYYY-MM-DD or an ISO 8601 instant`);
+  }
+  return iso;
 }
 
-function parseFilters(opts) {
+function parseFilters(opts, ctx) {
+  const scope = requireReadScope(ctx);
+  for (const key of RESERVED_QUERY_KEYS) {
+    if (Object.prototype.hasOwnProperty.call(opts, key)) {
+      throw new BrainError('unknown_parameter',
+        `${key} is not a query parameter — the embedding provider is part of this store's configuration, not of a request`);
+    }
+  }
   const q = String(opts.q ?? '').trim();
   if (!q) throw new BrainError('no_query', 'q is required');
+  assertNoNul(q, 'q');
   const kind = opts.type ? String(opts.type).trim() : null;
   if (kind && !KINDS.includes(kind)) throw new BrainError('bad_type', `type must be one of: ${KINDS.join(', ')}`);
-  const approvedOnly = !(opts.approved_only === false || String(opts.approved_only).toLowerCase() === 'false');
+
+  // P0-3: the flag came off the query string with no reference to WHO was asking,
+  // so the one thing R16 forbids — a pipeline reading unapproved insights — was
+  // one query parameter away for the exact caller R16 is about. Seeing
+  // unapproved work is a REVIEWER's privilege; the caller must be able to approve.
+  // The decision itself lives in brainScope.js, shared with GET /insights (NEW-1).
+  const wantsUnapproved = opts.approved_only === false || String(opts.approved_only).toLowerCase() === 'false';
+  if (wantsUnapproved) assertMayReadUnapproved(scope, 'approved_only=false');
+  const approvedOnly = !wantsUnapproved;
   return {
     q,
     kind,
     approvedOnly,
     product: assertProductCode(opts.product ?? null),
-    source: opts.source ? String(opts.source).trim() : null,
+    source: opts.source ? assertNoNul(String(opts.source).trim(), 'source') : null,
     insightType: opts.insight_type ? assertInsightType(opts.insight_type) : null,
-    from: startOf(opts.from),
-    to: endOfDay(opts.to),
+    from: boundary(opts.from, 'from'),
+    to: boundary(opts.to, 'to', { end: true }),
     limit: clampLimit(opts.limit),
   };
 }
@@ -128,6 +164,7 @@ async function vectorSearch(sql, f, provider) {
   const docParams = [lit, f.product, f.source, f.from, f.to, f.limit, provider.model];
   const insParams = [lit, f.product, f.source, f.from, f.to, f.insightType, f.approvedOnly, f.limit, provider.model];
   const out = [];
+  let backfill = null;
   if (f.kind !== 'insight') {
     const rows = await sql.unsafe(`
       SELECT d.id, 1 - (e.embedding <=> $1::vector) AS score, d.title, d.source, d.url,
@@ -146,6 +183,17 @@ async function vectorSearch(sql, f, provider) {
     }
   }
   if (f.kind !== 'document') {
+    // The insight half only answers where insight vectors EXIST. Rows approved
+    // before this path could write them (or while no provider was configured)
+    // would otherwise stay invisible for ever, silently — so catch them up here,
+    // bounded, before the join runs. A reviewer reading unapproved work needs the
+    // proposed rows embedded too, or `approved_only=false` is empty in vector mode.
+    //
+    // NEW-4: this is a READ endpoint that spends money, so the bound is explicit
+    // (BACKFILL_MAX_PER_REQUEST) and what it spent is REPORTED, not inferred from
+    // a log line. Per-store metering and a budget block (R18) are queued work.
+    const statuses = f.approvedOnly ? ['approved'] : ['approved', 'proposed'];
+    backfill = await backfillInsightEmbeddings(sql, { provider, statuses });
     const rows = await sql.unsafe(`
       SELECT i.id, 1 - (e.embedding <=> $1::vector) AS score, i.insight_type, i.body, i.quote,
              i.status, i.confidence, i.product_code, i.created_at
@@ -163,24 +211,33 @@ async function vectorSearch(sql, f, provider) {
       });
     }
   }
-  return out;
+  return { out, backfill };
 }
 
 /**
  * @param {import('postgres').Sql} sql  this store's database — the only one reachable
  * @param {object} opts  q, type, product, source, insight_type, from, to, approved_only, limit
- * @returns {{mode:'vector'|'keyword', limit:number, approved_only:boolean, results:object[]}}
+ *   — the REQUEST's own parameters, and nothing else. `provider` here is refused.
+ * @param {{mayReadUnapproved:boolean, provider?:object|null}} ctx  the CALLER's standing,
+ *   decided by the route from the credential presented and never by the query string
+ *   (P0-3 / NEW-1), plus the injected embedding provider (NEW-5). MANDATORY: a read
+ *   with no scope raises rather than defaulting to something permissive.
+ * @returns {{mode:'vector'|'keyword', limit:number, approved_only:boolean,
+ *            results:object[], backfill:object|null}}
  */
-export async function search(sql, opts = {}) {
-  const f = parseFilters(opts);
-  const provider = opts.provider !== undefined ? opts.provider : getEmbeddingProvider();
+export async function search(sql, opts = {}, ctx) {
+  const f = parseFilters(opts, ctx);
+  const provider = ctx.provider !== undefined ? ctx.provider : getEmbeddingProvider();
   const canVector = provider ? await vectorColumnAvailable(sql) : false;
   const mode = provider && canVector ? 'vector' : 'keyword';
-  const results = mode === 'vector' ? await vectorSearch(sql, f, provider) : await keywordSearch(sql, f);
+  let results; let backfill = null;
+  if (mode === 'vector') ({ out: results, backfill } = await vectorSearch(sql, f, provider));
+  else results = await keywordSearch(sql, f);
   results.sort((a, b) => b.score - a.score);
   return {
     mode, limit: f.limit, approved_only: f.approvedOnly,
     results: results.slice(0, f.limit),
+    backfill,
   };
 }
 

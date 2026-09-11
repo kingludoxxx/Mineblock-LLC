@@ -23,7 +23,11 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO = join(HERE, '..', '..', '..');
 const CLI = join(REPO, 'server/scripts/brain-import.mjs');
 const PG = 'postgres://postgres@127.0.0.1:5433';
-const DBNAME = 's4_brain_import';
+// R43 (one test database per worktree): the database NAME carries an optional
+// prefix from BRAIN_TEST_DB_PREFIX, so two lanes running this suite at once do not
+// share a database and produce each other's failures. Default unchanged.
+const DBPREFIX = process.env.BRAIN_TEST_DB_PREFIX || '';
+const DBNAME = `${DBPREFIX}s4_brain_import`;
 const DB = `${PG}/${DBNAME}`;
 const PRODUCT_CODES_JSON = JSON.stringify({ AAA: { default: true } });
 

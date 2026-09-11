@@ -45,14 +45,27 @@ BEGIN
     RETURN;
   END IF;
 
-  CREATE EXTENSION IF NOT EXISTS vector;
-  -- 1536 = text-embedding-3-small. A different model needs its own column/table.
-  EXECUTE 'ALTER TABLE kb_embeddings ADD COLUMN IF NOT EXISTS embedding vector(1536)';
+  -- The EXCEPTION covers the WHOLE vector block, not just the index. The
+  -- extension is listed as available yet CREATE EXTENSION needs privileges the
+  -- migration role may not have, and ALTER TABLE can fail for its own reasons —
+  -- either one used to fail the migration and therefore the deploy, on a
+  -- database whose PORTABLE shape (embedding_json + tsvector) is complete and
+  -- perfectly serviceable. Both paths are legitimate, so neither may be fatal.
   BEGIN
-    EXECUTE 'CREATE INDEX IF NOT EXISTS kb_embeddings_vec_idx ON kb_embeddings '
-         || 'USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100)';
+    CREATE EXTENSION IF NOT EXISTS vector;
+    -- 1536 = text-embedding-3-small. A different model needs its own column/table.
+    EXECUTE 'ALTER TABLE kb_embeddings ADD COLUMN IF NOT EXISTS embedding vector(1536)';
+    BEGIN
+      EXECUTE 'CREATE INDEX IF NOT EXISTS kb_embeddings_vec_idx ON kb_embeddings '
+           || 'USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100)';
+    EXCEPTION WHEN OTHERS THEN
+      -- ivfflat needs rows to train on some builds; the column is what matters.
+      RAISE NOTICE 'kb_embeddings: vector index not created (%) — exact scan still works', SQLERRM;
+    END;
   EXCEPTION WHEN OTHERS THEN
-    -- ivfflat needs rows to train on some builds; the column is what matters.
-    RAISE NOTICE 'kb_embeddings: vector index not created (%) — exact scan still works', SQLERRM;
+    -- No embedding column ⇒ vectorColumnAvailable() answers false at request time
+    -- and search runs the tsvector path. `npm run brain:vector-enable` retries
+    -- this block once the privilege or extension situation is fixed.
+    RAISE NOTICE 'kb_embeddings: pgvector column NOT created (%) — keeping embedding_json only; run `npm run brain:vector-enable` once pgvector is usable', SQLERRM;
   END;
 END $$;
