@@ -463,8 +463,11 @@ router.post('/exchange', async (req, res, next) => {
         // EVERY existing user — the divergence path writes an audit row about the roles held, and
         // that read has to be serialised with the repair too. The later `UPDATE users SET
         // last_login = NOW()` locks the same row, so this only moves an acquisition the exchange was
-        // already going to make, and both hops take it in the same order: no new deadlock.
-        await client.query('SELECT id FROM users WHERE id = $1 FOR UPDATE', [user.id]);
+        // already going to make, and both hops take it in the same order: no new deadlock. REVIEW-W8G NEW-1: it must be FOR NO KEY UPDATE, not FOR UPDATE — the product's own
+        // changeTeamMemberRole INSERTs into user_roles, whose FK takes FOR KEY SHARE on this row, and FOR KEY SHARE
+        // conflicts with FOR UPDATE (measured: 36/50 races deadlocked) but not with FOR NO KEY UPDATE (50/50 clean,
+        // and the hop-vs-hop races this lock exists for still serialise 50/50).
+        await client.query('SELECT id FROM users WHERE id = $1 FOR NO KEY UPDATE', [user.id]);
 
         const { name: mapped, exact: mappedExact } = await mappedRole(client, hubRole);
         const held = (await loadRoles(user.id, client)).map((r) => r.name);
