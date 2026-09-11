@@ -77,6 +77,9 @@ const MIGS = [
   '031_seed_page_permissions.sql', '076_team_invitations.sql', '086_add_orders_permission.sql',
   '126_hub_sso.sql', '132_session_hub_stores.sql', '133_hub_role_map_page_roles.sql',
   '134_hub_owner_kpi_role.sql',
+  // W8f: the exchange stamps users.created_via on a JIT creation, so this fixture needs the column.
+  // (The route degrades to the pre-W8f INSERT when it is absent — proved in w8f-jit-remap.mjs M1.)
+  '135_users_created_via.sql',
 ];
 for (const f of MIGS) {
   try { await pool.query(await readFile(join(REPO, 'server/migrations', f), 'utf8')); }
