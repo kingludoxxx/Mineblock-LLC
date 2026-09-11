@@ -274,6 +274,65 @@ export function frameioToken() {
   return '';
 }
 
+// ── Video launcher (per-store tool; URL is DATA, token is a SECRET) ──────
+//
+// W9 / R20. Both of these were LITERALS in client/src/pages/production/
+// ClickupPipeline.jsx:4-8 on hub/main 3a10be7, which means both were compiled
+// into the PUBLIC javascript bundle of every dashboard built from this repo —
+// readable by anyone who could load the file, signed in or not. They are store
+// data now, read at request time (R7), and they never leave the server.
+//
+// The URL is normalised to a BARE ORIGIN for the same reason HUB_ORIGIN is
+// (W6c / R10 P2-1): its whole job is to be concatenated with a path, so a
+// trailing path, a query or a fragment silently retargets every call. The
+// VALUE is never echoed in a warning — "not a url" is exactly the shape a
+// pasted secret has.
+
+/** Bare origin of this store's video launcher, or null when unset/unusable. */
+export function videoLauncherUrl() {
+  const v = raw('VIDEO_LAUNCHER_URL');
+  if (v === undefined) {
+    warnOnce('VIDEO_LAUNCHER_URL', 'not set — the video launcher page is DISABLED on this deployment');
+    return null;
+  }
+  let url;
+  try { url = new URL(v); } catch { url = null; }
+  if (!url || (url.protocol !== 'https:' && url.protocol !== 'http:')) {
+    warnOnce('VIDEO_LAUNCHER_URL', `is set but is not an http(s) url (${String(v).length} characters) — the video launcher page stays DISABLED`);
+    return null;
+  }
+  return url.origin;
+}
+
+/**
+ * The launcher's admin access token. SECRET (R20): write-only — it is never in
+ * snapshot(), never in a route response body, never in a log line, and the only
+ * code allowed to read it is routes/videoLauncher.js, which attaches it to the
+ * outbound call and nowhere else. Unset → '' (page disabled, one warning).
+ */
+export function videoLauncherToken() {
+  const v = raw('VIDEO_LAUNCHER_TOKEN');
+  if (v === undefined) {
+    warnOnce('VIDEO_LAUNCHER_TOKEN', 'not set — the video launcher page is DISABLED on this deployment');
+    return '';
+  }
+  return v;
+}
+
+/**
+ * The SAFE view of the pair, for diagnostics and for the route's own answer:
+ * the token is reported as a BOOLEAN (`token_set`), never as a value (R20
+ * "*_set on read"). `configured` is the single question the client asks.
+ * The url is deliberately NOT part of what the client is told either — a
+ * per-store functional URL in the bundle is the other half of this defect
+ * (R5 / R15).
+ */
+export function videoLauncher() {
+  const url = videoLauncherUrl();
+  const tokenSet = videoLauncherToken() !== '';
+  return { url_set: url !== null, token_set: tokenSet, configured: url !== null && tokenSet };
+}
+
 // ── Triple Whale ────────────────────────────────────────────────────────
 
 /** Triple Whale shop id; NO literal default — unset = feature dormant (one warning). */
@@ -515,6 +574,7 @@ const storeConfig = {
   setStoreConfigSource, resetWarnings,
   storeCode, brand, hub, shopifyStoreDomain, shopifyStoreUrl, shopifyApiVersion, SHOPIFY_API_VERSION_DEFAULT, whopCompanyId, tripleWhaleShopId,
   metaApiVersion, metaGraphUrl, META_API_VERSION_DEFAULT, adAccounts, adAccountNames, adAccountName, frameioToken,
+  videoLauncherUrl, videoLauncherToken, videoLauncher,
   timezone, TIMEZONE_DEFAULT, slackChannels,
   productCodes, defaultProduct, productFor, productForClickupProductRef,
   snapshot, assertBootConfig, StoreConfigError,
