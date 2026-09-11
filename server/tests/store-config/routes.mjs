@@ -135,6 +135,42 @@ test('W6 R7: the hub block is read at REQUEST time, and the flag is only ever th
   assert.equal(back.json.data.hub.origin, 'https://hub.example.test', 'and back, on the next request, with no restart');
 });
 
+test('W6c P2-1: hub.origin is normalised to a BARE origin, and an unparseable one is null', async () => {
+  // What this value is FOR is being concatenated with `/switch/<code>?next=…` in the browser. Anything after
+  // the authority breaks every link in the dropdown SILENTLY: measured on the unnormalised value,
+  // `https://hub.example.test#x` produced `https://hub.example.test#x/switch/MB?next=%2Fapp%2Fdashboard`,
+  // which is the hub ROOT. A `?token=` pasted into HUB_ORIGIN reached the browser verbatim for the same reason.
+  const saved = process.env.HUB_ORIGIN;
+  const SECRET_IN_A_URL = 'https://hub.example.test/?token=LEAK-hub-sso-secret-w6x1-at-least-32-bytes';
+  try {
+    for (const [given, want] of [
+      ['https://hub.example.test', 'https://hub.example.test'],
+      ['https://hub.example.test/', 'https://hub.example.test'],
+      ['https://hub.example.test///', 'https://hub.example.test'],
+      ['https://hub.example.test/path', 'https://hub.example.test'],
+      ['https://hub.example.test#x', 'https://hub.example.test'],
+      ['https://hub.example.test/a?b=c#d', 'https://hub.example.test'],
+      ['https://hub.example.test:8443/x', 'https://hub.example.test:8443'],      // a port IS part of the origin
+      ['http://127.0.0.1:3000/x', 'http://127.0.0.1:3000'],
+      [SECRET_IN_A_URL, 'https://hub.example.test'],
+      ['javascript:alert(1)', null],
+      ['not-a-url', null],
+      ['ftp://hub.example.test', null],
+    ]) {
+      process.env.HUB_ORIGIN = given;
+      const r = await get('/store-config', { Authorization: `Bearer ${token}` });
+      assert.equal(r.json.data.hub.origin, want, `HUB_ORIGIN=${given}`);
+    }
+    // and the scanner's own point: a secret pasted into HUB_ORIGIN no longer reaches the browser at all.
+    process.env.HUB_ORIGIN = SECRET_IN_A_URL;
+    const leaky = await get('/store-config', { Authorization: `Bearer ${token}` });
+    assert.equal(leaky.text.includes('LEAK-hub-sso-secret'), false, 'the query string a secret was pasted into is gone');
+    scan(leaky.text, 'store-config with a secret pasted into HUB_ORIGIN');
+  } finally { process.env.HUB_ORIGIN = saved; }
+  const back = await get('/store-config', { Authorization: `Bearer ${token}` });
+  assert.equal(back.json.data.hub.origin, 'https://hub.example.test', 'read at REQUEST time (R7): back on the next request');
+});
+
 test('W6: the store list is never taken from the client', async () => {
   const r = await get('/store-config?stores=%5B%7B%22code%22%3A%22XX%22%2C%22name%22%3A%22Injected%22%7D%5D', {
     Authorization: `Bearer ${token}`, 'x-hub-stores': '[{"code":"XX","name":"Injected"}]',

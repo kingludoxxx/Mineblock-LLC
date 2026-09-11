@@ -115,9 +115,36 @@ export function brand() {
  */
 export function hub() {
   return {
-    origin: readString('HUB_ORIGIN', { silent: true }),
+    origin: hubOrigin(),
     sso_enabled: raw('HUB_SSO_ENABLED') === '1',
   };
+}
+
+/**
+ * HUB_ORIGIN normalised to a BARE origin (scheme + host + port), or null. W6c / R10 P2-1.
+ *
+ * What this value is FOR is being concatenated with `/switch/<code>?next=…` in the browser
+ * (client/src/hooks/useStoreSwitcher.js switchUrl), so anything after the authority silently breaks every
+ * link in the dropdown. Measured on the unnormalised value: `https://hub.example.test#x` produced
+ * `https://hub.example.test#x/switch/MB?next=%2Fapp%2Fdashboard`, which is the hub ROOT with a fragment —
+ * every click lands on the hub instead of the store, with no error anywhere. A `?token=…` pasted into
+ * HUB_ORIGIN reached the browser verbatim for the same reason.
+ *
+ * Unparseable (or not http/https) -> null, with ONE warning, which is the same answer as "no hub configured":
+ * the client renders its plain brand block and the store keeps working on its own login (R21).
+ */
+function hubOrigin() {
+  const v = raw('HUB_ORIGIN');
+  if (v === undefined) return null;
+  let url;
+  try { url = new URL(v); } catch { url = null; }
+  if (!url || (url.protocol !== 'https:' && url.protocol !== 'http:')) {
+    // The VALUE is deliberately not echoed: P2-1 exists because an operator can paste something that is not a
+    // url into this variable, and "something that is not a url" is exactly the shape a pasted secret has (R20).
+    warnOnce('HUB_ORIGIN', `is set but is not an http(s) url (${String(v).length} characters) — the store switcher is off until it is`);
+    return null;
+  }
+  return url.origin;
 }
 
 // ── Shopify ─────────────────────────────────────────────────────────────

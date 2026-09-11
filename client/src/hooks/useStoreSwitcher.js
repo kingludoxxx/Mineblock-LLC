@@ -22,6 +22,23 @@ const STORE_CODE_RE = /^[A-Z0-9]{1,8}$/;
 const ROLE_MAX = 24;
 
 /**
+ * W6c / R10 P2-1: a BARE origin (scheme + host + port) or null — never a path, a query or a fragment.
+ *
+ * switchUrl() concatenates this with `/switch/<code>?next=…`, so anything after the authority breaks every
+ * link in the dropdown SILENTLY: measured, `https://hub.example.test#x` produced
+ * `https://hub.example.test#x/switch/MB?next=%2Fapp%2Fdashboard`, which is the hub root. The server now
+ * normalises HUB_ORIGIN the same way (server/src/config/storeConfig.js hub()); this is the client half of
+ * the same rule, because the client must not depend on the server's version being deployed first.
+ */
+export function bareOrigin(value) {
+  if (typeof value !== 'string' || value === '') return null;
+  let url;
+  try { url = new URL(value); } catch { return null; }
+  if (url.protocol !== 'https:' && url.protocol !== 'http:') return null;
+  return url.origin;
+}
+
+/**
  * Defensive read of the server's answer: the server validates, the client refuses to render anything odd.
  * W6b, per ENTRY: an unusable entry is dropped and the rest of the list is rendered — one odd store must not
  * cost the operator every other row. `role` is a LABEL for a pill (never a permission: every gate is taken at
@@ -30,7 +47,7 @@ const ROLE_MAX = 24;
 export function readStoreConfig(data) {
   const hub = data && typeof data === 'object' ? data.hub : null;
   const sw = data && typeof data === 'object' ? data.switcher : null;
-  const hubOrigin = hub && typeof hub.origin === 'string' && /^https?:\/\//.test(hub.origin) ? hub.origin.replace(/\/+$/, '') : null;
+  const hubOrigin = bareOrigin(hub?.origin);
   const stores = Array.isArray(sw?.stores)
     ? sw.stores.filter((s) => s && typeof s.code === 'string' && STORE_CODE_RE.test(s.code) && typeof s.name === 'string' && s.name.length > 0 && s.name.length <= 80)
       .map((s) => ({

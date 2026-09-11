@@ -79,20 +79,38 @@ export const HUB_STORES_MAX = 50;
 export const HUB_STORE_NAME_MAX = 80;
 export const HUB_STORE_ROLE_MAX = 24;
 const HUB_STORE_CODE_RE = /^[A-Z0-9]{1,8}$/;
-const HUB_STORE_KEYS = new Set(['code', 'name', 'role', 'can_hop']);
+// W6c / R10 P1-1: AN UNKNOWN KEY IS IGNORED, NOT A REASON TO DROP THE ENTRY.
+// W6 rejected any entry carrying a key outside the four known ones. Measured on the real function: an unknown
+// key on ONE entry cost that entry; an unknown key on EVERY entry — which is exactly what the first hub release
+// that adds a fifth field looks like — returned 0 entries and emptied every store's dropdown, with no error, no
+// log line and no failing test on either side. The hub deploys FIRST by design (that is what the C1 check in
+// hub-sso/w6-switcher-claim.mjs exists to prove for the ticket), so this had to be true for the LIST too.
+// This is not a weaker posture: the four known fields are each validated on their own, whatever else the object
+// carries, and the object that leaves here is BUILT from them — nothing unknown is copied, so nothing unknown
+// can reach a browser. Recovery from the old behaviour would have been a dashboard deploy per store.
+//
+// W6c / R10 P2-2: NAMES ARE NORMALISED, not just length-checked. A store name is operator free text that the
+// dropdown renders verbatim, and the dropdown is now the thing an operator reads before choosing which LIVE
+// store to enter. U+202E and friends reverse the rendered text (`Safe<RLO>erots-live` reads as a different
+// store); zero-width characters make two different names look identical. Both are stripped, then runs of
+// whitespace are collapsed and the ends trimmed, so a name cannot be padded into a different-looking row.
+// An entry whose name is NOTHING BUT those characters has no name and is dropped.
+const BIDI_AND_ZERO_WIDTH = /[\u200B-\u200F\u202A-\u202E\u2066-\u2069\uFEFF]/g;
+
+/** Strip the characters that spoof a rendered row, collapse whitespace, trim. R10 P2-2. */
+export const cleanHubStoreName = (value) => String(value).replace(BIDI_AND_ZERO_WIDTH, '').replace(/\s+/g, ' ').trim();
 
 /** @returns {{code:string,name:string,role:string,can_hop:boolean}|null} the entry to keep, or null to skip it. */
 const sanitizeHubStore = (entry) => {
   if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return null;
-  const keys = Object.keys(entry);
-  if (!keys.includes('code') || !keys.includes('name')) return null;
-  if (keys.some((k) => !HUB_STORE_KEYS.has(k))) return null;          // an unknown key is an unknown contract
-  const { code, name, role, can_hop: canHop } = entry;
+  const { code, name, role, can_hop: canHop } = entry;                // P1-1: read the four we know, ignore the rest
   if (typeof code !== 'string' || !HUB_STORE_CODE_RE.test(code)) return null;
   if (typeof name !== 'string' || name.length === 0 || name.length > HUB_STORE_NAME_MAX) return null;
   if (role !== undefined && (typeof role !== 'string' || role.length > HUB_STORE_ROLE_MAX)) return null;
   if (canHop !== undefined && typeof canHop !== 'boolean') return null;
-  return { code, name, role: role ?? '', can_hop: canHop ?? true };
+  const cleanName = cleanHubStoreName(name);
+  if (cleanName.length === 0) return null;                            // P2-2: a name made only of invisible characters
+  return { code, name: cleanName, role: role === undefined ? '' : cleanHubStoreName(role), can_hop: canHop ?? true };
 };
 
 /** @returns {{code:string,name:string,role:string,can_hop:boolean}[]} [] whenever the CLAIM itself is not a list. */

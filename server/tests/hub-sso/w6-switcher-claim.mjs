@@ -159,7 +159,6 @@ const GOOD = { code: 'SB', name: 'Sandbox', role: 'owner', can_hop: true };
     ['a code over 8 characters', { code: 'ABCDEFGHI', name: 'Too long', role: 'owner', can_hop: true }],
     ['a name that is not a string', { code: 'MB', name: 42, role: 'owner', can_hop: true }],
     ['a name over 80 characters', { code: 'MB', name: 'x'.repeat(81), role: 'owner', can_hop: true }],
-    ['an entry carrying an extra field', { code: 'MB', name: 'Mineblock', role: 'owner', can_hop: true, dashboard_origin: 'https://evil.example' }],
     ['a role that is not a string', { code: 'MB', name: 'Mineblock', role: 5, can_hop: true }],
     ['a role over 24 characters', { code: 'MB', name: 'Mineblock', role: 'r'.repeat(25), can_hop: true }],
     ['can_hop that is not a boolean', { code: 'MB', name: 'Mineblock', role: 'owner', can_hop: 'yes' }],
@@ -170,6 +169,62 @@ const GOOD = { code: 'SB', name: 'Sandbox', role: 'owner', can_hop: true };
     const sess = await lastSession();
     ok(r.status === 302, `W6b ${label}: the ticket is still accepted`, `${r.status} ${r.text}`);
     ok(JSON.stringify(sess.hub_stores) === JSON.stringify([GOOD]), `W6b ${label}: that ENTRY is skipped and the rest of the list is kept`, JSON.stringify(sess.hub_stores));
+  }
+
+  // (b2) W6c / R10 P1-1: AN UNKNOWN KEY IS IGNORED AND THE ENTRY IS KEPT.
+  //      W6 rejected any entry carrying a key outside the four known ones. The hub deploys FIRST by design, so
+  //      the FIRST hub release that adds a fifth field to every entry emptied every store's dropdown — silently,
+  //      with no error, no log line and no failing test on either side. Recovery would have been a dashboard
+  //      deploy per store. The entry that comes out is BUILT from the four known fields, so nothing unknown
+  //      can reach a browser; this is forwarding compatibility, not a weaker posture.
+  {
+    const t = mint({ stores: [{ ...GOOD, dashboard_origin: 'https://evil.example' }] });
+    const r = await exchange({ ticket: t.ticket, next: '/' });
+    const sess = await lastSession();
+    ok(r.status === 302 && JSON.stringify(sess.hub_stores) === JSON.stringify([GOOD]),
+      'P1-1 an entry with one unknown key is KEPT, and the unknown key is dropped', JSON.stringify(sess.hub_stores));
+    // THE SHIPPING HAZARD ITSELF: a future hub field on EVERY entry. Under W6 this answered [].
+    const future = [
+      { code: 'MB', name: 'Store one', role: 'owner', can_hop: true, tier: 'gold' },
+      { code: 'SB', name: 'Sandbox', role: 'owner', can_hop: true, tier: 'silver' },
+      { code: 'TW', name: 'Store three', role: 'viewer', can_hop: false, tier: 'bronze' },
+    ];
+    const t2 = mint({ stores: future });
+    const r2 = await exchange({ ticket: t2.ticket, next: '/' });
+    const sess2 = await lastSession();
+    ok(r2.status === 302 && sess2.hub_stores.length === 3,
+      'P1-1 a future FIFTH field on EVERY entry keeps every entry (the dropdown does not empty)', JSON.stringify(sess2.hub_stores));
+    ok(sess2.hub_stores.every((e) => Object.keys(e).sort().join(',') === 'can_hop,code,name,role'),
+      'P1-1 and the unknown field reaches neither the session row nor the browser', JSON.stringify(sess2.hub_stores));
+    // NEGATIVE CONTROL: the per-entry validation still bites on a field it DOES know.
+    const t3 = mint({ stores: [{ code: 'lower', name: 'Bad code', role: 'owner', can_hop: true, tier: 'gold' }, GOOD] });
+    const r3 = await exchange({ ticket: t3.ticket, next: '/' });
+    ok(r3.status === 302 && JSON.stringify((await lastSession()).hub_stores) === JSON.stringify([GOOD]),
+      'P1-1 negative control: an entry that is bad on a KNOWN field is still dropped');
+  }
+
+  // (b3) W6c / R10 P2-2: a name is NORMALISED, not just length-checked. U+202E reverses the rendered row, and
+  //      zero-width characters make two different names look identical — in the one list an operator reads
+  //      before choosing which LIVE store to enter.
+  {
+    const spoof = [
+      { code: 'MB', name: 'Safe\u202Eerots-live', role: 'owner', can_hop: true },
+      { code: 'SB', name: 'Sand\u200Bbox\uFEFF', role: 'owner', can_hop: true },
+      { code: 'TW', name: '  Padded\u2066   name  ', role: 'owner', can_hop: true },
+      { code: 'XX', name: '\u200B\u202E\uFEFF', role: 'owner', can_hop: true },
+    ];
+    const t = mint({ stores: spoof });
+    const r = await exchange({ ticket: t.ticket, next: '/' });
+    const sess = await lastSession();
+    ok(r.status === 302, 'P2-2 a spoofed name does not refuse the ticket', `${r.status}`);
+    ok(JSON.stringify(sess.hub_stores.map((e) => e.name)) === JSON.stringify(['Safeerots-live', 'Sandbox', 'Padded name']),
+      'P2-2 bidi + zero-width are stripped, whitespace collapsed, and a name of nothing but those is dropped', JSON.stringify(sess.hub_stores));
+    ok(!/[\u200B-\u200F\u202A-\u202E\u2066-\u2069\uFEFF]/.test(JSON.stringify(sess.hub_stores)),
+      'P2-2 no bidi or zero-width character survives anywhere in the stored list');
+    // POSITIVE CONTROL: a name that needs no cleaning is untouched, punctuation and accents included.
+    const t2 = mint({ stores: [{ code: 'MB', name: 'Ötzi & Co. (EU) - 2026', role: 'owner', can_hop: true }] });
+    await exchange({ ticket: t2.ticket, next: '/' });
+    ok((await lastSession()).hub_stores[0].name === 'Ötzi & Co. (EU) - 2026', 'P2-2 positive control: an ordinary name is unchanged');
   }
 
   // (c) backward compatibility with a W6 ticket: no role, no can_hop -> role '' and can_hop true.

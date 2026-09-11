@@ -74,10 +74,23 @@ const countFailure = (req) => {
 const b64uDecode = (s) => Buffer.from(String(s).replace(/-/g, '+').replace(/_/g, '/'), 'base64');
 const isB64u = (s) => typeof s === 'string' && s.length > 0 && /^[A-Za-z0-9_-]+$/.test(s);
 
-/** Only a path inside the SPA. '//host' is protocol-relative and '/\host' is read the same way by browsers. */
+/**
+ * Only a path inside the SPA. '//host' is protocol-relative and '/\host' is read the same way by browsers.
+ *
+ * W6c / R10 P0-1: the C0-plus-space class is refused too. A URL parser DELETES tab, LF and CR out of a URL
+ * before parsing it, so `/<TAB>/evil.example` passes a startsWith('//') test and is then read as
+ * `//evil.example` — protocol-relative, off-site. `next` ends up in a res.redirect() here, and express's
+ * encodeurl neutralises it on the way out (measured), so this side was never exploitable; it is refused
+ * anyway because the SAME string is guarded by three functions in two repos and three guards that disagree
+ * about what a path is are three chances to be wrong. The hub's twins carry the identical class:
+ * store-hub src/ui/switcher.mjs NEXT_BAD_CHARS (the one that WAS exploitable) and src/routes/switcher.js.
+ * Shared list of the forms all three must refuse: server/tests/hub-sso/next-forms.mjs.
+ */
+export const NEXT_BAD_CHARS = /[\u0000-\u0020]/;
 export function safeNext(raw) {
   if (raw === undefined || raw === null || raw === '') return '/';
-  if (typeof raw !== 'string' || !raw.startsWith('/') || raw.startsWith('//') || raw.startsWith('/\\')) return null;
+  if (typeof raw !== 'string' || NEXT_BAD_CHARS.test(raw)) return null;
+  if (!raw.startsWith('/') || raw.startsWith('//') || raw.startsWith('/\\')) return null;
   return raw;
 }
 

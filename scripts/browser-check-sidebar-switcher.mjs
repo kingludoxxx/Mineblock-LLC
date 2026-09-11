@@ -69,13 +69,20 @@ const PNG = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR
 
 /** Flipped between page loads to serve a DIFFERENT store-config: this is how the R21 no-hub path is reached. */
 let mode = 'hub';
+// W6c / R10 P2-1: a hub origin that is NOT a bare origin. The dropdown's hrefs are built by concatenation, so
+// under W6 every row's href became `https://hub.example.test/?token=SEKRIT/switch/MB?next=…` — the hub ROOT,
+// with a secret in it, on every click, silently. The client normalises it now; this fixture proves it in the
+// browser rather than in a unit test, because the href is what a person actually clicks.
+const HOSTILE_ORIGIN = 'https://hub.example.test/?token=LEAK-not-a-real-secret#frag';
 const storeConfigBody = () => ({
   success: true,
   data: {
     storeCode: CURRENT,
     brand: { name: null, shortName: null, logoWhite: null, logoSymbol: null, logoBlack: null, emailDomain: null },
-    hub: mode === 'hub' ? { origin: HUB_ORIGIN, sso_enabled: true } : { origin: null, sso_enabled: false },
-    switcher: { current: CURRENT, stores: mode === 'hub' ? FAKE_STORES : [] },
+    hub: mode === 'hub' ? { origin: HUB_ORIGIN, sso_enabled: true }
+      : mode === 'hostile-origin' ? { origin: HOSTILE_ORIGIN, sso_enabled: true }
+      : { origin: null, sso_enabled: false },
+    switcher: { current: CURRENT, stores: mode === 'nohub' ? [] : FAKE_STORES },
   },
 });
 
@@ -307,6 +314,28 @@ try {
   check('collapsed: the symbol logo is still the trigger', collapsed.sidebar <= 60 && Boolean(collapsed.img));
   check('collapsed: the same menu opens and stays on screen', collapsedMenu.rows === FAKE_STORES.length + 2 && collapsedMenu.left >= 0);   // 4 stores + New store + Manage stores
   await shot('05-collapsed-open');
+
+  // ── 5c. W6c / R10 P2-1: a non-bare hub origin still produces bare-origin links ──
+  mode = 'hostile-origin';
+  await cdp.send('Page.navigate', { url: BASE + PAGE }, sid);
+  await until('the sidebar with a hostile hub origin', async () => await evaluate(`!!document.querySelector('[data-testid="store-switcher-button"]')`));
+  await click('[data-testid="store-switcher-button"]');
+  await until('the menu with a hostile hub origin', open);
+  const hostileHrefs = await evaluate(`[...document.querySelectorAll('[data-testid="store-switcher-menu"] [role="menuitem"]')].map(a=>a.getAttribute('href')).filter(Boolean)`);
+  log(`5c. HUB_ORIGIN=${JSON.stringify(HOSTILE_ORIGIN)} -> hrefs ${JSON.stringify(hostileHrefs)}`);
+  // Parsed, not string-matched: the hostile origin has the SAME host, so only the path/query/fragment separate
+  // a normalised link from a broken one. Every link must be <bare origin> + a path this app chose.
+  const hrefParts = hostileHrefs.map((h) => { const u = new URL(h); return { origin: u.origin, pathname: u.pathname, search: u.search, hash: u.hash }; });
+  log(`5c. parsed: ${JSON.stringify(hrefParts)}`);
+  check('W6c P2-1: every switch link is built from the BARE origin, not the raw HUB_ORIGIN',
+    hrefParts.length > 0 && hrefParts.every((u) => u.origin === 'https://hub.example.test'
+      && (u.pathname === '/' || u.pathname.startsWith('/switch/'))
+      && (u.search === '' || u.search.startsWith('?next='))
+      && (u.hash === '' || u.hash === '#add-store')));
+  check('W6c P2-1: nothing from the hub origin\'s query or fragment reaches an href',
+    hostileHrefs.every((h) => !h.includes('token=') && !h.includes('#frag')));
+  check('W6c P2-1: the rows are still THERE (a normalisation that emptied the menu would be worse)',
+    hostileHrefs.length >= FAKE_STORES.filter((x) => x.can_hop !== false).length);
 
   // ── 6. R21 THE FAILURE PATH: no hub -> the brand block, exactly as before ──
   mode = 'nohub';

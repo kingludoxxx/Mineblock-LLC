@@ -48,8 +48,10 @@ const navGroups = [
   // ─────────────────────────────────────────────────────────────────────────
   // ONE MENU (2026-08-10). Organised by what the operator is DOING, not by
   // which backend serves it. `/app/crm/*` entries are the Funnel OS CRM
-  // embedded in this shell; everything else is native Puure. The operator
-  // should not be able to tell the difference — that is the whole point.
+  // embedded in this shell; everything else is this store's own dashboard. The
+  // operator should not be able to tell the difference — that is the whole point.
+  // (W6c / R10 P2-7: the store name that used to be on the line above is gone. R15
+  // is about engine code naming a store, and a comment is engine code.)
   //
   // The legacy native CRM pages (/app/orders, /app/funnels, …) still exist and
   // still work by URL. They are off the menu so there is ONE of everything.
