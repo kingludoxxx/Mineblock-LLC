@@ -10,6 +10,7 @@ import {
   ChevronRight,
 } from 'lucide-react';
 import api from '../../../services/api';
+import { loadLaunchPages, pageOptions, pageFields } from '../../../lib/copySetPages';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -66,7 +67,7 @@ function countLabel(arr) {
 // EditCopySetModal (sub-modal)
 // ---------------------------------------------------------------------------
 
-function EditCopySetModal({ copySet, onSave, onClose, saving }) {
+function EditCopySetModal({ copySet, onSave, onClose, saving, pages, pagesError }) {
   const [form, setForm] = useState(() => {
     const pt = ensureArray(copySet.primary_texts);
     const hl = ensureArray(copySet.headlines);
@@ -78,6 +79,7 @@ function EditCopySetModal({ copySet, onSave, onClose, saving }) {
       cta_button: copySet.cta_button || 'SHOP_NOW',
       landing_page_url: copySet.landing_page_url || '',
       utm_parameters: copySet.utm_parameters || '',
+      page_id: copySet.page_id ? String(copySet.page_id) : '',
     };
   });
 
@@ -105,6 +107,7 @@ function EditCopySetModal({ copySet, onSave, onClose, saving }) {
   const handleSave = () => {
     onSave({
       ...form,
+      ...pageFields(pages, form.page_id, copySet),
       angle: copySet.angle,
       primary_texts: form.primary_texts.filter((s) => s.trim()),
       headlines: form.headlines.filter((s) => s.trim()),
@@ -131,6 +134,25 @@ function EditCopySetModal({ copySet, onSave, onClose, saving }) {
 
         {/* Body */}
         <div className="flex-1 overflow-y-auto px-6 py-5 space-y-6">
+          {/* Facebook Page */}
+          <div>
+            <label className="font-mono text-[10px] text-[#c9a84c] uppercase tracking-[0.15em] block mb-2">
+              Facebook Page
+            </label>
+            <select
+              className={inputClass + ' cursor-pointer'}
+              value={form.page_id}
+              onChange={(e) => setForm((prev) => ({ ...prev, page_id: e.target.value }))}
+            >
+              <option value="" className="bg-[#111113] text-white">Use the launch template's pages</option>
+              {pageOptions(pages, copySet).map((p) => (
+                <option key={p.id} value={p.id} className="bg-[#111113] text-white">{p.name}</option>
+              ))}
+            </select>
+            <p className="mt-1 text-[11px] text-white/30">The ads of this copy set run from this page. Empty uses the template's pages.</p>
+            {pagesError && <p className="mt-1 text-[11px] text-red-400">{pagesError}</p>}
+          </div>
+
           {/* Primary Texts */}
           <div>
             <label className="font-mono text-[10px] text-[#c9a84c] uppercase tracking-[0.15em] block mb-2">
@@ -309,6 +331,8 @@ export default function AdCopySetsManager({ open, onClose, productId, productNam
   const [editingSet, setEditingSet] = useState(null);
   const [addingAngle, setAddingAngle] = useState(false);
   const [newAngleName, setNewAngleName] = useState('');
+  const [pages, setPages] = useState([]);
+  const [pagesError, setPagesError] = useState('');
 
   // ── Fetch copy sets ────────────────────────────────────────────────────
   const fetchCopySets = async () => {
@@ -328,6 +352,13 @@ export default function AdCopySetsManager({ open, onClose, productId, productNam
   useEffect(() => {
     if (open) fetchCopySets();
   }, [open, productId]);
+
+  useEffect(() => {
+    if (!open) return;
+    loadLaunchPages((url) => api.get(url))
+      .then((list) => { setPages(list); setPagesError(''); })
+      .catch((err) => setPagesError(`Could not load Facebook pages: ${err?.response?.data?.error?.message || err.message}`));
+  }, [open]);
 
   // ── Create ─────────────────────────────────────────────────────────────
   const handleCreateAngle = async () => {
@@ -550,7 +581,13 @@ export default function AdCopySetsManager({ open, onClose, productId, productNam
                   </div>
 
                   {/* Preview row */}
-                  <div className="grid grid-cols-3 gap-3 text-xs text-white/50 mb-2">
+                  <div className="grid grid-cols-4 gap-3 text-xs text-white/50 mb-2">
+                    <div className="min-w-0">
+                      <span className="font-mono text-[10px] text-[#c9a84c] uppercase tracking-[0.15em] block mb-0.5">
+                        Facebook Page
+                      </span>
+                      <p className="truncate" title={cs.page_id || ''}>{cs.page_id ? (cs.page_name || cs.page_id) : 'Template pages'}</p>
+                    </div>
                     <div className="min-w-0">
                       <span className="font-mono text-[10px] text-[#c9a84c] uppercase tracking-[0.15em] block mb-0.5">
                         Body Copy
@@ -603,6 +640,8 @@ export default function AdCopySetsManager({ open, onClose, productId, productNam
           onSave={handleSave}
           onClose={() => setEditingSet(null)}
           saving={saving}
+          pages={pages}
+          pagesError={pagesError}
         />
       )}
     </div>
