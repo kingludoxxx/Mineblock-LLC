@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
+import { makeDraftCreator } from '../../lib/draftCreate';
 import {
   Package, Plus, Pencil, Trash2, X, Image,
   Target, ChevronRight, ChevronDown, Loader2,
@@ -1048,6 +1049,7 @@ export default function Assets() {
 
   const openDetail = async (product) => {
     // Show cached data immediately, then refresh from DB in background
+    newDraft(product?.id ?? null);
     setSelectedProduct(normalizeProduct({ ...product }));
     setViewMode('detail');
     try {
@@ -1060,23 +1062,47 @@ export default function Assets() {
   };
 
   const goBackToList = () => {
+    draftRef.current = null;
     setViewMode('list');
     setSelectedProduct(null);
   };
 
-  const handleCreate = async () => {
-    if (creating) return;
-    setCreating(true);
-    try {
-      const resp = await api.post('/product-profiles', { name: 'Untitled Product' });
-      const created = resp.data?.data || resp.data;
-      openDetail(created);
-    } catch (err) {
-      console.error('Create failed:', err);
-    } finally {
-      setCreating(false);
-    }
+  // ADD PRODUCT OPENS A DRAFT. It used to POST {name:'Untitled Product'} the instant the button was clicked, so every
+  // click - including a curious one, or an automated page check - left a blank product in the store's live library
+  // (2026-09-13: one such row had to be removed by hand). Now nothing is written until the operator enters something.
+  // One draft creator per open product (client/src/lib/draftCreate.js, tested in
+  // server/tests/product-library/draft-create.test.mjs): creates on the FIRST real save, shares that create with any
+  // save racing it, and never creates for a product that already exists.
+  const draftRef = useRef(null);
+  const newDraft = (existingId = null) => {
+    draftRef.current = makeDraftCreator({
+      initialId: existingId,
+      create: async (payload) => {
+        const body = { ...payload };
+        if (!String(body.name || '').trim()) body.name = 'Untitled Product';   // the table requires a name
+        setCreating(true);
+        try {
+          const resp = await api.post('/product-profiles', body);
+          return normalizeProduct(resp.data?.data || resp.data);
+        } finally {
+          setCreating(false);
+        }
+      },
+      onCreated: (created) => {
+        setSelectedProduct((prev) => ({ ...prev, ...created }));
+        setProducts((prev) => [created, ...prev.filter((x) => x.id !== created.id)]);
+      },
+    });
+    return draftRef.current;
   };
+
+  const handleCreate = () => {
+    newDraft(null);
+    setSelectedProduct(normalizeProduct({ name: '' }));
+    setViewMode('detail');
+  };
+
+  const ensureProductId = (payload = {}) => (draftRef.current || newDraft(selectedProduct?.id ?? null)).ensure(payload);
 
   // Save field — value passed directly from AutoSaveField's ref (never stale)
   // Pass key='__all__' and value=fullProductObject to save everything at once
@@ -1084,23 +1110,24 @@ export default function Assets() {
   // to avoid stale API responses overwriting rapid local edits.
   const saveVersionRef = useRef(0);
   const handleFieldSave = async (key, value) => {
-    if (!selectedProduct?.id) return;
-    const version = ++saveVersionRef.current;
     const payload = key === '__all__' ? value : { [key]: value };
-    const { data } = await api.put(`/product-profiles/${selectedProduct.id}`, payload);
+    const { id, created } = await ensureProductId(payload);
+    if (created) return;   // this very call created the product with this edit; writing it again adds nothing
+    const version = ++saveVersionRef.current;
+    const { data } = await api.put(`/product-profiles/${id}`, payload);
     // If another save happened while this one was in flight, skip state update
     if (version !== saveVersionRef.current) return;
     const updated = normalizeProduct(data?.data || data);
     if (updated?.id) {
       setSelectedProduct(prev => ({ ...prev, ...updated }));
-      setProducts(prev => prev.map(p => p.id === selectedProduct.id ? { ...p, ...updated } : p));
+      setProducts(prev => prev.map(p => p.id === id ? { ...p, ...updated } : p));
     }
   };
 
   const handleAiFill = async (url) => {
-    if (!selectedProduct?.id) return;
     try {
-      const resp = await api.post(`/product-profiles/${selectedProduct.id}/ai-fill`, { url });
+      const { id } = await ensureProductId({});   // AI fill needs a product to fill; a deliberate action, so create
+      const resp = await api.post(`/product-profiles/${id}/ai-fill`, { url });
       const updated = resp.data?.data || resp.data;
       setSelectedProduct(prev => ({ ...prev, ...updated }));
     } catch (err) {
