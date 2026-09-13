@@ -1,6 +1,7 @@
 import { useState, useMemo, useEffect } from 'react';
 import { ScanSearch, MousePointerSquareDashed, EyeOff, AlertCircle, X, Check, Trash2, Zap, Calendar, RefreshCw, Pencil, Save, XCircle, Plus } from 'lucide-react';
 import CreativeImage from './CreativeImage';
+import { templateIsAnalyzed, useTemplateAnalysis } from './useTemplateAnalysis';
 
 // ---------------------------------------------------------------------------
 // Categories
@@ -124,7 +125,7 @@ function TemplateCard({ template, onView, onAnalyze, onDelete }) {
           </div>
         )}
         {/* Analysis indicator */}
-        {template.deep_analysis && (
+        {templateIsAnalyzed(template) && (
           <div className="absolute top-2 right-2 w-2 h-2 rounded-full bg-green-500" title="Analyzed" />
         )}
         {/* Hover overlay */}
@@ -203,6 +204,7 @@ function ReferenceLightbox({ template, onClose, onSelect, onAnalyze, onHide, onD
   const [editTags, setEditTags] = useState([]);
   const [tagInput, setTagInput] = useState('');
   const [saveError, setSaveError] = useState('');
+  const { analysis: da, loading: analysisLoading, error: analysisError } = useTemplateAnalysis(template);
 
   // Reset edit mode + tag input whenever we switch templates. useEffect runs
   // after commit, so the hook call happens unconditionally on every render.
@@ -213,11 +215,6 @@ function ReferenceLightbox({ template, onClose, onSelect, onAnalyze, onHide, onD
   }, [template?.id]);
 
   if (!template) return null;
-  // deep_analysis may come as a JSON string from the API — parse it safely
-  let da = template.deep_analysis;
-  if (typeof da === 'string') {
-    try { da = JSON.parse(da); } catch { da = null; }
-  }
   const templateTags = parseTags(template.tags);
 
   const startEdit = () => {
@@ -532,6 +529,10 @@ function ReferenceLightbox({ template, onClose, onSelect, onAnalyze, onHide, onD
                     </div>
                   )}
                 </div>
+              ) : analysisLoading ? (
+                <p className="py-4 text-center text-sm text-zinc-500">Loading analysis...</p>
+              ) : analysisError ? (
+                <p className="py-4 text-center text-sm text-red-400">Could not load the analysis: {analysisError}</p>
               ) : (
                 <div className="py-4 text-center">
                   <p className="text-sm text-zinc-500 mb-3">Not analyzed yet</p>

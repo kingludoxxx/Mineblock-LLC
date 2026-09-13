@@ -16,6 +16,7 @@ import {
   Zap,
 } from 'lucide-react';
 import api from '../../../services/api';
+import { useTemplateAnalysis } from './useTemplateAnalysis';
 
 const API_BASE = import.meta.env.VITE_API_URL || '';
 
@@ -82,15 +83,12 @@ export default function TemplateAnalysisModal({ isOpen, onClose, template }) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
 
-  // Sync analysis from template prop
+  // The list carries has_analysis, not the analysis: load it for this template, then keep it in sync.
+  const stored = useTemplateAnalysis(isOpen ? template : null);
   useEffect(() => {
-    if (template?.deep_analysis) {
-      setAnalysis(template.deep_analysis);
-    } else {
-      setAnalysis(null);
-    }
-    setError(null);
-  }, [template]);
+    setAnalysis(stored.analysis);
+    setError(stored.error);
+  }, [stored.analysis, stored.error, template?.id]);
 
   // Close on Escape
   useEffect(() => {
@@ -197,18 +195,20 @@ export default function TemplateAnalysisModal({ isOpen, onClose, template }) {
               )}
 
               {/* Loading state (no existing analysis) */}
-              {loading && !a && (
+              {(loading || stored.loading) && !a && (
                 <div className="flex flex-col items-center justify-center py-16 text-slate-400">
                   <Loader2 className="w-8 h-8 animate-spin mb-3" />
-                  <p>Analyzing template with AI...</p>
-                  <p className="text-xs text-slate-600 mt-1">
-                    This may take 15-30 seconds
-                  </p>
+                  <p>{loading ? 'Analyzing template with AI...' : 'Loading analysis...'}</p>
+                  {loading && (
+                    <p className="text-xs text-slate-600 mt-1">
+                      This may take 15-30 seconds
+                    </p>
+                  )}
                 </div>
               )}
 
               {/* Empty state */}
-              {!a && !loading && (
+              {!a && !loading && !stored.loading && (
                 <div className="flex flex-col items-center justify-center py-16 text-slate-500">
                   <Zap className="w-8 h-8 mb-3" />
                   <p>No analysis yet</p>

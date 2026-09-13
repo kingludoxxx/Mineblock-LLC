@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { pgQuery } from '../db/pg.js';
 import { authenticate } from '../middleware/auth.js';
 import { resolveInlineFlags } from '../utils/inlineImages.js';
+import { templateListQuery } from '../utils/templateListQuery.js';
 import { requirePermission } from '../middleware/rbac.js';
 import { buildLayoutAnalysisPrompt } from '../utils/staticsPrompts.js';
 import { resolveImage } from '../utils/imageHelpers.js';
@@ -155,38 +156,13 @@ router.get('/', authenticate, async (req, res) => {
   try {
     await ensureTable();
     const { category, search, hidden } = req.query;
-    const showHidden = hidden === 'true';
-
-    // 224 of these rows store the image itself in image_url (a data: URI, up to 495 KB). SELECT * shipped
-    // 23.3 MB per page load and timed out. The row is built as jsonb MINUS image_url, which is added back
-    // only when it is a link; an inline image becomes a link to /api/v1/inline-images. No data changes.
-    let query = `SELECT (to_jsonb(t) - 'image_url') || jsonb_build_object(
-        'image_url', CASE WHEN t.image_url LIKE 'data:%' THEN NULL ELSE t.image_url END,
-        'image_url__inline', COALESCE(t.image_url LIKE 'data:%', false)) AS r
-      FROM statics_templates t WHERE 1=1`;
-    const params = [];
-    let idx = 1;
-
-    if (!showHidden) {
-      query += ` AND is_hidden = false`;
-    }
-    if (category) {
-      query += ` AND category = $${idx++}`;
-      params.push(category);
-    } else {
-      // Exclude uncategorized templates from default listing — they clutter the picker
-      // and typically haven't been reviewed/tagged yet. Pass ?category=Uncategorized to see them.
-      query += ` AND (category IS NULL OR category != 'Uncategorized')`;
-    }
-    if (search) {
-      const searchTerm = `%${search}%`;
-      query += ` AND (name ILIKE $${idx} OR category ILIKE $${idx + 1})`;
-      params.push(searchTerm, searchTerm);
-      idx += 2;
-    }
-
-    query += ' ORDER BY sort_order ASC, created_at DESC';
-    const templates = (await pgQuery(query, params)).map((row) => resolveInlineFlags(row.r, 'template'));
+    // Columns are read each time so a column another route adds at boot ships without editing this list.
+    const columns = (await pgQuery(
+      `SELECT column_name FROM information_schema.columns
+        WHERE table_schema = current_schema() AND table_name = 'statics_templates' ORDER BY ordinal_position`
+    )).map((r) => r.column_name);
+    const { text, params } = templateListQuery(columns, { category, search, showHidden: hidden === 'true' });
+    const templates = (await pgQuery(text, params)).map((row) => resolveInlineFlags(row.r, 'template'));
 
     const categories = await pgQuery(`
       SELECT category AS name, COUNT(*)::int AS count
