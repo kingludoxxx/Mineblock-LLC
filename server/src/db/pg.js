@@ -14,8 +14,23 @@ const FAILURE_THRESHOLD = 5;
  * postgres.js client — NOT the same as node-postgres (pg).
  * This is the primary query interface for the SaaS platform.
  */
+/**
+ * How many connections the postgres.js pool may hold (PG_POOL_MAX, default 20, clamped 5..40).
+ *
+ * It was a fixed 10. Measured 2026-09-13 in real Chrome on a live store: the Statics Generation page fires 12 API
+ * requests at the same instant, every one of them through THIS pool. Requests returning 0 KB took 2.5-5 s (queueing,
+ * not working), and the two at the back - a 0.15 ms query among them - passed pgQuery's 8 s limit and answered 500.
+ * The app's OTHER pool (config/db.js) already allows 20; this one now matches it. Bounded both ways so a typo cannot
+ * starve the page (below 5) or exhaust the database's connection limit (above 40).
+ */
+export function poolMax(raw = process.env.PG_POOL_MAX) {
+  const n = Number.parseInt(String(raw ?? '').trim(), 10);
+  if (!Number.isFinite(n)) return 20;
+  return Math.min(40, Math.max(5, n));
+}
+
 const pgDb = postgres(env.DATABASE_URL, {
-  max: 10,
+  max: poolMax(),
   idle_timeout: 20,
   connect_timeout: 10,
   ssl: dbSslEnabled() ? 'require' : false,
