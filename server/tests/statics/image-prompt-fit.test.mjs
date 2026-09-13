@@ -88,3 +88,27 @@ test('F5: the OpenAI submit path itself never sends more than 32,000 prompt char
     assert.ok(sent[0].includes('KEEP THIS COPY'));
   } finally { globalThis.fetch = realFetch; }
 });
+
+// Found live 2026-09-13: a reference ad with competitor packs BLURRED came back with QuietLab, Honex, intake and
+// Breathe Right printed legibly. No prompt said anything about other brands. A real competitor's name or logo in our
+// ad is a legal risk, so every image prompt carries this rule, and it is never shortened.
+test('B1: every image prompt forbids readable third-party brands and keeps obscured ones obscured', () => {
+  const out = buildNanoBananaImagePrompt(claude, product({ w: 100, n: 100, p: 100 }), TEMPLATE);
+  assert.match(out, /OTHER BRANDS/);
+  assert.match(out, /not Test Device/, 'the rule names the product it exempts');
+  assert.match(out, /blurred or obscured/);
+});
+
+test('B2: the brand rule survives when the prompt has to be shortened', () => {
+  const out = buildNanoBananaImagePrompt(claude, product(), TEMPLATE, {}, { maxChars: 32_000 });
+  assert.ok(out.length <= 32_000);
+  assert.match(out, /OTHER BRANDS/);
+});
+
+test('B3: a JSON-shaped operator template is still filled JSON-safely after the rule is put in front of it', () => {
+  const jsonTpl = '{"headline_swaps": "{{TEXT_SWAPS}}", "angle": "{{ANGLE}}"}';
+  const tricky = { ...claude, adapted_text: { headline: 'SAY "HELLO"\nNOW' } };
+  const out = buildNanoBananaImagePrompt(tricky, product({ w: 10, n: 10, p: 10 }), jsonTpl);
+  const json = out.slice(out.indexOf('{"headline_swaps"'));
+  assert.doesNotThrow(() => JSON.parse(json), 'the JSON part still parses');
+});

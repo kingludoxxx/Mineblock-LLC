@@ -844,8 +844,16 @@ export function buildNanoBananaImagePrompt(claudeResult = {}, product = {}, temp
     VARIED:                 iterationVars.VARIED         || '',
     LOCKED:                 iterationVars.LOCKED         || '',
   };
-  return fitImagePrompt(template, vars, maxChars);
+  // The rule is prepended, so JSON-escaping is decided by the operator's template as it was, not by the rule's text.
+  const jsonSafe = typeof template === 'string' && template.trimStart().startsWith('{');
+  return fitImagePrompt(OTHER_BRANDS_RULE + (template || ''), vars, maxChars, jsonSafe);
 }
+
+// Other companies' brands (legal). Found live 2026-09-13: a reference with competitor packs blurred came back with
+// their names printed legibly, because no prompt said otherwise. First in the prompt so no shortening can cut it.
+const OTHER_BRANDS_RULE = `OTHER BRANDS (legal rule, overrides the reference): only {{PRODUCT_NAME}} may show a readable brand name or logo. Any other product, package or logo (anything that is not {{PRODUCT_NAME}}) must be generic: if the reference shows it blurred or obscured, keep it blurred or obscured; if the reference shows it readable, render it unbranded with no legible name or logo. Never write a real competitor's brand name anywhere in the image.
+
+`;
 
 // Product-knowledge fields an image prompt may carry for context. When the prompt is over the engine's limit these
 // are shortened, longest first; the copy (TEXT_SWAPS), the visual brief, the angle and COMPLIANCE never are.
@@ -857,8 +865,8 @@ const SHORTENABLE_IMAGE_VARS = ['WINNING_ANGLES', 'NOTES', 'CUSTOM_ANGLES', 'COM
 const SHORTENED_MARK = ' [shortened]';
 const MIN_SHORTENED = 400;
 
-function fitImagePrompt(template, vars, maxChars) {
-  let out = interpolate(template, vars);
+function fitImagePrompt(template, vars, maxChars, jsonSafe = false) {
+  let out = interpolate(template, vars, { jsonSafe });
   if (!maxChars || out.length <= maxChars) return out;
   const v = { ...vars };
   for (let guard = 0; guard < 50 && out.length > maxChars; guard++) {
@@ -871,7 +879,7 @@ function fitImagePrompt(template, vars, maxChars) {
     const over = out.length - maxChars;
     const keep = Math.max(MIN_SHORTENED, v[k].length - Math.ceil(over / uses) - SHORTENED_MARK.length);
     v[k] = v[k].slice(0, keep) + SHORTENED_MARK;
-    out = interpolate(template, v);
+    out = interpolate(template, v, { jsonSafe });
   }
   // The fixed parts alone are over the limit: cut at a line boundary, keeping the copy lines (same rule as the
   // NanoBanana submit path).
