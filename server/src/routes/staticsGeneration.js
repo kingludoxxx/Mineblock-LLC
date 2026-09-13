@@ -6426,14 +6426,14 @@ async function _doLaunch(req, res) {
     const safeObj = (v) => { if (v && typeof v === 'object' && !Array.isArray(v)) return v; if (typeof v === 'string') { try { const p = JSON.parse(v); return (p && typeof p === 'object') ? p : {}; } catch { return {}; } } return {}; };
 
     let selectedPages;
-    try { selectedPages = pagesForLaunch(template, copySet); }
+    try { selectedPages = pagesForLaunch(copySet); }
     catch (err) {
       await pgQuery(`UPDATE spy_creatives SET status = 'ready' WHERE id = ANY($1) AND status = 'launching'`, [creative_ids]);
       return res.status(400).json({ success: false, error: { message: err.message } });
     }
     if (!selectedPages.length || !selectedPages[0]?.id) {
       await pgQuery(`UPDATE spy_creatives SET status = 'ready' WHERE id = ANY($1) AND status = 'launching'`, [creative_ids]);
-      return res.status(400).json({ success: false, error: { message: 'No Facebook pages configured in launch template. Edit the template and select at least one page.' } });
+      return res.status(400).json({ success: false, error: { message: 'The copy set has no Facebook page. Set one in Ad Copy Sets.' } });
     }
 
     // ─── ANGLE GROUPING ──────────────────────────────────────────────────

@@ -144,12 +144,12 @@ function EditCopySetModal({ copySet, onSave, onClose, saving, pages, pagesError 
               value={form.page_id}
               onChange={(e) => setForm((prev) => ({ ...prev, page_id: e.target.value }))}
             >
-              <option value="" className="bg-[#111113] text-white">Use the launch template's pages</option>
+              <option value="" className="bg-[#111113] text-white">Select page… (required to launch)</option>
               {pageOptions(pages, copySet).map((p) => (
                 <option key={p.id} value={p.id} className="bg-[#111113] text-white">{p.name}</option>
               ))}
             </select>
-            <p className="mt-1 text-[11px] text-white/30">The ads of this copy set run from this page. Empty uses the template's pages.</p>
+            <p className="mt-1 text-[11px] text-white/30">The ads of this copy set run from this page. A copy set without a page cannot launch.</p>
             {pagesError && <p className="mt-1 text-[11px] text-red-400">{pagesError}</p>}
           </div>
 
@@ -586,7 +586,7 @@ export default function AdCopySetsManager({ open, onClose, productId, productNam
                       <span className="font-mono text-[10px] text-[#c9a84c] uppercase tracking-[0.15em] block mb-0.5">
                         Facebook Page
                       </span>
-                      <p className="truncate" title={cs.page_id || ''}>{cs.page_id ? (cs.page_name || cs.page_id) : 'Template pages'}</p>
+                      <p className="truncate" title={cs.page_id || ''}>{cs.page_id ? (cs.page_name || cs.page_id) : <span className="text-red-400">No page</span>}</p>
                     </div>
                     <div className="min-w-0">
                       <span className="font-mono text-[10px] text-[#c9a84c] uppercase tracking-[0.15em] block mb-0.5">

@@ -6522,10 +6522,10 @@ router.post('/launch', authenticate, async (req, res) => {
     }
 
     let selectedPages;
-    try { selectedPages = pagesForLaunch(template, copySet); }
+    try { selectedPages = pagesForLaunch(copySet); }
     catch (err) { return res.status(400).json({ success: false, error: { message: err.message } }); }
     if (!selectedPages.length || !selectedPages[0]?.id) {
-      return res.status(400).json({ success: false, error: { message: 'No Facebook pages configured in launch template.' } });
+      return res.status(400).json({ success: false, error: { message: 'The copy set has no Facebook page. Set one in Ad Copy Sets.' } });
     }
 
     // ATOMIC LOCK + SELECT: flips eligible briefs to 'launching' and returns

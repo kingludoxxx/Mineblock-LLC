@@ -457,17 +457,10 @@ export default function LaunchTemplateEditor({ open, onClose, template, onSaved 
       setSaveError('CBO needs a campaign daily budget.');
       return;
     }
-    if (!form.selectedPages || form.selectedPages.length === 0) {
-      setSaveError('Please pick at least one Facebook Page before saving.');
-      return;
-    }
     setSaving(true);
     setSaveError('');
     try {
       // When sync data is available, use it; otherwise preserve original template data
-      const resolvedPages = pages.length
-        ? pages.filter(p => form.selectedPages.includes(p.id)).map(p => ({ id: p.id, name: p.name, selected: true }))
-        : safeArr(template?.page_ids).filter(p => form.selectedPages.includes(p.id));
       const resolvedInclude = audiences.length
         ? audiences.filter(a => form.includeAudiences.includes(a.id))
         : safeArr(template?.include_audiences).filter(a => form.includeAudiences.includes(a.id || a));
@@ -479,8 +472,10 @@ export default function LaunchTemplateEditor({ open, onClose, template, onSaved 
         name: form.name,
         ad_account_id: form.accountId,
         ad_account_name: accounts.find(a => a.id === form.accountId)?.name || form.accountId,
-        page_mode: form.pageMode === 'round-robin' ? 'round_robin' : 'single',
-        page_ids: resolvedPages,
+        // The Facebook page is chosen per copy set, not here (Ludo 2026-09-14). Pages already stored on an
+        // existing template are kept as they are for the launchers that still read them.
+        page_mode: template?.page_mode || 'single',
+        page_ids: safeArr(template?.page_ids),
         pixel_id: form.pixelId,
         pixel_name: pixels.find(p => p.id === form.pixelId)?.name || (template?.pixel_name || ''),
         campaign_id: form.campaignMode === 'create_new' ? null : form.campaignId,
@@ -537,8 +532,6 @@ export default function LaunchTemplateEditor({ open, onClose, template, onSaved 
   if (!open) return null;
 
   // -- Round-robin next indicator -------------------------------------------
-  const rrSelectedPages = pages.filter((p) => form.selectedPages.includes(p.id));
-  const rrNextPage = rrSelectedPages[0];
 
   return (
     <div className="fixed inset-0 z-50 flex justify-end">
@@ -615,70 +608,6 @@ export default function LaunchTemplateEditor({ open, onClose, template, onSaved 
                   </option>
                 ))}
               </Select>
-            )}
-          </Card>
-
-          {/* 3. Facebook Page */}
-          <Card>
-            <SectionLabel icon={Megaphone}>Facebook Page</SectionLabel>
-            {/* Mode toggle */}
-            <div className="flex items-center gap-1 mb-4 p-0.5 bg-white/[0.03] rounded-lg w-fit">
-              {['single', 'round-robin'].map((mode) => (
-                <button
-                  key={mode}
-                  onClick={() => set('pageMode')(mode)}
-                  className={`px-3 py-1 text-xs font-medium rounded-md transition cursor-pointer ${
-                    form.pageMode === mode
-                      ? 'bg-[#c9a84c] text-[#111113]'
-                      : 'text-zinc-400 hover:text-white'
-                  }`}
-                >
-                  {mode === 'single' ? 'Single' : 'Round-Robin'}
-                </button>
-              ))}
-            </div>
-
-            {form.pageMode === 'round-robin' && rrSelectedPages.length > 0 && (
-              <div className="mb-3 text-xs text-zinc-500">
-                <span className="text-[#c9a84c]">{rrSelectedPages.length}</span> pages selected
-                {rrNextPage && (
-                  <span className="ml-2 text-zinc-600">
-                    next: <span className="text-zinc-400">{rrNextPage.name}</span>
-                  </span>
-                )}
-              </div>
-            )}
-
-            {syncing ? (
-              <div className="flex items-center gap-2 text-xs text-zinc-500">
-                <Loader2 className="w-3.5 h-3.5 animate-spin" /> Syncing pages...
-              </div>
-            ) : pages.length === 0 ? (
-              <p className="text-xs text-zinc-600">Select an ad account to load pages</p>
-            ) : (
-              <div className="space-y-1.5 max-h-40 overflow-y-auto">
-                {pages.map((page) => (
-                  <label
-                    key={page.id}
-                    className="flex items-center gap-2.5 px-3 py-2 rounded-lg hover:bg-white/[0.03] transition cursor-pointer"
-                  >
-                    <input
-                      type={form.pageMode === 'single' ? 'radio' : 'checkbox'}
-                      name="fb-page"
-                      checked={form.selectedPages.includes(page.id)}
-                      onChange={() => {
-                        if (form.pageMode === 'single') {
-                          set('selectedPages')([page.id]);
-                        } else {
-                          toggleArrayItem('selectedPages', page.id);
-                        }
-                      }}
-                      className="accent-[#c9a84c]"
-                    />
-                    <span className="text-sm text-white truncate">{page.name}</span>
-                  </label>
-                ))}
-              </div>
             )}
           </Card>
 
@@ -1205,7 +1134,6 @@ export default function LaunchTemplateEditor({ open, onClose, template, onSaved 
               {[
                 ['Template', form.name || '—'],
                 ['Account', accounts.find((a) => a.id === form.accountId)?.name || form.accountId || '—'],
-                ['Page Mode', form.pageMode === 'round-robin' ? `Round-Robin (${rrSelectedPages.length})` : 'Single'],
                 ['Pixel', pixels.find((p) => p.id === form.pixelId)?.name || form.pixelId || '—'],
                 ['Campaign', campaigns.find((c) => c.id === form.campaignId)?.name || '—'],
                 ['Conversion', `${form.conversionEvent} on ${form.conversionLocation}`],
