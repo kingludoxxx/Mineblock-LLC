@@ -6,6 +6,7 @@ import {
   Sparkles, Upload, ArrowLeft, Link, Globe, Zap,
   AlertTriangle, MessageSquare, Tag, Check, Star,
 } from 'lucide-react';
+import { makeFieldState } from '../../lib/autoSaveField';
 import api from '../../services/api';
 
 /* ------------------------------------------------------------------ */
@@ -63,28 +64,29 @@ function CollapsibleSection({ icon: Icon, title, subtitle, defaultOpen = false, 
 /* ------------------------------------------------------------------ */
 
 function AutoSaveField({ label, value, onChange, onSave, placeholder, rows }) {
-  // Fully local state — only syncs to parent + API on blur
-  const [local, setLocal] = useState(value || '');
+  // Local text; saved to the parent + API when the operator leaves the field (client/src/lib/autoSaveField.js).
+  const stateRef = useRef(null);
+  if (!stateRef.current) stateRef.current = makeFieldState(value);
+  const [local, setLocal] = useState(stateRef.current.value);
   const [saved, setSaved] = useState(false);
-  const dirtyRef = useRef(false);
 
-  // Sync from parent when value changes externally (e.g. AI fill, page load)
+  // A value from outside (AI fill, page load, another product). The parent's echo of our own typing is ignored.
   useEffect(() => {
-    setLocal(value || '');
-    dirtyRef.current = false;
+    const shown = stateRef.current.external(value);
+    if (shown !== null) setLocal(shown);
   }, [value]);
 
   const handleChange = (v) => {
+    stateRef.current.change(v);
     setLocal(v);
     onChange?.(v);
-    dirtyRef.current = true;
     setSaved(false);
   };
 
   const handleBlur = () => {
-    if (!dirtyRef.current) return; // skip save if nothing changed
-    dirtyRef.current = false;
-    onSave(local);
+    const r = stateRef.current.blur();
+    if (!r.save) return;
+    onSave(r.value);
     setSaved(true);
     setTimeout(() => setSaved(false), 1500);
   };
@@ -138,14 +140,14 @@ function QuickInfoBar({ product, onSave, onChange }) {
 }
 
 function QuickInfoBox({ box, initialValue, onSave, onChange }) {
-  const [val, setVal] = useState(initialValue);
-  const latestRef = useRef(initialValue);
-  const dirtyRef = useRef(false);
+  // Same unsaved-changes rule as AutoSaveField: the parent's echo of our own typing is not an outside change.
+  const stateRef = useRef(null);
+  if (!stateRef.current) stateRef.current = makeFieldState(initialValue);
+  const [val, setVal] = useState(stateRef.current.value);
 
   useEffect(() => {
-    setVal(initialValue);
-    latestRef.current = initialValue;
-    dirtyRef.current = false;
+    const shown = stateRef.current.external(initialValue);
+    if (shown !== null) setVal(shown);
   }, [initialValue]);
 
   return (
@@ -156,16 +158,13 @@ function QuickInfoBox({ box, initialValue, onSave, onChange }) {
       <input
         value={val}
         onChange={(e) => {
+          stateRef.current.change(e.target.value);
           setVal(e.target.value);
-          latestRef.current = e.target.value;
-          dirtyRef.current = true;
           onChange?.(box.key, e.target.value);
         }}
         onBlur={() => {
-          if (dirtyRef.current) {
-            onSave(box.key, latestRef.current);
-            dirtyRef.current = false;
-          }
+          const r = stateRef.current.blur();
+          if (r.save) onSave(box.key, r.value);
         }}
         placeholder={box.placeholder}
         className="w-full bg-transparent text-sm text-white font-medium placeholder-zinc-600 focus:outline-none"
