@@ -21,8 +21,19 @@ import { useEffect, useRef, useState } from 'react';
 import { ExternalLink, AlertTriangle } from 'lucide-react';
 import api from '../../services/api';
 
-const CRM_ORIGIN =
-  import.meta.env.VITE_CRM_ORIGIN || 'https://puure-crm.onrender.com';
+// NO FALLBACK. This used to default to one particular store's CRM host, so a dashboard built without its own CRM
+// address silently embedded ANOTHER store's CRM - measured on a live store 2026-09-13 (its bundle carried the other
+// store's CRM host twice and its own zero times). A store with no CRM address now says so, naming the setting.
+const CRM_ORIGIN = (import.meta.env.VITE_CRM_ORIGIN || '').trim();
+
+/** Why the CRM could not be opened, in words an operator can act on. `code` comes from the ticket endpoint. */
+function reasonFor(code, status) {
+  if (code === 'sso_not_configured') return 'this dashboard has no SSO_SHARED_SECRET, so it cannot sign you in to its CRM.';
+  if (code === 'no_email_on_principal') return 'your account has no email address to sign in with.';
+  if (status === 401) return 'your dashboard session has expired. Sign in again.';
+  if (status) return `the sign-in service answered ${status}${code ? ` (${code})` : ''}.`;
+  return 'the sign-in service could not be reached.';
+}
 
 // How long we wait for the frame to report a load before assuming the browser
 // refused it. A cold Render instance can take a while, so this is generous —
@@ -35,15 +46,18 @@ export default function CrmFrame({ path = '/app', title = 'CRM' }) {
   // hand; if minting fails we fall back to the plain URL, which still works —
   // it just shows the CRM login. A broken SSO must degrade to "log in twice",
   // never to "no CRM at all".
-  const plainSrc = `${CRM_ORIGIN}${path}`;
+  const plainSrc = CRM_ORIGIN ? `${CRM_ORIGIN}${path}` : '';
   const [ssoSrc, setSsoSrc] = useState(null);
   const [ssoFailed, setSsoFailed] = useState(false);
+  const [ssoReason, setSsoReason] = useState('');
   // HOLD the frame until the ticket answer is in. Rendering plainSrc while the
   // ticket was still in flight put the CRM's own login on screen for the first
   // seconds of every visit — the operator saw a second sign-in that the SSO
   // exists to remove. The plain URL is now strictly the FALLBACK for a failed
   // mint, never the placeholder for a pending one.
-  const src = ssoSrc || (ssoFailed ? plainSrc : null);
+  // A failed sign-in no longer silently loads the CRM's own login screen: the operator got a blank frame or a second
+  // login with no idea why. It now says exactly what failed, and "Open in new tab" stays as the way through.
+  const src = ssoSrc;
   const [state, setState] = useState('loading'); // loading | ok | blocked
   const timer = useRef(null);
 
@@ -51,6 +65,8 @@ export default function CrmFrame({ path = '/app', title = 'CRM' }) {
     let cancelled = false;
     setSsoSrc(null);
     setSsoFailed(false);
+    setSsoReason('');
+    if (!CRM_ORIGIN) return () => { cancelled = true; };
     (async () => {
       try {
         const r = await api.get('/crm-sso/ticket');
@@ -60,12 +76,16 @@ export default function CrmFrame({ path = '/app', title = 'CRM' }) {
             `${CRM_ORIGIN}/api/sso?t=${encodeURIComponent(ticket)}&next=${encodeURIComponent(path)}`,
           );
         } else if (!cancelled) {
+          setSsoReason('the sign-in service returned no ticket.');
           setSsoFailed(true);
         }
-      } catch {
-        // Not configured, or the CRM has no matching user — degrade to the
-        // CRM's own login rather than showing nothing at all.
-        if (!cancelled) setSsoFailed(true);
+      } catch (err) {
+        if (!cancelled) {
+          const status = err?.response?.status;
+          const code = err?.response?.data?.error;
+          setSsoReason(reasonFor(code, status));
+          setSsoFailed(true);
+        }
       }
     })();
     return () => { cancelled = true; };
@@ -90,6 +110,22 @@ export default function CrmFrame({ path = '/app', title = 'CRM' }) {
     );
     return () => clearTimeout(timer.current);
   }, [src]);
+
+  if (!CRM_ORIGIN) {
+    return (
+      <div className="flex h-[calc(100vh-4rem)] flex-col">
+        <h1 className="px-1 pb-2 text-lg font-medium text-text-primary">{title}</h1>
+        <div role="alert" className="flex items-start gap-2 rounded-lg border border-red-500/20 bg-red-500/10 px-4 py-3 text-sm text-red-300">
+          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+          <div>
+            The CRM is not configured for this store: this dashboard was built without{' '}
+            <code className="text-xs">VITE_CRM_ORIGIN</code>, so it does not know where its own CRM is. It will never
+            fall back to another store's CRM.
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="flex h-[calc(100vh-4rem)] flex-col">
@@ -117,6 +153,13 @@ export default function CrmFrame({ path = '/app', title = 'CRM' }) {
         </div>
       )}
 
+      {ssoFailed && (
+        <div role="alert" className="mb-2 flex items-start gap-2 rounded-lg border border-red-500/20 bg-red-500/10 px-3 py-2 text-sm text-red-300">
+          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+          <div>Could not sign you in to the CRM: {ssoReason} Use “Open in new tab” to reach its own login.</div>
+        </div>
+      )}
+
       {src ? (
         <iframe
           key={src}
@@ -126,9 +169,11 @@ export default function CrmFrame({ path = '/app', title = 'CRM' }) {
           className="min-h-0 w-full flex-1 rounded-lg border border-border-subtle bg-white"
         />
       ) : (
-        <div className="flex min-h-0 w-full flex-1 items-center justify-center rounded-lg border border-border-subtle bg-white/[0.02] text-sm text-text-faint">
-          Signing you in…
-        </div>
+        !ssoFailed && (
+          <div className="flex min-h-0 w-full flex-1 items-center justify-center rounded-lg border border-border-subtle bg-white/[0.02] text-sm text-text-faint">
+            Signing you in…
+          </div>
+        )
       )}
     </div>
   );
