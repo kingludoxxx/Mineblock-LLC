@@ -216,6 +216,7 @@ async function withRetry(fn, label, maxAttempts = 3) {
 import { submitToNanoBanana, pollNanoBanana } from '../services/imageGeneration.js';
 import { getEngine, DEFAULT_ENGINE, listEngines } from '../services/imageEngines.js';
 import { pagesForLaunch } from '../utils/launchPages.js';
+import { formatPrimaryTexts } from '../utils/adCopy.js';
 
 // Room left in an engine's prompt limit for what is added around the built image prompt (the style directive
 // before it, an adjustment request after it). The engine's submit path still enforces the hard limit.
@@ -6707,10 +6708,10 @@ async function _doLaunch(req, res) {
         const csPrimaryTexts = safeArr(copySet?.primary_texts);
         const csHeadlines    = safeArr(copySet?.headlines);
         const csDescriptions = safeArr(copySet?.descriptions);
-        const primaryTexts = csPrimaryTexts.length
+        const primaryTexts = formatPrimaryTexts(csPrimaryTexts.length
           ? csPrimaryTexts
           : safeArr(genCopy.primary_texts).length ? safeArr(genCopy.primary_texts)
-          : [creative.source_label || 'Check this out'];
+          : [creative.source_label || 'Check this out']);
         const headlines = csHeadlines.length
           ? csHeadlines
           : safeArr(genCopy.headlines).length ? safeArr(genCopy.headlines)

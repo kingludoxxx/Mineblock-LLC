@@ -29,6 +29,7 @@ import { extractFreshVideoUrl, adLibraryUrl } from '../services/freshVideoUrl.js
 import { getAdDetail } from '../db/brandSpyDb.js';
 import { extractVideoUrlFromAdLibrary, warmupBrowser as warmupFbExtractor } from '../services/fbAdLibraryExtractor.js';
 import { pagesForLaunch } from '../utils/launchPages.js';
+import { formatPrimaryTexts } from '../utils/adCopy.js';
 
 // Warm up the Chromium browser pool at boot so the first import doesn't
 // pay the ~5s cold-start cost. Fires once, never throws — the extractor
@@ -6679,7 +6680,7 @@ router.post('/launch', authenticate, async (req, res) => {
           const csPrimary = readJsonArray(copySet?.primary_texts);
           const csHeadlines = readJsonArray(copySet?.headlines);
           const csDescriptions = readJsonArray(copySet?.descriptions);
-          const primaryTexts = csPrimary.length ? csPrimary : [brief.body || brief.hooks?.[0]?.text || 'Check this out'];
+          const primaryTexts = formatPrimaryTexts(csPrimary.length ? csPrimary : [brief.body || brief.hooks?.[0]?.text || 'Check this out']);
           const headlines = csHeadlines.length ? csHeadlines : (brief.hooks || []).map(h => h.text).filter(Boolean).slice(0, 3);
           const descriptions = csDescriptions.length ? csDescriptions : [''];
           const cta = copySet?.cta_button || 'SHOP_NOW';
