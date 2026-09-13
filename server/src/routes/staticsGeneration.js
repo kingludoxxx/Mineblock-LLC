@@ -215,6 +215,7 @@ async function withRetry(fn, label, maxAttempts = 3) {
 }
 import { submitToNanoBanana, pollNanoBanana } from '../services/imageGeneration.js';
 import { getEngine, DEFAULT_ENGINE, listEngines } from '../services/imageEngines.js';
+import { pagesForLaunch } from '../utils/launchPages.js';
 
 // Room left in an engine's prompt limit for what is added around the built image prompt (the style directive
 // before it, an adjustment request after it). The engine's submit path still enforces the hard limit.
@@ -6424,7 +6425,12 @@ async function _doLaunch(req, res) {
     const safeArr = (v) => { if (Array.isArray(v)) return v; if (typeof v === 'string') { try { let p = JSON.parse(v); if (typeof p === 'string') p = JSON.parse(p); return Array.isArray(p) ? p : []; } catch { return []; } } return []; };
     const safeObj = (v) => { if (v && typeof v === 'object' && !Array.isArray(v)) return v; if (typeof v === 'string') { try { const p = JSON.parse(v); return (p && typeof p === 'object') ? p : {}; } catch { return {}; } } return {}; };
 
-    const selectedPages = safeArr(template.page_ids).filter(p => p.selected !== false);
+    let selectedPages;
+    try { selectedPages = pagesForLaunch(template, copySet); }
+    catch (err) {
+      await pgQuery(`UPDATE spy_creatives SET status = 'ready' WHERE id = ANY($1) AND status = 'launching'`, [creative_ids]);
+      return res.status(400).json({ success: false, error: { message: err.message } });
+    }
     if (!selectedPages.length || !selectedPages[0]?.id) {
       await pgQuery(`UPDATE spy_creatives SET status = 'ready' WHERE id = ANY($1) AND status = 'launching'`, [creative_ids]);
       return res.status(400).json({ success: false, error: { message: 'No Facebook pages configured in launch template. Edit the template and select at least one page.' } });

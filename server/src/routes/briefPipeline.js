@@ -28,6 +28,7 @@ import { uploadBuffer, isR2Configured } from '../services/r2.js';
 import { extractFreshVideoUrl, adLibraryUrl } from '../services/freshVideoUrl.js';
 import { getAdDetail } from '../db/brandSpyDb.js';
 import { extractVideoUrlFromAdLibrary, warmupBrowser as warmupFbExtractor } from '../services/fbAdLibraryExtractor.js';
+import { pagesForLaunch } from '../utils/launchPages.js';
 
 // Warm up the Chromium browser pool at boot so the first import doesn't
 // pay the ~5s cold-start cost. Fires once, never throws — the extractor
@@ -6088,6 +6089,9 @@ async function _initLaunchTables() {
     )
   `);
   await pgQuery(`CREATE UNIQUE INDEX IF NOT EXISTS idx_copy_sets_product_angle ON brief_copy_sets(product_id, angle)`).catch(() => {});
+  // The Facebook page the copy runs from (utils/launchPages.js). Empty = the template's pages.
+  await pgQuery(`ALTER TABLE brief_copy_sets ADD COLUMN IF NOT EXISTS page_id TEXT`);
+  await pgQuery(`ALTER TABLE brief_copy_sets ADD COLUMN IF NOT EXISTS page_name TEXT`);
   // Add launch columns to generated table
   await pgQuery(`ALTER TABLE brief_pipeline_generated ADD COLUMN IF NOT EXISTS launched_at TIMESTAMPTZ`).catch(() => {});
   await pgQuery(`ALTER TABLE brief_pipeline_generated ADD COLUMN IF NOT EXISTS launch_error TEXT`).catch(() => {});
@@ -6391,8 +6395,8 @@ router.post('/copy-sets', authenticate, async (req, res) => {
     await ensureLaunchTables();
     const c = req.body;
     const rows = await pgQuery(
-      `INSERT INTO brief_copy_sets (product_id, angle, primary_texts, headlines, descriptions, cta_button, landing_page_url, utm_parameters, created_by)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *`,
+      `INSERT INTO brief_copy_sets (product_id, angle, primary_texts, headlines, descriptions, cta_button, landing_page_url, utm_parameters, created_by, page_id, page_name)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING *`,
       [
         c.product_id, c.angle,
         // NOT JSON.stringify. This is postgres.js, which serialises JS values
@@ -6408,7 +6412,9 @@ router.post('/copy-sets', authenticate, async (req, res) => {
         c.cta_button || 'SHOP_NOW',
         c.landing_page_url || '',
         c.utm_parameters || 'tw_source={{site_source_name}}&tw_adid={{ad.id}}',
-        req.user?.id || null
+        req.user?.id || null,
+        c.page_id ? String(c.page_id) : null,
+        c.page_id ? (c.page_name || null) : null,
       ]
     );
     res.json({ success: true, data: rows[0] });
@@ -6426,7 +6432,12 @@ router.put('/copy-sets/:id', authenticate, async (req, res) => {
     const c = req.body;
     const rows = await pgQuery(
       // Same jsonb rule as the INSERT above — pass arrays, never JSON strings.
-      `UPDATE brief_copy_sets SET angle=$1, primary_texts=$2, headlines=$3, descriptions=$4, cta_button=$5, landing_page_url=$6, utm_parameters=$7, updated_at=NOW()
+      // page_id / page_name change only when the body carries page_id ('' clears it); an editor that does not know
+      // about pages never wipes one.
+      `UPDATE brief_copy_sets SET angle=$1, primary_texts=$2, headlines=$3, descriptions=$4, cta_button=$5, landing_page_url=$6, utm_parameters=$7,
+         page_id = CASE WHEN $9::boolean THEN $10 ELSE page_id END,
+         page_name = CASE WHEN $9::boolean THEN $11 ELSE page_name END,
+         updated_at=NOW()
        WHERE id=$8 RETURNING *`,
       [
         c.angle,
@@ -6436,7 +6447,10 @@ router.put('/copy-sets/:id', authenticate, async (req, res) => {
         c.cta_button || 'SHOP_NOW',
         c.landing_page_url || '',
         c.utm_parameters || '',
-        req.params.id
+        req.params.id,
+        Object.prototype.hasOwnProperty.call(c, 'page_id'),
+        c.page_id ? String(c.page_id) : null,
+        c.page_id ? (c.page_name || null) : null,
       ]
     );
     if (!rows.length) return res.status(404).json({ success: false, error: { message: 'Copy set not found' } });
@@ -6507,7 +6521,9 @@ router.post('/launch', authenticate, async (req, res) => {
       return res.status(400).json({ success: false, error: { message: 'No landing page URL configured: set one on the copy set or the template. Refusing to launch ads without a destination.' } });
     }
 
-    const selectedPages = safeArr(template.page_ids).filter(p => p.selected !== false);
+    let selectedPages;
+    try { selectedPages = pagesForLaunch(template, copySet); }
+    catch (err) { return res.status(400).json({ success: false, error: { message: err.message } }); }
     if (!selectedPages.length || !selectedPages[0]?.id) {
       return res.status(400).json({ success: false, error: { message: 'No Facebook pages configured in launch template.' } });
     }
