@@ -216,6 +216,7 @@ async function withRetry(fn, label, maxAttempts = 3) {
 import { submitToNanoBanana, pollNanoBanana } from '../services/imageGeneration.js';
 import { getEngine, DEFAULT_ENGINE, listEngines } from '../services/imageEngines.js';
 import { pagesForLaunch } from '../utils/launchPages.js';
+import { resolveStorePrompts, promptsToSave, bootPromptRepair } from '../utils/storePrompts.js';
 import { formatPrimaryTexts } from '../utils/adCopy.js';
 
 // Room left in an engine's prompt limit for what is added around the built image prompt (the style directive
@@ -1676,65 +1677,23 @@ const MAX_TEMP_IMAGES = 200;
 })();
 
 // ─────────────────────────────────────────────────────────────────────────
-// Signature-based statics-prompt re-seeder (multiproduct-brief §4 pattern).
-//
-// The problem the brief calls out: prompts are DB-stored, so a new
-// {{TEMPLATE_VAR}} in the code default is inert until the stored row
-// references it. Silently doing nothing is worse than a crash — Puure
-// generations "look deployed" but never see the master brief.
-//
-// Signature strategy: pick a distinct string from the newest template
-// revision that would NOT appear in any older revision. On boot, load the
-// DB copy; if it lacks the signature, force-overwrite with the current
-// baked default (one-shot upgrade). Operator edits made AFTER the upgrade
-// keep the signature and are therefore left alone on subsequent boots.
-//
-// Signature "{{MASTER_BRIEF}}" is the interpolation placeholder itself —
-// the string exists in every claude_analysis template that has the new
-// revision, and nowhere in older ones. When bumping the schema again
-// (e.g. adding {{PUURE_HOOKS}}), change the constant below to force a
-// one-shot refresh across all deployments.
-// ─────────────────────────────────────────────────────────────────────────
-// Bumped 2026-08-13 for the TEXT RULES revision (swap-not-rewrite: adapted_text
-// must mirror original_text's shape, and a text-free reference must stay
-// text-free). Must be a literal that exists in the TEMPLATE itself — a string
-// that only appears in the template's RENDERED output would never match, and
-// the re-seed would fire on every single boot and overwrite operator edits
-// forever. Verified before bumping: all six stored templates on Puure were
-// byte-identical to the baked defaults, so this one-shot refresh discards no
-// operator work.
-const STATICS_CLAUDE_SIGNATURE = 'OFFER RULES — never invent commercial terms';
+// Boot repair of this store's statics prompts. Prompts are per store (Ludo 2026-09-14): a deploy never replaces a
+// prompt the store already has. A NEW prompt type added in code is added to rows that lack it, so a new template
+// variable reaches a store only when its operator adopts the new default (Settings > Prompts > reset).
 (async () => {
   try {
     await new Promise(r => setTimeout(r, 6000)); // let migrations settle
+    // A store's prompts belong to the store: a deploy never overwrites one. It only adds prompt types the store's
+    // row does not have yet (utils/storePrompts.js). No row: the defaults are read, nothing is written.
     const rows = await pgQuery(`SELECT value FROM system_settings WHERE key = 'statics_prompts'`);
-    if (rows.length === 0) {
-      console.log('[boot] statics_prompts: no DB row yet — baked defaults will be used on first read (already include MASTER_BRIEF)');
-      return;
-    }
-    const raw = rows[0].value;
-    const data = typeof raw === 'string' ? JSON.parse(raw) : raw;
-    const currentClaude = (data && typeof data.claude_analysis === 'string') ? data.claude_analysis : '';
-    if (currentClaude.includes(STATICS_CLAUDE_SIGNATURE)) {
-      // Already on the master-brief revision — leave operator edits alone.
-      return;
-    }
-    // Missing the signature → force-overwrite claude_analysis with the current
-    // baked default. Keep operator's nanobanana_image + ai_adjustment intact.
-    const defaults = getDefaultStaticsPrompts();
-    const merged = {
-      claude_analysis:  defaults.claude_analysis,
-      nanobanana_image: data?.nanobanana_image || defaults.nanobanana_image,
-      ai_adjustment:    data?.ai_adjustment    || defaults.ai_adjustment,
-    };
+    const plan = bootPromptRepair(rows.length ? rows[0].value : null, getDefaultStaticsPrompts(), STATICS_PROMPT_KEYS);
+    if (!plan.write) return;
     await pgQuery(
-      `INSERT INTO system_settings (key, value, description)
-       VALUES ('statics_prompts', $1, 'Pipeline prompts for statics generation — 3-prompt architecture')
-       ON CONFLICT (key) DO UPDATE SET value = $1, updated_at = NOW()`,
-      [JSON.stringify(merged)]
+      `UPDATE system_settings SET value = $1, updated_at = NOW() WHERE key = 'statics_prompts'`,
+      [JSON.stringify(plan.value)]
     );
     staticsPromptsCache = { data: null, timestamp: 0 };
-    console.log('[boot] statics_prompts: force-refreshed claude_analysis to include {{MASTER_BRIEF}} block (operator edits to other prompts preserved)');
+    console.log(`[boot] statics_prompts: added missing prompt types ${plan.added.join(', ')} (existing prompts untouched)`);
   } catch (err) {
     console.warn('[boot] statics_prompts re-seed failed:', err.message);
   }
@@ -2903,13 +2862,6 @@ This is a SCIENTIFIC ITERATION TEST. ONE variable changes; everything else must 
   };
 }
 
-function isValidPromptsShape(obj) {
-  if (!obj || typeof obj !== 'object') return false;
-  for (const k of STATICS_PROMPT_KEYS) {
-    if (typeof obj[k] !== 'string' || !obj[k].trim()) return false;
-  }
-  return true;
-}
 
 async function getCustomStaticsPrompts() {
   if (staticsPromptsCache.data && Date.now() - staticsPromptsCache.timestamp < STATICS_CACHE_TTL) {
@@ -2917,12 +2869,8 @@ async function getCustomStaticsPrompts() {
   }
   try {
     const rows = await pgQuery(`SELECT value FROM system_settings WHERE key = 'statics_prompts'`);
-    let data = rows.length ? (typeof rows[0].value === 'string' ? JSON.parse(rows[0].value) : rows[0].value) : null;
-    if (!isValidPromptsShape(data)) {
-      // Legacy shape (e.g. old { claudeAnalysis: {...}, nanoBanana: {...} }) → fall back to defaults
-      if (data) console.warn('[staticsPrompts] DB row exists but does not match 3-prompt shape — falling back to defaults');
-      data = getDefaultStaticsPrompts();
-    }
+    // This store's own prompts; a prompt it has not saved comes from the defaults (utils/storePrompts.js).
+    const data = resolveStorePrompts(rows.length ? rows[0].value : null, getDefaultStaticsPrompts(), STATICS_PROMPT_KEYS);
     staticsPromptsCache = { data, timestamp: Date.now() };
     return data;
   } catch (err) {
@@ -6265,23 +6213,16 @@ router.put('/settings/prompts', authenticate, async (req, res) => {
     if (!incoming || typeof incoming !== 'object') {
       return res.status(400).json({ success: false, error: { message: 'prompts object is required' } });
     }
-    for (const k of STATICS_PROMPT_KEYS) {
-      if (typeof incoming[k] !== 'string' || !incoming[k].trim()) {
-        return res.status(400).json({ success: false, error: { message: `Missing or empty prompt: ${k}` } });
-      }
-    }
-    const toSave = {
-      claude_analysis:  incoming.claude_analysis,
-      nanobanana_image: incoming.nanobanana_image,
-      ai_adjustment:    incoming.ai_adjustment,
-    };
+    let toSave;
+    try { toSave = promptsToSave(incoming, STATICS_PROMPT_KEYS); }   // all six prompts, each required
+    catch (err) { return res.status(400).json({ success: false, error: { message: err.message } }); }
     await pgQuery(
       `INSERT INTO system_settings (key, value, description)
        VALUES ('statics_prompts', $1, 'Pipeline prompts for statics generation — 3-prompt architecture')
        ON CONFLICT (key) DO UPDATE SET value = $1, updated_at = NOW()`,
       [JSON.stringify(toSave)]
     );
-    staticsPromptsCache = { data: toSave, timestamp: Date.now() };
+    staticsPromptsCache = { data: resolveStorePrompts(toSave, getDefaultStaticsPrompts(), STATICS_PROMPT_KEYS), timestamp: Date.now() };
     res.json({ success: true, message: 'Prompts saved', current: toSave });
   } catch (err) {
     res.status(500).json({ success: false, error: { message: err.message } });
