@@ -14,6 +14,7 @@ import adsControlCenterRoutes from './adsControlCenter.js';
 import advertorialRoutes from './advertorialPipeline.js';
 import adLauncherRoutes from './adLauncher.js';
 import staticsTemplatesRoutes from './staticsTemplates.js';
+import inlineImagesRoutes from './inlineImages.js';
 import videoAdsLauncherRoutes from './videoAdsLauncher.js';
 import teamRoutes from './team.js';
 import languagesPipelineRoutes from './languagesPipeline.js';
@@ -81,6 +82,7 @@ const mountRoutes = (app) => {
   app.use('/api/v1/advertorial', advertorialRoutes);
   app.use('/api/v1/ad-launcher', adLauncherRoutes);
   app.use('/api/v1/statics-templates', staticsTemplatesRoutes);
+  app.use('/api/v1/inline-images', inlineImagesRoutes); // images stored inline in a column, served by link (statics lists were 21-23 MB)
   app.use('/api/v1/video-ads-launcher', videoAdsLauncherRoutes);
   app.use('/api/v1/languages-pipeline', languagesPipelineRoutes);
   app.use('/api/v1/ads-reporting', adsReportingRoutes);

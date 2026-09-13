@@ -45,6 +45,7 @@ import { namingVars, tidyName, claimImNumber, syncCounter, DEFAULT_CREATOR } fro
 import { STATICS_FORMATS, getFormat, capFor, resolveFormat } from '../config/staticsFormats.js';
 import { pgQuery } from '../db/pg.js';
 import { authenticate } from '../middleware/auth.js';
+import { inlineSafeColumn, resolveInlineFlags } from '../utils/inlineImages.js';
 import { requirePermission, holdsWildcard } from '../middleware/rbac.js';
 import { uploadBuffer, uploadFromUrl, isR2Configured } from '../services/r2.js';
 
@@ -5274,7 +5275,10 @@ router.get('/creatives/pipeline', authenticate, async (req, res) => {
     // made a card and how a Composer card arrived. Omitting them made
     // composer_source read as null on every card even though the column was
     // populated.
-    let query = "SELECT id, product_id, product_name, image_url, thumbnail_url, source_label, angle, archetype, aspect_ratio, status, reference_thumbnail, reference_name, parent_creative_id, pipeline, copy_set_id, meta_ad_ids, meta_image_hash, generated_copy, parent_creative_id_ref, parent_im_number, im_number, iteration_change_description, image_engine, composer_source, composer_import_id, composer_prompt, quality_warning, created_at FROM spy_creatives WHERE pipeline IN ('standard', 'iteration') AND COALESCE(is_reference, false) = false";
+    // reference_thumbnail is a data: URI on 253 of 648 rows; with them inline this response was 21.2 MB and
+    // timed out. image_url / thumbnail_url are guarded the same way (0 inline today) so a future inline image
+    // cannot bring the timeout back. Inline values come back as links to /api/v1/inline-images.
+    let query = `SELECT id, product_id, product_name, ${inlineSafeColumn('image_url')}, ${inlineSafeColumn('thumbnail_url')}, source_label, angle, archetype, aspect_ratio, status, ${inlineSafeColumn('reference_thumbnail')}, reference_name, parent_creative_id, pipeline, copy_set_id, meta_ad_ids, meta_image_hash, generated_copy, parent_creative_id_ref, parent_im_number, im_number, iteration_change_description, image_engine, composer_source, composer_import_id, composer_prompt, quality_warning, created_at FROM spy_creatives WHERE pipeline IN ('standard', 'iteration') AND COALESCE(is_reference, false) = false`;
     const params = [];
     if (product_id) {
       query += ' AND product_id = $1';
@@ -5282,7 +5286,7 @@ router.get('/creatives/pipeline', authenticate, async (req, res) => {
     }
     query += ' ORDER BY created_at DESC';
 
-    const rows = await pgQuery(query, params);
+    const rows = (await pgQuery(query, params)).map((row) => resolveInlineFlags(row, 'creative'));
 
     // 'approved' bucket is deprecated — rows that still have it (older data
     // that escaped migration 051, e.g. inserted during the deploy window)

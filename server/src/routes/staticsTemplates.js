@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { pgQuery } from '../db/pg.js';
 import { authenticate } from '../middleware/auth.js';
+import { resolveInlineFlags } from '../utils/inlineImages.js';
 import { requirePermission } from '../middleware/rbac.js';
 import { buildLayoutAnalysisPrompt } from '../utils/staticsPrompts.js';
 import { resolveImage } from '../utils/imageHelpers.js';
@@ -156,7 +157,13 @@ router.get('/', authenticate, async (req, res) => {
     const { category, search, hidden } = req.query;
     const showHidden = hidden === 'true';
 
-    let query = 'SELECT * FROM statics_templates WHERE 1=1';
+    // 224 of these rows store the image itself in image_url (a data: URI, up to 495 KB). SELECT * shipped
+    // 23.3 MB per page load and timed out. The row is built as jsonb MINUS image_url, which is added back
+    // only when it is a link; an inline image becomes a link to /api/v1/inline-images. No data changes.
+    let query = `SELECT (to_jsonb(t) - 'image_url') || jsonb_build_object(
+        'image_url', CASE WHEN t.image_url LIKE 'data:%' THEN NULL ELSE t.image_url END,
+        'image_url__inline', COALESCE(t.image_url LIKE 'data:%', false)) AS r
+      FROM statics_templates t WHERE 1=1`;
     const params = [];
     let idx = 1;
 
@@ -179,7 +186,7 @@ router.get('/', authenticate, async (req, res) => {
     }
 
     query += ' ORDER BY sort_order ASC, created_at DESC';
-    const templates = await pgQuery(query, params);
+    const templates = (await pgQuery(query, params)).map((row) => resolveInlineFlags(row.r, 'template'));
 
     const categories = await pgQuery(`
       SELECT category AS name, COUNT(*)::int AS count
