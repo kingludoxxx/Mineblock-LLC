@@ -45,7 +45,7 @@ import { namingVars, tidyName, claimImNumber, syncCounter, DEFAULT_CREATOR } fro
 import { STATICS_FORMATS, getFormat, capFor, resolveFormat } from '../config/staticsFormats.js';
 import { pgQuery } from '../db/pg.js';
 import { authenticate } from '../middleware/auth.js';
-import { requirePermission } from '../middleware/rbac.js';
+import { requirePermission, holdsWildcard } from '../middleware/rbac.js';
 import { uploadBuffer, uploadFromUrl, isR2Configured } from '../services/r2.js';
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -4031,7 +4031,8 @@ router.delete('/queue/:id', authenticate, async (req, res) => {
     }
     const row = rows[0];
     const roles = Array.isArray(req.user?.roles) ? req.user.roles : [];
-    const isAdmin = roles.some(r => r?.name === 'SuperAdmin' || r?.name === 'Admin');
+    // A full-access role (the hub owner, migration 136) may cancel any queued job, like SuperAdmin.
+    const isAdmin = roles.some(r => r?.name === 'SuperAdmin' || r?.name === 'Admin' || holdsWildcard(r));
     if (row.user_id !== req.user?.id && !isAdmin) {
       return res.status(404).json({ success: false, error: { message: 'queue row not found' } });
     }
