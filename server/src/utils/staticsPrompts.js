@@ -1,3 +1,4 @@
+import { fitNanoBananaPrompt } from '../services/imageGeneration.js';
 // ─────────────────────────────────────────────────────────────────────────────
 // statics — 3-prompt architecture (migration 036)
 //
@@ -729,7 +730,7 @@ export function describeShapeReport(report) {
   return bits.length ? bits.join(' · ') : null;
 }
 
-export function buildNanoBananaImagePrompt(claudeResult = {}, product = {}, template = '', iterationVars = {}) {
+export function buildNanoBananaImagePrompt(claudeResult = {}, product = {}, template = '', iterationVars = {}, { maxChars = null } = {}) {
   const hasProduct = claudeResult.reference_has_product_visual !== false;
   const productVisual = (claudeResult.product_visual_for_generation || '').trim();
   const peopleCount = claudeResult.people_count ?? 0;
@@ -843,7 +844,38 @@ export function buildNanoBananaImagePrompt(claudeResult = {}, product = {}, temp
     VARIED:                 iterationVars.VARIED         || '',
     LOCKED:                 iterationVars.LOCKED         || '',
   };
-  return interpolate(template, vars);
+  return fitImagePrompt(template, vars, maxChars);
+}
+
+// Product-knowledge fields an image prompt may carry for context. When the prompt is over the engine's limit these
+// are shortened, longest first; the copy (TEXT_SWAPS), the visual brief, the angle and COMPLIANCE never are.
+// Found live 2026-09-13: a full knowledge base pushed an OpenAI prompt to 32,208 chars (limit 32,000) and every
+// generation for that product failed. The copy was already written by the analysis step from the full record.
+const SHORTENABLE_IMAGE_VARS = ['WINNING_ANGLES', 'NOTES', 'CUSTOM_ANGLES', 'COMPETITIVE_EDGE', 'PAIN_POINTS', 'OBJECTIONS',
+  'CUSTOMER', 'CUSTOMER_FRUSTRATION', 'CUSTOMER_DREAM', 'KEY_BENEFITS', 'TARGET_AUDIENCE', 'PRODUCT_DESCRIPTION',
+  'DIFFERENTIATOR', 'UNIQUE_MECHANISM', 'BRAND_VOICE', 'GUARANTEE', 'OFFER_HOOK'];
+const SHORTENED_MARK = ' [shortened]';
+const MIN_SHORTENED = 400;
+
+function fitImagePrompt(template, vars, maxChars) {
+  let out = interpolate(template, vars);
+  if (!maxChars || out.length <= maxChars) return out;
+  const v = { ...vars };
+  for (let guard = 0; guard < 50 && out.length > maxChars; guard++) {
+    const candidates = SHORTENABLE_IMAGE_VARS
+      .filter((k) => typeof v[k] === 'string' && v[k].length > MIN_SHORTENED + SHORTENED_MARK.length && template.includes(`{{${k}}}`))
+      .sort((a, b) => v[b].length - v[a].length);
+    if (!candidates.length) break;
+    const k = candidates[0];
+    const uses = template.split(`{{${k}}}`).length - 1;
+    const over = out.length - maxChars;
+    const keep = Math.max(MIN_SHORTENED, v[k].length - Math.ceil(over / uses) - SHORTENED_MARK.length);
+    v[k] = v[k].slice(0, keep) + SHORTENED_MARK;
+    out = interpolate(template, v);
+  }
+  // The fixed parts alone are over the limit: cut at a line boundary, keeping the copy lines (same rule as the
+  // NanoBanana submit path).
+  return out.length > maxChars ? fitNanoBananaPrompt(out, maxChars).prompt : out;
 }
 
 /**

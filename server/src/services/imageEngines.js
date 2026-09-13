@@ -32,6 +32,7 @@ const ENGINES = {
     poll:   pollNanoBanana,
     isConfigured: isNanoBananaConfigured,
     describe: () => 'google/nano-banana-edit (via Kie.ai)',
+    maxPromptChars: 5000,     // Kie.ai refuses longer prompts (fitted again at submit)
   },
   openai: {
     name: 'openai',
@@ -41,6 +42,7 @@ const ENGINES = {
     poll:   pollOpenAI,
     isConfigured: isOpenAIConfigured,
     describe: () => `OpenAI ${getOpenAIModel()}`,
+    maxPromptChars: 32000,    // OpenAI images API: "maximum length 32000" (fitted again at submit)
   },
 };
 

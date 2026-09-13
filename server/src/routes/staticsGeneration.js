@@ -215,6 +215,14 @@ async function withRetry(fn, label, maxAttempts = 3) {
 }
 import { submitToNanoBanana, pollNanoBanana } from '../services/imageGeneration.js';
 import { getEngine, DEFAULT_ENGINE, listEngines } from '../services/imageEngines.js';
+
+// Room left in an engine's prompt limit for what is added around the built image prompt (the style directive
+// before it, an adjustment request after it). The engine's submit path still enforces the hard limit.
+const IMAGE_PROMPT_HEADROOM = 3000;
+function imagePromptBudget(engine) {
+  const cap = engine?.maxPromptChars;
+  return cap ? Math.max(1000, cap - IMAGE_PROMPT_HEADROOM) : null;
+}
 import crypto from 'crypto';
 import { analyzeTemplate, analyzeTemplateFast } from '../utils/templateAnalysis.js';
 import sharp from 'sharp';
@@ -3312,7 +3320,7 @@ router.post('/generate', authenticate, async (req, res) => {
         : customPrompts.nanobanana_image;
       // Stamp the angle so image-prompt builder can interpolate {{ANGLE}}
       product._angle = angle_data?.name || angle || '';
-      let nbPrompt = buildNanoBananaImagePrompt(claudeResult, product, engineTemplate);
+      let nbPrompt = buildNanoBananaImagePrompt(claudeResult, product, engineTemplate, {}, { maxChars: imagePromptBudget(engine) });
 
       // STYLE DIRECTIVE prepend — injects the medium + authenticity cues +
       // style_directive Claude returned, so NanoBanana doesn't default to its
@@ -4707,7 +4715,7 @@ router.post('/iterate/:creativeId', authenticate, async (req, res) => {
             STRATEGY_LABEL: strategy.label,
             VARIED:         strategy.vary,
             LOCKED:         strategy.lock,
-          });
+          }, { maxChars: imagePromptBudget(iterEngine) });
           // Only prepend the hardcoded directive when falling back to the
           // fresh-generation template (no dedicated iteration template yet).
           // The dedicated template has the directive built into its JSON.
@@ -5746,7 +5754,7 @@ router.post('/creatives/:id/ai-adjust', authenticate, async (req, res) => {
           ? (customPrompts.openai_image || customPrompts.nanobanana_image)
           : customPrompts.nanobanana_image;
         product._angle = creative.angle || '';
-        const baseNbPrompt = buildNanoBananaImagePrompt(claudeResult, product, adjustTemplate);
+        const baseNbPrompt = buildNanoBananaImagePrompt(claudeResult, product, adjustTemplate, {}, { maxChars: imagePromptBudget(getEngine(creative.image_engine || 'nanobanana')) });
         const newNbPrompt = `${baseNbPrompt}\n\nADJUSTMENT REQUESTED BY USER:\n${adjustmentInstruction}\n\nPreserve everything else exactly as it appears in the input image.`;
 
         storeTaskResult(adjustTaskId, { status: 'processing', progress: 'Regenerating with NanoBanana...' });
@@ -7918,7 +7926,7 @@ async function _doRegenerateBrokenPreviews(req, res) {
             ? (customPrompts.openai_image || customPrompts.nanobanana_image)
             : customPrompts.nanobanana_image;
           product._angle = row.angle || '';
-          const nbPrompt = buildNanoBananaImagePrompt(claudeResult, product, rgnTemplate);
+          const nbPrompt = buildNanoBananaImagePrompt(claudeResult, product, rgnTemplate, {}, { maxChars: imagePromptBudget(rgnEngine) });
           const ratio = row.aspect_ratio || '4:5';
           const nbTaskId = await rgnEngine.submit(nbPrompt, [productHttpUrl], ratio);
           const tempUrl = await rgnEngine.poll(nbTaskId);

@@ -1,3 +1,5 @@
+import { fitNanoBananaPrompt } from './imageGeneration.js';
+export const OPENAI_MAX_PROMPT_CHARS = 32000;
 // ─────────────────────────────────────────────────────────────────────────────
 // openaiImageGen — thin OpenAI gpt-image-2 client
 //
@@ -106,6 +108,11 @@ function ratioToSize(ratio) {
  */
 export async function submitToOpenAI(prompt, imageUrls = [], ratio = '1:1', maskDataUrl = null) {
   if (!OPENAI_API_KEY) throw new Error('OPENAI_API_KEY is not configured');
+  // OpenAI refuses a prompt over 32,000 chars and the whole generation is lost. Last line of defence for every
+  // caller: whitespace first, then a line-boundary cut that keeps the copy lines. Never silent.
+  const fitted = fitNanoBananaPrompt(String(prompt ?? ''), OPENAI_MAX_PROMPT_CHARS);
+  if (fitted.action !== 'none') console.warn(`[OpenAI] prompt ${fitted.original} chars over ${OPENAI_MAX_PROMPT_CHARS}: ${fitted.action} to ${fitted.final}`);
+  prompt = fitted.prompt;
 
   const size = ratioToSize(ratio);
   const taskId = `oai-${randomUUID()}`;
