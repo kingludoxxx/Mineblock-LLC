@@ -59,6 +59,7 @@ import hubSsoRoutes from './hubSso.js';
 import storeConfigRoutes from './storeConfig.js';
 import videoLauncherRoutes from './videoLauncher.js';
 import brainRoutes from './brain.js';
+import productBibleRoutes from './productBible.js';
 
 const mountRoutes = (app) => {
   // STORE CONFIG (Lane F): GET /api/v1/store-config (session, non-secret) and
@@ -75,6 +76,7 @@ const mountRoutes = (app) => {
   app.use('/api/v1/creative-analysis', creativeAnalysisRoutes);
   app.use('/api/v1/statics-generation', staticsGenerationRoutes);
   app.use('/api/v1/product-profiles', productProfileRoutes);
+  app.use('/api/v1/product-bible', productBibleRoutes); // PRODUCT BIBLE: per-market research in the product library. Session (products:access) OR this pair's BRAIN_SERVICE_TOKEN (read-only).
   app.use('/api/v1/brain', brainRoutes); // STORE BRAIN (S4-SB): this store's own knowledge base — raw sources, insights, playbook. Session (brain:access) OR this pair's BRAIN_SERVICE_TOKEN; no store parameter, scoped by construction.
   app.use('/api/v1/ad-rejection-monitor', adRejectionMonitorRoutes);
   app.use('/api/v1/kpi-system', kpiSystemRoutes);

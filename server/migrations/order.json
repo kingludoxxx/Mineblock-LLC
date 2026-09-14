@@ -120,6 +120,7 @@
     "133_hub_role_map_page_roles.sql",
     "134_hub_owner_kpi_role.sql",
     "135_users_created_via.sql",
-    "136_hub_owner_full_access.sql"
+    "136_hub_owner_full_access.sql",
+    "137_product_bible.sql"
   ]
 }
