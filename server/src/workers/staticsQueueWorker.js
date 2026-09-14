@@ -230,6 +230,8 @@ async function runOneReference({ row, reference, freshToken }) {
     // Reference metadata passed through for auto-save's reference_thumbnail.
     reference_name: reference?.name || null,
     reference_thumbnail: reference?.thumbnail || null,
+    // Product Bible selection queued with the item (NULL for products without markets -> omitted, today's body).
+    ...(row.bible ? { bible: typeof row.bible === 'string' ? JSON.parse(row.bible) : row.bible } : {}),
   };
 
   const submitRes = await fetch(`${base}/api/v1/statics-generation/generate`, {

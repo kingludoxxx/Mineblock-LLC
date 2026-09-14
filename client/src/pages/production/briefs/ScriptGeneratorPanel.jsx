@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, forwardRef, useImperativeHandle } from 'react';
 import { FileText, Video, Wand2, Loader2, Sparkles, ChevronDown, Package, Check, AlertCircle } from 'lucide-react';
 import ProductSelector from '../../../components/ProductSelector';
+import BiblePicker from '../../../components/productBible/BiblePicker';
 import api from '../../../services/api';
 
 // Fallback when the selected product has no angles in the Product Library.
@@ -60,6 +61,8 @@ const ScriptGeneratorPanel = forwardRef(function ScriptGeneratorPanel({
   const [selectedProduct, setSelectedProduct] = useState(null);
   const [productList, setProductList] = useState([]);
   const [selectedAngle, setSelectedAngle] = useState(null);
+  // Product Bible selection ({ product, market, avatar, angle }) or null when the product has no bible.
+  const [bible, setBible] = useState(null);
   const [customAngle, setCustomAngle] = useState('');
   const [outputMode, setOutputMode] = useState('clone');
   const [variantCount, setVariantCount] = useState(3);
@@ -82,6 +85,7 @@ const ScriptGeneratorPanel = forwardRef(function ScriptGeneratorPanel({
 
   useImperativeHandle(ref, () => ({
     getSelectedModel: () => selectedModel,
+    getBibleSelection: () => bible,
   }));
 
   // Apply external prefill (from Reference card → "Generate Brief"). The
@@ -232,6 +236,7 @@ const ScriptGeneratorPanel = forwardRef(function ScriptGeneratorPanel({
         model: selectedModel,
         // Only send vectorsSelected on iterate mode — clone mode ignores it.
         vectorsSelected: outputMode === 'iterate' ? buildVectorsPayload() : undefined,
+        bible: bible || undefined,
       });
     } catch (err) {
       setError(err.message || 'Generation failed');
@@ -351,6 +356,16 @@ const ScriptGeneratorPanel = forwardRef(function ScriptGeneratorPanel({
             onLoad={(list) => setProductList(list || [])}
             allowClear={false}
             className="w-full"
+          />
+          <BiblePicker
+            productId={selectedProduct?.id ?? null}
+            onProductSelect={(id) => {
+              const p = productList.find((x) => String(x.id) === String(id));
+              if (p) setSelectedProduct(p);
+            }}
+            // Only a selection for the product this panel generates for is ever sent.
+            onChange={(sel) => setBible(sel && String(sel.product) === String(selectedProduct?.id) ? sel : null)}
+            className="mt-2"
           />
 
           {/* Product Library context is still fetched (the angle dropdown and

@@ -129,6 +129,19 @@ export async function importMarketBible({
   });
 }
 
+/** A product reference as briefs, ClickUp and the CRM spell it: numeric id, product code, short name or name. */
+export async function resolveProductRef(ref, db = sql) {
+  const raw = String(ref ?? '').trim();
+  if (!raw) throw new BibleError(400, 'bad_product', 'product is required');
+  if (/^\d+$/.test(raw)) return Number(raw);
+  const rows = await db`
+    SELECT id FROM product_profiles
+     WHERE lower(product_code) = lower(${raw}) OR lower(short_name) = lower(${raw}) OR lower(name) = lower(${raw})
+     ORDER BY (lower(product_code) = lower(${raw})) DESC, id LIMIT 2`;
+  if (!rows.length) throw new BibleError(404, 'product_not_found', `no product matches "${raw}"`);
+  return rows[0].id;
+}
+
 export async function listMarkets(productId, db = sql) {
   return db`
     SELECT id, product_id, market_key, label, price, product_url, sort_order, bible_title, bible_version, imported_at, stats

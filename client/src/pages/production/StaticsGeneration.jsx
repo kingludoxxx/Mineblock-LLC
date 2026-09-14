@@ -37,6 +37,8 @@ import {
 import api from '../../services/api';
 import { resolveDefaultProduct, rememberProduct } from './statics/defaultProduct';
 import ProductSelector from '../../components/ProductSelector';
+import BiblePicker from '../../components/productBible/BiblePicker';
+import { toBibleAngleOptions, sameBible } from './statics/bibleAngles';
 import { PipelineView } from './statics/PipelineView';
 import { LibraryView } from './statics/LibraryView';
 import { TemplateSelectModal } from './statics/TemplateSelectModal';
@@ -108,6 +110,7 @@ function normalizeServerQueueRow(row) {
     product_payload: row.product_payload || null,
     angle_data: row.angle_data || null,
     custom_angle: row.custom_angle || null,
+    bible: row.bible || null,
     image_engine: row.image_engine || 'openai',
     // Progress + result surface for the queue panel.
     refsTotal,
@@ -1091,6 +1094,13 @@ export default function StaticsGeneration() {
   const [selectedProductObj, setSelectedProductObj] = useState(null);
   const selectedProductRef = useRef(null); // full product object for generation
 
+  // PRODUCT BIBLE. bibleSel = { product, market, avatar, angle:null } for the selected product when it has markets,
+  // else null. While it is set, the angle chips show the bible's angles (tier-grouped option objects carrying
+  // bible_key) instead of the product library's, and every generate/queue call carries `bible` with that key.
+  const [bibleSel, setBibleSel] = useState(null);
+  const [bibleAngleOptions, setBibleAngleOptions] = useState(null); // null = no bible angles loaded
+  const [bibleAvatars, setBibleAvatars] = useState([]);
+
   // Blocks fetchQueueFromServer while an add/remove/clear mutation is in
   // flight. The poll would otherwise reconcile against a DB snapshot that
   // predates the mutation and wipe the optimistic update. Cleared in the
@@ -1178,6 +1188,34 @@ export default function StaticsGeneration() {
   // =========================================================================
   // STANDARD PIPELINE HANDLERS
   // =========================================================================
+
+  const effectiveAngles = bibleSel && bibleAngleOptions ? bibleAngleOptions : productAngles;
+  const selectedBibleAvatar = bibleSel?.avatar ? (bibleAvatars.find((a) => a.key === bibleSel.avatar) || null) : null;
+  // A bible angle option is not a product-library angle object: it never goes out as angle_data.
+  const legacyAngleData = (a) => (a && !a.bible_key ? a : null);
+  const bibleWithAngle = (angleKey) => (bibleSel ? { ...bibleSel, angle: angleKey || null } : null);
+  const currentBibleAngleKey = () => (!customAngle && selectedAngleData?.bible_key ? selectedAngleData.bible_key : null);
+
+  const handleBibleChange = useCallback((sel, meta) => {
+    setBibleSel((prev) => (sameBible(prev, sel) ? prev : sel));
+    setBibleAvatars(sel ? (meta?.avatars || []) : []);
+    setBibleAngleOptions(sel && !meta?.loading ? toBibleAngleOptions(meta?.angles) : null);
+  }, []);
+
+  // Keep the angle choice valid for the angle source in use: a bible angle does not survive leaving that bible,
+  // and a product-library angle is not carried into a bible (it starts on Auto).
+  useEffect(() => {
+    if (!selectedAngleData && !marketingAngle) return;
+    if (bibleSel && bibleAngleOptions) {
+      const ok = selectedAngleData?.bible_key && bibleAngleOptions.some((a) => a.bible_key === selectedAngleData.bible_key);
+      if (!ok) { setMarketingAngle(''); setSelectedAngleData(null); }
+    } else if (!bibleSel && selectedAngleData?.bible_key) {
+      // Back on product-library angles: same default handleProductSelect applies (first angle, if any).
+      setMarketingAngle(productAngles[0]?.name || '');
+      setSelectedAngleData(productAngles[0] || null);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [bibleSel?.product, bibleSel?.market, bibleAngleOptions]);
 
   const handleProductSelect = async (product) => {
     if (!product) {
@@ -1454,9 +1492,10 @@ export default function StaticsGeneration() {
           profile: Object.keys(profile).length > 0 ? profile : undefined,
         },
         angle: customAngle || marketingAngle || undefined,
-        angle_data: !customAngle && selectedAngleData ? selectedAngleData : undefined,
+        angle_data: !customAngle && legacyAngleData(selectedAngleData) ? selectedAngleData : undefined,
         ratio: 'all',
         image_engine: imageEngine,
+        ...(bibleSel ? { bible: bibleWithAngle(currentBibleAngleKey()) } : {}),
       });
 
       const genResult = response.data?.data || response.data;
@@ -1633,7 +1672,8 @@ export default function StaticsGeneration() {
   // =========================================================================
 
   const handleGenerateAllAngles = async () => {
-    if (!canGenerate || generatingAll || productAngles.length === 0) return;
+    if (!canGenerate || generatingAll || effectiveAngles.length === 0) return;
+    const anglesToRun = effectiveAngles;
     setGeneratingAll(true);
 
     let resolvedReferenceUrl = referenceImageUrl;
@@ -1674,7 +1714,7 @@ export default function StaticsGeneration() {
       ? Math.max(0, _allAnglesImages.indexOf(productImageUrl))
       : null;
 
-    for (const angleObj of productAngles) {
+    for (const angleObj of anglesToRun) {
       try {
         const resp = await api.post('/statics-generation/generate', {
           reference_image_url: resolvedReferenceUrl,
@@ -1694,7 +1734,8 @@ export default function StaticsGeneration() {
             profile: Object.keys(profile).length > 0 ? profile : undefined,
           },
           angle: angleObj.name,
-          angle_data: angleObj,
+          angle_data: legacyAngleData(angleObj) || undefined,
+          ...(bibleSel ? { bible: bibleWithAngle(angleObj.bible_key) } : {}),
         });
         const genData = resp.data?.data || resp.data;
         const taskId = genData?.taskId;
@@ -1709,7 +1750,7 @@ export default function StaticsGeneration() {
 
     setGeneratingAll(false);
     if (failed > 0) {
-      addToast(`Queued ${queued}/${productAngles.length} angles — ${failed} failed to submit`, 'warning', 8000);
+      addToast(`Queued ${queued}/${anglesToRun.length} angles — ${failed} failed to submit`, 'warning', 8000);
     } else {
       addToast(`All ${queued} angles queued — generating & saving in background`, 'success', 8000);
     }
@@ -1853,7 +1894,9 @@ export default function StaticsGeneration() {
   // without waiting for the next 4s poll.
   const enqueueItems = async (items) => {
     try {
-      const res = await api.post('/statics-generation/generate-batch', { items });
+      const bibles = items.map((it) => (it?.bible ? JSON.stringify(it.bible) : ''));
+      const shared = bibles.length > 0 && bibles[0] && bibles.every((b) => b === bibles[0]) ? items[0].bible : null;
+      const res = await api.post('/statics-generation/generate-batch', shared ? { items, bible: shared } : { items });
       const inserted = res.data?.data?.queued || [];
       if (inserted.length > 0) {
         setQueue(prev => {
@@ -1895,9 +1938,10 @@ export default function StaticsGeneration() {
       product_payload: buildProductPayloadSnapshot(),
       references: itemReferences,
       angle: !customAngle ? (marketingAngle || null) : null,
-      angle_data: !customAngle && selectedAngleData ? selectedAngleData : null,
+      angle_data: !customAngle && legacyAngleData(selectedAngleData) ? selectedAngleData : null,
       custom_angle: customAngle || null,
       image_engine: imageEngine || 'openai',
+      ...(bibleSel ? { bible: bibleWithAngle(currentBibleAngleKey()) } : {}),
     };
 
     mutationInFlight.current = true;
@@ -1957,9 +2001,10 @@ export default function StaticsGeneration() {
         source_label: sourceLabel,
       })],
       angle: !customAngle ? (marketingAngle || null) : null,
-      angle_data: !customAngle && selectedAngleData ? selectedAngleData : null,
+      angle_data: !customAngle && legacyAngleData(selectedAngleData) ? selectedAngleData : null,
       custom_angle: customAngle || null,
       image_engine: imageEngine || 'openai',
+      ...(bibleSel ? { bible: bibleWithAngle(currentBibleAngleKey()) } : {}),
     };
     mutationInFlight.current = true;
     try {
@@ -2035,6 +2080,8 @@ export default function StaticsGeneration() {
       angle_data: src.angle_data || src.angleData || null,
       custom_angle: src.custom_angle || src.customAngle || null,
       image_engine: src.image_engine || imageEngine || 'nanobanana',
+      // A retry re-runs the row as it was queued, including its bible selection (if it had one).
+      ...(src.bible ? { bible: src.bible } : {}),
     };
     mutationInFlight.current = true;
     let inserted;
@@ -2465,7 +2512,20 @@ export default function StaticsGeneration() {
                   onAngleChange={setMarketingAngle}
                   angleData={selectedAngleData}
                   onAngleDataChange={setSelectedAngleData}
-                  productAngles={productAngles}
+                  productAngles={effectiveAngles}
+                  bibleActive={!!(bibleSel && bibleAngleOptions)}
+                  bibleAvatar={selectedBibleAvatar}
+                  productExtra={(
+                    <BiblePicker
+                      productId={selectedProductId}
+                      showAngle={false}
+                      onProductSelect={(id) => { if (String(id) !== String(selectedProductId)) handleProductSelect({ id }); }}
+                      onChange={(sel, meta) => handleBibleChange(
+                        sel && String(sel.product) === String(selectedProductRef.current?.id ?? selectedProductId) ? sel : null,
+                        meta,
+                      )}
+                    />
+                  )}
                   customAngle={customAngle}
                   onCustomAngleChange={setCustomAngle}
                   references={references}
@@ -2786,7 +2846,7 @@ export default function StaticsGeneration() {
                     setReferenceFile(null);
                   }}
                   onQueueLeagueRef={handleQueueLeagueRef}
-                  productAngles={productAngles}
+                  productAngles={effectiveAngles}
                   onQueueRefWithAngles={async (ref, anglesPicked) => {
                     // One reference image × N angles → N /generate-batch items.
                     if (!selectedProductId) {
@@ -2825,9 +2885,10 @@ export default function StaticsGeneration() {
                       product_payload: productPayload,
                       references: [trimReferenceForBatch({ image_url: refUrl, thumbnail: refUrl, name: refLabel, source_label: refLabel })],
                       angle: angleObj?.name || null,
-                      angle_data: angleObj || null,
+                      angle_data: legacyAngleData(angleObj),
                       custom_angle: null,
                       image_engine: imageEngine || 'openai',
+                      ...(bibleSel ? { bible: bibleWithAngle(angleObj?.bible_key) } : {}),
                     }));
                     const inserted = await enqueueItems(items);
                     if (inserted) {
@@ -2856,9 +2917,10 @@ export default function StaticsGeneration() {
                         product_payload: productPayload,
                         references: [trimReferenceForBatch({ image_url: url, thumbnail: url, name: label, source_label: label })],
                         angle: !customAngle ? (marketingAngle || null) : null,
-                        angle_data: !customAngle && selectedAngleData ? selectedAngleData : null,
+                        angle_data: !customAngle && legacyAngleData(selectedAngleData) ? selectedAngleData : null,
                         custom_angle: customAngle || null,
                         image_engine: imageEngine || 'openai',
+                        ...(bibleSel ? { bible: bibleWithAngle(currentBibleAngleKey()) } : {}),
                       };
                     }).filter(Boolean);
                     if (items.length === 0) {
@@ -2922,6 +2984,11 @@ export default function StaticsGeneration() {
                         custom_angle: null,
                         image_engine: creative.image_engine || imageEngine || 'nanobanana',
                       };
+                      // The current bible selection applies only when it is for this creative's product.
+                      if (bibleSel && String(bibleSel.product) === String(creative.product_id)) {
+                        const match = (bibleAngleOptions || []).find((a) => a.name === creative.angle);
+                        item.bible = bibleWithAngle(match?.bible_key);
+                      }
                       const inserted = await enqueueItems([item]);
                       if (inserted) {
                         addToast(`Regenerating "${creative.product_name || 'creative'}"`, 'info');

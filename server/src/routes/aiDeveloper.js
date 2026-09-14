@@ -25,6 +25,8 @@ import { createImageJob, createVideoJob, getJob, isAllowedAssetUrl } from '../se
 import {
   THREAD_LIMIT, appendThread, clearThread, ensureAiDevChatTables, openThreadEpoch, readThread,
 } from '../services/aiDeveloperSchema.js';
+import { resolveChatBible } from '../services/productBible/pipelineBible.js';
+import { BibleError } from '../services/productBible/bibleStore.js';
 
 const router = Router();
 router.use(authenticate, requirePermission('funnels', 'access'));
@@ -915,7 +917,26 @@ router.post('/chat', async (req, res) => {
       }
     }
 
-    const system = buildSystemPrompt({ page, funnel, blocks: contextBlocks, attachment: resolvedAttachment });
+    let system = buildSystemPrompt({ page, funnel, blocks: contextBlocks, attachment: resolvedAttachment });
+
+    // Product Bible: when the conversation names a product sold into markets (or the request carries
+    // `bible: { product, market, avatar, angle }`), the page copy is written from that market's bible. An explicit
+    // invalid selection is a 4xx; any other bible failure leaves the chat exactly as it was, loudly logged.
+    const explicitBible = req.body && req.body.bible && typeof req.body.bible === 'object' ? req.body.bible : null;
+    try {
+      const lastUser = [...messages].reverse().find((m) => m.role === 'user');
+      const chatBible = await resolveChatBible({
+        text: messages.map((m) => m.content).join('\n'), bible: explicitBible, query: lastUser ? lastUser.content : undefined,
+      });
+      if (chatBible) {
+        system += `\n\nPRODUCT BIBLE (read-only market research for the product this conversation is about; write page copy from it, in the customers' own words, and never borrow from another market):\n${chatBible.block}`;
+      }
+    } catch (bibleErr) {
+      if (explicitBible && bibleErr instanceof BibleError) {
+        return res.status(bibleErr.status).json({ error: bibleErr.message, code: bibleErr.code });
+      }
+      console.error('[ai-developer] product bible context skipped:', bibleErr?.message || bibleErr);
+    }
 
     // OPEN THE THREAD EPOCH *BEFORE* the model runs. This is the value the
     // persist below is checked against: if the operator clears the conversation

@@ -16,6 +16,7 @@ import {
   Layers,
   Clock,
 } from 'lucide-react';
+import BiblePicker from '../../../components/productBible/BiblePicker';
 import api from '../../../services/api';
 
 // Minimal, unified pill/badge styling — the tier icon + label
@@ -100,6 +101,7 @@ export default function LeagueImportModal({ open, onClose, onImported, onQueued 
   const [queueProductId, setQueueProductId] = useState(null);
   const [queueAngles, setQueueAngles] = useState([]);
   const [queueAngle, setQueueAngle] = useState(''); // '' = AUTO (null in payload)
+  const [queueBible, setQueueBible] = useState(null); // Product Bible selection, null when the product has none
   const [queueModel, setQueueModel] = useState('claude');
   const [queueing, setQueueing] = useState(false);
   const [queueError, setQueueError] = useState(null);
@@ -376,6 +378,7 @@ export default function LeagueImportModal({ open, onClose, onImported, onQueued 
         productCode,
         angle,
         model: queueModel,
+        ...(queueBible ? { bible: queueBible } : {}),
       });
       // Persist the batch defaults so the next open starts pre-configured.
       try {
@@ -1113,6 +1116,15 @@ export default function LeagueImportModal({ open, onClose, onImported, onQueued 
                 ))}
               </select>
             </div>
+
+            {/* Product Bible (renders nothing when no product has markets) */}
+            <BiblePicker
+              inline
+              hideProduct
+              productId={queueProductId}
+              onChange={(sel) => setQueueBible(sel && String(sel.product) === String(queueProductId) ? sel : null)}
+              className="order-last w-full"
+            />
 
             {/* Model toggle */}
             <div className="flex items-center p-0.5 bg-white/[0.02] rounded-md border border-white/[0.06]">

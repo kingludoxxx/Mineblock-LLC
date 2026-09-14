@@ -1,0 +1,50 @@
+{
+  "_doc": "Inputs for pipeline-bible.mjs. The baseline file next to this one holds what the legacy builders produced for these inputs BEFORE the Product Bible was wired into the pipelines (generated from commit d5aaabf). A product without markets must keep producing exactly that.",
+  "plainRow": {
+    "id": 9001,
+    "name": "Plain Product",
+    "short_name": "PP",
+    "product_code": "PP1",
+    "description": "A plain product used by the pipeline tests.",
+    "oneliner": "Plain and simple.",
+    "price": "$10",
+    "product_url": "https://example.test/pp",
+    "big_promise": "Plain promise line.",
+    "mechanism": "Plain mechanism line.",
+    "guarantee": "30 day plain guarantee.",
+    "customer_avatar": "Plain customer.",
+    "pain_points": "Plain pain.",
+    "common_objections": "Plain objection.",
+    "voice": "Plain voice.",
+    "discount_codes": "SAVE10",
+    "compliance_restrictions": "Never claim plain miracles.",
+    "master_brief": "MASTER DOC FOR THE PLAIN PRODUCT",
+    "benefits": ["benefit one", "benefit two"],
+    "angles": [
+      {
+        "name": "Legacy Angle",
+        "funnel_stage": "top",
+        "avatar": "Legacy avatar",
+        "tone": "calm",
+        "messenger": "a plain customer",
+        "lead_with": "Lead with the plain truth.",
+        "headline_examples": ["Legacy headline one", "Legacy headline two"],
+        "required_elements": ["Legacy proof one", "Legacy proof two"],
+        "banned_phrases": ["legacy banned"]
+      }
+    ]
+  },
+  "analysisTemplate": "Adapt the reference for {{PRODUCT_NAME}} at {{PRODUCT_PRICE}}.\nPromise: {{BIG_PROMISE}}\nMechanism: {{UNIQUE_MECHANISM}}\nCustomer: {{CUSTOMER}}\nAngle: {{ANGLE}}\nCodes: {{DISCOUNT_CODES}}\nCompliance: {{COMPLIANCE}}\n{{MASTER_BRIEF}}{{PRODUCT_IMAGE_NOTE}}\nReturn JSON.",
+  "imageTemplate": "Render an ad for {{PRODUCT_NAME}}.\n{{PRODUCT_INSTRUCTION}}\nTEXT SWAPS:\n{{TEXT_SWAPS}}\nVISUAL CHANGES:\n{{VISUAL_CHANGES}}\nAngle: {{ANGLE}}\nPromise: {{BIG_PROMISE}}\nPain: {{PAIN_POINTS}}\nCompliance: {{COMPLIANCE}}\nFinal rule: render every text swap exactly.",
+  "imageTemplateJson": "{\"task\": \"render\", \"product\": \"{{PRODUCT_NAME}}\", \"swaps\": \"{{TEXT_SWAPS}}\", \"angle\": \"{{ANGLE}}\", \"promise\": \"{{BIG_PROMISE}}\"}",
+  "claudeResult": {
+    "reference_has_product_visual": true,
+    "product_visual_for_generation": "the device on a nightstand",
+    "background": "soft wall",
+    "composition": "centered product, headline on top",
+    "original_text": { "headline": "OLD HEADLINE", "cta": "OLD CTA" },
+    "adapted_text": { "headline": "NEW HEADLINE", "cta": "NEW CTA" },
+    "people_count": 0
+  },
+  "copyArgs": { "format": "statement", "hook": "Legacy headline one", "proof": "Legacy proof one", "count": 3 }
+}

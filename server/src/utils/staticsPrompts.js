@@ -66,6 +66,7 @@ export function interpolate(template, vars = {}, opts = {}) {
  * @returns {string} interpolated prompt text
  */
 export function buildClaudeAnalysisPrompt(product = {}, angle = '', template = '', extras = {}) {
+  if (hasBible(product)) return buildBibleAnalysisPrompt(product, angle, template, extras);
   const p = product.profile || {};
   const vars = {
     // Core
@@ -123,6 +124,53 @@ export function buildClaudeAnalysisPrompt(product = {}, angle = '', template = '
   // generator gets who/how/hooks, not just the angle name. No template edit
   // needed — mirrors the MASTER_BRIEF block approach.
   return interpolate(template, vars) + renderAngleDetailsBlock(p.angles, angle);
+}
+
+// ── PRODUCT BIBLE ────────────────────────────────────────────────────────────
+// A product sold into MARKETS carries `product._bible` = resolveStaticsBible(): { copy, image, angleDef, selection }.
+// Then the market's bible is the product context INSTEAD of the legacy profile fields and the master brief (never
+// both), and the chosen bible angle replaces the Product Library angle. Products without markets never carry
+// `_bible`, so every builder below returns exactly what it returned before.
+function hasBible(product) {
+  const b = product && product._bible;
+  return !!(b && b.copy && typeof b.copy.text === 'string' && b.angleDef && b.angleDef.name);
+}
+
+function renderBibleBlock(text) {
+  return `\n\n===== PRODUCT BIBLE — THIS MARKET'S RESEARCH (primary source of truth: avatar, angle, customer language, claims) =====\n\n${text}`;
+}
+
+// Vars that stay from the product row when a bible applies: identity, physical facts and the operator's guardrails
+// (discount codes are what enforceOfferClaims validates against; compliance is a hard rule). Price and URL come from
+// the MARKET. Every other marketing field is the bible's job.
+function bibleAnalysisVars(product, angleName, extras) {
+  const p = product.profile || {};
+  const b = product._bible;
+  return {
+    PRODUCT_NAME:   product.name || p.product_name || '',
+    PRODUCT_PRICE:  b.copy.market?.price || product.price || p.price || '',
+    PRICING:        b.copy.market?.price || product.price || p.price || '',
+    PRODUCT_URL:    b.copy.market?.product_url || p.product_url || '',
+    ANGLE:          angleName,
+    SHORT_NAME:     p.short_name || '',
+    PRODUCT_TYPE:   p.product_type || '',
+    UNIT_DETAILS:   p.unit_details || '',
+    MAX_DISCOUNT:   p.max_discount || '',
+    DISCOUNT_CODES: p.discount_codes || '',
+    COMPLIANCE:     p.compliance || '',
+    MASTER_BRIEF:   '',
+    PRODUCT_IMAGE_NOTE: extras.PRODUCT_IMAGE_NOTE || '',
+    ...extras,
+  };
+}
+
+function buildBibleAnalysisPrompt(product, angle, template, extras) {
+  const def = product._bible.angleDef;
+  // A caller may decorate the angle (an iteration appends its strategy); the base is always the bible angle.
+  const angleName = typeof extras.ANGLE === 'string' && extras.ANGLE ? extras.ANGLE : def.name;
+  return interpolate(template, bibleAnalysisVars(product, angleName, extras))
+    + renderBibleBlock(product._bible.copy.text)
+    + renderAngleDetailsBlock([def], def.name);
 }
 
 /**
@@ -731,6 +779,13 @@ export function describeShapeReport(report) {
 }
 
 export function buildNanoBananaImagePrompt(claudeResult = {}, product = {}, template = '', iterationVars = {}, { maxChars = null } = {}) {
+  if (hasBible(product) && product._bible.image && typeof product._bible.image.text === 'string') {
+    return buildBibleImagePrompt(claudeResult, product, template, iterationVars, maxChars);
+  }
+  return buildLegacyImagePrompt(claudeResult, product, template, iterationVars, maxChars);
+}
+
+function buildLegacyImagePrompt(claudeResult, product, template, iterationVars, maxChars) {
   const hasProduct = claudeResult.reference_has_product_visual !== false;
   const productVisual = (claudeResult.product_visual_for_generation || '').trim();
   const peopleCount = claudeResult.people_count ?? 0;
@@ -847,6 +902,46 @@ export function buildNanoBananaImagePrompt(claudeResult = {}, product = {}, temp
   // The rule is prepended, so JSON-escaping is decided by the operator's template as it was, not by the rule's text.
   const jsonSafe = typeof template === 'string' && template.trimStart().startsWith('{');
   return fitImagePrompt(OTHER_BRANDS_RULE + (template || ''), vars, maxChars, jsonSafe);
+}
+
+// Marketing vars an image template may reference. With a bible they are emptied: the static_image pack carries the
+// market's avatar, angle and customer language instead (the analysis step already wrote the copy from static_copy).
+const BIBLE_BLANKED_IMAGE_VARS = ['ONELINER', 'TAGLINE', 'CATEGORY', 'PRODUCT_DESCRIPTION', 'BRAND_VOICE', 'CUSTOMER',
+  'CUSTOMER_FRUSTRATION', 'CUSTOMER_DREAM', 'BIG_PROMISE', 'DIFFERENTIATOR', 'COMPETITIVE_EDGE', 'UNIQUE_MECHANISM',
+  'KEY_BENEFITS', 'TARGET_AUDIENCE', 'PAIN_POINTS', 'OBJECTIONS', 'GUARANTEE', 'WINNING_ANGLES', 'CUSTOM_ANGLES',
+  'OFFER_HOOK', 'NOTES'];
+// The pack never takes the prompt below this many characters of its own, and never pushes the copy out: when the
+// budget is tight the operator's template (with its copy lines) is fitted first and the pack gets what is left.
+const MIN_BIBLE_IMAGE_CHARS = 300;
+
+function trimBlockTo(text, limit) {
+  if (text.length <= limit) return text;
+  if (limit <= 0) return '';
+  const cut = text.slice(0, Math.max(0, limit - 13));
+  const at = cut.lastIndexOf('\n');
+  return `${at > limit * 0.5 ? cut.slice(0, at) : cut}\n[...trimmed]`;
+}
+
+function buildBibleImagePrompt(claudeResult, product, template, iterationVars, maxChars) {
+  const def = product._bible.angleDef;
+  const profile = { ...(product.profile || {}) };
+  const legacyKeys = { ONELINER: 'oneliner', TAGLINE: 'tagline', CATEGORY: 'category', BRAND_VOICE: 'brand_voice', CUSTOMER: 'customer',
+    CUSTOMER_FRUSTRATION: 'customer_frustration', CUSTOMER_DREAM: 'customer_dream', BIG_PROMISE: 'big_promise', DIFFERENTIATOR: 'differentiator',
+    COMPETITIVE_EDGE: 'competitive_edge', UNIQUE_MECHANISM: 'unique_mechanism', KEY_BENEFITS: 'key_benefits', TARGET_AUDIENCE: 'target_audience',
+    PAIN_POINTS: 'pain_points', OBJECTIONS: 'objections', GUARANTEE: 'guarantee', WINNING_ANGLES: 'winning_angles', CUSTOM_ANGLES: 'custom_angles',
+    OFFER_HOOK: 'offer_hook', NOTES: 'notes', PRODUCT_DESCRIPTION: 'description' };
+  for (const k of BIBLE_BLANKED_IMAGE_VARS) profile[legacyKeys[k]] = '';
+  profile.pricing = product._bible.copy.market?.price || profile.pricing || '';
+  const stripped = { ...product, description: '', price: product._bible.copy.market?.price || product.price, profile, _angle: String(product._angle || '').startsWith(def.name) ? product._angle : def.name };
+  const block = renderBibleBlock(product._bible.image.text);
+  if (!maxChars) return buildLegacyImagePrompt(claudeResult, stripped, template, iterationVars, null) + block;
+  let base = buildLegacyImagePrompt(claudeResult, stripped, template, iterationVars, maxChars);
+  if (maxChars - base.length < MIN_BIBLE_IMAGE_CHARS) {
+    base = buildLegacyImagePrompt(claudeResult, stripped, template, iterationVars, Math.max(1, maxChars - MIN_BIBLE_IMAGE_CHARS));
+  }
+  const room = maxChars - base.length;
+  const fitted = trimBlockTo(block, room);
+  return fitted ? base + fitted : base;
 }
 
 // Other companies' brands (legal). Found live 2026-09-13: a reference with competitor packs blurred came back with

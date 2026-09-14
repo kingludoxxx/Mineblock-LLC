@@ -420,6 +420,8 @@ export default function BriefPipeline() {
         // expects [{ vector, target }] — Hooks / Format Swap / Avatar / etc.
         // Undefined in clone mode (server ignores it).
         vectorsSelected: config.vectorsSelected,
+        // Product Bible selection; only present when the chosen product has markets.
+        ...(config.bible ? { bible: config.bible } : {}),
       });
 
       // Server responds immediately — poll for completion
@@ -486,6 +488,7 @@ export default function BriefPipeline() {
     const productCode = opts.productCode || 'MR';
     const angle = opts.angle || null;
     const model = opts.model || 'claude';
+    const bible = opts.bible || null;
     try {
       await Promise.all(refs.map(async (ref) => {
         // Skip references with no transcript — backend would 400 anyway and
@@ -501,6 +504,9 @@ export default function BriefPipeline() {
             numVariations: 1,
             referenceId: ref.id,
             model,
+            // With a Product Bible selection the brief is for THAT product: send its id so the server never
+            // resolves the default product code instead (the server refuses a bible/product mismatch).
+            ...(bible ? { bible, productId: bible.product } : {}),
           });
           if (data?.winner_id) {
             spawnPendingGeneration({
@@ -1283,7 +1289,8 @@ export default function BriefPipeline() {
                           onClick={() => {
                             const refs = references.filter((r) => selectedReferenceIds.includes(r.id));
                             const selectedModel = scriptGeneratorPanelRef.current?.getSelectedModel?.() || 'claude';
-                            handleBatchGenerateFromReferences(refs, { model: selectedModel });
+                            const bible = scriptGeneratorPanelRef.current?.getBibleSelection?.() || null;
+                            handleBatchGenerateFromReferences(refs, { model: selectedModel, bible });
                           }}
                           className="w-full flex items-center justify-center gap-2 py-3 rounded-md bg-[#c9a84c]/15 border border-[#c9a84c]/40 text-[#e8d5a3] font-mono text-xs uppercase tracking-wider hover:bg-[#c9a84c]/25 hover:border-[#c9a84c]/60 shadow-[0_0_15px_rgba(201,168,76,0.15)] transition-all cursor-pointer"
                         >

@@ -221,7 +221,9 @@ export function scoreCopySet(result) {
   return score;
 }
 
-function buildCopyPrompt({ product, angle, format, hook, proof, count }) {
+// `bible` (a static_copy Product Bible pack) replaces the promise / mechanism / guarantee lines with the market's
+// research. Without it the prompt is exactly what it was.
+export function buildCopyPrompt({ product, angle, format, hook, proof, count, bible = null }) {
   const fmt = getFormat(format) || null;
   const cap = fmt ? fmt.cap : capFor(null);
   const banned = Array.isArray(angle?.banned_phrases) ? angle.banned_phrases.filter(Boolean) : [];
@@ -235,11 +237,15 @@ function buildCopyPrompt({ product, angle, format, hook, proof, count }) {
 
 PRODUCT
   name: ${product?.name || ''}
-  price: ${product?.price || ''}
+${bible && typeof bible.text === 'string' && bible.text ? `  price: ${bible.market?.price || product?.price || ''}
+
+PRODUCT BIBLE — THIS MARKET'S RESEARCH (the only source of claims, avatar and customer language):
+${bible.text}
+` : `  price: ${product?.price || ''}
   promise: ${product?.big_promise || ''}
   mechanism: ${product?.mechanism || ''}
   guarantee: ${product?.guarantee || ''}
-
+`}
 ${angle ? `ANGLE: ${angle.name}
   who it speaks to: ${angle.avatar || ''}
   voice: ${angle.messenger || 'brand voice'}
@@ -288,7 +294,7 @@ different entry points, not the same sentence reworded.`;
  * than a silent empty list.
  */
 export async function generateCopySets({
-  product = {}, angle = null, format = null, hook = '', proof = '', count = 3,
+  product = {}, angle = null, format = null, hook = '', proof = '', count = 3, bible = null,
 } = {}) {
   if (!process.env.ANTHROPIC_API_KEY) {
     return { ok: false, candidates: [], rejected: [], error: 'ANTHROPIC_API_KEY missing' };
@@ -298,7 +304,7 @@ export async function generateCopySets({
     const res = await anthropic.messages.create({
       model: COPY_MODEL,
       max_tokens: 2000,
-      messages: [{ role: 'user', content: buildCopyPrompt({ product, angle, format, hook, proof, count }) }],
+      messages: [{ role: 'user', content: buildCopyPrompt({ product, angle, format, hook, proof, count, bible }) }],
     });
     const raw = (res.content || []).filter(b => b.type === 'text').map(b => b.text).join('').trim();
     parsed = JSON.parse(raw.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, ''));

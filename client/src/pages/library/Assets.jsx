@@ -8,6 +8,8 @@ import {
 } from 'lucide-react';
 import { makeFieldState } from '../../lib/autoSaveField';
 import api from '../../services/api';
+import ProductBibleViewer from '../../components/productBible/ProductBibleViewer';
+import { fetchBibleMarkets, bibleErrorText } from '../../components/productBible/bibleApi';
 
 /* ------------------------------------------------------------------ */
 /*  Helpers                                                           */
@@ -326,6 +328,27 @@ function DeleteDialog({ product, onConfirm, onCancel }) {
 }
 
 /* ------------------------------------------------------------------ */
+/*  Product Bible markets (only products with an imported bible get a tab) */
+/* ------------------------------------------------------------------ */
+
+function useBibleMarkets(productId) {
+  const [state, setState] = useState({ id: null, markets: [] });
+  useEffect(() => {
+    if (!productId) return undefined;
+    let alive = true;
+    fetchBibleMarkets(productId)
+      .then((markets) => { if (alive) setState({ id: productId, markets }); })
+      .catch((err) => {
+        // A store without bibles (or without access) keeps today's page; the failure is logged, not hidden.
+        console.error('[Assets] Product Bible markets failed to load:', bibleErrorText(err));
+        if (alive) setState({ id: productId, markets: [] });
+      });
+    return () => { alive = false; };
+  }, [productId]);
+  return state.id === productId ? state.markets : [];
+}
+
+/* ------------------------------------------------------------------ */
 /*  Product Detail View                                               */
 /* ------------------------------------------------------------------ */
 
@@ -337,6 +360,9 @@ function ProductDetailView({ product, onBack, onFieldSave, onAiFill, onProductCh
   const [saving, setSaving] = useState(false);
   const [savedFlash, setSavedFlash] = useState(false);
   const [benefitInput, setBenefitInput] = useState('');
+  const bibleMarkets = useBibleMarkets(product.id || null);
+  const [detailTab, setDetailTab] = useState('profile');
+  const showBible = bibleMarkets.length > 0 && detailTab === 'bible';
   const fileInputRef = useRef(null);
   const logoFileInputRef = useRef(null);
   // Use ref to get latest product for image operations (avoids stale closure)
@@ -498,7 +524,7 @@ function ProductDetailView({ product, onBack, onFieldSave, onAiFill, onProductCh
   );
 
   return (
-    <div className="p-6 space-y-5 max-w-4xl mx-auto">
+    <div className={`p-6 space-y-5 mx-auto min-w-0 ${showBible ? 'max-w-[1280px]' : 'max-w-4xl'}`}>
       {/* Header */}
       <div className="flex items-center gap-4">
         <button
@@ -536,6 +562,29 @@ function ProductDetailView({ product, onBack, onFieldSave, onAiFill, onProductCh
         </button>
       </div>
 
+      {/* Profile | Product Bible (the switch exists only when this product has an imported bible) */}
+      {bibleMarkets.length > 0 && (
+        <div role="tablist" aria-label="Product views" className="flex items-center gap-1 border-b border-white/[0.05]">
+          {[['profile', 'Profile'], ['bible', 'Product Bible']].map(([key, label]) => (
+            <button
+              key={key}
+              type="button"
+              role="tab"
+              aria-selected={detailTab === key}
+              onClick={() => setDetailTab(key)}
+              className={`px-3 py-2 -mb-px font-mono text-[11px] font-semibold uppercase tracking-[0.15em] border-b-2 transition-colors cursor-pointer ${
+                detailTab === key ? 'border-[#c9a84c] text-[#e8d5a3]' : 'border-transparent text-zinc-500 hover:text-zinc-300'
+              }`}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {showBible ? (
+        <ProductBibleViewer productId={product.id} markets={bibleMarkets} />
+      ) : (<>
       {/* AI Auto-fill Card */}
       <div className="glass-card border border-white/[0.05] rounded-xl p-5">
         <div className="flex items-start gap-3 mb-4">
@@ -999,6 +1048,7 @@ function ProductDetailView({ product, onBack, onFieldSave, onAiFill, onProductCh
           </p>
         </CollapsibleSection>
       </div>
+      </>)}
     </div>
   );
 }

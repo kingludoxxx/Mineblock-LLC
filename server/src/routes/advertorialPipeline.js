@@ -14,6 +14,8 @@ import { generateImage, generateImages } from '../services/geminiImageGen.js';
 import { ARCHETYPES, buildClassificationPrompt, buildConceptPrompt, buildGeminiPrompt, validatePrompt } from '../utils/archetypePrompts.js';
 import { uploadBuffer, uploadFromUrl, isR2Configured } from '../services/r2.js';
 import crypto from 'crypto';
+import { resolvePipelineBible } from '../services/productBible/pipelineBible.js';
+import { BibleError } from '../services/productBible/bibleStore.js';
 
 const router = Router();
 router.use(authenticate, requirePermission('advertorial', 'access'));
@@ -158,6 +160,19 @@ router.post('/copies/generate', authenticate, async (req, res) => {
     if (products.length === 0) return res.status(404).json({ success: false, error: { message: 'Product not found' } });
     const product = products[0];
 
+    // Product Bible: a product with markets writes from its market's bible slice (market inferred from the angle and
+    // the source copy unless the request names it). Products without markets keep today's prompt exactly.
+    let biblePack = null;
+    try {
+      biblePack = await resolvePipelineBible({
+        bible: req.body.bible || null, productRow: product, hintText: [String(angle || ''), String(source_copy || '').slice(0, 4000)],
+        job: 'brief', query: String(angle || ''),
+      });
+    } catch (e) {
+      if (e instanceof BibleError) return res.status(e.status).json({ success: false, error: { message: e.message, code: e.code } });
+      throw e;
+    }
+
     const adaptationTypes = ['direct_adapt', 'pain_pivot', 'creative_swing'];
     const groupId = crypto.randomUUID();
     const systemPrompt = buildCopySystemPrompt();
@@ -166,7 +181,8 @@ router.post('/copies/generate', authenticate, async (req, res) => {
     const results = await Promise.allSettled(
       adaptationTypes.map(async (type) => {
         const userPrompt = buildCopyAdaptPrompt(source_copy, product, angle, type);
-        const finalPrompt = custom_instructions ? `${userPrompt}\n\nADDITIONAL INSTRUCTIONS:\n${custom_instructions}` : userPrompt;
+        const withBible = biblePack ? `${biblePack.text}\n\n=== TASK ===\n${userPrompt}` : userPrompt;
+        const finalPrompt = custom_instructions ? `${withBible}\n\nADDITIONAL INSTRUCTIONS:\n${custom_instructions}` : withBible;
 
         const response = await anthropic.messages.create({
           model: 'claude-sonnet-4-20250514',

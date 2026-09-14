@@ -218,6 +218,31 @@ import { getEngine, DEFAULT_ENGINE, listEngines } from '../services/imageEngines
 import { pagesForLaunch } from '../utils/launchPages.js';
 import { resolveStorePrompts, promptsToSave, bootPromptRepair } from '../utils/storePrompts.js';
 import { formatPrimaryTexts } from '../utils/adCopy.js';
+import { resolvePipelineBible, resolveStaticsBible } from '../services/productBible/pipelineBible.js';
+import { BibleError } from '../services/productBible/bibleStore.js';
+
+// ── Product Bible ─────────────────────────────────────────────────────────────
+// A request may carry `bible: { product, market, avatar, angle }` (null = auto). For a product sold into markets the
+// analysis prompt, the image prompt and the copywriter read that market's bible (product._bible) instead of the
+// legacy profile fields / master brief, and the chosen bible angle replaces the Product Library angle. Products
+// without markets resolve to null and every path below runs exactly as before.
+const requestBible = (body) => (body && body.bible && typeof body.bible === 'object' ? body.bible : null);
+const textHints = (...xs) => xs.filter((x) => typeof x === 'string' && x.trim());
+/** Validate an explicit selection BEFORE a background job starts. Returns true when a 4xx was sent. */
+async function refuseInvalidBible(res, bible, productId) {
+  if (!bible) return false;
+  try {
+    await resolvePipelineBible({ bible, productRow: productId && /^\d+$/.test(String(productId)) ? { id: Number(productId) } : null, job: 'summary' });
+    return false;
+  } catch (err) {
+    if (!(err instanceof BibleError)) throw err;
+    res.status(err.status).json({ success: false, error: { code: err.code, message: err.message } });
+    return true;
+  }
+}
+async function stampBible(sql, params) {
+  try { await pgQuery(sql, params); } catch (err) { console.error(`[staticsGeneration] could not stamp the bible selection: ${err.message}`); }
+}
 
 // Room left in an engine's prompt limit for what is added around the built image prompt (the style directive
 // before it, an adjustment request after it). The engine's submit path still enforces the hard limit.
@@ -2904,6 +2929,7 @@ router.post('/generate', authenticate, async (req, res) => {
   const reqProduct  = req.body.product;
   if (!reqRefImage) return res.status(400).json({ success: false, error: { message: 'reference_image_url is required' } });
   if (!reqProduct)  return res.status(400).json({ success: false, error: { message: 'product is required' } });
+  if (await refuseInvalidBible(res, requestBible(req.body), req.body.product_id || reqProduct?.id)) return;
 
   // Pre-allocate parent + one child task per ratio, respond IMMEDIATELY.
   // Pre-creating per-ratio child taskIds is critical: the frontend polls each
@@ -3098,6 +3124,16 @@ router.post('/generate', authenticate, async (req, res) => {
       };
       const profileForPrompt = mapProductRowToFlatProfile(profileSource);
       const productForPrompt = { ...product, profile: profileForPrompt };
+      const staticsBible = await resolveStaticsBible({
+        bible: requestBible(req.body),
+        productRow: productDbId && /^\d+$/.test(String(productDbId)) ? { id: Number(productDbId) } : null,
+        hintText: textHints(angle_data?.name, angle, req.body.custom_angle, req.body.reference_name),
+      });
+      if (staticsBible) {
+        productForPrompt._bible = staticsBible;
+        product._bible = staticsBible;
+        console.log(`[staticsGeneration] Product Bible: market=${staticsBible.selection.market} (${staticsBible.selection.picked.market}) avatar=${staticsBible.selection.avatar} angle=${staticsBible.selection.angle}`);
+      }
 
       // ── Pre-fetch: prompts + reference image (parallel) ──
       storeTaskResult(earlyTaskId, { status: 'processing', progress: 'Reading reference image...' });
@@ -3459,6 +3495,7 @@ router.post('/generate', authenticate, async (req, res) => {
         model: engine.describe(),
         claudeAnalysis: claudeResult,
         swapPairs: [],
+        ...(product._bible ? { bible: product._bible.selection } : {}),
       });
 
       // ── PHASE 2 AUTO-SAVE ──────────────────────────────────────────────
@@ -3618,6 +3655,9 @@ router.post('/generate', authenticate, async (req, res) => {
                 }));
               }
 
+              if (product._bible && parentCreativeId) {
+                await stampBible('UPDATE spy_creatives SET bible = ($1::text)::jsonb WHERE group_id = $2', [JSON.stringify(product._bible.selection), groupId]);
+              }
               console.log(`[staticsGeneration] auto-save: persisted parent=${parentCreativeId} + ${childrenTasks.length} child(ren) for ${earlyTaskId}`);
             } else {
               console.warn(`[staticsGeneration] auto-save: skipping — parent URL missing or volatile (${parentImageUrl?.slice(0, 80)})`);
@@ -3889,6 +3929,11 @@ router.post('/generate-batch', authenticate, async (req, res) => {
       }
     }
 
+    // Product Bible selections are validated up front too, so a bad one never partial-enqueues.
+    for (const it of items) {
+      if (await refuseInvalidBible(res, requestBible(it) || requestBible(req.body), it.product_id)) return;
+    }
+
     const inserted = [];
     for (const it of items) {
       const refsTotal = it.references.length;
@@ -3916,6 +3961,10 @@ router.post('/generate-batch', authenticate, async (req, res) => {
           refsTotal,
         ],
       );
+      const itemBible = requestBible(it) || requestBible(req.body);
+      if (itemBible && rows[0]?.id) {
+        await pgQuery('UPDATE statics_queue SET bible = ($1::text)::jsonb WHERE id = $2', [JSON.stringify(itemBible), rows[0].id]);
+      }
       inserted.push(rows[0]);
     }
 
@@ -4434,6 +4483,20 @@ router.post('/iterate/:creativeId', authenticate, async (req, res) => {
       }
     }
 
+    // Product Bible: iterate a winner inside ONE market (the request's selection, or the market its avatar / angle /
+    // ad name names). Resolved before responding so an invalid selection is a 4xx, not a batch of failed cards.
+    let iterBible = null;
+    try {
+      iterBible = await resolveStaticsBible({
+        bible: requestBible(req.body), productRow: productRowRef,
+        hintText: textHints(parent.avatar, parent.angle, parent.ad_name),
+      });
+    } catch (err) {
+      if (!(err instanceof BibleError)) throw err;
+      return res.status(err.status).json({ success: false, error: { code: err.code, message: err.message } });
+    }
+    if (iterBible) product._bible = iterBible;
+
     // Determine which image engine generated the parent — iterations on an
     // OpenAI creative must stay on OpenAI (no cross-engine style drift).
     // Resolution order:
@@ -4513,6 +4576,9 @@ router.post('/iterate/:creativeId', authenticate, async (req, res) => {
       createdRows.push(row[0]);
     }
     console.log(`[iterate] batch ${batchId.slice(0,8)}: ${variations} variations spread across shots [${perVariationIndexes.join(',')}] (product has ${productImagesLen} images)`);
+    if (iterBible) {
+      await stampBible('UPDATE spy_creatives SET bible = ($1::text)::jsonb WHERE batch_id = $2', [JSON.stringify(iterBible.selection), batchId]);
+    }
 
     // Mark parent as iterated (UI "last iterated" timestamp)
     await pgQuery(
@@ -4574,7 +4640,9 @@ router.post('/iterate/:creativeId', authenticate, async (req, res) => {
         const strategyKey = strategyForVariationIndex(idx);
         const strategy = ITERATION_STRATEGIES[strategyKey];
         const variationLabel = `${strategy.label} variation`;
-        const variationAngle = `${parent.angle || 'Winner iteration'} — ${strategy.label}`;
+        const variationAngle = iterBible
+          ? `${iterBible.angleDef.name} — ${strategy.label}`
+          : `${parent.angle || 'Winner iteration'} — ${strategy.label}`;
         const iterationDirective = buildIterationDirective(strategyKey);
         const tagPrefix = `[iter ${batchId.slice(0,8)} ${idx+1}/${variations} ${strategy.label}]`;
 
@@ -4592,7 +4660,10 @@ router.post('/iterate/:creativeId', authenticate, async (req, res) => {
           const { base64: refBase64, mediaType: refMediaType } = await resolveImage(refImgUrl);
           const basePromptText = buildClaudeAnalysisPrompt(
             product, variationAngle, customPrompts.claude_analysis,
-            { PRODUCT_IMAGE_NOTE: productHttpUrl ? '\n\nA second image is attached: this is OUR product. Render it precisely as shown.' : '' }
+            {
+              PRODUCT_IMAGE_NOTE: productHttpUrl ? '\n\nA second image is attached: this is OUR product. Render it precisely as shown.' : '',
+              ...(iterBible ? { ANGLE: variationAngle } : {}),
+            }
           );
           const promptText = iterationDirective + basePromptText;
 
@@ -5487,6 +5558,8 @@ router.post('/creatives', authenticate, async (req, res) => {
       parent_creative_id,
       image_engine, // 'nanobanana' | 'openai' (default 'nanobanana' via DB)
     } = req.body;
+    // Product Bible selection the generation used (echoed by /generate's task result). Stamped after the insert.
+    const savedBible = requestBible(req.body);
     // Deliberate product-image selection persisted on the row so regenerate +
     // iterate can honor the same shot. Default 0 = image #1 = back-compat.
     const productImageIndex = Number.isInteger(req.body.product_image_index)
@@ -5597,6 +5670,18 @@ router.post('/creatives', authenticate, async (req, res) => {
       }
     }
 
+    if (savedBible && typeof savedBible.market === 'string' && rows[0]?.id && !rows[0].bible) {
+      const record = {
+        product_id: Number(savedBible.product_id ?? product_id) || null,
+        market: savedBible.market,
+        avatar: typeof savedBible.avatar === 'string' ? savedBible.avatar : null,
+        angle: typeof savedBible.angle === 'string' ? savedBible.angle : null,
+        ...(savedBible.picked && typeof savedBible.picked === 'object' ? { picked: savedBible.picked } : {}),
+      };
+      await stampBible('UPDATE spy_creatives SET bible = ($1::text)::jsonb WHERE id = $2 AND bible IS NULL', [JSON.stringify(record), rows[0].id]);
+      rows[0].bible = record;
+    }
+
     res.json({ success: true, data: rows[0] });
   } catch (err) {
     console.error('[staticsGeneration] POST /creatives error:', err);
@@ -5665,6 +5750,14 @@ router.post('/creatives/:id/ai-adjust', authenticate, async (req, res) => {
           profile: {},
           product_image_url: null,
         };
+        if (creative.product_id) {
+          // Product Bible: keep the refine inside the market the card was made for.
+          const adjustBible = await resolveStaticsBible({
+            bible: requestBible(req.body), loadPersisted: async () => creative.bible || null,
+            productRow: { id: creative.product_id }, hintText: textHints(creative.angle),
+          });
+          if (adjustBible) product._bible = adjustBible;
+        }
 
         const adjustPromptText = buildAdjustmentPrompt(
           claudeResult,
@@ -7812,6 +7905,14 @@ async function _doRegenerateBrokenPreviews(req, res) {
             profile: mapProductRowToFlatProfile(p),
           };
           if (!product.product_image_url) throw new Error('no product_image_url');
+          {
+            // Product Bible: regenerate inside the market this card was made for (its stamped selection).
+            const rgnBible = await resolveStaticsBible({
+              loadPersisted: async () => (await pgQuery('SELECT bible FROM spy_creatives WHERE id = $1', [row.id]))[0]?.bible || null,
+              productRow: p, hintText: textHints(row.angle),
+            });
+            if (rgnBible) product._bible = rgnBible;
+          }
 
           // 2. Resolve product to HTTP URL (R2-uploaded data URI or tmp-img fallback)
           const productHttpUrl = await ensureHttpUrlGlobal(product.product_image_url, 'rgn-product');
@@ -11165,12 +11266,20 @@ router.post('/composer/copy-preview', authenticate, async (req, res) => {
   const prows = await pgQuery('SELECT * FROM product_profiles WHERE id = $1', [parseInt(b.product_id, 10)]);
   if (!prows.length) return res.status(404).json({ success: false, error: { message: `Product ${b.product_id} not found` } });
   const prod = prows[0];
-  const angleDef = resolveAngleDef(prod, b.angle);
+  let previewBible;
+  try {
+    previewBible = await resolveStaticsBible({ bible: requestBible(b), productRow: prod, hintText: textHints(b.angle, b.brief) });
+  } catch (err) {
+    if (!(err instanceof BibleError)) throw err;
+    return res.status(err.status).json({ success: false, error: { code: err.code, message: err.message } });
+  }
+  const angleDef = previewBible ? previewBible.angleDef : resolveAngleDef(prod, b.angle);
   const fmt = resolveFormat(b.format) || getFormat('statement');
   const { hook, proof } = variantHookAndProof(angleDef, Number(b.variant_index) || 0);
   const out = await generateCopySets({
     product: prod, angle: angleDef, format: fmt.id, hook, proof,
     count: Math.min(Math.max(parseInt(b.count, 10) || 3, 1), 6),
+    ...(previewBible ? { bible: previewBible.copy } : {}),
   });
   res.json({
     success: true,
@@ -11179,6 +11288,7 @@ router.post('/composer/copy-preview', authenticate, async (req, res) => {
       candidates: out.candidates.map(c => ({ ...c.set, words: c.totalWords, score: c.score })),
       rejected: out.rejected,
       error: out.error,
+      ...(previewBible ? { bible: previewBible.selection } : {}),
     },
   });
 });
@@ -11221,11 +11331,11 @@ function approvedCopyOf(row) {
   return parse(row?.adapted_text) || parse(row?.generated_copy) || null;
 }
 
-async function auditCreativeAndPersist(creativeId, { imageUrl, productRow, angleName, requestedFormat, prefixNote = null, approvedCopy = null, creativeRow = null } = {}) {
+async function auditCreativeAndPersist(creativeId, { imageUrl, productRow, angleName, requestedFormat, prefixNote = null, approvedCopy = null, creativeRow = null, angleDef = null } = {}) {
   try {
     // Same richest-match rule as renderAngleVariantBlock — an empty stub sharing
-    // a name would otherwise audit against an empty banned list.
-    const angle = resolveAngleDef(productRow, angleName);
+    // a name would otherwise audit against an empty banned list. A Product Bible card audits against its bible angle.
+    const angle = angleDef || resolveAngleDef(productRow, angleName);
     // Score against the FORMAT's cap. A flat 20 flagged every checklist and
     // diagram in the 20-card audit while type-led cards passed untouched.
     const fmt = resolveFormat(requestedFormat);
@@ -11315,6 +11425,7 @@ router.post('/composer/describe', authenticate, async (req, res) => {
   if (!b.product_id) {
     return res.status(400).json({ success: false, error: { message: 'product_id is required' } });
   }
+  if (await refuseInvalidBible(res, requestBible(b), b.product_id)) return;
   const ratio = COMPOSER_RATIOS.some(r => r.ratio === b.ratio) ? b.ratio : '4:5';
   const engineName = String(b.image_engine || DEFAULT_ENGINE).toLowerCase();
   const engine = getEngine(engineName);
@@ -11329,6 +11440,8 @@ router.post('/composer/describe', authenticate, async (req, res) => {
       const prows = await pgQuery('SELECT * FROM product_profiles WHERE id = $1', [parseInt(b.product_id, 10)]);
       if (prows.length === 0) throw new Error(`Product ${b.product_id} not found`);
       const prod = prows[0];
+      // Product Bible: describe inside one market (the request's selection, or the market the brief / angle names).
+      const describeBible = await resolveStaticsBible({ bible: requestBible(b), productRow: prod, hintText: textHints(b.angle, brief) });
 
       // Shot selection. This line used to read `... : 0`, so every card the
       // Composer ever produced used product image [0] — a whole 60-card batch
@@ -11367,7 +11480,11 @@ router.post('/composer/describe', authenticate, async (req, res) => {
       // because the guardrail that used to say "NO body-copy blocks" had been
       // replaced by the authored-copy rules. Remove the material, not just the
       // permission — the copy stage has already used these facts.
-      const buildContext = (full) => (full
+      const buildContext = (full) => (describeBible
+        ? (full
+          ? `PRODUCT: ${prod.name || ''}\nPRICE: ${describeBible.market.price || prod.price || ''}\n\n${describeBible.image.text}`
+          : `PRODUCT: ${prod.name || ''}`.trim())
+        : (full
         ? [
             `PRODUCT: ${prod.name || ''}`.trim(),
             prod.price ? `PRICE: ${prod.price}` : '',
@@ -11376,7 +11493,7 @@ router.post('/composer/describe', authenticate, async (req, res) => {
             prod.guarantee ? `GUARANTEE: ${prod.guarantee}` : '',
           ]
         : [`PRODUCT: ${prod.name || ''}`.trim()]
-      ).filter(Boolean).join('\n');
+      ).filter(Boolean).join('\n'));
 
       // Angle variety. When the caller names an angle, the angle's OWN copy
       // material picks this card's single line of attack — a different one per
@@ -11384,8 +11501,8 @@ router.post('/composer/describe', authenticate, async (req, res) => {
       // instruction N times, and the copy converges (15 Comparison cards all
       // landing on "only one holds up"). Collapses to '' for unknown angles.
       const angleVariant = renderAngleVariantBlock(
-        prod.angles,
-        b.angle,
+        describeBible ? [describeBible.angleDef] : prod.angles,
+        describeBible ? describeBible.angleDef.name : b.angle,
         Number.isFinite(Number(b.variant_index)) ? Number(b.variant_index) : 0,
       );
 
@@ -11403,11 +11520,12 @@ router.post('/composer/describe', authenticate, async (req, res) => {
       let authoredCopy = null;
       let copyNote = null;
       if (b.copy_mode !== 'off') {
-        const angleDef = resolveAngleDef(prod, b.angle);
+        const angleDef = describeBible ? describeBible.angleDef : resolveAngleDef(prod, b.angle);
         const { hook, proof } = variantHookAndProof(angleDef, Number(b.variant_index) || 0);
         storeTaskResult(taskId, { status: 'processing', progress: 'Writing copy...' });
         const copy = await generateCopySets({
           product: prod, angle: angleDef, format: fmt ? fmt.id : null, hook, proof, count: 3,
+          ...(describeBible ? { bible: describeBible.copy } : {}),
         });
         if (copy.candidates.length) {
           authoredCopy = copy.candidates[0].set;
@@ -11513,12 +11631,16 @@ RULES:
         productImageIndex,
       ]);
 
+      if (describeBible && inserted[0]?.id) {
+        await stampBible('UPDATE spy_creatives SET bible = ($1::text)::jsonb WHERE id = $2', [JSON.stringify(describeBible.selection), inserted[0].id]);
+      }
       storeTaskResult(taskId, {
         status: 'completed',
         successFlag: true,
         resultImageUrl: stableUrl,
         creative: inserted[0] || null,
         image_engine: engine.name,
+        ...(describeBible ? { bible: describeBible.selection } : {}),
       });
       console.log(`[composer] describe → COMPOSER card ${inserted[0]?.id || '(existing)'} via ${engine.name} ${ratio}`);
 
@@ -11531,6 +11653,7 @@ RULES:
           imageUrl: stableUrl,
           productRow: prod,
           angleName: b.angle,
+          angleDef: describeBible ? describeBible.angleDef : null,
           requestedFormat: fmt ? fmt.id : ((brief.match(/VISUAL FORMAT FOR THIS ONE:\s*(.+)/) || [])[1] || ''),
           prefixNote: copyNote,
           approvedCopy: authoredCopy,

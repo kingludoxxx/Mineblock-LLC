@@ -17,7 +17,7 @@ import { requirePermission } from '../middleware/rbac.js';
 import { SERVICE_TOKEN_HEADER, tokensMatch } from '../middleware/brainAuth.js';
 import { client as sql } from '../db/pg.js';
 import {
-  BibleError, importMarketBible, listMarkets, listProductsWithMarkets, getBibleDocument, listEntities, getQuotes,
+  BibleError, resolveProductRef, importMarketBible, listMarkets, listProductsWithMarkets, getBibleDocument, listEntities, getQuotes,
 } from '../services/productBible/bibleStore.js';
 import { buildBibleContextPack, JOB_BUDGETS } from '../services/productBible/contextPack.js';
 
@@ -54,15 +54,7 @@ function sessionOnly(req, res, next) {
 router.use(serviceOrSession);
 
 export async function resolveProductId(ref, db = sql) {
-  const raw = String(ref ?? '').trim();
-  if (!raw) throw new BibleError(400, 'bad_product', 'product is required');
-  if (/^\d+$/.test(raw)) return Number(raw);
-  const rows = await db`
-    SELECT id FROM product_profiles
-     WHERE lower(product_code) = lower(${raw}) OR lower(short_name) = lower(${raw}) OR lower(name) = lower(${raw})
-     ORDER BY (lower(product_code) = lower(${raw})) DESC, id LIMIT 2`;
-  if (!rows.length) throw new BibleError(404, 'product_not_found', `no product matches "${raw}"`);
-  return rows[0].id;
+  return resolveProductRef(ref, db);
 }
 
 const handle = (fn) => async (req, res) => {

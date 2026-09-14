@@ -7,6 +7,7 @@ import {
 } from 'lucide-react';
 import ProductSelector from '../../../components/ProductSelector';
 import { AresAgent } from './AresAgent';
+import { anglesForAvatar, groupAnglesByTier } from '../../../components/productBible/bibleSelection';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -41,9 +42,13 @@ export function ConfigSidebar({
   generatingAll,
   generationStep,
   onProductsLoaded,
+  productExtra = null,   // rendered under the product selector (the Product Bible picker)
+  bibleActive = false,   // productAngles are Product Bible angle options (tier + bible_key)
+  bibleAvatar = null,    // the bible avatar chosen in the picker, to narrow the angles
 }) {
   const fileInputRef = useRef(null);
   const [dragging, setDragging] = useState(false);
+  const [showAllBibleAngles, setShowAllBibleAngles] = useState(false);
 
   // A reference is "picked" if EITHER the references array is populated
   // (multi-ref / template flow) OR a single referenceImageUrl is set
@@ -119,6 +124,7 @@ export function ConfigSidebar({
             onSelect={(product) => onProductChange(product)}
             onLoad={onProductsLoaded}
           />
+          {productExtra}
         </div>
 
         {/* ---- Ad Angle ---- */}
@@ -130,7 +136,68 @@ export function ConfigSidebar({
           {/* Product angles from library — only renders when the product has angles configured.
               Funnel-stage labels (MIDDLE/BOTTOM) and the selected-angle note box were
               removed per operator request — clean chip-only list. */}
-          {productAngles && productAngles.length > 0 && (
+          {bibleActive && (() => {
+            const { angles: offered, filtered } = anglesForAvatar(productAngles, bibleAvatar, showAllBibleAngles);
+            const chip = (on) => `px-2.5 py-1 text-xs rounded-md border transition-all duration-300 cursor-pointer text-left ${
+              on
+                ? 'bg-[#c9a84c]/10 border-[#c9a84c]/30 text-[#e8d5a3] shadow-[0_0_8px_rgba(201,168,76,0.1)]'
+                : 'bg-white/[0.02] border-white/[0.05] text-zinc-400 hover:border-white/[0.1] hover:text-zinc-200 hover:bg-white/[0.04]'
+            }`;
+            const autoOn = !customAngle && !angleData?.bible_key;
+            return (
+              <div className="space-y-2.5">
+                <div className="flex items-center justify-between gap-2">
+                  <button
+                    type="button"
+                    aria-pressed={autoOn}
+                    onClick={() => { onAngleChange(null); if (onAngleDataChange) onAngleDataChange(null); if (customAngle) onCustomAngleChange(''); }}
+                    className={chip(autoOn)}
+                  >
+                    Auto (best from the bible)
+                  </button>
+                  {bibleAvatar && (filtered || showAllBibleAngles) && (
+                    <label className="flex items-center gap-1 text-[10px] text-zinc-500 cursor-pointer shrink-0">
+                      <input type="checkbox" checked={showAllBibleAngles} onChange={(e) => setShowAllBibleAngles(e.target.checked)} className="accent-[#c9a84c]" />
+                      All angles
+                    </label>
+                  )}
+                </div>
+                {bibleAvatar && filtered && (
+                  <p className="text-[10px] text-zinc-500">Angles linked to the chosen avatar</p>
+                )}
+                {groupAnglesByTier(offered).map((g) => (
+                  <div key={g.tier} role="group" aria-label={g.tier === 'Other' ? 'Other angles' : `Tier ${g.tier} angles`}>
+                    <div className="font-mono text-[10px] font-semibold text-zinc-500 uppercase tracking-[0.15em] mb-1.5">
+                      {g.tier === 'Other' ? 'Other' : `Tier ${g.tier}`}
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                      {g.angles.map((a) => {
+                        const on = !customAngle && angleData?.bible_key === a.bible_key;
+                        return (
+                          <button
+                            key={a.id}
+                            type="button"
+                            aria-pressed={on}
+                            title={a.hook_strategy || ''}
+                            onClick={() => {
+                              onAngleChange(on ? null : a.name);
+                              if (onAngleDataChange) onAngleDataChange(on ? null : a);
+                              if (!on && customAngle) onCustomAngleChange('');
+                            }}
+                            className={chip(on)}
+                          >
+                            {a.name}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            );
+          })()}
+
+          {!bibleActive && productAngles && productAngles.length > 0 && (
             <div className="flex flex-wrap gap-2">
               {productAngles.map((a) => (
                 <button

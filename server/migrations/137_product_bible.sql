@@ -86,3 +86,12 @@ CREATE TABLE IF NOT EXISTS product_bible_quotes (
   UNIQUE (market_id, quote_id)
 );
 CREATE INDEX IF NOT EXISTS product_bible_quotes_market_avatar ON product_bible_quotes (market_id, avatar);
+
+-- The bible selection a pipeline used, stamped on the record it produced:
+--   { product_id, market, avatar, angle, picked: { market, avatar, angle } }  (picked: operator | inferred | auto)
+-- NULL for every record made for a product without markets (today's behaviour). None of these tables had a
+-- general JSON metadata column to carry it.
+ALTER TABLE brief_pipeline_generated ADD COLUMN IF NOT EXISTS bible JSONB;
+ALTER TABLE brief_generation_jobs    ADD COLUMN IF NOT EXISTS bible JSONB;
+ALTER TABLE spy_creatives            ADD COLUMN IF NOT EXISTS bible JSONB;
+ALTER TABLE statics_queue            ADD COLUMN IF NOT EXISTS bible JSONB;

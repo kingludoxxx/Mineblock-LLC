@@ -30,6 +30,12 @@ import { getAdDetail } from '../db/brandSpyDb.js';
 import { extractVideoUrlFromAdLibrary, warmupBrowser as warmupFbExtractor } from '../services/fbAdLibraryExtractor.js';
 import { pagesForLaunch } from '../utils/launchPages.js';
 import { formatPrimaryTexts } from '../utils/adCopy.js';
+import { buildBriefProductContext } from '../utils/briefProductContext.js';
+import {
+  resolvePipelineBible, resolveRecordBible, reselectBible, bibleCatalog, catalogKey, bibleAngleDef,
+  catalogAvatarsList, bibleCloneAngleParts,
+} from '../services/productBible/pipelineBible.js';
+import { BibleError } from '../services/productBible/bibleStore.js';
 
 // Warm up the Chromium browser pool at boot so the first import doesn't
 // pay the ~5s cold-start cost. Fires once, never throws — the extractor
@@ -401,7 +407,16 @@ router.post('/generated/restore-signature-hooks', dedupeAuthOrAuthenticate, asyn
       let productContextStr = '';
       try {
         const profile = await fetchProductProfile(b.product_code || 'MR');
-        if (profile) productContextStr = buildProductContextForBrief(profile);
+        if (profile) {
+          const biblePack = await resolveRecordBible({
+            loadPersisted: async () => {
+              const r = await pgQuery(`SELECT bible FROM brief_pipeline_generated WHERE id = $1`, [b.id]);
+              return parseJsonb(r[0]?.bible) || null;
+            },
+            productRow: profile, job: 'brief', hintText: [b.naming_convention].filter(Boolean),
+          });
+          productContextStr = buildBriefProductContext(profile, biblePack);
+        }
       } catch { /* best-effort — proceed without product context */ }
 
       const oldH1 = currentHooks[0]?.text || '';
@@ -2714,65 +2729,6 @@ async function fetchProductProfile(productCode) {
   }
 }
 
-function buildProductContextForBrief(p) {
-  if (!p) return 'No product profile available.';
-  const lines = [
-    // ── Core Identity ──
-    p.name             && `Product: ${p.name}`,
-    p.product_code     && `Product Code: ${p.product_code}`,
-    p.short_name       && `Short Name: ${p.short_name}`,
-    p.description      && `Description: ${p.description}`,
-    p.oneliner         && `One-Liner: ${p.oneliner}`,
-    p.tagline          && `Tagline: ${p.tagline}`,
-    p.product_type     && `Product Type: ${p.product_type}`,
-    p.product_group    && `Product Group: ${p.product_group}`,
-    p.category         && `Category: ${p.category}`,
-    // ── Pricing & Offer ──
-    p.price            && `Price: ${p.price}`,
-    p.product_url      && `Product URL: ${p.product_url}`,
-    p.unit_details     && `Unit Details: ${p.unit_details}`,
-    p.offer_details    && `Offer Details: ${p.offer_details}`,
-    p.max_discount     && `Max Discount: ${p.max_discount}`,
-    p.discount_codes   && `Discount Codes: ${p.discount_codes}`,
-    p.bundle_variants  && `Bundle Variants: ${p.bundle_variants}`,
-    p.offers?.length   && `Active Offers: ${Array.isArray(p.offers) ? p.offers.map(o => o.name || o.title || o.text || JSON.stringify(o)).join('; ') : p.offers}`,
-    p.guarantee        && `Guarantee: ${p.guarantee}`,
-    // ── Persuasion Engine ──
-    p.big_promise      && `Big Promise: ${p.big_promise}`,
-    p.mechanism        && `Unique Mechanism: ${p.mechanism}`,
-    p.differentiator   && `Differentiator: ${p.differentiator}`,
-    p.competitive_edge && `Competitive Edge: ${p.competitive_edge}`,
-    p.benefits?.length && `Key Benefits: ${Array.isArray(p.benefits) ? p.benefits.map(b => b.text || b.name || b).join(', ') : p.benefits}`,
-    // ── Audience ──
-    p.customer_avatar  && `Target Customer: ${p.customer_avatar}`,
-    p.customer_frustration && `Customer Frustration: ${p.customer_frustration}`,
-    p.customer_dream   && `Customer Dream Outcome: ${p.customer_dream}`,
-    p.target_demographics && `Target Demographics: ${p.target_demographics}`,
-    p.pain_points      && `Pain Points: ${p.pain_points}`,
-    p.common_objections && `Common Objections: ${p.common_objections}`,
-    // ── Brand & Voice ──
-    p.voice            && `Brand Voice/Tone: ${p.voice}`,
-    // ── Angles & Strategy ──
-    p.winning_angles   && `Winning Angles: ${p.winning_angles}`,
-    p.custom_angles_text && `Custom Angles: ${p.custom_angles_text}`,
-    p.angles?.length   && `Proven Angles: ${Array.isArray(p.angles) ? p.angles.map(a => a.name || a).join(', ') : p.angles}`,
-    // ── Proven Scripts (for style reference) ──
-    p.scripts?.length  && `Proven Scripts: ${Array.isArray(p.scripts) ? p.scripts.slice(0, 3).map((s, i) => `[${i + 1}] ${(typeof s === 'string' ? s : (s.text || s.body || JSON.stringify(s))).slice(0, 200)}`).join('\n') : p.scripts}`,
-    // ── Compliance ──
-    p.compliance_restrictions && `COMPLIANCE — Never claim: ${p.compliance_restrictions}`,
-    p.notes            && `Notes: ${p.notes}`,
-  ].filter(Boolean);
-  const base = lines.join('\n');
-
-  // Full master brief — the operator's complete product document (angles with
-  // full strategy, mechanism, avatar deep-dive, offer structure). The distilled
-  // fields above are a summary; generation quality depends on the model seeing
-  // 100% of this. Appended last so the structured fields stay scannable.
-  if (p.master_brief && String(p.master_brief).trim()) {
-    return `${base}\n\n===== MASTER PRODUCT BRIEF — FULL DOCUMENT (primary source of truth) =====\n\n${String(p.master_brief).trim()}`;
-  }
-  return base;
-}
 
 // ── Claude Prompts ────────────────────────────────────────────────────
 
@@ -3015,14 +2971,16 @@ const DEFAULT_AVATARS = [
 //
 // Returns { avatar, angle } — either may be null if we couldn't resolve
 // to a valid catalog entry. Callers fall back to 'NA' in that case.
-async function detectAvatarAndAngle({ transcript, headline, productProfile }) {
+async function detectAvatarAndAngle({ transcript, headline, productProfile, catalog = null }) {
   const resolveArr = (raw, fallback) => {
     let a = raw;
     if (typeof a === 'string') { try { a = JSON.parse(a); } catch { a = null; } }
     return Array.isArray(a) && a.length > 0 ? a : fallback;
   };
-  const avatars = resolveArr(productProfile?.avatars, DEFAULT_AVATARS);
-  const angles  = resolveArr(productProfile?.angles, []);
+  // Product Bible: a product sold into markets classifies against THIS market's bible avatars + angles
+  // (bibleCatalog), never the generic DEFAULT_AVATARS or the product-level angle list.
+  const avatars = catalog ? (catalog.avatars || []) : resolveArr(productProfile?.avatars, DEFAULT_AVATARS);
+  const angles  = catalog ? (catalog.angles || []) : resolveArr(productProfile?.angles, []);
   if (!avatars.length && !angles.length) return { avatar: null, angle: null };
 
   const clean = String(transcript || '').slice(0, 4000);
@@ -3067,7 +3025,7 @@ async function detectAvatarAndAngle({ transcript, headline, productProfile }) {
   return { avatar, angle };
 }
 
-async function buildIterationPrompt(parsedScript, productContext, performanceContext, numVariations, productProfile = null, vectorsSelected = null, angleLocked = null, rawTranscript = null) {
+async function buildIterationPrompt(parsedScript, productContext, performanceContext, numVariations, productProfile = null, vectorsSelected = null, angleLocked = null, rawTranscript = null, bibleCatalogForPrompt = null) {
   // Load saved prompt or fall back to baked v1 defaults.
   let systemPrompt = DEFAULT_ITERATION_PROMPT_SYSTEM;
   let userTemplate = DEFAULT_ITERATION_PROMPT_USER;
@@ -3097,7 +3055,9 @@ async function buildIterationPrompt(parsedScript, productContext, performanceCon
   const formats = resolveArr(productProfile?.formats, DEFAULT_FORMATS);
   const avatars = resolveArr(productProfile?.avatars, DEFAULT_AVATARS);
   const formatsList = formats.map(f => `- ${f.name}${f.description ? ` — ${f.description}` : ''}`).join('\n');
-  const avatarsList = avatars.map(a => `- ${a.name}${a.description ? ` — ${a.description}` : ''}`).join('\n');
+  const avatarsList = bibleCatalogForPrompt
+    ? catalogAvatarsList(bibleCatalogForPrompt)
+    : avatars.map(a => `- ${a.name}${a.description ? ` — ${a.description}` : ''}`).join('\n');
 
   // Build the SELECTED ITERATION VECTORS block. If nothing was passed, default
   // to "Hooks Only" (the safest most common iteration) so the prompt always
@@ -3370,7 +3330,7 @@ function stripDashesFromBrief(generated) {
   return generated;
 }
 
-async function buildScriptClonePrompt(parsedScript, deepAnalysis, productContext, productProfile = null, angle = null, rawTranscript = null) {
+async function buildScriptClonePrompt(parsedScript, deepAnalysis, productContext, productProfile = null, angle = null, rawTranscript = null, bibleAngleParts = null) {
   const originalHooks = (parsedScript.hooks || [])
     .map(h => `${h.id}: ${h.text}`)
     .join('\n');
@@ -3442,13 +3402,18 @@ async function buildScriptClonePrompt(parsedScript, deepAnalysis, productContext
     if (typeof a === 'string') { try { a = JSON.parse(a); } catch { a = []; } }
     if (Array.isArray(a)) anglesArr = a;
   }
-  const anglesList = anglesArr.length > 0
+  let anglesList = anglesArr.length > 0
     ? anglesArr.map(a => `- ${a.name} [${(a.funnel_stage || 'middle').toUpperCase()}]${a.tone ? ` — ${(a.tone || '').split('.')[0]}` : ''}`).join('\n')
     : '(no angles defined in the Product Library — fall back to neutral tone)';
 
-  const angleName = angle && angle !== 'NA' ? angle : 'AUTO';
+  let angleName = angle && angle !== 'NA' ? angle : 'AUTO';
   let angleDetails = '(none — angle is AUTO; pick from the list above)';
-  if (angleName !== 'AUTO') {
+  if (bibleAngleParts) {
+    // Product Bible: the market's angles and the chosen bible angle replace the Product Library angle block.
+    anglesList = bibleAngleParts.anglesList;
+    angleName = bibleAngleParts.angleName;
+    angleDetails = bibleAngleParts.angleDetails;
+  } else if (angleName !== 'AUTO') {
     const match = anglesArr.find(a => (a.name || '').toLowerCase() === angleName.toLowerCase());
     if (match) {
       const lines = [];
@@ -3954,6 +3919,19 @@ router.post('/generate-from-script', authenticate, async (req, res) => {
   try {
     await ensureTables();
     const { script, url, productId, productCode, angle, mode, numVariations = 3, referenceId, vectorsSelected, acknowledgeBrandMismatch, acknowledgeAdCopyOnly, model = 'claude' } = req.body;
+    // Product Bible selection { product, market, avatar, angle } (null = auto). An invalid one is refused HERE, before
+    // the background job starts, so the operator sees the 400/404 instead of a silently failed generation.
+    const bible = req.body.bible && typeof req.body.bible === 'object' ? req.body.bible : null;
+    if (bible) {
+      try {
+        await resolvePipelineBible({ bible, productRow: productId && /^\d+$/.test(String(productId)) ? { id: Number(productId) } : null, job: 'summary' });
+      } catch (bibleErr) {
+        if (bibleErr instanceof BibleError) {
+          return res.status(bibleErr.status).json({ success: false, error: { code: bibleErr.code, message: bibleErr.message } });
+        }
+        throw bibleErr;
+      }
+    }
 
     // C2 — refuse iterate/clone when the reference's transcript came from
     // Meta ad-copy metadata (Path 5 last resort) instead of a real video
@@ -4242,7 +4220,7 @@ router.post('/generate-from-script', authenticate, async (req, res) => {
     // fire-and-forget behavior.
     executeGenerationJob({
       rawScript, referenceId, productId, productCode, angle, mode,
-      numVariations, vectorsSelected, model, winner, creativeId,
+      numVariations, vectorsSelected, model, winner, creativeId, bible,
     }).catch(async (bgErr) => {
       console.error('[BriefPipeline] generate-from-script background error:', bgErr.message);
       // Reset winner status so user can retry
@@ -4267,6 +4245,7 @@ router.post('/generate-from-script', authenticate, async (req, res) => {
 async function executeGenerationJob({
   rawScript, referenceId, productId, productCode, angle, mode,
   numVariations = 3, vectorsSelected, model = 'claude', winner, creativeId,
+  bible = null, hintText = null,
 }) {
     // Step 4: Parse script + fetch product in parallel
     const isCloneMode   = mode === 'clone';
@@ -4369,7 +4348,18 @@ async function executeGenerationJob({
     if (!productProfile) {
       console.warn(`[BriefPipeline] WARNING: No product profile found for ${productCode || 'MR'} — generation will proceed with limited context`);
     }
-    const productContext = buildProductContextForBrief(productProfile);
+    // Product Bible: a product sold into markets writes from ONE market's bible (the request's selection, or the
+    // market inferred from the angle / reference headline / script). Null for every other product, and then this
+    // job runs exactly as before.
+    let biblePack = await resolvePipelineBible({
+      bible, productRow: productProfile, job: 'brief',
+      hintText: [angle, hintText, String(rawScript || '').slice(0, 6000)].filter((h) => typeof h === 'string' && h.trim()),
+    });
+    let bibleCatalogForJob = biblePack ? await bibleCatalog(biblePack.productId, biblePack.market.key) : null;
+    if (biblePack) {
+      console.log(`[BriefPipeline] Product Bible: market=${biblePack.market.key} (${biblePack.picked.market}) avatar=${biblePack.avatar.key} (${biblePack.picked.avatar}) angle=${biblePack.angle.key} (${biblePack.picked.angle}) ${biblePack.chars} chars`);
+    }
+    let productContext = buildBriefProductContext(productProfile, biblePack);
     console.log(`[BriefPipeline] Product context: ${productContext === 'No product profile available.' ? 'EMPTY (no profile)' : `${productContext.split('\n').length} fields loaded`}`);
 
     // Auto-detect avatar + angle from the transcript. Only fills in what the
@@ -4379,7 +4369,23 @@ async function executeGenerationJob({
     // the extra latency is invisible next to the ~30s clone generation.
     let detectedAvatar = null;
     let effectiveAngle = angle && String(angle).trim() && String(angle).trim().toUpperCase() !== 'NA' ? angle : null;
-    if (isCloneMode && productProfile) {
+    if (biblePack) {
+      // Detection chooses from the market's bible catalog, and only for what the operator left on auto.
+      if (isCloneMode && (biblePack.picked.avatar === 'auto' || biblePack.picked.angle === 'auto')) {
+        const detection = await detectAvatarAndAngle({
+          transcript: rawScript, headline: winner?.ad_name || null, productProfile, catalog: bibleCatalogForJob,
+        });
+        const avatarKey = biblePack.picked.avatar === 'auto' ? catalogKey(bibleCatalogForJob.avatars, detection.avatar) : null;
+        const angleKey = biblePack.picked.angle === 'auto' ? catalogKey(bibleCatalogForJob.angles, detection.angle) : null;
+        if (avatarKey || angleKey) {
+          biblePack = await reselectBible(biblePack, { avatar: avatarKey, angle: angleKey }, 'detected');
+          productContext = buildBriefProductContext(productProfile, biblePack);
+          console.log(`[BriefPipeline] bible detection: avatar=${avatarKey || '(pack)'} angle=${angleKey || '(pack)'}`);
+        }
+      }
+      detectedAvatar = biblePack.avatar.title;
+      effectiveAngle = biblePack.angle.title;
+    } else if (isCloneMode && productProfile) {
       const needAvatar = true; // we NEVER receive avatar today; always try
       const needAngle  = !effectiveAngle;
       if (needAvatar || needAngle) {
@@ -4421,7 +4427,7 @@ async function executeGenerationJob({
       // Resolve the locked angle from the reference's imported_metadata if
       // available — META references carry the angle the source ad was
       // tagged with at sync time.
-      let resolvedAngleLocked = angle && angle !== 'NA' ? angle : null;
+      let resolvedAngleLocked = biblePack ? biblePack.angle.title : (angle && angle !== 'NA' ? angle : null);
       if (!resolvedAngleLocked && referenceId) {
         try {
           const refRows = await pgQuery(
@@ -4444,6 +4450,7 @@ async function executeGenerationJob({
         vectorsSelected,
         resolvedAngleLocked,
         rawScript,   // pass raw transcript so the prompt can see [ON-SCREEN TEXT] markers
+        bibleCatalogForJob,
       );
 
       // Route to correct model (Claude vs OpenAI) based on request parameter
@@ -4515,8 +4522,14 @@ async function executeGenerationJob({
       // Angle now flows through the prompt template's {{ANGLE_NAME}} +
       // {{ANGLE_DETAILS}} + {{ANGLES_LIST}} placeholders, sourced from
       // productProfile.angles. No more hardcoded post-prompt appendix.
+      const bibleAngleParts = biblePack
+        ? bibleCloneAngleParts(
+          await bibleAngleDef(biblePack.productId, biblePack.market.key, biblePack.angle.key, biblePack.avatar.title),
+          bibleCatalogForJob,
+        )
+        : null;
       const { system: cloneSystem, user: cloneUser } = await buildScriptClonePrompt(
-        parsedScript, {}, productContext, productProfile, angle, rawScript
+        parsedScript, {}, productContext, productProfile, angle, rawScript, bibleAngleParts
       );
       const enhancedCloneUser = cloneUser;
 
@@ -4792,6 +4805,15 @@ async function executeGenerationJob({
           // never invent overlays (see clone rule §7 / iteration rule §9).
           JSON.stringify(Array.isArray(generated.highlighted_text) ? generated.highlighted_text : []),
         ], { timeout: 10000 });
+        if (biblePack && inserted[0]?.id) {
+          // Stamped after the insert so a product without markets runs the exact insert it always did.
+          try {
+            await pgQuery(`UPDATE brief_pipeline_generated SET bible = ($1::text)::jsonb WHERE id = $2`, [JSON.stringify(biblePack.selection), inserted[0].id]);
+            inserted[0].bible = biblePack.selection;
+          } catch (bibleErr) {
+            console.error(`[BriefPipeline] could not stamp the bible selection on brief ${inserted[0].id}:`, bibleErr.message);
+          }
+        }
         generatedBriefs.push({ ...inserted[0], scores, direction });
       } catch (dbErr) {
         console.error(`[BriefPipeline] DB insert error for direction #${direction.id}:`, dbErr.message);
@@ -5493,9 +5515,19 @@ ${srcOverlays || '(none detected)'}
     try {
       const productProfile = await fetchProductProfile(brief.product_code || 'MR');
       if (productProfile) {
-        productContextStr = buildProductContextForBrief(productProfile);
+        // Product Bible: the request's selection, else the one stamped on this brief, else inferred from its name.
+        const biblePack = await resolveRecordBible({
+          bible: req.body?.bible && typeof req.body.bible === 'object' ? req.body.bible : null,
+          loadPersisted: async () => parseJsonb(brief.bible),
+          productRow: productProfile, job: 'brief',
+          hintText: [brief.naming_convention, brief.avatar, brief.angle].filter(Boolean),
+        });
+        productContextStr = buildBriefProductContext(productProfile, biblePack);
       }
     } catch (profileErr) {
+      if (profileErr instanceof BibleError && req.body?.bible) {
+        return res.status(profileErr.status).json({ success: false, error: { code: profileErr.code, message: profileErr.message } });
+      }
       console.warn('[BriefPipeline] Could not fetch product profile for enhance:', profileErr.message);
     }
 
@@ -7242,6 +7274,17 @@ router.post('/queue', authenticate, async (req, res) => {
     if (!Array.isArray(items) || items.length === 0) {
       return res.status(400).json({ success: false, error: { message: 'items array is required (at least one ad)' } });
     }
+    const bible = req.body?.bible && typeof req.body.bible === 'object' ? req.body.bible : null;
+    if (bible) {
+      try {
+        await resolvePipelineBible({ bible, productRow: productId != null && /^\d+$/.test(String(productId)) ? { id: Number(productId) } : null, job: 'summary' });
+      } catch (bibleErr) {
+        if (bibleErr instanceof BibleError) {
+          return res.status(bibleErr.status).json({ success: false, error: { code: bibleErr.code, message: bibleErr.message } });
+        }
+        throw bibleErr;
+      }
+    }
     const modelVal = model === 'openai' ? 'openai' : 'claude';
     // angle: string | null — null/''/'AUTO' all mean AUTO (resolve at generate time)
     const angleVal = (angle && String(angle).trim() && String(angle).trim().toUpperCase() !== 'AUTO')
@@ -7288,6 +7331,9 @@ router.post('/queue', authenticate, async (req, res) => {
           modelVal,
         ]
       );
+      if (bible && inserted[0]?.id) {
+        await pgQuery(`UPDATE brief_generation_jobs SET bible = ($1::text)::jsonb WHERE id = $2`, [JSON.stringify(bible), inserted[0].id]);
+      }
       jobs.push(inserted[0]);
     }
     res.json({ success: true, queued: jobs.length, skipped, jobs });
@@ -8972,8 +9018,21 @@ router.get('/product-context/:id', authenticate, async (req, res) => {
     }
 
     // Reuse the canonical context builder so what we show here is byte-for-byte
-    // what the generators will receive.
-    const context = buildProductContextForBrief(profile);
+    // what the generators will receive. Product Bible: ?market=&avatar=&angle= pick a slice (else inferred from
+    // ?hint=, else the first market); products without markets get the legacy text.
+    let biblePack = null;
+    try {
+      biblePack = await resolvePipelineBible({
+        bible: req.query.market ? { product: profile.id, market: String(req.query.market), avatar: req.query.avatar ? String(req.query.avatar) : null, angle: req.query.angle ? String(req.query.angle) : null } : null,
+        productRow: profile, job: 'brief', hintText: req.query.hint ? String(req.query.hint) : '',
+      });
+    } catch (bibleErr) {
+      if (bibleErr instanceof BibleError) {
+        return res.status(bibleErr.status).json({ success: false, error: { code: bibleErr.code, message: bibleErr.message } });
+      }
+      throw bibleErr;
+    }
+    const context = buildBriefProductContext(profile, biblePack);
     const lineCount = context && context !== 'No product profile available.'
       ? context.split('\n').filter(Boolean).length
       : 0;
@@ -9014,6 +9073,12 @@ router.get('/product-context/:id', authenticate, async (req, res) => {
       product: summary,
       context,
       lineCount,
+      ...(biblePack ? {
+        bible: {
+          selection: biblePack.selection, markets: biblePack.markets, market: biblePack.market,
+          avatar: biblePack.avatar, angle: biblePack.angle, chars: biblePack.chars, truncated: biblePack.truncated,
+        },
+      } : {}),
     });
   } catch (err) {
     console.error('[BriefPipeline] GET /product-context/:id error:', err.message);
@@ -9321,7 +9386,7 @@ async function analyzeWholeVideoWithGemini(mediaUrl, promptText) {
 // defaults to 'MR' (MinerForge Pro) when callers don't pass one, but
 // callers SHOULD pass it so non-MR products don't get analyzed through
 // the MinerForge compliance lens.
-async function buildReferenceAnalyzerPrompt(reference, productCode = 'MR') {
+async function buildReferenceAnalyzerPrompt(reference, productCode = 'MR', bible = null) {
   // Allow operator override via League Prompts (key=scriptAnalysis).
   const saved = await getLeaguePrompts();
   let template = DEFAULT_REFERENCE_ANALYZER_PROMPT;
@@ -9340,7 +9405,13 @@ async function buildReferenceAnalyzerPrompt(reference, productCode = 'MR') {
   // explicitly at generation time, so we pass an empty-ish profile here and
   // let the analyzer comment on alignment generically.
   const profile = await fetchProductProfile(productCode || 'MR');
-  const productContext = buildProductContextForBrief(profile);
+  // Product Bible: judge the reference against the market it would be cloned for (the request's selection, or the
+  // market its headline / transcript names).
+  const biblePack = await resolvePipelineBible({
+    bible, productRow: profile, job: 'brief',
+    hintText: [reference.headline, String(reference.transcript || '').slice(0, 6000)].filter(Boolean),
+  });
+  const productContext = buildBriefProductContext(profile, biblePack);
 
   const vars = {
     PRODUCT_CONTEXT:      productContext,
@@ -9414,7 +9485,15 @@ router.post('/references/:id/analyze', authenticate, async (req, res) => {
     }
 
     const refForPrompt = mapReferenceRow(ref);
-    const promptText = await buildReferenceAnalyzerPrompt(refForPrompt, analyzerProductCode);
+    let promptText;
+    try {
+      promptText = await buildReferenceAnalyzerPrompt(refForPrompt, analyzerProductCode, req.body?.bible && typeof req.body.bible === 'object' ? req.body.bible : null);
+    } catch (bibleErr) {
+      if (bibleErr instanceof BibleError) {
+        return res.status(bibleErr.status).json({ success: false, error: { code: bibleErr.code, message: bibleErr.message } });
+      }
+      throw bibleErr;
+    }
 
     // Primary: Gemini whole-video. Fallback: OpenAI thumbnail+transcript.
     let result = null;
@@ -9685,6 +9764,10 @@ async function processBriefQueueJob(job) {
           model: job.model || 'claude',
           winner,
           creativeId,
+          // Product Bible: the queued selection (column absent/NULL on stores without markets = today's flow),
+          // and the ad headline as the strongest hint for inferring the market.
+          bible: (() => { const b = parseJsonb(job.bible); return b && typeof b === 'object' ? b : null; })(),
+          hintText: job.headline || ad?.headline || null,
         }));
       } catch (genErr) {
         // Same reset the route's fire-and-forget catch performs, so the

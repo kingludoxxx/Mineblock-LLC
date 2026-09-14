@@ -1,6 +1,8 @@
 import express from 'express';
 import { authenticate } from '../middleware/auth.js';
 import { requirePermission } from '../middleware/rbac.js';
+import { resolvePipelineBible } from '../services/productBible/pipelineBible.js';
+import { BibleError } from '../services/productBible/bibleStore.js';
 
 const router = express.Router();
 router.use(authenticate, requirePermission('iteration-king', 'access'));
@@ -250,7 +252,7 @@ router.post('/analyze', authenticate, async (req, res) => {
       return res.status(400).json({ success: false, error: 'Script is required (minimum 10 characters)' });
     }
 
-    const productContext = buildProductContext(productProfile);
+    const { text: productContext } = await resolveProductContext(req, productProfile, req.body?.script || req.body?.body || '');
     const scriptText = script.slice(0, 6000);
 
     // ── CALL 1: Script DNA (combines DNA Extraction + Mechanism ID + Narrative Mapping) ──
@@ -419,6 +421,7 @@ ${scriptText}
 
     res.json({ success: true, analysis });
   } catch (err) {
+    if (bibleErrorResponse(res, err)) return;
     console.error('[IterationKing] Analyze error:', err.message);
     res.status(500).json({ success: false, error: err.message });
   }
@@ -529,6 +532,26 @@ SAFE ITERATION DIRECTIONS:
   return sections.length ? '\n' + sections.join('\n\n') + '\n' : '';
 }
 
+
+// ── Product Bible: when the product has markets, the market's bible slice replaces the legacy profile fields ──
+// Products without markets get today's exact buildProductContext() text.
+async function resolveProductContext(req, productProfile, hint) {
+  const productRow = productProfile && Number.isInteger(Number(productProfile.id)) && Number(productProfile.id) > 0
+    ? { id: Number(productProfile.id) } : null;
+  const resolved = await resolvePipelineBible({
+    bible: req.body?.bible || null, productRow, hintText: [String(hint || '').slice(0, 4000)], job: 'brief',
+  });
+  if (!resolved) return { text: buildProductContext(productProfile), bible: null };
+  return {
+    text: `\nProduct Intelligence (PRODUCT BIBLE, market: ${resolved.market.label}):\n${resolved.text}\n`,
+    bible: { market: resolved.market.key, avatar: resolved.avatar.key, angle: resolved.angle.key, picked: resolved.picked },
+  };
+}
+function bibleErrorResponse(res, err) {
+  if (err instanceof BibleError && !res.headersSent) { res.status(err.status).json({ success: false, error: err.message, code: err.code }); return true; }
+  return false;
+}
+
 // ── Product profile context builder ───────────────────────────────
 function buildProductContext(p) {
   if (!p) return '';
@@ -559,7 +582,7 @@ router.post('/generate-scripts', authenticate, async (req, res) => {
     if (!script) return res.status(400).json({ success: false, error: 'Script is required' });
 
     const analysisContext = buildAnalysisContext(analysis);
-    const productContext = buildProductContext(productProfile);
+    const { text: productContext } = await resolveProductContext(req, productProfile, req.body?.script || req.body?.body || '');
 
     const prompt = `You are a world-class direct response ad copy iteration engine used by a media buying team to create winning ad variations.
 
@@ -602,6 +625,7 @@ Generate exactly 10 variations.`;
 
     await streamJSONArray(res, prompt, 16384, { fast: false });
   } catch (err) {
+    if (bibleErrorResponse(res, err)) return;
     console.error('[IterationKing] Generate scripts error:', err.message);
     if (!res.headersSent) res.status(500).json({ success: false, error: err.message });
   }
@@ -614,7 +638,7 @@ router.post('/generate-full-scripts', authenticate, async (req, res) => {
     if (!script) return res.status(400).json({ success: false, error: 'Script is required' });
 
     const analysisContext = buildAnalysisContext(analysis);
-    const productContext = buildProductContext(productProfile);
+    const { text: productContext } = await resolveProductContext(req, productProfile, req.body?.script || req.body?.body || '');
 
     const prompt = `You are a world-class direct response ad scriptwriter for a media buying team.
 
@@ -657,6 +681,7 @@ Generate exactly 10 complete scripts.`;
 
     await streamJSONArray(res, prompt, 16384, { fast: false });
   } catch (err) {
+    if (bibleErrorResponse(res, err)) return;
     console.error('[IterationKing] Generate full scripts error:', err.message);
     if (!res.headersSent) res.status(500).json({ success: false, error: err.message });
   }
@@ -667,7 +692,7 @@ router.post('/generate-hooks', authenticate, async (req, res) => {
   try {
     const { body, aggressiveness = 5, analysis, productProfile } = req.body;
     if (!body) return res.status(400).json({ success: false, error: 'Body script is required' });
-    const productContext = buildProductContext(productProfile);
+    const { text: productContext } = await resolveProductContext(req, productProfile, req.body?.script || req.body?.body || '');
     const analysisContext = buildAnalysisContext(analysis);
 
     const prompt = `You are a world-class direct response hook writer for a media buying team.
@@ -706,6 +731,7 @@ Generate exactly 10 hooks.`;
 
     await streamJSONArray(res, prompt, 2048, { fast: false });
   } catch (err) {
+    if (bibleErrorResponse(res, err)) return;
     console.error('[IterationKing] Generate hooks error:', err.message);
     if (!res.headersSent) res.status(500).json({ success: false, error: err.message });
   }
@@ -716,7 +742,7 @@ router.post('/generate-brief-hooks', authenticate, async (req, res) => {
   try {
     const { script, aggressiveness = 5, analysis, productProfile } = req.body;
     if (!script) return res.status(400).json({ success: false, error: 'Source script is required' });
-    const productContext = buildProductContext(productProfile);
+    const { text: productContext } = await resolveProductContext(req, productProfile, req.body?.script || req.body?.body || '');
 
     // Extract the body (everything after HOOKS: section ends, or after BODY: marker)
     const bodyMatch = script.match(/\bBODY:\s*/i);
@@ -772,6 +798,7 @@ Generate exactly 5 hooks.`;
 
     await streamJSONArray(res, prompt, 2048, { fast: false });
   } catch (err) {
+    if (bibleErrorResponse(res, err)) return;
     console.error('[IterationKing] Generate brief hooks error:', err.message);
     if (!res.headersSent) res.status(500).json({ success: false, error: err.message });
   }
