@@ -180,14 +180,20 @@ export function BrandFollowConfigModal({ isOpen, onClose, onSynced }) {
         onClick={(e) => e.stopPropagation()}
       >
         {/* Header */}
-        <div className="flex items-start justify-between px-6 py-5 border-b border-white/[0.06]">
-          <div className="space-y-1">
-            <h2 className="text-lg font-mono text-white">Brand Follow Config</h2>
-            <p className="text-xs text-zinc-500 leading-relaxed max-w-lg">
-              Manually import or auto-pull the top static ads from each followed brand. Imported cards are pinned to the top of the FROM LEAGUE column with a ★ badge.
-            </p>
+        <div className="flex items-start justify-between gap-4 px-6 py-5 border-b border-white/[0.06]">
+          <div className="flex items-start gap-3 min-w-0">
+            <Layers className="w-5 h-5 text-[#c9a84c] mt-0.5 shrink-0" />
+            <div className="space-y-1 min-w-0">
+              <h2 className="text-xl font-semibold text-white">Brand Follow Config</h2>
+              <p className="text-sm text-zinc-300 leading-relaxed max-w-lg">
+                Import top static ads from the brands you follow.
+              </p>
+              <p className="text-xs text-zinc-500 leading-relaxed max-w-lg">
+                Imported ads are pinned to FROM LEAGUE with a star badge.
+              </p>
+            </div>
           </div>
-          <button onClick={onClose} className="p-1.5 rounded hover:bg-white/[0.05] text-zinc-400 cursor-pointer">
+          <button onClick={onClose} className="p-1.5 rounded hover:bg-white/[0.05] text-zinc-400 cursor-pointer shrink-0">
             <X className="w-5 h-5" />
           </button>
         </div>
@@ -201,27 +207,32 @@ export function BrandFollowConfigModal({ isOpen, onClose, onSynced }) {
           )}
 
           {/* Control Center — top-of-modal summary + sync-all */}
-          <div className="rounded-lg border border-violet-400/20 bg-violet-500/[0.04] p-4">
-            <div className="flex items-start justify-between gap-4">
+          <div className="rounded-xl border border-white/10 bg-white/[0.02] p-4">
+            <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-4">
               <div className="flex items-start gap-3 min-w-0">
-                <Layers className="w-4 h-4 text-violet-300 mt-0.5 shrink-0" />
+                <Layers className="w-4 h-4 text-[#c9a84c] mt-0.5 shrink-0" />
                 <div className="min-w-0">
-                  <div className="text-[11px] font-mono uppercase tracking-wider text-violet-300 mb-1">
-                    Control Center
+                  <div className="flex items-center gap-2 mb-1 flex-wrap">
+                    <span className="text-[11px] font-mono uppercase tracking-widest text-zinc-400">
+                      Control Center
+                    </span>
                     {!followedFlag && (
-                      <span className="ml-2 text-[9px] normal-case text-amber-300/80" title="No formally-followed brands found; falling back to top-100 active Brand Spy brands.">
-                        · fallback
+                      <span
+                        className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full border border-[#c9a84c]/30 bg-[#c9a84c]/10 text-[#c9a84c] text-[10px] font-mono"
+                        title="No formally-followed brands found; falling back to top-100 active Brand Spy brands."
+                      >
+                        <span className="w-1.5 h-1.5 rounded-full bg-[#c9a84c]" />
+                        Fallback
                       </span>
                     )}
                   </div>
-                  <div className="text-xs font-mono text-zinc-200 leading-relaxed">
-                    <span className="text-white font-bold">{summary.count}</span> brand{summary.count === 1 ? '' : 's'}
-                    {summary.enabled > 0 && (<> · <span className="text-emerald-300 font-bold">{summary.enabled}</span> auto-syncing</>)}
+                  <div className="text-sm text-zinc-300 leading-relaxed">
+                    <span className="text-white font-semibold">{summary.count}</span> brand{summary.count === 1 ? '' : 's'}
                     {' · '}
-                    <span className="text-cyan-300 font-bold">~{summary.totalProjected}</span> ads will sync
+                    <span className="text-[#c9a84c] font-bold">~{summary.totalProjected}</span> ads to import
                   </div>
                   {summary.nextAutoSync && (
-                    <div className="text-[10px] font-mono text-zinc-500 mt-0.5">
+                    <div className="text-xs text-zinc-500 mt-0.5">
                       Next auto-sync {summary.nextAutoSync > Date.now()
                         ? `in ${Math.max(1, Math.round((summary.nextAutoSync - Date.now()) / 3600000))}h`
                         : 'pending'}
@@ -229,21 +240,17 @@ export function BrandFollowConfigModal({ isOpen, onClose, onSynced }) {
                   )}
                 </div>
               </div>
-              <div className="flex items-center gap-2 shrink-0">
+              <div className="flex items-center gap-2 flex-wrap shrink-0">
                 {/* Master Auto-sync toggle — flips every brand's
                     auto_sync_enabled in one call. */}
                 <button
                   type="button"
                   onClick={() => handleMasterAutoSync(!summary.anyAutoSync)}
                   disabled={autoSyncBusy || summary.count === 0}
-                  className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md border text-xs font-mono font-semibold uppercase tracking-wide cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed transition-colors ${
-                    summary.anyAutoSync
-                      ? 'bg-emerald-500/20 border-emerald-400/40 hover:bg-emerald-500/30 text-emerald-200'
-                      : 'bg-white/[0.04] border-white/[0.12] hover:bg-white/[0.08] text-zinc-300'
-                  }`}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-white/10 bg-white/[0.04] hover:bg-white/[0.08] text-zinc-300 text-xs font-medium cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
                   title={summary.anyAutoSync
-                    ? 'Auto-sync is ON for some brands — click to pause all'
-                    : 'Auto-sync is OFF everywhere — click to enable on all brands'}
+                    ? 'Auto-sync is on for some brands, click to pause all'
+                    : 'Auto-sync is off everywhere, click to enable on all brands'}
                 >
                   {autoSyncBusy ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : null}
                   {`Auto-sync ${summary.anyAutoSync ? 'on' : 'off'}`}
@@ -252,7 +259,7 @@ export function BrandFollowConfigModal({ isOpen, onClose, onSynced }) {
                   type="button"
                   onClick={handleSyncAll}
                   disabled={syncingAll || summary.count === 0}
-                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-violet-500/20 border border-violet-400/40 hover:bg-violet-500/30 text-violet-200 text-xs font-mono font-semibold uppercase tracking-wide cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#c9a84c] hover:bg-[#d9ba63] text-black text-xs font-semibold cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
                   title="Import the top N% of each brand's static ads into the FROM LEAGUE column"
                 >
                   {syncingAll ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Zap className="w-3.5 h-3.5" />}
@@ -261,23 +268,28 @@ export function BrandFollowConfigModal({ isOpen, onClose, onSynced }) {
               </div>
             </div>
             {syncAllMsg && (
-              <div className="mt-3 text-[10px] font-mono text-zinc-400 border-t border-white/[0.05] pt-2">
+              <div className="mt-3 text-xs text-zinc-400 border-t border-white/[0.08] pt-2">
                 {syncAllMsg}
               </div>
             )}
             {autoSyncMsg && (
-              <div className="mt-2 text-[10px] font-mono text-zinc-400">
+              <div className="mt-2 text-xs text-zinc-400">
                 {autoSyncMsg}
               </div>
             )}
           </div>
 
           <div>
-            <h3 className="text-sm font-mono font-semibold text-white mb-3">Followed Brands</h3>
+            <div className="flex items-center gap-2 mb-3">
+              <h3 className="text-xs font-mono uppercase tracking-widest text-zinc-400">Followed Brands</h3>
+              <span className="inline-flex items-center px-1.5 py-0.5 rounded-full border border-[#c9a84c]/30 text-[#c9a84c] text-[10px] font-mono">
+                {brands.length}
+              </span>
+            </div>
 
             {loading && (
               <div className="flex items-center justify-center py-8">
-                <Loader2 className="w-5 h-5 animate-spin text-violet-400" />
+                <Loader2 className="w-5 h-5 animate-spin text-[#c9a84c]" />
               </div>
             )}
 
@@ -309,7 +321,7 @@ export function BrandFollowConfigModal({ isOpen, onClose, onSynced }) {
 
           {/* Search */}
           <div>
-            <h3 className="text-sm font-mono font-semibold text-white mb-2">Filter</h3>
+            <h3 className="text-sm font-semibold text-white mb-2">Filter</h3>
             <div className="relative">
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-zinc-600" />
               <input
@@ -317,7 +329,7 @@ export function BrandFollowConfigModal({ isOpen, onClose, onSynced }) {
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
                 placeholder="Filter brands…"
-                className="w-full pl-10 pr-3 py-2.5 rounded-md bg-white/[0.04] border border-white/[0.08] focus:border-violet-400/40 focus:outline-none text-zinc-200 text-sm font-mono placeholder:text-zinc-600"
+                className="w-full pl-10 pr-3 py-2.5 rounded-lg bg-white/[0.04] border border-white/10 focus:border-[#c9a84c]/40 focus:outline-none text-zinc-200 text-sm placeholder:text-zinc-600"
               />
             </div>
           </div>
@@ -394,22 +406,22 @@ function BrandRow({ brand, expanded, onToggleExpand, onPatch, onSynced }) {
   };
 
   return (
-    <div className={`rounded-lg border ${expanded ? 'border-violet-400/30 bg-violet-500/[0.03]' : 'border-white/[0.06] bg-white/[0.02]'}`}>
+    <div className={`rounded-xl border ${expanded ? 'border-[#c9a84c]/30 bg-[#c9a84c]/[0.03]' : 'border-white/10 bg-white/[0.02]'}`}>
       {/* Summary row */}
       <div className="flex items-center gap-3 px-4 py-3">
-        <div className="shrink-0 w-9 h-9 rounded-md bg-white/[0.05] border border-white/[0.08] flex items-center justify-center text-zinc-300 text-sm font-mono font-bold">
+        <div className="shrink-0 w-9 h-9 rounded-lg bg-black/40 border border-white/10 flex items-center justify-center text-zinc-300 text-sm font-semibold">
           {initial}
         </div>
         <div className="min-w-0 flex-1">
-          <div className="text-sm font-mono text-white truncate">{name || domain}</div>
-          <div className="text-[11px] font-mono text-zinc-500">
-            {active_image_count} active · will import ~{projected_import_count}
+          <div className="text-base font-medium text-white truncate">{name || domain}</div>
+          <div className="text-xs text-zinc-400">
+            {active_image_count} active · ~{projected_import_count} to import
           </div>
         </div>
         <div className="flex items-center gap-1.5 shrink-0">
           {pickerOpen ? (
-            <div className="flex items-center gap-1.5 bg-violet-500/[0.06] border border-violet-400/40 rounded-md px-2 py-1">
-              <span className="text-[10px] font-mono text-violet-300 uppercase tracking-wide">Import</span>
+            <div className="flex items-center gap-1.5 bg-[#c9a84c]/[0.06] border border-[#c9a84c]/40 rounded-lg px-2 py-1">
+              <span className="text-[10px] font-mono text-[#c9a84c] uppercase tracking-wide">Import</span>
               <input
                 type="number"
                 min="1"
@@ -421,14 +433,14 @@ function BrandRow({ brand, expanded, onToggleExpand, onPatch, onSynced }) {
                 }}
                 onKeyDown={(e) => { if (e.key === 'Enter') handleSyncNow(importCount); if (e.key === 'Escape') setPickerOpen(false); }}
                 autoFocus
-                className="w-16 px-1.5 py-0.5 rounded bg-black/40 border border-white/[0.1] text-zinc-100 text-[11px] font-mono text-center focus:outline-none focus:border-violet-400/60"
+                className="w-16 px-1.5 py-0.5 rounded bg-black/40 border border-white/10 text-zinc-100 text-xs text-center focus:outline-none focus:border-[#c9a84c]/60"
               />
-              <span className="text-[10px] font-mono text-zinc-500">of {active_image_count}</span>
+              <span className="text-[10px] text-zinc-500">of {active_image_count}</span>
               <button
                 type="button"
                 onClick={() => handleSyncNow(importCount)}
                 disabled={syncing}
-                className="ml-1 inline-flex items-center gap-1 px-2 py-1 rounded bg-violet-500/30 hover:bg-violet-500/50 text-violet-100 text-[10px] font-mono font-bold cursor-pointer disabled:opacity-40"
+                className="ml-1 inline-flex items-center gap-1 px-2 py-1 rounded bg-[#c9a84c] hover:bg-[#d9ba63] text-black text-[10px] font-semibold cursor-pointer disabled:opacity-40"
               >
                 {syncing ? <Loader2 className="w-3 h-3 animate-spin" /> : 'Go'}
               </button>
@@ -446,17 +458,17 @@ function BrandRow({ brand, expanded, onToggleExpand, onPatch, onSynced }) {
               type="button"
               onClick={() => setPickerOpen(true)}
               disabled={syncing || (active_image_count || 0) === 0}
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-violet-500/15 border border-violet-400/30 hover:bg-violet-500/25 hover:border-violet-400/50 text-violet-200 text-[10px] font-mono font-semibold uppercase tracking-wide cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-[#c9a84c]/40 hover:bg-[#c9a84c]/10 text-white text-xs font-medium cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
               title="Pick how many static ads to import from this brand"
             >
-              {syncing ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Download className="w-3.5 h-3.5" />}
+              {syncing ? <Loader2 className="w-3.5 h-3.5 animate-spin text-[#c9a84c]" /> : <Download className="w-3.5 h-3.5 text-[#c9a84c]" />}
               {syncing ? 'Importing…' : 'Import'}
             </button>
           )}
           <button
             type="button"
             onClick={onToggleExpand}
-            className="p-2 rounded-md bg-white/[0.04] border border-white/[0.08] hover:bg-white/[0.08] text-zinc-300 cursor-pointer"
+            className="p-2 rounded-lg bg-white/[0.04] border border-white/10 hover:bg-white/[0.08] text-zinc-300 cursor-pointer"
             title={expanded ? 'Collapse' : 'Configure'}
           >
             {expanded ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
@@ -465,22 +477,22 @@ function BrandRow({ brand, expanded, onToggleExpand, onPatch, onSynced }) {
       </div>
 
       {syncMsg && (
-        <div className="px-4 pb-2 text-[10px] font-mono text-zinc-400">
+        <div className="px-4 pb-2 text-xs text-zinc-400">
           {syncMsg}
         </div>
       )}
 
       {/* Expanded controls */}
       {expanded && (
-        <div className="border-t border-white/[0.05] px-4 py-4 space-y-5">
+        <div className="border-t border-white/10 px-4 py-4 space-y-5">
           {/* Top ads to import */}
           <div>
-            <div className="flex items-center justify-between mb-2">
-              <label className="text-xs font-mono text-zinc-300 flex items-center gap-1.5">
+            <div className="flex items-center justify-between mb-2 gap-2 flex-wrap">
+              <label className="text-sm text-zinc-300 flex items-center gap-1.5">
                 Top ads to import
-                <Info className="w-3 h-3 text-zinc-500" title="Picks the top N% of this brand's active image ads ordered by tier_score DESC, current_rank ASC — BANGER first, then CHAMP, A, B, C, MID, TEST. Within a tier, ads ranked higher in the FB Ad Library (lower current_rank) come first." />
+                <Info className="w-3.5 h-3.5 text-zinc-500" title="Picks the top N% of this brand's active image ads ordered by tier_score DESC, current_rank ASC: BANGER first, then CHAMP, A, B, C, MID, TEST. Within a tier, ads ranked higher in the FB Ad Library (lower current_rank) come first." />
               </label>
-              <span className="text-xs font-mono text-cyan-300">
+              <span className="text-sm text-white font-bold">
                 {localTopPct}% (~{Math.max(1, Math.ceil(active_image_count * (localTopPct / 100)))} ads)
               </span>
             </div>
@@ -490,46 +502,52 @@ function BrandRow({ brand, expanded, onToggleExpand, onPatch, onSynced }) {
               max="100"
               value={localTopPct}
               onChange={(e) => setLocalTopPct(parseInt(e.target.value, 10))}
-              className="w-full accent-violet-500"
+              className="w-full h-1.5 rounded-full bg-zinc-300 accent-[#c9a84c] cursor-pointer"
             />
-            <div className="flex justify-between text-[9px] font-mono text-zinc-600 mt-1">
+            <div className="flex justify-between text-[10px] text-zinc-500 mt-1">
               <span>1%</span><span>25%</span><span>50%</span><span>75%</span><span>100%</span>
             </div>
-            <div className="text-[10px] font-mono text-zinc-500 mt-2 leading-relaxed">
-              Ranked best-converters first <span className="text-[#c9a84c]">BANGER</span> → CHAMP → A → B → C, then by FB Ad Library position.
+            <div className="text-xs text-zinc-500 mt-2 leading-relaxed">
+              Best converters first: <span className="text-[#c9a84c] font-semibold">BANGER</span> → CHAMP → A → B → C, then by FB Ad Library position.
             </div>
           </div>
 
           {/* Tier filter */}
           <div>
             <div className="flex items-center justify-between mb-2">
-              <label className="text-xs font-mono text-zinc-300">Tier filter</label>
-              <span className="text-[10px] font-mono text-zinc-600">
+              <label className="text-sm text-zinc-300">Tier filter</label>
+              <span className="text-xs text-zinc-400">
                 {Array.isArray(config.tier_filter) && config.tier_filter.length > 0
                   ? `${config.tier_filter.length} selected`
                   : 'All tiers'}
               </span>
             </div>
             <div className="flex flex-wrap gap-1.5">
-              {ALL_TIERS.map(tier => (
-                <button
-                  key={tier}
-                  type="button"
-                  onClick={() => toggleTier(tier)}
-                  className={`px-2 py-1 rounded text-[10px] font-mono font-bold transition-all cursor-pointer ${
-                    tierActive(tier)
-                      ? 'bg-[#c9a84c]/30 text-[#e8d5a3] border border-[#c9a84c]/40'
-                      : 'bg-white/[0.03] text-zinc-600 border border-white/[0.06] hover:text-zinc-400'
-                  }`}
-                >
-                  {tier}
-                </button>
-              ))}
+              {ALL_TIERS.map(tier => {
+                const active = tierActive(tier);
+                const selected = Array.isArray(config.tier_filter) && config.tier_filter.includes(tier);
+                return (
+                  <button
+                    key={tier}
+                    type="button"
+                    onClick={() => toggleTier(tier)}
+                    className={`px-2 py-1 rounded text-[10px] font-mono uppercase font-bold transition-all cursor-pointer border ${
+                      !active
+                        ? 'bg-white/[0.03] text-zinc-600 border-white/[0.06] hover:text-zinc-400'
+                        : selected
+                          ? 'bg-[#c9a84c]/25 text-[#e8d5a3] border-[#c9a84c]/40'
+                          : 'bg-[#c9a84c]/10 text-[#c9a84c] border-[#c9a84c]/40'
+                    }`}
+                  >
+                    {tier}
+                  </button>
+                );
+              })}
               {Array.isArray(config.tier_filter) && config.tier_filter.length > 0 && (
                 <button
                   type="button"
                   onClick={() => onPatch({ tier_filter: null })}
-                  className="px-2 py-1 rounded text-[10px] font-mono text-zinc-400 hover:text-zinc-200 cursor-pointer"
+                  className="px-2 py-1 rounded text-xs text-zinc-400 hover:text-zinc-200 cursor-pointer"
                 >
                   Clear
                 </button>
@@ -540,8 +558,8 @@ function BrandRow({ brand, expanded, onToggleExpand, onPatch, onSynced }) {
           {/* Max copy length */}
           <div>
             <div className="flex items-center justify-between mb-2">
-              <label className="text-xs font-mono text-zinc-300">Max ad copy length</label>
-              <span className="text-xs font-mono text-violet-300">
+              <label className="text-sm text-zinc-300">Max ad copy length</label>
+              <span className="text-sm text-white font-bold">
                 {localMaxLen === 0 ? 'No limit' : `${localMaxLen} chars`}
               </span>
             </div>
@@ -552,9 +570,9 @@ function BrandRow({ brand, expanded, onToggleExpand, onPatch, onSynced }) {
               step="50"
               value={localMaxLen}
               onChange={(e) => setLocalMaxLen(parseInt(e.target.value, 10))}
-              className="w-full accent-violet-500"
+              className="w-full h-1.5 rounded-full bg-zinc-300 accent-[#c9a84c] cursor-pointer"
             />
-            <div className="flex justify-between text-[9px] font-mono text-zinc-600 mt-1">
+            <div className="flex justify-between text-[10px] text-zinc-500 mt-1">
               <span>No limit</span><span>500</span><span>1000</span>
             </div>
           </div>
@@ -567,113 +585,116 @@ function BrandRow({ brand, expanded, onToggleExpand, onPatch, onSynced }) {
 
           {/* Sort by */}
           <div>
-            <div className="flex items-center justify-between mb-2">
-              <label className="text-xs font-mono text-zinc-300">Import by</label>
+            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+              <label className="text-sm text-zinc-300 sm:w-40 shrink-0">Import by</label>
+              <div className="flex flex-wrap gap-1.5">
+                {[
+                  { v: 'tier_score',      label: 'Top performers' },
+                  { v: 'longest_running', label: 'Longest running' },
+                  { v: 'newest',          label: 'Newest' },
+                ].map(o => {
+                  const active = (config.sort_mode || 'tier_score') === o.v;
+                  return (
+                    <button
+                      key={o.v}
+                      type="button"
+                      onClick={() => onPatch({ sort_mode: o.v })}
+                      className={`px-2.5 h-7 rounded-lg text-xs border transition-colors cursor-pointer ${
+                        active
+                          ? 'border-[#c9a84c]/50 bg-[#c9a84c]/10 text-white'
+                          : 'border-white/10 bg-white/[0.03] text-zinc-300 hover:text-white'
+                      }`}
+                    >
+                      {o.label}
+                    </button>
+                  );
+                })}
+              </div>
             </div>
-            <div className="flex flex-wrap gap-1.5">
-              {[
-                { v: 'tier_score',      label: 'Top performers' },
-                { v: 'longest_running', label: 'Longest running' },
-                { v: 'newest',          label: 'Newest' },
-              ].map(o => {
-                const active = (config.sort_mode || 'tier_score') === o.v;
-                return (
-                  <button
-                    key={o.v}
-                    type="button"
-                    onClick={() => onPatch({ sort_mode: o.v })}
-                    className={`px-2.5 h-7 rounded-lg text-[11px] font-mono border transition-colors cursor-pointer ${
-                      active
-                        ? 'border-violet-500/40 bg-violet-500/15 text-violet-200'
-                        : 'border-white/[0.08] bg-white/[0.03] text-zinc-400 hover:text-zinc-200'
-                    }`}
-                  >
-                    {o.label}
-                  </button>
-                );
-              })}
-            </div>
-            <p className="text-[9px] font-mono text-zinc-600 mt-1">
-              Longest running = proven staying power, not just current rank.
+            <p className="text-xs text-zinc-500 mt-1.5">
+              Longest running highlights ads with proven staying power.
             </p>
           </div>
 
           {/* Format */}
           <div>
-            <div className="flex items-center justify-between mb-2">
-              <label className="text-xs font-mono text-zinc-300">Creative formats</label>
+            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+              <label className="text-sm text-zinc-300 sm:w-40 shrink-0">Creative formats</label>
+              <div className="flex flex-wrap gap-1.5">
+                {[
+                  { v: 'IMAGE',      label: 'Images only' },
+                  { v: 'ALL_STATIC', label: 'All statics' },
+                  { v: 'CAROUSEL',   label: 'Carousel only' },
+                ].map(o => {
+                  const active = (config.format_filter || 'IMAGE') === o.v;
+                  return (
+                    <button
+                      key={o.v}
+                      type="button"
+                      onClick={() => onPatch({ format_filter: o.v })}
+                      className={`px-2.5 h-7 rounded-lg text-xs border transition-colors cursor-pointer ${
+                        active
+                          ? 'border-[#c9a84c]/50 bg-[#c9a84c]/10 text-white'
+                          : 'border-white/10 bg-white/[0.03] text-zinc-300 hover:text-white'
+                      }`}
+                    >
+                      {o.label}
+                    </button>
+                  );
+                })}
+              </div>
             </div>
-            <div className="flex flex-wrap gap-1.5">
-              {[
-                { v: 'IMAGE',      label: 'Images only' },
-                { v: 'ALL_STATIC', label: 'All statics' },
-                { v: 'CAROUSEL',   label: 'Carousel only' },
-              ].map(o => {
-                const active = (config.format_filter || 'IMAGE') === o.v;
-                return (
-                  <button
-                    key={o.v}
-                    type="button"
-                    onClick={() => onPatch({ format_filter: o.v })}
-                    className={`px-2.5 h-7 rounded-lg text-[11px] font-mono border transition-colors cursor-pointer ${
-                      active
-                        ? 'border-violet-500/40 bg-violet-500/15 text-violet-200'
-                        : 'border-white/[0.08] bg-white/[0.03] text-zinc-400 hover:text-zinc-200'
-                    }`}
-                  >
-                    {o.label}
-                  </button>
-                );
-              })}
-            </div>
-            <p className="text-[9px] font-mono text-zinc-600 mt-1">
-              &ldquo;Images only&rdquo; excludes carousel/DCO/DPA — which is most of some brands&apos; libraries.
+            <p className="text-xs text-zinc-500 mt-1.5">
+              Images only excludes carousel, DCO and DPA.
             </p>
           </div>
 
+          <div className="border-t border-white/10" />
+
           {/* Include ended ads */}
-          <div className="flex items-center justify-between">
-            <div>
-              <label className="text-xs font-mono text-zinc-300">Include ended ads</label>
-              <p className="text-[9px] font-mono text-zinc-600 mt-0.5">
-                Off = only ads running right now.
+          <div className="flex items-center justify-between gap-3">
+            <div className="min-w-0">
+              <label className="text-sm text-zinc-300">Include ended ads</label>
+              <p className="text-xs text-zinc-500 mt-0.5">
+                Only running ads when disabled.
               </p>
             </div>
             <button
               type="button"
               onClick={() => onPatch({ include_inactive: !config.include_inactive })}
-              className={`px-2 h-6 rounded text-[10px] font-mono border transition-colors cursor-pointer shrink-0 ${
-                config.include_inactive
-                  ? 'border-violet-500/40 bg-violet-500/15 text-violet-200'
-                  : 'border-white/[0.08] bg-white/[0.03] text-zinc-500 hover:text-zinc-300'
+              className={`relative inline-flex h-5 w-10 items-center rounded-full transition-colors cursor-pointer shrink-0 ${
+                config.include_inactive ? 'bg-[#c9a84c]' : 'bg-zinc-700'
               }`}
+              title={config.include_inactive ? 'Disable to only show running ads' : 'Enable to include ended ads'}
             >
-              {config.include_inactive ? 'On' : 'Off'}
+              <span className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white transition-transform ${
+                config.include_inactive ? 'translate-x-5' : 'translate-x-1'
+              }`} />
             </button>
           </div>
 
           {/* Auto-sync */}
-          <div>
-            <div className="flex items-center justify-between mb-2">
-              <label className="text-xs font-mono text-zinc-300">
+          <div className="flex items-center justify-between gap-3">
+            <div className="min-w-0">
+              <label className="text-sm text-zinc-300">
                 Auto-sync (every {config.auto_sync_interval_hours}h)
               </label>
-              <button
-                type="button"
-                onClick={() => onPatch({ auto_sync_enabled: !config.auto_sync_enabled })}
-                className={`relative inline-flex h-5 w-10 items-center rounded-full transition-colors cursor-pointer ${
-                  config.auto_sync_enabled ? 'bg-emerald-500/80' : 'bg-white/[0.08]'
-                }`}
-                title={config.auto_sync_enabled ? 'Disable auto-sync' : 'Enable auto-sync'}
-              >
-                <span className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white transition-transform ${
-                  config.auto_sync_enabled ? 'translate-x-5' : 'translate-x-1'
-                }`} />
-              </button>
+              <p className="text-xs text-zinc-500 mt-0.5">
+                Last synced: {formatRelative(config.last_synced_at)}
+              </p>
             </div>
-            <div className="text-[10px] font-mono text-zinc-600">
-              Last synced {formatRelative(config.last_synced_at)}
-            </div>
+            <button
+              type="button"
+              onClick={() => onPatch({ auto_sync_enabled: !config.auto_sync_enabled })}
+              className={`relative inline-flex h-5 w-10 items-center rounded-full transition-colors cursor-pointer shrink-0 ${
+                config.auto_sync_enabled ? 'bg-[#c9a84c]' : 'bg-zinc-700'
+              }`}
+              title={config.auto_sync_enabled ? 'Disable auto-sync' : 'Enable auto-sync'}
+            >
+              <span className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white transition-transform ${
+                config.auto_sync_enabled ? 'translate-x-5' : 'translate-x-1'
+              }`} />
+            </button>
           </div>
         </div>
       )}
