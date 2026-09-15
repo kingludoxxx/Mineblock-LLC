@@ -4,10 +4,14 @@
 import api from '../../services/api';
 
 const cache = new Map();
+const settled = new Map(); // key -> resolved value, readable synchronously
 
 function cached(key, load) {
   if (cache.has(key)) return cache.get(key);
-  const p = load().catch((err) => {
+  const p = load().then((value) => {
+    settled.set(key, value);
+    return value;
+  }, (err) => {
     cache.delete(key);
     throw err;
   });
@@ -40,6 +44,11 @@ export function fetchBibleMarkets(product) {
 export function fetchBibleDocument(product, market) {
   return cached(`doc:${product}:${market}`, async () =>
     unwrap(await api.get(`/product-bible/products/${enc(product)}/markets/${enc(market)}/document`)));
+}
+
+/** Entities already loaded for this page, without waiting; undefined when not loaded yet. */
+export function peekBibleEntities(product, market, type) {
+  return settled.get(`ents:${product}:${market}:${type}`);
 }
 
 export function fetchBibleEntities(product, market, type) {

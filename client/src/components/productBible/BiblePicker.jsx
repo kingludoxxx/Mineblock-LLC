@@ -10,7 +10,7 @@
 // step where the page's own product control sits right beside it; `inline` lays the steps out in one wrapping row.
 import { useEffect, useId, useMemo, useRef, useState } from 'react';
 import { BookOpen, Loader2, RotateCw } from 'lucide-react';
-import { fetchBibleProducts, fetchBibleEntities, bibleErrorText } from './bibleApi';
+import { fetchBibleProducts, fetchBibleEntities, peekBibleEntities, bibleErrorText } from './bibleApi';
 import {
   AVATAR_TYPE_LABEL, sortAvatars, anglesForAvatar, groupAnglesByTier, fitAvatarNames, toBibleBody,
   sameProduct, loadRemembered, remember, marketLabel,
@@ -38,6 +38,9 @@ export default function BiblePicker({
   const [avatars, setAvatars] = useState([]);
   const [angles, setAngles] = useState([]);
   const [entLoading, setEntLoading] = useState(false);
+  // Which product:market the avatars/angles above belong to. A market switch renders once before its data is
+  // in; without this key that render handed the page the PREVIOUS market's angles, then an empty list.
+  const [loadedKey, setLoadedKey] = useState('');
   const [entError, setEntError] = useState(null);
   const [retry, setRetry] = useState(0);
   const onChangeRef = useRef(onChange);
@@ -81,15 +84,44 @@ export default function BiblePicker({
     const mk = (p.markets || []).find((m) => m.market_key === saved?.market) || (p.markets || [])[0];
     pendingRestore.current = saved && mk && saved.market === mk.market_key ? saved : null;
     setProduct(String(p.id));
-    setMarket(mk?.market_key || '');
+    applyMarket(String(p.id), mk?.market_key || '');
+  }
+
+  // Switch market in ONE render: when this page already loaded the market, its avatars + angles go in with it.
+  function applyMarket(productKey, marketKey) {
+    setMarket(marketKey);
     setAvatar('');
     setAngle('');
     setShowAllAngles(false);
+    const av = productKey && marketKey ? peekBibleEntities(productKey, marketKey, 'avatar') : undefined;
+    const an = productKey && marketKey ? peekBibleEntities(productKey, marketKey, 'angle') : undefined;
+    if (av && an) {
+      setAvatars(sortAvatars(av));
+      setAngles(an);
+      setEntError(null);
+      setEntLoading(false);
+      setLoadedKey(`${productKey}:${marketKey}`);
+    }
   }
 
   // Load avatars + angles for the chosen market.
   useEffect(() => {
-    if (!product || !market) { setAvatars([]); setAngles([]); setEntError(null); return undefined; }
+    if (!product || !market) { setAvatars([]); setAngles([]); setEntError(null); setLoadedKey(''); return undefined; }
+    const key = `${product}:${market}`;
+    const restore = () => {
+      const saved = pendingRestore.current;
+      pendingRestore.current = null;
+      return saved;
+    };
+    if (loadedKey === key && retry === 0) {
+      // Already applied synchronously by applyMarket; only a remembered avatar/angle may still need restoring.
+      const saved = restore();
+      if (saved) {
+        if (saved.avatar && avatars.some((a) => a.key === saved.avatar)) setAvatar(saved.avatar);
+        if (saved.angle && angles.some((a) => a.key === saved.angle)) setAngle(saved.angle);
+      }
+      return undefined;
+    }
     let alive = true;
     setEntLoading(true);
     setEntError(null);
@@ -100,26 +132,40 @@ export default function BiblePicker({
       if (!alive) return;
       setAvatars(sortAvatars(av));
       setAngles(an);
-      const saved = pendingRestore.current;
-      pendingRestore.current = null;
+      setLoadedKey(key);
+      const saved = restore();
       if (saved) {
         if (saved.avatar && av.some((a) => a.key === saved.avatar)) setAvatar(saved.avatar);
         if (saved.angle && an.some((a) => a.key === saved.angle)) setAngle(saved.angle);
       }
     }).catch((err) => {
       if (!alive) return;
-      setAvatars([]); setAngles([]);
+      setAvatars([]); setAngles([]); setLoadedKey('');
       setEntError(bibleErrorText(err));
     }).finally(() => { if (alive) setEntLoading(false); });
     return () => { alive = false; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [product, market, retry]);
+
+  // Warm every market of the product once, so switching markets never waits on the network.
+  useEffect(() => {
+    if (!product) return;
+    for (const m of markets) {
+      for (const type of ['avatar', 'angle']) {
+        fetchBibleEntities(product, m.market_key, type)
+          .catch((err) => console.warn('[BiblePicker] prefetch failed:', m.market_key, type, bibleErrorText(err)));
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [product, markets.length]);
 
   const avatarRow = avatars.find((a) => a.key === avatar) || null;
   const { angles: offeredAngles, filtered } = anglesForAvatar(angles, avatarRow, showAllAngles);
   const tierGroups = groupAnglesByTier(offeredAngles);
   const angleRow = angles.find((a) => a.key === angle) || null;
 
-  // Emit.
+  // Emit. Never hand out rows that belong to another market.
+  const fresh = !!product && !!market && loadedKey === `${product}:${market}`;
   useEffect(() => {
     if (!products) return;
     const sel = product
@@ -128,10 +174,10 @@ export default function BiblePicker({
     if (sel) remember(sel);
     onChangeRef.current?.(sel, {
       product: current, market: markets.find((m) => m.market_key === market) || null,
-      avatars, angles, loading: entLoading,
+      avatars: fresh ? avatars : [], angles: fresh ? angles : [], loading: entLoading || (!!sel && !fresh && !entError),
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [products, product, market, avatar, angle, showAngle, avatars, angles, entLoading]);
+  }, [products, product, market, avatar, angle, showAngle, avatars, angles, entLoading, fresh, entError]);
 
   if (!products || products.length === 0) return null;
   // inline: one wrapping row for toolbars/footers; default: a stacked card for sidebars.
@@ -177,7 +223,7 @@ export default function BiblePicker({
                   type="button"
                   role="radio"
                   aria-checked={on}
-                  onClick={() => { if (!on) { pendingRestore.current = null; setMarket(m.market_key); setAvatar(''); setAngle(''); setShowAllAngles(false); } }}
+                  onClick={() => { if (!on) { pendingRestore.current = null; applyMarket(product, m.market_key); } }}
                   className={`px-2.5 py-1 text-xs rounded-md border transition-colors cursor-pointer focus:outline-none focus-visible:ring-1 focus-visible:ring-[#c9a84c]/50 ${
                     on
                       ? 'bg-[#c9a84c]/10 border-[#c9a84c]/30 text-[#e8d5a3]'
