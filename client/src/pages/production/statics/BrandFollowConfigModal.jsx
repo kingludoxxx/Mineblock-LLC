@@ -384,7 +384,7 @@ function BrandRow({ brand, expanded, onToggleExpand, onPatch, onSynced }) {
       const body = count != null ? { count } : {};
       const { data } = await api.post(`/statics-generation/league/brand-configs/${id}/sync`, body);
       const r = data?.data || {};
-      setSyncMsg(`Imported — ${r.imported || 0} new${r.skipped ? `, ${r.skipped} already in library` : ''}`);
+      setSyncMsg(`Imported: ${r.imported || 0} new${r.skipped ? `, ${r.skipped} already in library` : ''}`);
       onSynced?.({ brandId: id, ...r });
     } catch (err) {
       setSyncMsg(`Import failed: ${err.response?.data?.error?.message || err.message}`);
