@@ -1,7 +1,7 @@
 // PRODUCT BIBLE VIEWER: read-only research document for one product, one market at a time.
 // Sticky table of contents (drawer on narrow screens), scoped document typography (productBible.css),
 // clickable quote chips that resolve the verbatim quote through the quotes API.
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Fragment, memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { BookOpen, ChevronDown, ChevronRight, ExternalLink, List, Loader2, RotateCw, X } from 'lucide-react';
 import { fetchBibleDocument, fetchBibleQuotes, bibleErrorText } from './bibleApi';
 import './productBible.css';
@@ -166,6 +166,37 @@ function QuotePopover({ state, onClose }) {
   );
 }
 
+// The operator's live commercial terms for this market (product profile offers), which statics use verbatim.
+function OfferCard({ offer }) {
+  const rows = offer ? [
+    ['Price', offer.price],
+    ['Discount', offer.discount],
+    ['Discount code', offer.code],
+    ['Savings option', offer.savings],
+    ['Notes', offer.notes],
+  ].filter(([, v]) => v) : [];
+  return (
+    <aside className="not-prose my-4 rounded-xl border border-[#c9a84c]/30 bg-[#c9a84c]/[0.06] p-4" aria-label="Offers">
+      <div className="flex items-center justify-between gap-2 mb-2">
+        <span className="font-mono text-[11px] font-semibold uppercase tracking-[0.15em] text-[#c9a84c]">Offers</span>
+        <span className="text-[11px] text-zinc-500">Live terms used by ad generation</span>
+      </div>
+      {rows.length === 0 ? (
+        <p className="text-sm text-zinc-400">No offer stored for this market. Ads use the price only, with no discount or code.</p>
+      ) : (
+        <dl className="grid grid-cols-[max-content_1fr] gap-x-4 gap-y-1.5 text-sm">
+          {rows.map(([k, v]) => (
+            <Fragment key={k}>
+              <dt className="text-zinc-400">{k}</dt>
+              <dd className={k === 'Discount code' ? 'font-mono font-semibold text-[#e8d5a3]' : 'text-zinc-100'}>{String(v)}</dd>
+            </Fragment>
+          ))}
+        </dl>
+      )}
+    </aside>
+  );
+}
+
 // Memoised on its strings: re-rendering an element with dangerouslySetInnerHTML re-parses it, which would re-create
 // every chip (losing focus/aria state) and re-layout the whole document on each active-section change.
 const DocSection = memo(function DocSection({ anchor, html }) {
@@ -263,6 +294,11 @@ export default function ProductBibleViewer({ productId, markets }) {
   }, [docKey, productId, market]);
 
   const toc = useMemo(() => doc?.toc || [], [doc]);
+  // The live offer shows at the top of the bible's own offer section (or the first section when it has none).
+  const offerAnchor = useMemo(() => {
+    const list = doc?.sections || [];
+    return (list.find((s) => /offer/i.test(s.title || '')) || list[0])?.anchor || null;
+  }, [doc]);
   const parentOf = useMemo(() => {
     const m = new Map();
     for (const h2 of toc) for (const h3 of h2.children || []) m.set(h3.anchor, h2.anchor);
@@ -493,7 +529,10 @@ export default function ProductBibleViewer({ productId, markets }) {
               onKeyDown={onArticleKey}
             >
               {sections.map((sec) => (
-                <DocSection key={`${market}:${sec.anchor}`} anchor={sec.anchor} html={sec.html} />
+                <Fragment key={`${market}:${sec.anchor}`}>
+                  {sec.anchor === offerAnchor && <OfferCard offer={doc?.offer} />}
+                  <DocSection anchor={sec.anchor} html={sec.html} />
+                </Fragment>
               ))}
             </article>
           </div>

@@ -11,7 +11,9 @@
 // Returns the context pack plus: marketPicked, picked.market, markets[], productId, selection (what to persist).
 // Nothing here names a product, market, store or brand (R15).
 import { client as sql } from '../../db/pg.js';
-import { BibleError, listMarkets, listEntities, listProductsWithMarkets, resolveProductRef } from './bibleStore.js';
+import { BibleError, listMarkets, listEntities, listProductsWithMarkets, resolveProductRef, marketOffer } from './bibleStore.js';
+
+export { marketOffer };
 import { buildBibleContextPack } from './contextPack.js';
 
 const STOP = new Set(['with', 'from', 'that', 'this', 'your', 'their', 'into', 'over', 'more', 'less', 'than', 'what',
@@ -187,20 +189,6 @@ export async function resolveStaticsBible({ bible = null, loadPersisted = null, 
   return { copy, image, angleDef, selection: copy.selection, market: copy.market, offer };
 }
 
-/**
- * The operator's live commercial terms for ONE market: the product profile's `offers` entry whose `market` is the
- * market key, e.g. { market, price, discount, code, savings, notes }. Offers live on the product (not in the bible
- * tables) so a bible re-import never wipes them. null when the market has none: the prompt then allows no code.
- */
-export async function marketOffer(productId, marketKey, db = sql) {
-  const rows = await db`SELECT offers FROM product_profiles WHERE id = ${productId}`;
-  let offers = rows[0]?.offers;
-  if (typeof offers === 'string') { try { offers = JSON.parse(offers); } catch { offers = null; } }
-  if (!Array.isArray(offers)) return null;
-  const key = String(marketKey || '').toLowerCase();
-  const hit = offers.find((o) => o && typeof o === 'object' && String(o.market || o.market_key || '').toLowerCase() === key);
-  return hit || null;
-}
 
 /** The market's bible avatars + angles as a detection catalog (name = title, the key kept for mapping back). */
 export async function bibleCatalog(productId, marketKey, db = sql) {

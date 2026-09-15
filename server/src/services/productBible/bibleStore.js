@@ -165,6 +165,21 @@ export async function getMarket(productId, marketKey, db = sql) {
   return m;
 }
 
+/**
+ * The operator's live commercial terms for ONE market: the product profile's `offers` entry whose `market` is the
+ * market key, e.g. { market, price, discount, code, savings, notes }. Offers live on the product (not in the bible
+ * tables) so a bible re-import never wipes them. null when the market has none: the prompt then allows no code.
+ */
+export async function marketOffer(productId, marketKey, db = sql) {
+  const rows = await db`SELECT offers FROM product_profiles WHERE id = ${productId}`;
+  let offers = rows[0]?.offers;
+  if (typeof offers === 'string') { try { offers = JSON.parse(offers); } catch { offers = null; } }
+  if (!Array.isArray(offers)) return null;
+  const key = String(marketKey || '').toLowerCase();
+  const hit = offers.find((o) => o && typeof o === 'object' && String(o.market || o.market_key || '').toLowerCase() === key);
+  return hit || null;
+}
+
 export async function getBibleDocument(productId, marketKey, db = sql) {
   const m = await getMarket(productId, marketKey, db);
   const rows = await db`
@@ -180,6 +195,7 @@ export async function getBibleDocument(productId, marketKey, db = sql) {
       key: m.market_key, label: m.label, price: m.price, product_url: m.product_url, bible_title: m.bible_title,
       bible_version: m.bible_version, imported_at: m.imported_at, stats: m.stats,
     },
+    offer: await marketOffer(productId, m.market_key, db),
     toc,
     sections: rows.filter((r) => r.level === 2).map((r) => ({ anchor: r.anchor, title: r.title, html: r.html })),
   };
