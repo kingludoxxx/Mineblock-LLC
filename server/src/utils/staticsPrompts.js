@@ -154,7 +154,8 @@ function bibleAnalysisVars(product, angleName, extras) {
     ANGLE:          angleName,
     SHORT_NAME:     p.short_name || '',
     PRODUCT_TYPE:   p.product_type || '',
-    UNIT_DETAILS:   p.unit_details || '',
+    // An approved product pack carries the product description; the legacy field often holds sales copy.
+    UNIT_DETAILS:   b.copy?.curated ? '' : (p.unit_details || ''),
     // The market's own offer wins: a code for one market must never reach another market's ad.
     MAX_DISCOUNT:   b.offer ? (b.offer.discount || '') : (p.max_discount || ''),
     DISCOUNT_CODES: b.offer ? (b.offer.code || '') : (p.discount_codes || ''),
@@ -171,11 +172,25 @@ function buildBibleAnalysisPrompt(product, angle, template, extras) {
   const def = product._bible.angleDef;
   // A caller may decorate the angle (an iteration appends its strategy); the base is always the bible angle.
   const angleName = typeof extras.ANGLE === 'string' && extras.ANGLE ? extras.ANGLE : def.name;
+  const curated = !!product._bible.copy.curated;
   return interpolate(template, bibleAnalysisVars(product, angleName, extras))
     + renderBibleBlock(product._bible.copy.text)
-    + renderAngleDetailsBlock([def], def.name)
+    // A product pack already carries the chosen angle's brief (or every pinned angle, for auto).
+    + (curated ? CURATED_COPY_APPROACH : renderAngleDetailsBlock([def], def.name))
     + renderCommercialStructureBlock(product._bible.offer);
 }
+
+// Found live 2026-09-15: the saved analysis template says "this is a SWAP, not a rewrite" and to keep the
+// reference's sentence structure, so bible statics carried over the competitor's claims and wording and landed on
+// the same generic bullets. With a product pack the words come from the angle; the reference gives the layout.
+const CURATED_COPY_APPROACH = `
+
+===== COPY APPROACH (with a product pack this overrides the SWAP and FORMULA PRESERVATION rules for the WORDS; every layout, shape and length rule still applies) =====
+1. Decide the MESSAGE first, from the angle brief and the product core above: what this ad argues, for whom, in the angle's tone. When the angle is AUTO, first pick the one angle the reference fits best and return "chosen_angle" and "chosen_angle_reason".
+2. Then fit that message into the reference's text slots: the same fields, the same number of bullets and badges, a similar length per field.
+3. Take the reference's LAYOUT and commercial structure, never its claims, numbers, timelines, prices, reasons for urgency or product facts. Every fact comes from the product pack.
+4. Headline: build it from the angle's hook strategy and headline examples, adapted to the slot. Bullets: each one a different point from the angle's required elements or the product core, never a generic feature list.
+5. Sound like the customer voice lines, never like a spec sheet.`;
 
 function offerLines(offer) {
   if (!offer) return [];

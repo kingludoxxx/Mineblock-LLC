@@ -15,6 +15,7 @@ import { BibleError, listMarkets, listEntities, listProductsWithMarkets, resolve
 
 export { marketOffer };
 import { buildBibleContextPack } from './contextPack.js';
+import { loadCuratedMarket, curatedAngleLegacy, AUTO_ANGLE_KEY } from './curatedPack.js';
 
 const STOP = new Set(['with', 'from', 'that', 'this', 'your', 'their', 'into', 'over', 'more', 'less', 'than', 'what',
   'when', 'where', 'which', 'who', 'about', 'after', 'before', 'people', 'market', 'markets', 'product', 'general']);
@@ -165,6 +166,14 @@ export function bibleAngleToLegacy(entity, { avatarTitle = '', marketBanned = []
 
 /** The legacy-shaped angle definition for one selection. */
 export async function bibleAngleDef(productId, marketKey, angleKey, avatarTitle = '', db = sql) {
+  const curated = await loadCuratedMarket(productId, marketKey, db);
+  if (curated) {
+    // Auto: the pack lists every pinned angle and the model picks one, so there is no single angle block.
+    if (!angleKey || angleKey === AUTO_ANGLE_KEY) return { ...curatedAngleLegacy({ name: 'AUTO' }), key: AUTO_ANGLE_KEY };
+    const a = curated.angles.find((x) => x.id === angleKey);
+    if (!a) throw new BibleError(404, 'angle_not_found', `market "${marketKey}" has no angle "${angleKey}"`);
+    return curatedAngleLegacy(a);
+  }
   const rows = await db`
     SELECT e.type, e.key, e.title, e.tier, e.data
       FROM product_bible_entities e JOIN product_markets m ON m.id = e.market_id
@@ -192,6 +201,14 @@ export async function resolveStaticsBible({ bible = null, loadPersisted = null, 
 
 /** The market's bible avatars + angles as a detection catalog (name = title, the key kept for mapping back). */
 export async function bibleCatalog(productId, marketKey, db = sql) {
+  const curated = await loadCuratedMarket(productId, marketKey, db);
+  if (curated) {
+    const cut = (s) => String(s || '').replace(/\s+/g, ' ').trim().slice(0, 180);
+    return {
+      avatars: [],
+      angles: curated.angles.map((a) => ({ key: a.id, name: a.name, tier: null, funnel_stage: a.funnel_stage || '', description: cut(a.hook_strategy || a.lead_with) })),
+    };
+  }
   const [avatars, angles] = await Promise.all([
     listEntities(productId, marketKey, { type: 'avatar' }, db),
     listEntities(productId, marketKey, { type: 'angle' }, db),
@@ -291,6 +308,17 @@ export async function resolveRecordBible({ bible = null, loadPersisted = null, p
       return { ...r, picked, marketPicked: picked.market || r.marketPicked, selection: { ...r.selection, picked } };
     } catch (err) {
       if (!(err instanceof BibleError)) throw err;
+      // The market usually still exists (an angle was renamed, or an approved product pack replaced the research
+      // angles): keep the record in its market and let the angle be picked again.
+      if (sel.avatar || sel.angle) {
+        try {
+          const r = await resolvePipelineBible({ bible: { product: productRow.id, market: sel.market, avatar: null, angle: null }, productRow, job, query, budget }, db);
+          console.warn(`[productBible] stored selection ${JSON.stringify(sel)} no longer resolves (${err.message}); kept market "${sel.market}", angle auto`);
+          return r;
+        } catch (err2) {
+          if (!(err2 instanceof BibleError)) throw err2;
+        }
+      }
       console.warn(`[productBible] stored selection ${JSON.stringify(sel)} no longer resolves (${err.message}); inferring again`);
     }
   }

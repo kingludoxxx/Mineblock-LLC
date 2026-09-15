@@ -7,7 +7,7 @@ import {
 } from 'lucide-react';
 import ProductSelector from '../../../components/ProductSelector';
 import { AresAgent } from './AresAgent';
-import { anglesForAvatar, groupAnglesByTier } from '../../../components/productBible/bibleSelection';
+import { anglesForAvatar, groupAnglesByTier, pinnedOnly } from '../../../components/productBible/bibleSelection';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -153,7 +153,7 @@ export function ConfigSidebar({
                     onClick={() => { onAngleChange(null); if (onAngleDataChange) onAngleDataChange(null); if (customAngle) onCustomAngleChange(''); }}
                     className={chip(autoOn)}
                   >
-                    Auto (best from the bible)
+                    {pinnedOnly(productAngles) ? 'Auto (best of our angles)' : 'Auto (best from the bible)'}
                   </button>
                   {bibleAvatar && (filtered || showAllBibleAngles) && (
                     <label className="flex items-center gap-1 text-[10px] text-zinc-500 cursor-pointer shrink-0">
@@ -167,9 +167,11 @@ export function ConfigSidebar({
                 )}
                 {groupAnglesByTier(offered).map((g) => (
                   <div key={g.tier} role="group" aria-label={g.tier === 'Other' ? 'Other angles' : `Tier ${g.tier} angles`}>
-                    <div className="font-mono text-[10px] font-semibold text-zinc-500 uppercase tracking-[0.15em] mb-1.5">
-                      {g.tier === 'Other' ? 'Other' : `Tier ${g.tier}`}
-                    </div>
+                    {!(g.tier === 'Other' && pinnedOnly(productAngles)) && (
+                      <div className="font-mono text-[10px] font-semibold text-zinc-500 uppercase tracking-[0.15em] mb-1.5">
+                        {g.tier === 'Other' ? 'Other' : `Tier ${g.tier}`}
+                      </div>
+                    )}
                     <div className="flex flex-wrap gap-2">
                       {g.angles.map((a) => {
                         const on = !customAngle && angleData?.bible_key === a.bible_key;

@@ -9,6 +9,7 @@
 // `picked`, so a caller can show "auto-selected" instead of pretending the operator chose.
 import { client as sql } from '../../db/pg.js';
 import { BibleError, getMarket } from './bibleStore.js';
+import { loadCuratedMarket, buildCuratedPack } from './curatedPack.js';
 
 export const JOB_BUDGETS = {
   brief: 26000,
@@ -79,6 +80,15 @@ export async function buildBibleContextPack({ productId, market, avatar, angle, 
   }
   const m = await getMarket(productId, market, db);
   const [product] = await db`SELECT id, name, short_name, product_code FROM product_profiles WHERE id = ${m.product_id}`;
+  // An operator-approved product pack replaces the bible slice for this market (curatedPack.js).
+  const curated = await loadCuratedMarket(m.product_id, m.market_key, db);
+  if (curated) {
+    return buildCuratedPack({
+      product: product ? { id: product.id, name: product.name, code: product.product_code } : null,
+      market: { key: m.market_key, label: m.label, price: m.price, product_url: m.product_url },
+      curated, angleKey: angle || null, job,
+    });
+  }
   const limits = LIMITS[job];
   const cap = Math.min(60000, Math.max(1000, Number(budget) || JOB_BUDGETS[job]));
 

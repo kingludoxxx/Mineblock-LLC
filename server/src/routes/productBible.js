@@ -20,6 +20,7 @@ import {
   BibleError, resolveProductRef, importMarketBible, listMarkets, listProductsWithMarkets, getBibleDocument, listEntities, getQuotes,
 } from '../services/productBible/bibleStore.js';
 import { buildBibleContextPack, JOB_BUDGETS } from '../services/productBible/contextPack.js';
+import { loadCuratedMarket, curatedAngleEntity } from '../services/productBible/curatedPack.js';
 
 const router = Router();
 
@@ -86,6 +87,12 @@ router.get('/products/:product/markets/:market/document', handle(async (req, res
 router.get('/products/:product/markets/:market/entities', handle(async (req, res) => {
   const id = await resolveProductId(req.params.product);
   const { type, avatar, angle, limit } = req.query;
+  // With an approved product pack the pickers offer only its pinned angles and no avatar list; the bible viewer
+  // reads the document, and ?source=bible still returns the research entities.
+  if ((type === 'angle' || type === 'avatar') && req.query.source !== 'bible') {
+    const curated = await loadCuratedMarket(id, req.params.market);
+    if (curated) return res.json({ success: true, data: type === 'angle' ? curated.angles.map(curatedAngleEntity) : [] });
+  }
   res.json({ success: true, data: await listEntities(id, req.params.market, { type, avatar, angle, limit }) });
 }));
 

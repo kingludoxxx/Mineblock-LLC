@@ -4,7 +4,7 @@ import {
   Package, Plus, Pencil, Trash2, X, Image,
   Target, ChevronRight, ChevronDown, Loader2,
   Sparkles, Upload, ArrowLeft, Link, Globe, Zap,
-  AlertTriangle, MessageSquare, Tag, Check, Star,
+  AlertTriangle, MessageSquare, Tag, Check, Star, BookOpen,
 } from 'lucide-react';
 import { makeFieldState } from '../../lib/autoSaveField';
 import { imageNoteKey } from '../../lib/imageNoteKey';
@@ -196,6 +196,38 @@ function PhotoRule({ src, notes, onSave }) {
       rows={3}
       className="w-full text-[11px] leading-snug bg-black/30 border border-white/[0.05] rounded-md px-2 py-1.5 text-zinc-300 placeholder:text-zinc-600 focus:outline-none focus:border-emerald-500/30 resize-y"
     />
+  );
+}
+
+/* Product pack for one market: the approved product core the statics and brief tools read instead of the bible,
+   plus the angles pinned to that market. A market needs both before the tools switch to it. */
+function MarketPackEditor({ market, product, onSave }) {
+  const packs = product.market_packs && typeof product.market_packs === 'object' ? product.market_packs : {};
+  const saved = typeof packs[market.market_key]?.core === 'string' ? packs[market.market_key].core : '';
+  const [text, setText] = useState(saved);
+  useEffect(() => { setText(saved); }, [saved]);
+  const pinned = (Array.isArray(product.angles) ? product.angles : []).filter((a) => a && a.market === market.market_key);
+  const active = saved.trim() && pinned.length > 0;
+  return (
+    <div className="space-y-2">
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="text-xs font-semibold text-zinc-200">{market.label || market.market_key}</span>
+        <span className={`text-[10px] px-1.5 py-0.5 rounded border ${active ? 'border-emerald-500/30 text-emerald-300' : 'border-white/[0.08] text-zinc-500'}`}>
+          {active ? 'Tools read this pack' : 'Tools read the bible (needs a core and at least one pinned angle)'}
+        </span>
+      </div>
+      <textarea
+        value={text}
+        onChange={(e) => setText(e.target.value)}
+        onBlur={() => { if (text.trim() !== saved.trim()) onSave(market.market_key, text.trim()); }}
+        rows={12}
+        placeholder="Product core: what it is, what it looks like, how it is used, what is included, price and guarantee, the mechanism, the honest timeline, who it is not for, banned claims."
+        className="w-full text-xs leading-relaxed bg-black/30 border border-white/[0.05] rounded-lg px-3 py-2 text-zinc-300 placeholder:text-zinc-600 focus:outline-none focus:border-emerald-500/30 resize-y"
+      />
+      <p className="text-[11px] text-zinc-500">
+        Pinned angles: {pinned.length ? pinned.map((a) => a.name).join(' · ') : 'none (add angles with this market in Ad Angles)'}
+      </p>
+    </div>
   );
 }
 
@@ -509,6 +541,19 @@ function ProductDetailView({ product, onBack, onFieldSave, onAiFill, onProductCh
     setImageUrlInput('');
   };
 
+  const saveMarketPack = async (marketKey, core) => {
+    const current = productRef.current.market_packs && typeof productRef.current.market_packs === 'object' ? productRef.current.market_packs : {};
+    const next = { ...current, [marketKey]: { ...(current[marketKey] || {}), core, updated_at: new Date().toISOString() } };
+    if (!core) delete next[marketKey];
+    productRef.current = { ...productRef.current, market_packs: next };
+    onProductChange(productRef.current);
+    try {
+      await onFieldSave('market_packs', next);
+    } catch (err) {
+      alert(`Failed to save the product pack: ${err?.response?.data?.error?.message || err?.message || 'Unknown error'}`);
+    }
+  };
+
   const savePhotoRule = async (key, text) => {
     const current = productRef.current.image_notes && typeof productRef.current.image_notes === 'object' ? productRef.current.image_notes : {};
     const next = { ...current };
@@ -662,6 +707,20 @@ function ProductDetailView({ product, onBack, onFieldSave, onAiFill, onProductCh
 
       {/* Sections */}
       <div className="space-y-3">
+        {bibleMarkets.length > 0 && (
+          <CollapsibleSection
+            icon={BookOpen}
+            title="Product Pack"
+            subtitle="What the statics and brief tools know, per market. The Product Bible stays research only."
+            defaultOpen
+          >
+            <div className="space-y-5">
+              {bibleMarkets.map((m) => (
+                <MarketPackEditor key={m.market_key} market={m} product={product} onSave={saveMarketPack} />
+              ))}
+            </div>
+          </CollapsibleSection>
+        )}
         {/* AI Brand Intelligence */}
         <CollapsibleSection
           icon={Globe}
@@ -1105,11 +1164,11 @@ export default function Assets() {
   // Normalize a product so JSONB fields are always arrays/objects, never strings
   const normalizeProduct = (p) => {
     if (!p) return p;
-    const jsonbFields = ['product_images', 'logos', 'fonts', 'benefits', 'angles', 'scripts', 'offers', 'image_notes'];
+    const jsonbFields = ['product_images', 'logos', 'fonts', 'benefits', 'angles', 'scripts', 'offers', 'image_notes', 'market_packs'];
     const out = { ...p };
     for (const f of jsonbFields) {
       if (typeof out[f] === 'string') {
-        try { out[f] = JSON.parse(out[f]); } catch { out[f] = f === 'image_notes' ? {} : []; }
+        try { out[f] = JSON.parse(out[f]); } catch { out[f] = (f === 'image_notes' || f === 'market_packs') ? {} : []; }
       }
     }
     return out;

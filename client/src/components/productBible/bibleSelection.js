@@ -45,6 +45,12 @@ export function groupAnglesByTier(angles) {
   return [...TIER_ORDER, 'Other'].filter((t) => groups.has(t)).map((t) => ({ tier: t, angles: groups.get(t) }));
 }
 
+/** True when the angles are a product pack's pinned angles (no tiers), not the research bible's. */
+export function pinnedOnly(angles) {
+  const list = angles || [];
+  return list.length > 0 && list.every((a) => !a?.tier);
+}
+
 /** Names of the avatars an angle fits, for a caption. */
 export function fitAvatarNames(angle, avatars) {
   if (!angle) return [];

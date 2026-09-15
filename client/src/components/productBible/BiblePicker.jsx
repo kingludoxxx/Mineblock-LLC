@@ -13,7 +13,7 @@ import { BookOpen, Loader2, RotateCw } from 'lucide-react';
 import { fetchBibleProducts, fetchBibleEntities, peekBibleEntities, bibleErrorText } from './bibleApi';
 import {
   AVATAR_TYPE_LABEL, sortAvatars, anglesForAvatar, groupAnglesByTier, fitAvatarNames, toBibleBody,
-  sameProduct, loadRemembered, remember, marketLabel,
+  sameProduct, loadRemembered, remember, marketLabel, pinnedOnly,
 } from './bibleSelection';
 
 const SELECT_CLS = 'w-full bg-[#0a0a0a] border border-white/[0.06] rounded-lg px-3 py-2 text-sm text-zinc-200 focus:outline-none focus:ring-1 focus:ring-[#c9a84c]/40 focus:border-[#c9a84c]/30 cursor-pointer appearance-none transition-colors hover:border-white/[0.12] disabled:opacity-50 disabled:cursor-not-allowed truncate';
@@ -249,7 +249,7 @@ export default function BiblePicker({
 
       {product && market && !entError && (
         <>
-          <div className={field}>
+          <div className={field} hidden={!entLoading && avatars.length === 0 && angles.length > 0}>
             <label htmlFor={`${uid}-avatar`} className={LABEL_CLS}>Avatar</label>
             <select
               id={`${uid}-avatar`}
@@ -292,12 +292,12 @@ export default function BiblePicker({
                 className={SELECT_CLS}
                 style={SELECT_STYLE}
               >
-                <option value="">Auto (best from the bible)</option>
+                <option value="">{pinnedOnly(angles) ? 'Auto (best of our angles)' : 'Auto (best from the bible)'}</option>
                 {angleRow && !offeredAngles.includes(angleRow) && (
                   <option value={angleRow.key}>{angleRow.title || angleRow.key}</option>
                 )}
                 {tierGroups.map((g) => (
-                  <optgroup key={g.tier} label={g.tier === 'Other' ? 'Other' : `Tier ${g.tier}`}>
+                  <optgroup key={g.tier} label={g.tier === 'Other' ? (pinnedOnly(angles) ? 'Our angles' : 'Other') : `Tier ${g.tier}`}>
                     {g.angles.map((a) => (
                       <option key={a.key} value={a.key}>{a.title || a.key}</option>
                     ))}
