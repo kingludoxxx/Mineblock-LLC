@@ -28,6 +28,7 @@ import {
   enforceTextShape,
   describeShapeReport,
   enforceOfferClaims,
+  enforcePriceDigits,
   describeOfferReport,
   assessReferenceUsability,
   buildClaudeAnalysisPrompt,
@@ -3244,6 +3245,11 @@ router.post('/generate', authenticate, async (req, res) => {
         }
         claudeResult = shaped.result;
       }
+      {
+        const digits = enforcePriceDigits(claudeResult, product);
+        if (digits.report.changed.length) console.log(`[staticsGeneration] price digits — ${digits.report.changed.map(c => `"${c.from}"→"${c.to}"`).join(' · ')}`);
+        claudeResult = digits.result;
+      }
 
       // OFFER CLAIMS — a discount code either exists in the operator's product
       // profile or it does not. Anything else gets replaced with the real code
@@ -4709,6 +4715,11 @@ router.post('/iterate/:creativeId', authenticate, async (req, res) => {
               console.warn('[staticsGeneration] ⚠️ Claude asserted the reference HAS text but returned none — copy was NOT stripped; treat this generation as suspect');
             }
             claudeResult = shaped.result;
+          }
+          {
+            const digits = enforcePriceDigits(claudeResult, product);
+            if (digits.report.changed.length) console.log(`[staticsGeneration] price digits — ${digits.report.changed.map(c => `"${c.from}"→"${c.to}"`).join(' · ')}`);
+            claudeResult = digits.result;
           }
 
 
@@ -7964,6 +7975,11 @@ async function _doRegenerateBrokenPreviews(req, res) {
               console.warn('[staticsGeneration] ⚠️ Claude asserted the reference HAS text but returned none — copy was NOT stripped; treat this generation as suspect');
             }
             claudeResult = shaped.result;
+          }
+          {
+            const digits = enforcePriceDigits(claudeResult, product);
+            if (digits.report.changed.length) console.log(`[staticsGeneration] price digits — ${digits.report.changed.map(c => `"${c.from}"→"${c.to}"`).join(' · ')}`);
+            claudeResult = digits.result;
           }
 
 

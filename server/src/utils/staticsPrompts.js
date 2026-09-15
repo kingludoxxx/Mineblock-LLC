@@ -218,7 +218,12 @@ export function renderCommercialStructureBlock(offer) {
 
 3. Our offer for this market. These are the ONLY commercial terms you may use:
 ${terms.length ? terms.map((t) => `   ${t}`).join('\n') : '   No discount or code exists for this market. A promo reference keeps its layout with our price only: no code, no percentage, no savings figure.'}
-   Never write any other code, percentage or savings figure.`;
+   Never write any other code, percentage or savings figure.
+
+4. PRICES AND NUMBERS (overrides any earlier rule about writing amounts): write every price, discount, saving,
+   percentage and count in digits with its symbol, exactly as a shopper reads it on a price tag: "$197",
+   "$99", "20% OFF", "90 nights". Never spell an amount out in words ("One Hundred Ninety Seven Dollars",
+   "Twenty Percent").`;
 }
 
 /**
@@ -795,6 +800,55 @@ export function enforceOfferClaims(claudeResult = {}, product = {}) {
     }
   }
   return { result: { ...claudeResult, adapted_text: next }, report };
+}
+
+// PRICES AS DIGITS — found live 2026-09-15: a store's saved analysis prompt still said "spell out any dollar
+// amounts as words", and a promo static printed "SAVE UP TO One Hundred Ninety Seven Dollars". The prompt rule in
+// renderCommercialStructureBlock fixed the offer line but a bullet still slipped through 1 run in 3, so the copy is
+// also rewritten in code. Bible products only: legacy stores keep whatever their own prompt asks for.
+const NUM_UNITS = { zero: 0, one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10,
+  eleven: 11, twelve: 12, thirteen: 13, fourteen: 14, fifteen: 15, sixteen: 16, seventeen: 17, eighteen: 18, nineteen: 19 };
+const NUM_TENS = { twenty: 20, thirty: 30, forty: 40, fifty: 50, sixty: 60, seventy: 70, eighty: 80, ninety: 90 };
+const NUM_WORD = `(?:${[...Object.keys(NUM_UNITS), ...Object.keys(NUM_TENS), 'hundred', 'thousand'].join('|')})`;
+const SPELLED_AMOUNT = new RegExp(`\\b(${NUM_WORD}(?:[\\s-]+(?:and[\\s-]+)?${NUM_WORD})*)[\\s-]+(dollars?|bucks|percent|per\\s+cent)\\b`, 'gi');
+
+function wordsToNumber(phrase) {
+  let total = 0; let current = 0;
+  for (const w of phrase.toLowerCase().split(/[\s-]+/)) {
+    if (w === 'and') continue;
+    if (w in NUM_UNITS) current += NUM_UNITS[w];
+    else if (w in NUM_TENS) current += NUM_TENS[w];
+    else if (w === 'hundred') current = (current || 1) * 100;
+    else if (w === 'thousand') { total += (current || 1) * 1000; current = 0; }
+    else return null;
+  }
+  return total + current;
+}
+
+export function digitizeSpelledAmounts(text) {
+  if (typeof text !== 'string' || !text) return text;
+  return text.replace(SPELLED_AMOUNT, (whole, words, unit) => {
+    const n = wordsToNumber(words);
+    if (n === null) return whole;
+    return /^per/i.test(unit) ? `${n}%` : `$${n}`;
+  });
+}
+
+export function enforcePriceDigits(claudeResult = {}, product = {}) {
+  const report = { changed: [] };
+  const adapted = claudeResult?.adapted_text;
+  if (!product?._bible || !adapted || typeof adapted !== 'object') return { result: claudeResult, report };
+  const walk = (v) => {
+    if (typeof v === 'string') {
+      const out = digitizeSpelledAmounts(v);
+      if (out !== v) report.changed.push({ from: v, to: out });
+      return out;
+    }
+    if (Array.isArray(v)) return v.map(walk);
+    if (v && typeof v === 'object') return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, walk(x)]));
+    return v;
+  };
+  return { result: { ...claudeResult, adapted_text: walk(adapted) }, report };
 }
 
 /** One-line log summary for an offer report, or null when nothing changed. */
