@@ -71,7 +71,12 @@ const handle = (fn) => async (req, res) => {
 };
 
 router.get('/products', handle(async (req, res) => {
-  res.json({ success: true, data: await listProductsWithMarkets() });
+  const products = await listProductsWithMarkets();
+  // has_pack: the market has an approved product pack, so pickers open on it first.
+  for (const p of products) {
+    for (const m of p.markets || []) m.has_pack = !!(await loadCuratedMarket(p.id, m.market_key));
+  }
+  res.json({ success: true, data: products });
 }));
 
 router.get('/products/:product/markets', handle(async (req, res) => {

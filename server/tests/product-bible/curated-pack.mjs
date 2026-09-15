@@ -151,6 +151,12 @@ ok(buildBriefProductContext(freshRow, chosen) === chosen.text, 'C7 brief product
 const alphaStill = await pb.resolvePipelineBible({ bible: { product: 'TD1', market: 'alpha' }, productRow: bibleRow, job: 'brief' }, db);
 ok(!alphaStill.curated && alphaStill.text.includes('PRODUCT BIBLE CONTEXT') && alphaStill.text.includes('alpha'), 'C7 alpha (no core) still reads its bible');
 
+// ── C9 ──
+const noHint = await pb.resolvePipelineBible({ productRow: bibleRow, hintText: 'nothing names a market', job: 'brief' }, db);
+ok(noHint.market.key === 'beta' && noHint.curated && noHint.marketPicked === 'auto', 'C9 no market hint -> the market with a pack (beta), not the first by sort order (alpha)', JSON.stringify(noHint.market));
+const hinted = await pb.resolvePipelineBible({ productRow: bibleRow, hintText: 'Alpha Pain card', job: 'brief' }, db);
+ok(hinted.market.key === 'alpha', 'C9 a card that names a market still gets that market');
+
 // ── C8 ──
 process.env.BRAIN_SERVICE_TOKEN = 'curated-pack-test-token-0123456789';
 const express = (await import('express')).default;
@@ -167,6 +173,9 @@ const research = await get(`/products/${bibleRow.id}/markets/beta/entities?type=
 ok(angEnt.status === 200 && angEnt.body?.data?.map((a) => a.title).join('|') === 'Pinned One|Pinned Two' && angEnt.body.data.every((a) => a.tier === null), 'C8 entities API: only pinned angles, no tiers', JSON.stringify(angEnt).slice(0, 400));
 ok(avEnt.status === 200 && Array.isArray(avEnt.body?.data) && avEnt.body.data.length === 0, 'C8 entities API: no avatars with a pack', JSON.stringify(avEnt).slice(0, 300));
 ok(research.status === 200 && research.body?.data?.length === 3, 'C8 ?source=bible still returns the research angles', JSON.stringify(research).slice(0, 300));
+const prods = await get('/products');
+const tdv = (prods.body?.data || []).find((p) => p.id === bibleRow.id);
+ok(tdv && tdv.markets.find((m) => m.market_key === 'beta')?.has_pack === true && tdv.markets.find((m) => m.market_key === 'alpha')?.has_pack === false, 'C8 products API flags which markets have a pack', JSON.stringify(tdv).slice(0, 400));
 server.close();
 
 console.log(`\n${pass} passed, ${fail} failed`);

@@ -81,7 +81,12 @@ export default function BiblePicker({
       return;
     }
     const saved = loadRemembered(p.id);
-    const mk = (p.markets || []).find((m) => m.market_key === saved?.market) || (p.markets || [])[0];
+    const list = p.markets || [];
+    // Markets with an approved product pack open first; a remembered market wins only when it has one too
+    // (or when no market has a pack).
+    const packed = list.filter((m) => m.has_pack);
+    const remembered = list.find((m) => m.market_key === saved?.market);
+    const mk = (remembered && (remembered.has_pack || packed.length === 0) ? remembered : null) || packed[0] || list[0];
     pendingRestore.current = saved && mk && saved.market === mk.market_key ? saved : null;
     setProduct(String(p.id));
     applyMarket(String(p.id), mk?.market_key || '');

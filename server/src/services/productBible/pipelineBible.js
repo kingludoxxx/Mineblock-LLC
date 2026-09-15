@@ -108,6 +108,12 @@ export async function resolvePipelineBible({ bible = null, productRow = null, hi
     const inferred = inferMarket(markets, hintText);
     marketKey = inferred.market.market_key;
     marketPicked = inferred.how;
+    if (inferred.how === 'auto') {
+      // Nothing named a market: prefer one the operator approved a product pack for over the first by sort order.
+      for (const m of markets) {
+        if (await loadCuratedMarket(productId, m.market_key, db)) { marketKey = m.market_key; break; }
+      }
+    }
   }
 
   const pack = await buildBibleContextPack({
