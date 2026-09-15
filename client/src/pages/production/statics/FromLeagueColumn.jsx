@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
-import { Globe, Loader2, Sparkles, Settings, X, ZoomIn, CheckCircle2, LayoutTemplate, Zap } from 'lucide-react';
+import { Globe, Loader2, Sparkles, Settings, X, ZoomIn, CheckCircle2, LayoutTemplate, Zap, ListChecks, Square, CheckSquare } from 'lucide-react';
 import api from '../../../services/api';
 import { BrandFollowConfigModal } from './BrandFollowConfigModal';
 
@@ -29,7 +29,11 @@ function writePersisted(brandIds) {
  * No queueing or generation happens directly from this column — it's a
  * discovery surface, generation always flows through Reference.
  */
-export function FromLeagueColumn({ onUseAsReference, onQueueLeagueRef, refreshTick = 0 }) {
+export function FromLeagueColumn({ onUseAsReference, onQueueLeagueRef, onQueueLeagueRefs, refreshTick = 0 }) {
+  // Multi-select: pick any number of references and queue them in one go.
+  const [selectMode, setSelectMode] = useState(false);
+  const [selectedIds, setSelectedIds] = useState(() => new Set());
+  const [queueingSelected, setQueueingSelected] = useState(false);
   const [brands, setBrands] = useState([]);
   const [selectedBrands, setSelectedBrands] = useState(() => readPersisted() || []);
   const [ads, setAds] = useState([]); // { ...ad, brand_id, brand_name }[]
@@ -149,6 +153,23 @@ export function FromLeagueColumn({ onUseAsReference, onQueueLeagueRef, refreshTi
   // The old "no brands selected" empty-state and brand filter are gone —
   // the column simply shows whatever was imported (zero or many).
   const visibleCount = visibleAds.length;
+  const selectedAds = visibleAds.filter((a) => selectedIds.has(a.id));
+  const toggleSelected = (id) => setSelectedIds((prev) => {
+    const next = new Set(prev);
+    if (next.has(id)) next.delete(id); else next.add(id);
+    return next;
+  });
+  const allSelected = visibleCount > 0 && selectedAds.length === visibleCount;
+  const queueSelected = async () => {
+    if (!onQueueLeagueRefs || selectedAds.length === 0 || queueingSelected) return;
+    setQueueingSelected(true);
+    try {
+      const inserted = await onQueueLeagueRefs(selectedAds);
+      if (inserted && inserted.length > 0) { setSelectedIds(new Set()); setSelectMode(false); }
+    } finally {
+      setQueueingSelected(false);
+    }
+  };
 
   return (
     <div className="flex flex-col min-w-[260px] max-w-[340px] flex-1 relative h-full">
@@ -164,6 +185,21 @@ export function FromLeagueColumn({ onUseAsReference, onQueueLeagueRef, refreshTi
           </span>
         </div>
         <div className="flex items-center gap-1.5">
+          {onQueueLeagueRefs && visibleCount > 0 && (
+            <button
+              type="button"
+              onClick={() => { setSelectMode((on) => !on); setSelectedIds(new Set()); }}
+              className={`inline-flex items-center gap-1 px-1.5 h-5 rounded text-[10px] font-mono border transition-colors cursor-pointer ${
+                selectMode
+                  ? 'border-[#c9a84c]/40 bg-[#c9a84c]/15 text-[#e8d5a3]'
+                  : 'border-white/[0.08] bg-white/[0.03] text-zinc-400 hover:text-zinc-200'
+              }`}
+              title={selectMode ? 'Leave select mode' : 'Select several references and queue them at once'}
+            >
+              <ListChecks className="w-3 h-3" />
+              {selectMode ? 'Done' : 'Select'}
+            </button>
+          )}
           {/* Auto — reflects whether any followed brand auto-syncs. Read-only
               here: the schedule itself is per-brand, so the gear is the one
               place it can be changed without being ambiguous. */}
@@ -229,6 +265,30 @@ export function FromLeagueColumn({ onUseAsReference, onQueueLeagueRef, refreshTi
           followed brands flow in by default; per-brand inclusion/exclusion
           is controlled there. */}
 
+      {selectMode && (
+        <div className="mb-3 px-2 py-2 rounded-lg bg-[#c9a84c]/[0.05] border border-[#c9a84c]/20 flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            onClick={() => setSelectedIds(allSelected ? new Set() : new Set(visibleAds.map((a) => a.id)))}
+            className="inline-flex items-center gap-1 text-[11px] text-zinc-300 hover:text-white cursor-pointer"
+          >
+            {allSelected ? <CheckSquare className="w-3.5 h-3.5 text-[#c9a84c]" /> : <Square className="w-3.5 h-3.5" />}
+            {allSelected ? 'Clear all' : `Select all (${visibleCount})`}
+          </button>
+          <span className="text-[11px] text-zinc-500">{selectedAds.length} selected</span>
+          <button
+            type="button"
+            onClick={queueSelected}
+            disabled={selectedAds.length === 0 || queueingSelected}
+            className="ml-auto inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-[#d4a93c] text-black text-[11px] font-semibold hover:bg-[#e0b74a] disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer"
+            title="Queue one generation per selected reference, using the sidebar's product, angle and bible"
+          >
+            {queueingSelected ? <Loader2 className="w-3 h-3 animate-spin" /> : <Zap className="w-3 h-3" />}
+            Queue {selectedAds.length || ''}
+          </button>
+        </div>
+      )}
+
       {/* Body */}
       <div className="flex-1 overflow-y-auto space-y-3 pr-1 custom-scrollbar">
         {error && (
@@ -252,6 +312,9 @@ export function FromLeagueColumn({ onUseAsReference, onQueueLeagueRef, refreshTi
             ad={ad}
             onUseAsReference={onUseAsReference}
             onQueueLeagueRef={onQueueLeagueRef}
+            selectMode={selectMode}
+            selected={selectedIds.has(ad.id)}
+            onToggleSelect={() => toggleSelected(ad.id)}
             onDismiss={async () => {
               // Hard-delete the spy_creatives row so the card never comes
               // back. Optimistic hide first; rollback on failure.
@@ -278,7 +341,7 @@ export function FromLeagueColumn({ onUseAsReference, onQueueLeagueRef, refreshTi
   );
 }
 
-function LeagueAdCard({ ad, onUseAsReference, onQueueLeagueRef, onDismiss }) {
+function LeagueAdCard({ ad, onUseAsReference, onQueueLeagueRef, onDismiss, selectMode = false, selected = false, onToggleSelect }) {
   const [busy, setBusy] = useState(false);
   const [picked, setPicked] = useState(false);
   const [previewOpen, setPreviewOpen] = useState(false);
@@ -318,7 +381,24 @@ function LeagueAdCard({ ad, onUseAsReference, onQueueLeagueRef, onDismiss }) {
   };
 
   return (
-    <div className="glass-card border border-white/[0.05] rounded-xl overflow-hidden hover:border-white/[0.12] transition-all">
+    <div className={`relative glass-card border rounded-xl overflow-hidden transition-all ${
+      selectMode && selected ? 'border-[#c9a84c]/60 ring-1 ring-[#c9a84c]/40' : 'border-white/[0.05] hover:border-white/[0.12]'
+    }`}>
+      {selectMode && (
+        <button
+          type="button"
+          onClick={onToggleSelect}
+          aria-pressed={selected}
+          className="absolute inset-0 z-10 cursor-pointer bg-transparent"
+          title={selected ? 'Unselect' : 'Select'}
+        >
+          <span className={`absolute top-2 right-2 inline-flex items-center justify-center w-6 h-6 rounded-md border ${
+            selected ? 'bg-[#d4a93c] border-[#d4a93c] text-black' : 'bg-black/60 border-white/30 text-transparent'
+          }`}>
+            <CheckCircle2 className="w-4 h-4" />
+          </span>
+        </button>
+      )}
       {thumb ? (
         <button
           type="button"

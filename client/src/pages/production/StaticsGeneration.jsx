@@ -1970,49 +1970,59 @@ export default function StaticsGeneration() {
   // click enqueues one /generate-batch item with the current sidebar angle +
   // product, using the clicked ad's image as the reference. No modal, no
   // extra clicks.
-  const handleQueueLeagueRef = async (ad) => {
+  const handleQueueLeagueRef = (ad) => handleQueueLeagueRefs([ad]);
+
+  // Queue one generation per League reference, all in ONE /generate-batch call, with the sidebar's current
+  // product, angle, engine and bible. The queue worker then runs them one by one.
+  const handleQueueLeagueRefs = async (ads) => {
     if (!selectedProductId) {
       addToast('Pick a product first before queueing from League', 'error');
-      return;
+      return null;
     }
-    const refUrl = ad?.image_url || ad?.thumbnail || ad?.reference_thumbnail;
-    if (!refUrl) {
-      addToast('That League ad has no image URL', 'error');
-      return;
+    const withImage = (ads || []).filter((ad) => ad?.image_url || ad?.thumbnail || ad?.reference_thumbnail);
+    if (withImage.length === 0) {
+      addToast(ads?.length > 1 ? 'None of the selected League ads has an image URL' : 'That League ad has no image URL', 'error');
+      return null;
     }
     const productImageIndex = productImageIndexTouched
       ? Math.max(0, (selectedProductRef.current?.product_images || []).indexOf(productImageUrl))
       : null;
-    const refName = ad.headline
-      || (typeof ad.body_text === 'string' ? ad.body_text.slice(0, 40) : null)
-      || ad.ad_archive_id
-      || 'League Ref';
-    const sourceLabel = ad.brand_name ? `${ad.brand_name} • League` : 'League';
-    const item = {
-      product_id: selectedProductId,
-      product_name: productName,
-      product_image_index: productImageIndex,
-      product_payload: buildProductPayloadSnapshot(),
-      references: [trimReferenceForBatch({
-        id: ad.id || `league-${Date.now()}`,
-        image_url: refUrl,
-        thumbnail: refUrl,
-        name: refName,
-        source_label: sourceLabel,
-      })],
-      angle: !customAngle ? (marketingAngle || null) : null,
-      angle_data: !customAngle && legacyAngleData(selectedAngleData) ? selectedAngleData : null,
-      custom_angle: customAngle || null,
-      image_engine: imageEngine || 'openai',
-      ...(bibleSel ? { bible: bibleWithAngle(currentBibleAngleKey()) } : {}),
-    };
+    const productPayload = buildProductPayloadSnapshot();
+    const items = withImage.map((ad) => {
+      const refUrl = ad.image_url || ad.thumbnail || ad.reference_thumbnail;
+      const refName = ad.headline
+        || (typeof ad.body_text === 'string' ? ad.body_text.slice(0, 40) : null)
+        || ad.ad_archive_id
+        || 'League Ref';
+      const sourceLabel = ad.brand_name ? `${ad.brand_name} • League` : 'League';
+      return {
+        product_id: selectedProductId,
+        product_name: productName,
+        product_image_index: productImageIndex,
+        product_payload: productPayload,
+        references: [trimReferenceForBatch({
+          id: ad.id || `league-${Date.now()}`,
+          image_url: refUrl,
+          thumbnail: refUrl,
+          name: refName,
+          source_label: sourceLabel,
+        })],
+        angle: !customAngle ? (marketingAngle || null) : null,
+        angle_data: !customAngle && legacyAngleData(selectedAngleData) ? selectedAngleData : null,
+        custom_angle: customAngle || null,
+        image_engine: imageEngine || 'openai',
+        ...(bibleSel ? { bible: bibleWithAngle(currentBibleAngleKey()) } : {}),
+      };
+    });
     mutationInFlight.current = true;
     try {
-      const inserted = await enqueueItems([item]);
+      const inserted = await enqueueItems(items);
       if (inserted && inserted.length > 0) {
         const angleLabel = customAngle || marketingAngle || 'default angle';
-        addToast(`Queued for "${angleLabel}"`, 'success', 3000);
+        const skipped = (ads?.length || 0) - withImage.length;
+        addToast(`Queued ${inserted.length} generation${inserted.length === 1 ? '' : 's'} for "${angleLabel}"${skipped > 0 ? ` (${skipped} without an image skipped)` : ''}`, 'success', 4000);
       }
+      return inserted;
     } finally {
       mutationInFlight.current = false;
     }
@@ -2846,6 +2856,7 @@ export default function StaticsGeneration() {
                     setReferenceFile(null);
                   }}
                   onQueueLeagueRef={handleQueueLeagueRef}
+                  onQueueLeagueRefs={handleQueueLeagueRefs}
                   productAngles={effectiveAngles}
                   onQueueRefWithAngles={async (ref, anglesPicked) => {
                     // One reference image × N angles → N /generate-batch items.

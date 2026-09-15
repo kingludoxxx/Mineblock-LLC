@@ -1200,7 +1200,7 @@ function LaunchedColumn({ column, items, onCardClick, onStatusChange, onRefresh 
 // Main PipelineView component
 // ---------------------------------------------------------------------------
 
-export function PipelineView({ creatives = [], onStatusChange, onAngleChange, onCardClick, onRegenerate, onRefresh, loading, onOpenTemplates, onEditTemplate, onOpenCopySets, queue = [], onRemoveFromQueue, productId = null, onSelectReference, onQueueLeagueRef, onAddSelectedToQueue, productAngles = [], onQueueRefWithAngles, templatesVersion = 0, onEditClick }) {
+export function PipelineView({ creatives = [], onStatusChange, onAngleChange, onCardClick, onRegenerate, onRefresh, loading, onOpenTemplates, onEditTemplate, onOpenCopySets, queue = [], onRemoveFromQueue, productId = null, onSelectReference, onQueueLeagueRef, onQueueLeagueRefs, onAddSelectedToQueue, productAngles = [], onQueueRefWithAngles, templatesVersion = 0, onEditClick }) {
   // Bucket creatives into columns by status.
   // Phase A: 'generating' rows are folded into the review column (the
   // dedicated Generating column was removed). The CreativeCard already
@@ -1506,6 +1506,7 @@ export function PipelineView({ creatives = [], onStatusChange, onAngleChange, on
         <FromLeagueColumn
           onUseAsReference={onSelectReference}
           onQueueLeagueRef={onQueueLeagueRef}
+          onQueueLeagueRefs={onQueueLeagueRefs}
           refreshTick={leagueRefreshTick}
         />
 
