@@ -884,14 +884,61 @@ export function describeShapeReport(report) {
   return bits.length ? bits.join(' · ') : null;
 }
 
-export function buildNanoBananaImagePrompt(claudeResult = {}, product = {}, template = '', iterationVars = {}, { maxChars = null } = {}) {
+export function buildNanoBananaImagePrompt(claudeResult = {}, product = {}, template = '', iterationVars = {}, { maxChars = null, referenceCount = null } = {}) {
   if (hasBible(product) && product._bible.image && typeof product._bible.image.text === 'string') {
-    return buildBibleImagePrompt(claudeResult, product, template, iterationVars, maxChars);
+    return buildBibleImagePrompt(claudeResult, product, template, iterationVars, maxChars, referenceCount);
   }
-  return buildLegacyImagePrompt(claudeResult, product, template, iterationVars, maxChars);
+  return buildLegacyImagePrompt(claudeResult, product, template, iterationVars, maxChars, referenceCount);
 }
 
-function buildLegacyImagePrompt(claudeResult, product, template, iterationVars, maxChars) {
+// ── PRODUCT REFERENCE PHOTOS ─────────────────────────────────────────────────
+// Found live 2026-09-15: Reevo's product has 4 correct photos (box, open case with device, device on its patch, worn
+// under the chin) but every image call sent ONE of them. 14 of 19 cards got only the box and the model drew a device
+// and a charging case it had never seen. So every call sends up to MAX_PRODUCT_REFERENCES photos, the chosen shot
+// first, and both prompts say to show only product objects that appear in the photos.
+export const MAX_PRODUCT_REFERENCES = 5; // OpenAI edits take 16 inputs, Kie nano-banana edit 10
+
+export function selectProductReferences(images, primaryIndex = 0, max = MAX_PRODUCT_REFERENCES) {
+  let list = images;
+  if (typeof list === 'string') { try { list = JSON.parse(list); } catch { return []; } }
+  if (!Array.isArray(list)) return [];
+  const urlOf = (e) => (typeof e === 'string' && e.length > 10 ? e : (e && typeof e === 'object' && typeof e.url === 'string' && e.url.length > 10 ? e.url : null));
+  const order = Number.isInteger(primaryIndex) && primaryIndex >= 0 && primaryIndex < list.length
+    ? [primaryIndex, ...list.map((_, i) => i).filter((i) => i !== primaryIndex)]
+    : list.map((_, i) => i);
+  const out = [];
+  for (const i of order) {
+    const u = urlOf(list[i]);
+    if (u && !out.includes(u)) out.push(u);
+    if (out.length >= max) break;
+  }
+  return out;
+}
+
+// Analysis-step note: the product photos follow the reference ad in the message, so they start at image 2.
+export function productReferencesNote(count, { firstImageNumber = 2 } = {}) {
+  if (!Number.isInteger(count) || count < 1) return '';
+  const rule = 'Only describe product objects (device, case, box, packaging, patch, accessory) that you can see in these photos, with the shape, colour and branding they show. Never describe a product part, accessory or packaging that none of the photos shows, even if the product notes mention it.';
+  if (count === 1) {
+    return `\n\nIMAGE ${firstImageNumber} is a photo of OUR product. Use it as the visual source of truth for product_visual_for_generation. ${rule}`;
+  }
+  const last = firstImageNumber + count - 1;
+  const labels = Array.from({ length: count }, (_, i) => `product photo ${i + 1} = image ${firstImageNumber + i}`).join(', ');
+  return `\n\nIMAGES ${firstImageNumber} TO ${last} are ${count} photos of OUR product from different views (${labels}; photo 1 is the main shot). Use them together as the visual source of truth for product_visual_for_generation, and say which photo each product object comes from. ${rule}`;
+}
+
+// Image-step rule, placed first (with the brand rule) so no shortening can cut it.
+function productReferencesRule(count) {
+  const n = Number(count);
+  const photos = n === 1 ? '1 PRODUCT PHOTO ATTACHED' : `${n} PRODUCT PHOTOS ATTACHED`;
+  const which = n === 1 ? 'The attached image shows' : `Images 1 to ${n} all show {{PRODUCT_NAME}} from different views; image 1 is the main shot. Together they show`;
+  return `${photos} (product reference rule, overrides the reference ad): ${which} exactly how every part of {{PRODUCT_NAME}} looks. Every product object in the scene (device, case, box, packaging, patch, accessory) must appear in at least one attached photo and match it exactly: shape, colour, material, proportions, label and branding. If the brief asks for a product object that no attached photo shows, leave it out. Never invent a product part, accessory, attachment, case or packaging.
+
+`;
+}
+
+function buildLegacyImagePrompt(claudeResult, product, template, iterationVars, maxChars, referenceCount = null) {
+  const refCount = Number.isInteger(referenceCount) && referenceCount >= 1 ? referenceCount : null;
   const hasProduct = claudeResult.reference_has_product_visual !== false;
   const productVisual = (claudeResult.product_visual_for_generation || '').trim();
   const peopleCount = claudeResult.people_count ?? 0;
@@ -901,7 +948,15 @@ function buildLegacyImagePrompt(claudeResult, product, template, iterationVars, 
   // PRODUCT_INSTRUCTION — replaces section "1. PRODUCT" of the template
   let productInstruction;
   let productRule;
-  if (hasProduct) {
+  if (hasProduct && refCount) {
+    productInstruction = refCount === 1
+      ? `1. PRODUCT: The attached photo is the product reference. Render the product visually as follows: ${productVisual || `the ${product.name || 'product'} as shown in the photo`}.`
+      : `1. PRODUCT: ${refCount} product photos are attached (images 1 to ${refCount}, image 1 is the main shot). Use them together as the product reference. Render the product visually as follows: ${productVisual || `the ${product.name || 'product'} as shown in the photos`}.`;
+    productRule = `- The product must appear prominently in the scene, matching the attached product photos exactly (shape, color, label, branding)
+- Only show product objects that appear in the attached photos; never invent a part, accessory, case or packaging
+- NEVER overlay logo or brand marks directly ON TOP OF the physical product itself — any branding should be on the product's surface as designed, not added as floating text/graphics on top
+- NEVER render the product in retail packaging (box, wrapper, blister pack) unless the reference image or a product photo shows it`;
+  } else if (hasProduct) {
     productInstruction =
 `1. PRODUCT: Use the product image (the ONLY image attached) as the SOLE product reference. Render the product visually as follows: ${productVisual || `the ${product.name || 'product'} as shown in the input image`}.`;
     productRule = `- The product must appear prominently in the scene, matching the input product image exactly (shape, color, label, branding)
@@ -1007,7 +1062,8 @@ function buildLegacyImagePrompt(claudeResult, product, template, iterationVars, 
   };
   // The rule is prepended, so JSON-escaping is decided by the operator's template as it was, not by the rule's text.
   const jsonSafe = typeof template === 'string' && template.trimStart().startsWith('{');
-  return fitImagePrompt(OTHER_BRANDS_RULE + (template || ''), vars, maxChars, jsonSafe);
+  const lead = refCount && hasProduct ? productReferencesRule(refCount) + OTHER_BRANDS_RULE : OTHER_BRANDS_RULE;
+  return fitImagePrompt(lead + (template || ''), vars, maxChars, jsonSafe);
 }
 
 // Marketing vars an image template may reference. With a bible they are emptied: the static_image pack carries the
@@ -1028,7 +1084,7 @@ function trimBlockTo(text, limit) {
   return `${at > limit * 0.5 ? cut.slice(0, at) : cut}\n[...trimmed]`;
 }
 
-function buildBibleImagePrompt(claudeResult, product, template, iterationVars, maxChars) {
+function buildBibleImagePrompt(claudeResult, product, template, iterationVars, maxChars, referenceCount = null) {
   const def = product._bible.angleDef;
   const profile = { ...(product.profile || {}) };
   const legacyKeys = { ONELINER: 'oneliner', TAGLINE: 'tagline', CATEGORY: 'category', BRAND_VOICE: 'brand_voice', CUSTOMER: 'customer',
@@ -1040,10 +1096,10 @@ function buildBibleImagePrompt(claudeResult, product, template, iterationVars, m
   profile.pricing = product._bible.copy.market?.price || profile.pricing || '';
   const stripped = { ...product, description: '', price: product._bible.copy.market?.price || product.price, profile, _angle: String(product._angle || '').startsWith(def.name) ? product._angle : def.name };
   const block = renderBibleBlock(product._bible.image.text);
-  if (!maxChars) return buildLegacyImagePrompt(claudeResult, stripped, template, iterationVars, null) + block;
-  let base = buildLegacyImagePrompt(claudeResult, stripped, template, iterationVars, maxChars);
+  if (!maxChars) return buildLegacyImagePrompt(claudeResult, stripped, template, iterationVars, null, referenceCount) + block;
+  let base = buildLegacyImagePrompt(claudeResult, stripped, template, iterationVars, maxChars, referenceCount);
   if (maxChars - base.length < MIN_BIBLE_IMAGE_CHARS) {
-    base = buildLegacyImagePrompt(claudeResult, stripped, template, iterationVars, Math.max(1, maxChars - MIN_BIBLE_IMAGE_CHARS));
+    base = buildLegacyImagePrompt(claudeResult, stripped, template, iterationVars, Math.max(1, maxChars - MIN_BIBLE_IMAGE_CHARS), referenceCount);
   }
   const room = maxChars - base.length;
   const fitted = trimBlockTo(block, room);

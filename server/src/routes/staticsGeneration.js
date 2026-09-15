@@ -29,6 +29,8 @@ import {
   describeShapeReport,
   enforceOfferClaims,
   enforcePriceDigits,
+  selectProductReferences,
+  productReferencesNote,
   describeOfferReport,
   assessReferenceUsability,
   buildClaudeAnalysisPrompt,
@@ -2434,6 +2436,38 @@ async function ensureHttpUrlGlobal(url, label = 'img') {
   return `${GLOBAL_SERVER_URL}/api/v1/statics-generation/tmp-img/${id}`;
 }
 
+// PRODUCT REFERENCE PHOTOS — every image call sends up to 4 photos of the product (the chosen shot first) instead of
+// one; see selectProductReferences in utils/staticsPrompts.js for the live incident. A photo that cannot be made
+// fetchable is skipped with a warning; the call only fails when none can.
+async function productReferenceHttpUrls(sources, label, tag = '[statics]') {
+  const out = [];
+  for (const src of sources) {
+    try {
+      const u = await ensureHttpUrlGlobal(src, label);
+      if (u && u.startsWith('http')) out.push(u);
+      else console.warn(`${tag} product photo skipped: not fetchable "${String(u || '').slice(0, 40)}"`);
+    } catch (e) {
+      console.warn(`${tag} product photo skipped: ${e.message}`);
+    }
+  }
+  return out;
+}
+
+// The same photos as Claude vision blocks, in the same order, for the analysis step.
+async function productReferenceClaudeBlocks(sources, tag = '[statics]') {
+  const blocks = [];
+  for (const src of sources) {
+    try {
+      const { base64, mediaType } = await resolveImage(src);
+      const shrunk = await shrinkForClaude(base64, mediaType);
+      blocks.push({ type: 'image', source: { type: 'base64', media_type: shrunk.mediaType, data: shrunk.base64 } });
+    } catch (e) {
+      console.warn(`${tag} product photo not attached to analysis: ${e.message}`);
+    }
+  }
+  return blocks;
+}
+
 // ─────────────────────────────────────────────────────────────────────────
 // Statics prompt settings (3-prompt architecture)
 // ─────────────────────────────────────────────────────────────────────────
@@ -2981,6 +3015,7 @@ router.post('/generate', authenticate, async (req, res) => {
       // Placeholder kept for downstream code that expects an int — we'll assign it
       // once we have the product row.
       let productImageIndex = 0;
+      let productReferenceSources = [];
       // Image engine selector — defaults to NanoBanana for backwards compat.
       // Resolved once per /generate call; every ratio (parent + children) uses
       // the same engine so the creative is consistent.
@@ -3061,6 +3096,7 @@ router.post('/generate', authenticate, async (req, res) => {
             // outdated code path (frontend picker default = 0 always).
             const dbImage = productImageAtIndex(p, productImageIndex);
             const resolvedProductImageUrl = dbImage || product.product_image_url;
+            productReferenceSources = selectProductReferences(p.product_images, productImageIndex);
             if (dbImage) {
               const src = explicitProductImageIndex != null ? 'explicit' : `smart(angle="${(angle||'').slice(0, 30)}")`;
               console.log(`[staticsGeneration] product_image_index=${productImageIndex}/${_pImages.length} via ${src} → ${dbImage.slice(0, 60)}...`);
@@ -3147,18 +3183,10 @@ router.post('/generate', authenticate, async (req, res) => {
       ]);
 
       // Optionally include product image in Claude vision (helps with product_visual_for_generation)
-      let productImageMsg = null;
-      let productImageNote = '';
-      if (product.product_image_url) {
-        try {
-          const { base64: pb64, mediaType: pmt } = await resolveImage(product.product_image_url);
-          const shrunk = await shrinkForClaude(pb64, pmt);
-          productImageMsg = { type: 'image', source: { type: 'base64', media_type: shrunk.mediaType, data: shrunk.base64 } };
-          productImageNote = '\n\nIMAGE 2 (second image) is the PRODUCT we are advertising. Use it as the visual source of truth for product_visual_for_generation.';
-        } catch (e) {
-          console.warn(`[staticsGeneration] Could not resolve product image for Claude vision: ${e.message}`);
-        }
-      }
+      if (!productReferenceSources.length && product.product_image_url) productReferenceSources = [product.product_image_url];
+      const productImageBlocks = await productReferenceClaudeBlocks(productReferenceSources, '[staticsGeneration]');
+      const productImageNote = productReferencesNote(productImageBlocks.length, { firstImageNumber: 2 });
+      console.log(`[staticsGeneration] product photos: ${productImageBlocks.length}/${productReferenceSources.length} attached to analysis`);
 
       // ── STEP 1: Claude analysis ──
       storeTaskResult(earlyTaskId, { status: 'processing', progress: 'Analyzing reference with Claude...' });
@@ -3173,7 +3201,7 @@ router.post('/generate', authenticate, async (req, res) => {
         { type: 'text', text: claudePromptText },
         { type: 'image', source: { type: 'base64', media_type: mediaType, data: base64 } },
       ];
-      if (productImageMsg) claudeContent.push(productImageMsg);
+      claudeContent.push(...productImageBlocks);
 
       const tClaude = Date.now();
       // System message — independently of the operator-editable user template,
@@ -3299,12 +3327,10 @@ router.post('/generate', authenticate, async (req, res) => {
       // ── STEP 2: NanoBanana image (parallel across ratios) ──
       // Per friend's architecture: NanoBanana receives ONLY the product image.
       // The composition is reconstructed from Claude's description.
-      const productHttpUrl = product.product_image_url
-        ? await ensureHttpUrlGlobal(product.product_image_url, 'products')
-        : null;
+      const productHttpUrls = await productReferenceHttpUrls(productReferenceSources, 'products', '[staticsGeneration]');
 
-      if (!productHttpUrl) {
-        throw new Error('No product_image_url available — NanoBanana requires a product image as the sole input');
+      if (!productHttpUrls.length) {
+        throw new Error('No product_image_url available — the image engine requires at least one product photo');
       }
 
       // Per-engine prompt template. NanoBanana uses customPrompts.nanobanana_image;
@@ -3315,7 +3341,7 @@ router.post('/generate', authenticate, async (req, res) => {
         : customPrompts.nanobanana_image;
       // Stamp the angle so image-prompt builder can interpolate {{ANGLE}}
       product._angle = angle_data?.name || angle || '';
-      let nbPrompt = buildNanoBananaImagePrompt(claudeResult, product, engineTemplate, {}, { maxChars: imagePromptBudget(engine) });
+      let nbPrompt = buildNanoBananaImagePrompt(claudeResult, product, engineTemplate, {}, { maxChars: imagePromptBudget(engine), referenceCount: productHttpUrls.length });
 
       // STYLE DIRECTIVE prepend — injects the medium + authenticity cues +
       // style_directive Claude returned, so NanoBanana doesn't default to its
@@ -3364,7 +3390,7 @@ router.post('/generate', authenticate, async (req, res) => {
         const childTaskId = preTaskIdByRatio[r] || `nb-${crypto.randomUUID()}`;
         try {
           const taskHandle = await withRetry(
-            () => engine.submit(nbPrompt, [productHttpUrl], r),
+            () => engine.submit(nbPrompt, productHttpUrls, r),
             `${engine.name}-submit ${r}`
           );
           console.log(`[staticsGeneration] ${engine.label} ${r} (scratch) submitted: ${taskHandle} (child=${childTaskId.slice(0, 12)}…)`);
@@ -4658,9 +4684,13 @@ router.post('/iterate/:creativeId', authenticate, async (req, res) => {
         // Per-variation product image — the whole point of iteration spread.
         const perVarIndex = perVariationIndexes[idx] ?? 0;
         const perVarProductImage = productImageAtIndex(productRowRef, perVarIndex);
-        const productHttpUrl = perVarProductImage
-          ? await ensureHttpUrlGlobal(perVarProductImage, 'iter-product').catch(() => null)
-          : null;
+        // This variation's shot stays first (the iteration spread); the other photos follow so no product part is guessed.
+        const perVarSources = (() => {
+          const refs = selectProductReferences(productRowRef?.product_images, perVarIndex);
+          return refs.length ? refs : (perVarProductImage ? [perVarProductImage] : []);
+        })();
+        const productHttpUrls = await productReferenceHttpUrls(perVarSources, 'iter-product', tagPrefix);
+        const productHttpUrl = productHttpUrls[0] || null;
         console.log(`${tagPrefix} product_image_index=${perVarIndex}/${productImagesLen}`);
         try {
           // Step B1: Claude analysis on the parent ad image — directive
@@ -4670,19 +4700,14 @@ router.post('/iterate/:creativeId', authenticate, async (req, res) => {
           const basePromptText = buildClaudeAnalysisPrompt(
             product, variationAngle, customPrompts.claude_analysis,
             {
-              PRODUCT_IMAGE_NOTE: productHttpUrl ? '\n\nA second image is attached: this is OUR product. Render it precisely as shown.' : '',
+              PRODUCT_IMAGE_NOTE: productReferencesNote(productHttpUrls.length, { firstImageNumber: 2 }),
               ...(iterBible ? { ANGLE: variationAngle } : {}),
             }
           );
           const promptText = iterationDirective + basePromptText;
 
           const userContent = [{ type: 'text', text: promptText }, { type: 'image', source: { type: 'base64', media_type: refMediaType, data: refBase64 } }];
-          if (productHttpUrl && productHttpUrl.startsWith('http')) {
-            try {
-              const { base64: pBase64, mediaType: pMediaType } = await resolveImage(productHttpUrl);
-              userContent.push({ type: 'image', source: { type: 'base64', media_type: pMediaType, data: pBase64 } });
-            } catch (e) { console.warn(`${tagPrefix} product image attach failed: ${e.message}`); }
-          }
+          userContent.push(...await productReferenceClaudeBlocks(productHttpUrls, tagPrefix));
 
           const claudeRes = await fetch('https://api.anthropic.com/v1/messages', {
             method: 'POST',
@@ -4750,7 +4775,7 @@ router.post('/iterate/:creativeId', authenticate, async (req, res) => {
             STRATEGY_LABEL: strategy.label,
             VARIED:         strategy.vary,
             LOCKED:         strategy.lock,
-          }, { maxChars: imagePromptBudget(iterEngine) });
+          }, { maxChars: imagePromptBudget(iterEngine), referenceCount: productHttpUrls.length });
           // Only prepend the hardcoded directive when falling back to the
           // fresh-generation template (no dedicated iteration template yet).
           // The dedicated template has the directive built into its JSON.
@@ -4760,7 +4785,7 @@ router.post('/iterate/:creativeId', authenticate, async (req, res) => {
           // Wrap in withRetry — NB occasionally times out on submit under
           // load; one retry caught both timeouts in the prior live test.
           const nbTaskId = await withRetry(
-            () => iterEngine.submit(nbPrompt, [productHttpUrl], primaryRatio),
+            () => iterEngine.submit(nbPrompt, productHttpUrls, primaryRatio),
             `iter-submit ${childRow.id.slice(0,8)} via ${iterEngine.name}`
           );
           const tempUrl = await withRetry(
@@ -7929,26 +7954,27 @@ async function _doRegenerateBrokenPreviews(req, res) {
           }
 
           // 2. Resolve product to HTTP URL (R2-uploaded data URI or tmp-img fallback)
-          const productHttpUrl = await ensureHttpUrlGlobal(product.product_image_url, 'rgn-product');
-          if (!productHttpUrl || !productHttpUrl.startsWith('http')) {
-            throw new Error(`productHttpUrl is not fetchable: "${(productHttpUrl||'').slice(0,40)}..."`);
+          const rgnSources = (() => {
+            const refs = selectProductReferences(p.product_images, row.product_image_index);
+            return refs.length ? refs : [product.product_image_url];
+          })();
+          const productHttpUrls = await productReferenceHttpUrls(rgnSources, 'rgn-product', tag);
+          if (!productHttpUrls.length) {
+            throw new Error('no product photo is fetchable');
           }
-          console.log(`${tag} productHttpUrl=${productHttpUrl.slice(0,80)}`);
+          console.log(`${tag} product photos=${productHttpUrls.length} first=${productHttpUrls[0].slice(0,80)}`);
 
           // 3. Step 1: Claude analysis
           const { base64: refB64, mediaType: refMt } = await resolveImage(row.reference_thumbnail);
           const promptText = buildClaudeAnalysisPrompt(
             product, row.angle || '', customPrompts.claude_analysis,
-            { PRODUCT_IMAGE_NOTE: '\n\nA second image is attached: this is OUR product. Render it precisely as shown.' }
+            { PRODUCT_IMAGE_NOTE: productReferencesNote(productHttpUrls.length, { firstImageNumber: 2 }) }
           );
           const content = [
             { type: 'text', text: promptText },
             { type: 'image', source: { type: 'base64', media_type: refMt, data: refB64 } },
+            ...await productReferenceClaudeBlocks(productHttpUrls, tag),
           ];
-          try {
-            const { base64: pB64, mediaType: pMt } = await resolveImage(productHttpUrl);
-            content.push({ type: 'image', source: { type: 'base64', media_type: pMt, data: pB64 } });
-          } catch {}
 
           const cr = await fetch(CLAUDE_API_URL, {
             method: 'POST',
@@ -7994,9 +8020,9 @@ async function _doRegenerateBrokenPreviews(req, res) {
             ? (customPrompts.openai_image || customPrompts.nanobanana_image)
             : customPrompts.nanobanana_image;
           product._angle = row.angle || '';
-          const nbPrompt = buildNanoBananaImagePrompt(claudeResult, product, rgnTemplate, {}, { maxChars: imagePromptBudget(rgnEngine) });
+          const nbPrompt = buildNanoBananaImagePrompt(claudeResult, product, rgnTemplate, {}, { maxChars: imagePromptBudget(rgnEngine), referenceCount: productHttpUrls.length });
           const ratio = row.aspect_ratio || '4:5';
-          const nbTaskId = await rgnEngine.submit(nbPrompt, [productHttpUrl], ratio);
+          const nbTaskId = await rgnEngine.submit(nbPrompt, productHttpUrls, ratio);
           const tempUrl = await rgnEngine.poll(nbTaskId);
           const persisted = await persistNanoBananaImage(tempUrl, 'statics-recovered');
 
@@ -11491,6 +11517,10 @@ router.post('/composer/describe', authenticate, async (req, res) => {
         productImagesLength: _pImages.length,
       });
       const productImage = productImageAtIndex(prod, productImageIndex);
+      const composerReferences = (() => {
+        const refs = selectProductReferences(prod.product_images, productImageIndex);
+        return refs.length ? refs : (productImage ? [productImage] : []);
+      })();
       if (!productImage) {
         throw new Error(`"${prod.name}" has no product images — upload one before describing a static`);
       }
@@ -11606,12 +11636,13 @@ ${authoredCopy ? `COPY RULE — THE WORDS ARE ALREADY WRITTEN:
   3 columns with single-word cells or tick/cross marks, nothing longer.`}
 
 RULES:
-- The attached image is the ONLY product reference. Match its shape, colour, label and branding exactly.
+- ${composerReferences.length > 1 ? `${composerReferences.length} product photos are attached (images 1 to ${composerReferences.length}, image 1 is the main shot). They are the product reference: match shape, colour, label and branding exactly.` : 'The attached image is the ONLY product reference. Match its shape, colour, label and branding exactly.'}
+- Only show product objects (device, case, box, packaging, patch, accessory) that appear in the attached photos. If the brief asks for one no photo shows, leave it out. Never invent a product part, accessory, case or packaging.
 - Render every piece of text crisply and spelled correctly. Do not invent claims that are not in the brief or context above.
 - No lorem ipsum, no placeholder text, no watermarks.`;
 
       storeTaskResult(taskId, { status: 'processing', progress: `Generating ${ratio} via ${engine.name}...` });
-      const engineTaskId = await engine.submit(prompt, [productImage], ratio);
+      const engineTaskId = await engine.submit(prompt, composerReferences, ratio);
       const resultUrl = await engine.poll(engineTaskId);
 
       // Mirror to R2 immediately — engine output URLs are short-lived (the whole
