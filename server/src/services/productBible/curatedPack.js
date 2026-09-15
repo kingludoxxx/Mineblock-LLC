@@ -26,7 +26,8 @@ export function curatedFromRow(row, marketKey) {
   const angles = parse(row.angles, []);
   const pinned = (Array.isArray(angles) ? angles : []).filter((a) => a && a.id && a.name && a.market === marketKey);
   if (typeof core !== 'string' || !core.trim() || pinned.length === 0) return null;
-  return { core: core.trim(), angles: pinned };
+  // Optional structural ban list next to the core (literal phrases); the core's own WHAT WE NEVER SAY block is parsed too.
+  return { core: core.trim(), angles: pinned, banned_phrases: list(packs[marketKey]?.banned_phrases) };
 }
 
 /** The pack for one market, or null. A product table without the column reads as "no pack". */
@@ -57,7 +58,7 @@ export function curatedAngleLegacy(a) {
   };
 }
 
-function angleBrief(a, { full = true } = {}) {
+function angleBrief(a, { full = true, required = full } = {}) {
   const lines = [`=== ANGLE: ${a.name} ===`];
   if (a.funnel_stage) lines.push(`funnel stage: ${a.funnel_stage}`);
   if (a.messenger) lines.push(`messenger: ${a.messenger}`);
@@ -68,7 +69,7 @@ function angleBrief(a, { full = true } = {}) {
   if (full && a.tone) lines.push(`tone: ${a.tone}`);
   if (full && a.copy_directives) lines.push(`copy directives:\n${a.copy_directives}`);
   const req = list(a.required_elements);
-  if (full && req.length) lines.push(`required elements:\n- ${req.join('\n- ')}`);
+  if (required && req.length) lines.push(`required elements:\n- ${req.join('\n- ')}`);
   const heads = list(a.headline_examples);
   if (heads.length) lines.push(`headline examples:\n- ${(full ? heads : heads.slice(0, 3)).join('\n- ')}`);
   const voice = list(a.customer_voice);
@@ -106,7 +107,8 @@ export function buildCuratedPack({ product, market, curated, angleKey = null, jo
   } else {
     body = [
       `=== CHOOSE THE ANGLE ===\nThese are the ONLY angles. Read the source (the reference ad, script or request) and pick the ONE angle it fits best. Write only from that angle's brief, and return its exact name as "chosen_angle" (plus one sentence "chosen_angle_reason") when you answer in JSON.`,
-      ...angles.map((a) => angleBrief(a, { full: job !== 'static_copy' && job !== 'summary' })),
+      // Statics auto keeps the briefs compact but lists each angle's required elements: the bullets are built from them.
+      ...angles.map((a) => angleBrief(a, { full: job !== 'static_copy' && job !== 'summary', required: job !== 'summary' })),
     ].join('\n\n');
   }
   const text = `${header}\n\n=== PRODUCT CORE ===\n${curated.core}${body ? `\n\n${body}` : ''}`;

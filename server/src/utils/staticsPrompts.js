@@ -189,8 +189,10 @@ const CURATED_COPY_APPROACH = `
 1. Decide the MESSAGE first, from the angle brief and the product core above: what this ad argues, for whom, in the angle's tone. When the angle is AUTO, first pick the one angle the reference fits best and return "chosen_angle" and "chosen_angle_reason".
 2. Then fit that message into the reference's text slots: the same fields, the same number of bullets and badges, a similar length per field.
 3. Take the reference's LAYOUT and commercial structure, never its claims, numbers, timelines, prices, reasons for urgency or product facts. Every fact comes from the product pack.
-4. Headline: build it from the angle's hook strategy and headline examples, adapted to the slot. Bullets: each one a different point from the angle's required elements or the product core, never a generic feature list.
-5. Sound like the customer voice lines, never like a spec sheet.`;
+4. Headline: build it from the angle's hook strategy and headline examples, adapted to the slot.
+5. BULLETS: each bullet is a different point taken from the chosen angle's required elements or copy directives, or a proof point from the product core (the mechanism, the guarantee, the honest timeline). Never a spec-sheet feature line (for example "3 intensity levels for your comfort", a battery, a material, a setting) and never one of the tired words, banned claims or banned phrases from WHAT WE NEVER SAY or the angle (for example "no mask, no hose"). When the reference has icon bullets, keep the icons and change the words.
+6. Sound like the customer voice lines, never like a spec sheet.
+7. Our own price is never struck through or written as an old price (see OUR PRICE below). The copy is checked against these rules before the image is made.`;
 
 function offerLines(offer) {
   if (!offer) return [];
@@ -224,8 +226,8 @@ export function renderCommercialStructureBlock(offer) {
 2. Rebuild the SAME commercial structure for our product in adapted_text:
    - promo: keep it a promo. Put our offer exactly where the reference puts its offer (headline, badge,
      sticker, price line, CTA) with the same weight. If the reference shows a code, show our code. If it shows
-     an original price struck through next to a sale price and we have a savings option, use the savings
-     option instead. The angle's pain or benefit becomes the supporting line.
+     an original price struck through next to a sale price, follow rule 5. The angle's pain or benefit becomes
+     the supporting line.
    - urgency: keep the urgency or scarcity mechanic the reference uses, in the same place and with the same
      weight ("Selling fast", "Last chance", "Limited stock"). Add our offer too when the reference pairs its
      urgency with one. Never invent a specific date, clock time or stock number.
@@ -238,7 +240,25 @@ ${terms.length ? terms.map((t) => `   ${t}`).join('\n') : '   No discount or cod
 4. PRICES AND NUMBERS (overrides any earlier rule about writing amounts): write every price, discount, saving,
    percentage and count in digits with its symbol, exactly as a shopper reads it on a price tag: "$197",
    "$99", "20% OFF", "90 nights". Never spell an amount out in words ("One Hundred Ninety Seven Dollars",
-   "Twenty Percent").`;
+   "Twenty Percent").
+
+5. OUR PRICE (overrides the reference): our own price is never shown struck through, crossed out, slashed, or
+   as an old "was", "regular" or "compare at" price, and never next to a higher original price. If the
+   reference shows a strikethrough was/now price sticker, that sticker shows ${ownPriceExample(offer)}. Never describe a strikethrough or crossed-out price anywhere in your JSON
+   (adapted_text, visual_adaptations, composition).`;
+}
+
+function ownPriceExample(offer) {
+  const price = offer && offer.price;
+  if (price && offer.savings) return `our price as a plain price plus the savings option, written like "${price} · ${offer.savings}"`;
+  if (price) return `our price only, as a plain price: "${price}"`;
+  return 'our price only, as a plain price';
+}
+
+// Image-step rule for bible products, placed first with the brand rule so no shortening can cut it. Found live
+// 2026-09-16: the reference had a "$69 struck through, $32" sticker and the image model drew our $149 struck through.
+export function ownPriceRuleLine(productName) {
+  return `OUR PRICE (pricing rule, overrides the reference): ${productName || 'our product'}'s own price is never struck through, crossed out, slashed or shown as an old was price. If the reference shows a strikethrough was/now price sticker, draw that sticker with only the price and savings text from the copy below, as plain text with no line through it. Never draw a price that is not in the copy below.`;
 }
 
 /**
@@ -994,7 +1014,7 @@ function productReferencesRule(count, notes = []) {
 ${rules}`;
 }
 
-function buildLegacyImagePrompt(claudeResult, product, template, iterationVars, maxChars, referenceCount = null, referenceNotes = []) {
+function buildLegacyImagePrompt(claudeResult, product, template, iterationVars, maxChars, referenceCount = null, referenceNotes = [], extraLead = '') {
   const refCount = Number.isInteger(referenceCount) && referenceCount >= 1 ? referenceCount : null;
   const hasProduct = claudeResult.reference_has_product_visual !== false;
   const productVisual = (claudeResult.product_visual_for_generation || '').trim();
@@ -1119,7 +1139,7 @@ function buildLegacyImagePrompt(claudeResult, product, template, iterationVars, 
   };
   // The rule is prepended, so JSON-escaping is decided by the operator's template as it was, not by the rule's text.
   const jsonSafe = typeof template === 'string' && template.trimStart().startsWith('{');
-  const lead = refCount && hasProduct ? productReferencesRule(refCount, referenceNotes) + OTHER_BRANDS_RULE : OTHER_BRANDS_RULE;
+  const lead = extraLead + (refCount && hasProduct ? productReferencesRule(refCount, referenceNotes) + OTHER_BRANDS_RULE : OTHER_BRANDS_RULE);
   return fitImagePrompt(lead + (template || ''), vars, maxChars, jsonSafe);
 }
 
@@ -1153,10 +1173,11 @@ function buildBibleImagePrompt(claudeResult, product, template, iterationVars, m
   profile.pricing = product._bible.copy.market?.price || profile.pricing || '';
   const stripped = { ...product, description: '', price: product._bible.copy.market?.price || product.price, profile, _angle: String(product._angle || '').startsWith(def.name) ? product._angle : def.name };
   const block = renderBibleBlock(product._bible.image.text);
-  if (!maxChars) return buildLegacyImagePrompt(claudeResult, stripped, template, iterationVars, null, referenceCount, referenceNotes) + block;
-  let base = buildLegacyImagePrompt(claudeResult, stripped, template, iterationVars, maxChars, referenceCount, referenceNotes);
+  const priceLead = `${ownPriceRuleLine(product.name)}\n\n`;
+  if (!maxChars) return buildLegacyImagePrompt(claudeResult, stripped, template, iterationVars, null, referenceCount, referenceNotes, priceLead) + block;
+  let base = buildLegacyImagePrompt(claudeResult, stripped, template, iterationVars, maxChars, referenceCount, referenceNotes, priceLead);
   if (maxChars - base.length < MIN_BIBLE_IMAGE_CHARS) {
-    base = buildLegacyImagePrompt(claudeResult, stripped, template, iterationVars, Math.max(1, maxChars - MIN_BIBLE_IMAGE_CHARS), referenceCount, referenceNotes);
+    base = buildLegacyImagePrompt(claudeResult, stripped, template, iterationVars, Math.max(1, maxChars - MIN_BIBLE_IMAGE_CHARS), referenceCount, referenceNotes, priceLead);
   }
   const room = maxChars - base.length;
   const fitted = trimBlockTo(block, room);

@@ -16,6 +16,7 @@ import { BibleError, listMarkets, listEntities, listProductsWithMarkets, resolve
 export { marketOffer };
 import { buildBibleContextPack } from './contextPack.js';
 import { loadCuratedMarket, curatedAngleLegacy, AUTO_ANGLE_KEY } from './curatedPack.js';
+import { packCopyRules } from '../../utils/packCopyGuard.js';
 
 const STOP = new Set(['with', 'from', 'that', 'this', 'your', 'their', 'into', 'over', 'more', 'less', 'than', 'what',
   'when', 'where', 'which', 'who', 'about', 'after', 'before', 'people', 'market', 'markets', 'product', 'general']);
@@ -201,7 +202,13 @@ export async function resolveStaticsBible({ bible = null, loadPersisted = null, 
   const image = await repackBible(copy, 'static_image', {}, db);
   const angleDef = await bibleAngleDef(copy.productId, copy.market.key, copy.angle.key, copy.avatar.title, db);
   const offer = await marketOffer(copy.productId, copy.market.key, db);
-  return { copy, image, angleDef, selection: copy.selection, market: copy.market, offer };
+  const out = { copy, image, angleDef, selection: copy.selection, market: copy.market, offer };
+  if (copy.curated) {
+    // The copy check before render reads these (bans, required elements per pinned angle).
+    const curated = await loadCuratedMarket(copy.productId, copy.market.key, db);
+    if (curated) out.copyRules = packCopyRules(curated);
+  }
+  return out;
 }
 
 

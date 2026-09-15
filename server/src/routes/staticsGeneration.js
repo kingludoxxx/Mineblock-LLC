@@ -41,7 +41,9 @@ import {
   mapProductRowToFlatProfile,
   renderAngleVariantBlock,
   countTextWords,
+  ownPriceRuleLine,
 } from '../utils/staticsPrompts.js';
+import { guardPackCopy, enforceOwnPriceNotStruck, parseJudgeReply } from '../utils/packCopyGuard.js';
 import { auditStaticImage } from '../services/staticsQualityAudit.js';
 import { generateCopySets, renderCopyForImage, totalWords } from '../services/staticsCopywriter.js';
 import { generateCutout } from '../services/productCutout.js';
@@ -2231,6 +2233,57 @@ const CLAUDE_API_URL     = 'https://api.anthropic.com/v1/messages';
 // (Opus only wins on hard reasoning tasks, not for "describe image + adapt copy".)
 const CLAUDE_MODEL       = 'claude-sonnet-4-6';
 
+// PRODUCT PACK COPY CHECK (found live 2026-09-16): with an approved product pack, adapted_text is checked before the
+// image is made (bans + tired words, the chosen angle's required elements, our price never struck). A failure gets ONE
+// rewrite of adapted_text from the analysis model; the path's enforce steps run again on it. Products without a pack
+// return the analysis untouched, with no model call.
+async function claudeText({ model, maxTokens, prompt, timeoutMs }) {
+  const r = await fetch(CLAUDE_API_URL, {
+    method: 'POST',
+    headers: { 'x-api-key': ANTHROPIC_API_KEY, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
+    body: JSON.stringify({ model, max_tokens: maxTokens, messages: [{ role: 'user', content: prompt }] }),
+    signal: AbortSignal.timeout(timeoutMs),
+  });
+  if (!r.ok) throw new Error(`Claude ${model} ${r.status}: ${(await r.text()).slice(0, 200)}`);
+  const d = await r.json();
+  const text = d.content?.[0]?.text;
+  if (!text) throw new Error(`Claude ${model} returned no text`);
+  return text;
+}
+
+async function runPackCopyGuard(claudeResult, product, tag, enforceSteps) {
+  if (!product?._bible?.copy?.curated) return claudeResult;
+  const withPrice = (r) => {
+    const own = enforceOwnPriceNotStruck(r, product);
+    if (own.report.changed.length) console.log(`${tag} own price: ${own.report.changed.map(c => `"${c.from}"→"${c.to}"`).join(' · ')}`);
+    return own.result;
+  };
+  try {
+    const { result } = await guardPackCopy({
+      claudeResult: withPrice(claudeResult),
+      product,
+      enforce: (r) => withPrice(enforceSteps(r)),
+      // A cheap judgement: required elements are ideas ("One program-urgency line"), not keywords.
+      judge: async ({ adapted, prompt }) => parseJudgeReply(
+        await claudeText({ model: 'claude-haiku-4-5', maxTokens: 400, prompt, timeoutMs: 20000 }),
+        Array.isArray(adapted?.bullets) ? adapted.bullets.length : 0,
+      ),
+      rewrite: async ({ prompt }) => {
+        const text = await claudeText({ model: CLAUDE_MODEL, maxTokens: 1200, prompt, timeoutMs: 60000 });
+        const m = text.match(/\{[\s\S]*\}/);
+        if (!m) throw new Error('rewrite returned no JSON');
+        return JSON.parse(m[0]);
+      },
+      log: (line) => console.log(`${tag} ${line}`),
+    });
+    if (result.copy_check?.quality_warning) console.warn(`${tag} quality_warning: ${result.copy_check.quality_warning}`);
+    return result;
+  } catch (err) {
+    console.error(`${tag} copy check crashed, rendering the analysis as it was: ${err.message}`);
+    return claudeResult;
+  }
+}
+
 function detectMime(buf) {
   if (buf[0] === 0xFF && buf[1] === 0xD8 && buf[2] === 0xFF) return 'image/jpeg';
   if (buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4E && buf[3] === 0x47) return 'image/png';
@@ -3297,6 +3350,8 @@ router.post('/generate', authenticate, async (req, res) => {
           console.log(`[staticsGeneration] reference_ad_type=${claudeResult.reference_ad_type || 'unset'} elements=${JSON.stringify(claudeResult.reference_offer_elements || [])} market=${product._bible.market?.key} offer_code=${product._bible.offer?.code || 'none'}`);
         }
       }
+      claudeResult = await runPackCopyGuard(claudeResult, product, '[staticsGeneration]',
+        (r) => enforceOfferClaims(enforcePriceDigits(enforceTextShape(r).result, product).result, product).result);
 
       // REFERENCE USABILITY GATE — decided from the text Claude just read off the
       // reference image, and BEFORE the ~150s image generation, so an unusable
@@ -4752,6 +4807,8 @@ router.post('/iterate/:creativeId', authenticate, async (req, res) => {
             if (digits.report.changed.length) console.log(`[staticsGeneration] price digits — ${digits.report.changed.map(c => `"${c.from}"→"${c.to}"`).join(' · ')}`);
             claudeResult = digits.result;
           }
+          claudeResult = await runPackCopyGuard(claudeResult, product, tagPrefix,
+            (r) => enforcePriceDigits(enforceTextShape(r).result, product).result);
 
 
           // Step B2: Image generation via the parent's engine (NB or OpenAI).
@@ -8014,6 +8071,8 @@ async function _doRegenerateBrokenPreviews(req, res) {
             if (digits.report.changed.length) console.log(`[staticsGeneration] price digits — ${digits.report.changed.map(c => `"${c.from}"→"${c.to}"`).join(' · ')}`);
             claudeResult = digits.result;
           }
+          claudeResult = await runPackCopyGuard(claudeResult, product, tag,
+            (r) => enforcePriceDigits(enforceTextShape(r).result, product).result);
 
 
           // 4. Step 2: image gen via the row's original engine (NB or OpenAI).
@@ -11645,7 +11704,7 @@ ${authoredCopy ? `COPY RULE — THE WORDS ARE ALREADY WRITTEN:
 RULES:
 - ${composerReferences.length > 1 ? `${composerReferences.length} product photos are attached (images 1 to ${composerReferences.length}, image 1 is the main shot). They are the product reference: match shape, colour, label and branding exactly.` : 'The attached image is the ONLY product reference. Match its shape, colour, label and branding exactly.'}
 - Only show product objects (device, case, box, packaging, patch, accessory) that appear in the attached photos. If the brief asks for one no photo shows, leave it out. Never invent a product part, accessory, case or packaging.
-${(() => { const lines = notesForReferences(composerReferences, prod.image_notes).map((n, i) => (n ? `- PHOTO RULE, image ${i + 1}: ${n}` : null)).filter(Boolean); return lines.length ? lines.join('\n') + '\n' : ''; })()}- Render every piece of text crisply and spelled correctly. Do not invent claims that are not in the brief or context above.
+${(() => { const lines = notesForReferences(composerReferences, prod.image_notes).map((n, i) => (n ? `- PHOTO RULE, image ${i + 1}: ${n}` : null)).filter(Boolean); return lines.length ? lines.join('\n') + '\n' : ''; })()}${describeBible ? `- ${ownPriceRuleLine(prod.name)}\n` : ''}- Render every piece of text crisply and spelled correctly. Do not invent claims that are not in the brief or context above.
 - No lorem ipsum, no placeholder text, no watermarks.`;
 
       storeTaskResult(taskId, { status: 'processing', progress: `Generating ${ratio} via ${engine.name}...` });

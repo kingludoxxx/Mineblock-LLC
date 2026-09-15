@@ -7,6 +7,7 @@
 //   C5  detection catalog and angle definitions come from the pack
 //   C6  statics analysis prompt: pack + COPY APPROACH, no legacy angle block, unit_details not used; image prompt carries the core
 //   C7  brief context is the pack; the other market (no pack) still reads its bible
+//   C10 copy rules: the statics auto pack lists required elements; the statics bible carries copyRules (bans, elements)
 //   C8  the entities API offers only the pinned angles and no avatars; ?source=bible still returns the research
 import postgres from 'postgres';
 import { spawnSync } from 'node:child_process';
@@ -156,6 +157,17 @@ const noHint = await pb.resolvePipelineBible({ productRow: bibleRow, hintText: '
 ok(noHint.market.key === 'beta' && noHint.curated && noHint.marketPicked === 'auto', 'C9 no market hint -> the market with a pack (beta), not the first by sort order (alpha)', JSON.stringify(noHint.market));
 const hinted = await pb.resolvePipelineBible({ productRow: bibleRow, hintText: 'Alpha Pain card', job: 'brief' }, db);
 ok(hinted.market.key === 'alpha', 'C9 a card that names a market still gets that market');
+
+// ── C10 ── copy rules for the check before render (2026-09-16): the auto statics pack lists each angle's required
+// elements (bullets must come from them), and the statics bible carries the bans structurally.
+ok(auto.text.includes('required elements:\n- pinned one element'), 'C10 statics auto pack lists each angle\'s required elements', auto.text.slice(0, 1500));
+await db`UPDATE product_profiles SET market_packs = ${db.json({ beta: { core: 'BETA PRODUCT CORE: looks like a small silver oval.\n\nWHAT WE NEVER SAY\nBanned claims: cures it, FDA approved or cleared; em dashes.\nTired words to avoid: finally, "no mask, no hose" as a headline.', banned_phrases: ['sleep like a baby'] } })} WHERE id = ${bibleRow.id}`;
+const sbRules = await pb.resolveStaticsBible({ bible: { product: 'TD1', market: 'beta', angle: null }, productRow: bibleRow }, db);
+const cr = sbRules.copyRules;
+ok(cr && cr.angles.map((a) => a.name).join('|') === 'Pinned One|Pinned Two' && cr.angles[0].required_elements[0] === 'pinned one element' && cr.angles[0].banned_phrases[0] === 'pinned one banned'
+  && cr.claims.includes('FDA cleared') && cr.claims.includes('sleep like a baby') && cr.tired.includes('no mask, no hose') && cr.emDashBanned === true, 'C10 statics bible carries copyRules (angles, claims, tired, structural list)', JSON.stringify(cr));
+const alphaRules = await pb.resolveStaticsBible({ bible: { product: 'TD1', market: 'alpha', angle: null }, productRow: bibleRow }, db);
+ok(alphaRules && alphaRules.copyRules === undefined, 'C10 a market without a pack has no copyRules (research bible path unchanged)');
 
 // ── C8 ──
 process.env.BRAIN_SERVICE_TOKEN = 'curated-pack-test-token-0123456789';
