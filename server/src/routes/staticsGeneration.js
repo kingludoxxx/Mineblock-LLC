@@ -3254,6 +3254,9 @@ router.post('/generate', authenticate, async (req, res) => {
         const summary = describeOfferReport(offer.report);
         if (summary) console.warn(`[staticsGeneration] offer claims — ${summary}`);
         claudeResult = offer.result;
+        if (product._bible) {
+          console.log(`[staticsGeneration] reference_ad_type=${claudeResult.reference_ad_type || 'unset'} elements=${JSON.stringify(claudeResult.reference_offer_elements || [])} market=${product._bible.market?.key} offer_code=${product._bible.offer?.code || 'none'}`);
+        }
       }
 
       // REFERENCE USABILITY GATE — decided from the text Claude just read off the

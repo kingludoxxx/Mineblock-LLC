@@ -155,8 +155,11 @@ function bibleAnalysisVars(product, angleName, extras) {
     SHORT_NAME:     p.short_name || '',
     PRODUCT_TYPE:   p.product_type || '',
     UNIT_DETAILS:   p.unit_details || '',
-    MAX_DISCOUNT:   p.max_discount || '',
-    DISCOUNT_CODES: p.discount_codes || '',
+    // The market's own offer wins: a code for one market must never reach another market's ad.
+    MAX_DISCOUNT:   b.offer ? (b.offer.discount || '') : (p.max_discount || ''),
+    DISCOUNT_CODES: b.offer ? (b.offer.code || '') : (p.discount_codes || ''),
+    OFFERS:         b.offer ? offerLines(b.offer).join(' | ') : '',
+    OFFER_HOOK:     b.offer ? offerLines(b.offer).join(' | ') : '',
     COMPLIANCE:     p.compliance || '',
     MASTER_BRIEF:   '',
     PRODUCT_IMAGE_NOTE: extras.PRODUCT_IMAGE_NOTE || '',
@@ -170,7 +173,52 @@ function buildBibleAnalysisPrompt(product, angle, template, extras) {
   const angleName = typeof extras.ANGLE === 'string' && extras.ANGLE ? extras.ANGLE : def.name;
   return interpolate(template, bibleAnalysisVars(product, angleName, extras))
     + renderBibleBlock(product._bible.copy.text)
-    + renderAngleDetailsBlock([def], def.name);
+    + renderAngleDetailsBlock([def], def.name)
+    + renderCommercialStructureBlock(product._bible.offer);
+}
+
+function offerLines(offer) {
+  if (!offer) return [];
+  return [
+    offer.price && `Price: ${offer.price}`,
+    offer.discount && `Discount: ${offer.discount}`,
+    offer.code && `Discount code: ${offer.code}`,
+    offer.savings && `Savings option (use instead of an original-vs-sale price): ${offer.savings}`,
+    offer.notes && `Notes: ${offer.notes}`,
+  ].filter(Boolean);
+}
+
+// Appended in code, after the store's (possibly older, customised) analysis template, so every bible static reads
+// the reference's commercial structure and rebuilds it with this market's real offer.
+export function renderCommercialStructureBlock(offer) {
+  const terms = offerLines(offer);
+  return `
+
+===== COMMERCIAL STRUCTURE OF THE REFERENCE (this section overrides any earlier line about offers) =====
+
+1. Decide what the reference LEADS WITH and add "reference_ad_type" to your JSON, one of:
+   promo | urgency | problem_solution | testimonial | ugc | comparison | educational | other
+   promo    the OFFER is the message: a discount, % off, sale price, savings amount or discount code is the
+            headline or the main visual hook.
+   urgency  the PRESSURE is the message: limited time, ends soon, last chance, countdown, selling fast,
+            low stock, few left, high demand, back in stock.
+   A discount with a deadline is "promo" and keeps its urgency element too. A small discount sticker on an
+   ad that argues a problem or teaches something does not make it a promo.
+   Also add "reference_offer_elements": the offer/urgency pieces you saw, e.g. ["20% OFF badge", "code in CTA"].
+
+2. Rebuild the SAME commercial structure for our product in adapted_text:
+   - promo: keep it a promo. Put our offer exactly where the reference puts its offer (headline, badge,
+     sticker, price line, CTA) with the same weight. If the reference shows a code, show our code. If it shows
+     an original price struck through next to a sale price and we have a savings option, use the savings
+     option instead. The angle's pain or benefit becomes the supporting line.
+   - urgency: keep the urgency or scarcity mechanic the reference uses, in the same place and with the same
+     weight ("Selling fast", "Last chance", "Limited stock"). Add our offer too when the reference pairs its
+     urgency with one. Never invent a specific date, clock time or stock number.
+   - anything else: follow the angle; do not add an offer the reference does not have.
+
+3. Our offer for this market. These are the ONLY commercial terms you may use:
+${terms.length ? terms.map((t) => `   ${t}`).join('\n') : '   No discount or code exists for this market. A promo reference keeps its layout with our price only: no code, no percentage, no savings figure.'}
+   Never write any other code, percentage or savings figure.`;
 }
 
 /**
@@ -716,7 +764,11 @@ export function enforceOfferClaims(claudeResult = {}, product = {}) {
   if (!adapted || typeof adapted !== 'object') return { result: claudeResult, report };
 
   const p = product.profile || {};
-  const authorised = extractAuthorisedCodes(p.discountCodes || p.discount_codes || product.discount_codes);
+  // With a bible, only the selected market's code is authorised (a product can carry one code per market).
+  const bibleOffer = product._bible && Object.prototype.hasOwnProperty.call(product._bible, 'offer') ? product._bible.offer : undefined;
+  const authorised = bibleOffer !== undefined
+    ? (bibleOffer?.code ? [String(bibleOffer.code).toUpperCase()] : extractAuthorisedCodes(p.discountCodes || p.discount_codes || product.discount_codes))
+    : extractAuthorisedCodes(p.discountCodes || p.discount_codes || product.discount_codes);
   report.authorised = authorised;
   const canonical = authorised.length === 1 ? authorised[0] : null;
 
