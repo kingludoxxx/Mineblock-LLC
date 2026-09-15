@@ -884,11 +884,11 @@ export function describeShapeReport(report) {
   return bits.length ? bits.join(' · ') : null;
 }
 
-export function buildNanoBananaImagePrompt(claudeResult = {}, product = {}, template = '', iterationVars = {}, { maxChars = null, referenceCount = null } = {}) {
+export function buildNanoBananaImagePrompt(claudeResult = {}, product = {}, template = '', iterationVars = {}, { maxChars = null, referenceCount = null, referenceNotes = [] } = {}) {
   if (hasBible(product) && product._bible.image && typeof product._bible.image.text === 'string') {
-    return buildBibleImagePrompt(claudeResult, product, template, iterationVars, maxChars, referenceCount);
+    return buildBibleImagePrompt(claudeResult, product, template, iterationVars, maxChars, referenceCount, referenceNotes);
   }
-  return buildLegacyImagePrompt(claudeResult, product, template, iterationVars, maxChars, referenceCount);
+  return buildLegacyImagePrompt(claudeResult, product, template, iterationVars, maxChars, referenceCount, referenceNotes);
 }
 
 // ── PRODUCT REFERENCE PHOTOS ─────────────────────────────────────────────────
@@ -915,9 +915,47 @@ export function selectProductReferences(images, primaryIndex = 0, max = MAX_PROD
   return out;
 }
 
+// PER-PHOTO RULES — an operator note per product photo (product_profiles.image_notes), e.g. "whenever the ad shows
+// the packaging with the product, copy this photo". Keyed by a fingerprint of the stored photo, not its position, so
+// adding or reordering photos never moves a note onto the wrong image. The same FNV-1a key is computed in the
+// Product Library UI (client/src/lib/imageNoteKey.js) — keep the two identical.
+export function imageNoteKey(src) {
+  if (typeof src !== 'string' || !src) return null;
+  let h = 0x811c9dc5;
+  for (let i = 0; i < src.length; i++) {
+    h ^= src.charCodeAt(i);
+    h = Math.imul(h, 0x01000193) >>> 0;
+  }
+  return `${h.toString(16).padStart(8, '0')}-${src.length}`;
+}
+
+export function notesForReferences(sources, imageNotes) {
+  let notes = imageNotes;
+  if (typeof notes === 'string') { try { notes = JSON.parse(notes); } catch { notes = null; } }
+  if (!notes || typeof notes !== 'object' || Array.isArray(notes)) notes = {};
+  return (sources || []).map((src) => {
+    const v = notes[imageNoteKey(src)];
+    return typeof v === 'string' ? v.trim() : '';
+  });
+}
+
+function photoRuleLines(notes, label) {
+  return (Array.isArray(notes) ? notes : [])
+    .map((n, i) => (typeof n === 'string' && n.trim() ? `- ${label(i)}: ${n.trim()}` : null))
+    .filter(Boolean);
+}
+
 // Analysis-step note: the product photos follow the reference ad in the message, so they start at image 2.
-export function productReferencesNote(count, { firstImageNumber = 2 } = {}) {
+export function productReferencesNote(count, { firstImageNumber = 2, notes = [] } = {}) {
   if (!Number.isInteger(count) || count < 1) return '';
+  const lines = photoRuleLines(notes.slice(0, count), (i) => `image ${firstImageNumber + i} (product photo ${i + 1})`);
+  const rules = lines.length
+    ? `\n\nPHOTO RULES (from the product library, they override the reference ad and any product notes; follow them when you write product_visual_for_generation, composition and visual_adaptations):\n${lines.join('\n')}`
+    : '';
+  return productReferencesNoteBase(count, firstImageNumber) + rules;
+}
+
+function productReferencesNoteBase(count, firstImageNumber) {
   const rule = 'Only describe product objects (device, case, box, packaging, patch, accessory) that you can see in these photos, with the shape, colour and branding they show. Never describe a product part, accessory or packaging that none of the photos shows, even if the product notes mention it.';
   if (count === 1) {
     return `\n\nIMAGE ${firstImageNumber} is a photo of OUR product. Use it as the visual source of truth for product_visual_for_generation. ${rule}`;
@@ -928,16 +966,20 @@ export function productReferencesNote(count, { firstImageNumber = 2 } = {}) {
 }
 
 // Image-step rule, placed first (with the brand rule) so no shortening can cut it.
-function productReferencesRule(count) {
+function productReferencesRule(count, notes = []) {
   const n = Number(count);
+  const lines = photoRuleLines(notes.slice(0, n), (i) => `Image ${i + 1}`);
+  const rules = lines.length
+    ? `PHOTO RULES (from the product library, they override the reference ad and the brief below; when a rule says to use a photo for a kind of scene, copy that photo's product arrangement exactly):\n${lines.join('\n')}\n\n`
+    : '';
   const photos = n === 1 ? '1 PRODUCT PHOTO ATTACHED' : `${n} PRODUCT PHOTOS ATTACHED`;
   const which = n === 1 ? 'The attached image shows' : `Images 1 to ${n} all show {{PRODUCT_NAME}} from different views; image 1 is the main shot. Together they show`;
   return `${photos} (product reference rule, overrides the reference ad): ${which} exactly how every part of {{PRODUCT_NAME}} looks. Every product object in the scene (device, case, box, packaging, patch, accessory) must appear in at least one attached photo and match it exactly: shape, colour, material, proportions, label and branding. If the brief asks for a product object that no attached photo shows, leave it out. Never invent a product part, accessory, attachment, case or packaging.
 
-`;
+${rules}`;
 }
 
-function buildLegacyImagePrompt(claudeResult, product, template, iterationVars, maxChars, referenceCount = null) {
+function buildLegacyImagePrompt(claudeResult, product, template, iterationVars, maxChars, referenceCount = null, referenceNotes = []) {
   const refCount = Number.isInteger(referenceCount) && referenceCount >= 1 ? referenceCount : null;
   const hasProduct = claudeResult.reference_has_product_visual !== false;
   const productVisual = (claudeResult.product_visual_for_generation || '').trim();
@@ -1062,7 +1104,7 @@ function buildLegacyImagePrompt(claudeResult, product, template, iterationVars, 
   };
   // The rule is prepended, so JSON-escaping is decided by the operator's template as it was, not by the rule's text.
   const jsonSafe = typeof template === 'string' && template.trimStart().startsWith('{');
-  const lead = refCount && hasProduct ? productReferencesRule(refCount) + OTHER_BRANDS_RULE : OTHER_BRANDS_RULE;
+  const lead = refCount && hasProduct ? productReferencesRule(refCount, referenceNotes) + OTHER_BRANDS_RULE : OTHER_BRANDS_RULE;
   return fitImagePrompt(lead + (template || ''), vars, maxChars, jsonSafe);
 }
 
@@ -1084,7 +1126,7 @@ function trimBlockTo(text, limit) {
   return `${at > limit * 0.5 ? cut.slice(0, at) : cut}\n[...trimmed]`;
 }
 
-function buildBibleImagePrompt(claudeResult, product, template, iterationVars, maxChars, referenceCount = null) {
+function buildBibleImagePrompt(claudeResult, product, template, iterationVars, maxChars, referenceCount = null, referenceNotes = []) {
   const def = product._bible.angleDef;
   const profile = { ...(product.profile || {}) };
   const legacyKeys = { ONELINER: 'oneliner', TAGLINE: 'tagline', CATEGORY: 'category', BRAND_VOICE: 'brand_voice', CUSTOMER: 'customer',
@@ -1096,10 +1138,10 @@ function buildBibleImagePrompt(claudeResult, product, template, iterationVars, m
   profile.pricing = product._bible.copy.market?.price || profile.pricing || '';
   const stripped = { ...product, description: '', price: product._bible.copy.market?.price || product.price, profile, _angle: String(product._angle || '').startsWith(def.name) ? product._angle : def.name };
   const block = renderBibleBlock(product._bible.image.text);
-  if (!maxChars) return buildLegacyImagePrompt(claudeResult, stripped, template, iterationVars, null, referenceCount) + block;
-  let base = buildLegacyImagePrompt(claudeResult, stripped, template, iterationVars, maxChars, referenceCount);
+  if (!maxChars) return buildLegacyImagePrompt(claudeResult, stripped, template, iterationVars, null, referenceCount, referenceNotes) + block;
+  let base = buildLegacyImagePrompt(claudeResult, stripped, template, iterationVars, maxChars, referenceCount, referenceNotes);
   if (maxChars - base.length < MIN_BIBLE_IMAGE_CHARS) {
-    base = buildLegacyImagePrompt(claudeResult, stripped, template, iterationVars, Math.max(1, maxChars - MIN_BIBLE_IMAGE_CHARS), referenceCount);
+    base = buildLegacyImagePrompt(claudeResult, stripped, template, iterationVars, Math.max(1, maxChars - MIN_BIBLE_IMAGE_CHARS), referenceCount, referenceNotes);
   }
   const room = maxChars - base.length;
   const fitted = trimBlockTo(block, room);

@@ -389,6 +389,8 @@ async function ensureTable() {
   await pgQuery(`
     DO $$ BEGIN
       ALTER TABLE product_profiles ADD COLUMN IF NOT EXISTS logos JSONB DEFAULT '[]';
+      -- Per-photo AI rules for statics, keyed by imageNoteKey(photo) (utils/staticsPrompts.js).
+      ALTER TABLE product_profiles ADD COLUMN IF NOT EXISTS image_notes JSONB DEFAULT '{}';
       ALTER TABLE product_profiles ADD COLUMN IF NOT EXISTS fonts JSONB DEFAULT '[]';
       ALTER TABLE product_profiles ADD COLUMN IF NOT EXISTS product_code TEXT;
       ALTER TABLE product_profiles ADD COLUMN IF NOT EXISTS short_name TEXT;
@@ -534,11 +536,11 @@ const UPDATABLE_FIELDS = [
   'short_name', 'product_type', 'product_group', 'unit_details', 'product_url',
   'pain_points', 'common_objections', 'winning_angles', 'custom_angles_text',
   'compliance_restrictions', 'competitive_edge', 'offer_details',
-  'max_discount', 'discount_codes', 'bundle_variants', 'notes',
+  'max_discount', 'discount_codes', 'bundle_variants', 'notes', 'image_notes',
 ];
 
 const JSONB_FIELDS = new Set([
-  'product_images', 'logos', 'fonts', 'benefits', 'angles', 'scripts', 'offers', 'brand_colors',
+  'product_images', 'logos', 'fonts', 'benefits', 'angles', 'scripts', 'offers', 'brand_colors', 'image_notes',
 ]);
 
 // postgres.js unsafe() returns JSONB columns as strings — parse them before sending
@@ -547,7 +549,7 @@ function parseRow(row) {
   const out = { ...row };
   for (const field of JSONB_FIELDS) {
     if (typeof out[field] === 'string') {
-      try { out[field] = JSON.parse(out[field]); } catch { out[field] = field === 'brand_colors' ? {} : []; }
+      try { out[field] = JSON.parse(out[field]); } catch { out[field] = (field === 'brand_colors' || field === 'image_notes') ? {} : []; }
     }
   }
   return out;

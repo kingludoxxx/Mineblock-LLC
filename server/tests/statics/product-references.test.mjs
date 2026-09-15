@@ -69,3 +69,56 @@ test('R7: a Product Bible product (Reevo) gets the same reference rule and label
   assert.doesNotMatch(out, /the ONLY image attached/);
   assert.match(out, /BIBLE IMAGE PACK/);
 });
+
+// Per-photo rules (Ludo 2026-09-15): with all 5 photos attached the model still drew a closed, different charging
+// case next to the box. Each photo can carry an operator note (product_profiles.image_notes, keyed by the photo's
+// fingerprint so reordering or adding photos never moves a note to the wrong image). Notes reach both prompts.
+import { imageNoteKey, notesForReferences } from '../../src/utils/staticsPrompts.js';
+
+test('N1: the note key is stable for the same photo and different for different photos', () => {
+  assert.equal(imageNoteKey(IMG(1)), imageNoteKey(IMG(1)));
+  assert.notEqual(imageNoteKey(IMG(1)), imageNoteKey(IMG(2)));
+  assert.match(imageNoteKey(IMG(1)), /^[0-9a-f]{8}-\d+$/);
+  assert.equal(imageNoteKey(''), null);
+});
+
+test('N2: notes follow their photo whatever the order; stored as object or JSON string; blanks ignored', () => {
+  const notes = { [imageNoteKey(IMG(2))]: 'Box + open case: copy this photo', [imageNoteKey(IMG(0))]: '   ' };
+  assert.deepEqual(notesForReferences([IMG(2), IMG(0), IMG(1)], notes), ['Box + open case: copy this photo', '', '']);
+  assert.deepEqual(notesForReferences([IMG(1), IMG(2)], JSON.stringify(notes)), ['', 'Box + open case: copy this photo']);
+  assert.deepEqual(notesForReferences([IMG(1)], 'bad json'), ['']);
+  assert.deepEqual(notesForReferences([IMG(1)], null), ['']);
+});
+
+test('N3: the analysis note and the image rule both carry each photo note next to its number', () => {
+  const notes = ['Packaging + product: copy this photo exactly, case open, device inside', '', 'Worn under the chin'];
+  const analysis = productReferencesNote(3, { firstImageNumber: 2, notes });
+  assert.match(analysis, /image 2 \(product photo 1\): Packaging \+ product: copy this photo exactly/);
+  assert.match(analysis, /image 4 \(product photo 3\): Worn under the chin/);
+  assert.match(analysis, /PHOTO RULES/);
+  const img = buildNanoBananaImagePrompt(claude, { name: 'Reevo Pulse Pro' }, TEMPLATE, {}, { referenceCount: 3, referenceNotes: notes });
+  assert.match(img, /PHOTO RULES/);
+  assert.match(img, /Image 1: Packaging \+ product: copy this photo exactly, case open, device inside/);
+  assert.match(img, /Image 3: Worn under the chin/);
+  assert.doesNotMatch(img, /Image 2:/, 'a photo without a note gets no line');
+});
+
+test('N4: no notes means no PHOTO RULES block and the earlier reference prompt is unchanged', () => {
+  const a = buildNanoBananaImagePrompt(claude, { name: 'P' }, TEMPLATE, {}, { referenceCount: 2 });
+  const b = buildNanoBananaImagePrompt(claude, { name: 'P' }, TEMPLATE, {}, { referenceCount: 2, referenceNotes: ['', ''] });
+  assert.equal(a, b);
+  assert.doesNotMatch(a, /PHOTO RULES/);
+  assert.equal(productReferencesNote(2, { firstImageNumber: 2 }), productReferencesNote(2, { firstImageNumber: 2, notes: [] }));
+});
+
+test('N5: photo rules survive a tight NanoBanana budget', () => {
+  const big = { name: 'P', profile: { winning_angles: 'W'.repeat(9000) } };
+  const out = buildNanoBananaImagePrompt(claude, big, TEMPLATE + '\n{{WINNING_ANGLES}}', {}, { maxChars: 5000, referenceCount: 2, referenceNotes: ['Copy this photo for packaging shots', ''] });
+  assert.ok(out.length <= 5000);
+  assert.match(out, /Image 1: Copy this photo for packaging shots/);
+});
+
+test('N6: the Product Library UI computes the same photo key as the server', async () => {
+  const { imageNoteKey: uiKey } = await import('../../../client/src/lib/imageNoteKey.js');
+  for (const s of [IMG(1), 'https://cdn.x/a.png', 'data:image/png;base64,' + 'Zé€'.repeat(5000), 'x'.repeat(11)]) assert.equal(uiKey(s), imageNoteKey(s));
+});

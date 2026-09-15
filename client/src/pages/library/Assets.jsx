@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { makeDraftCreator } from '../../lib/draftCreate';
 import {
   Package, Plus, Pencil, Trash2, X, Image,
@@ -7,6 +7,7 @@ import {
   AlertTriangle, MessageSquare, Tag, Check, Star,
 } from 'lucide-react';
 import { makeFieldState } from '../../lib/autoSaveField';
+import { imageNoteKey } from '../../lib/imageNoteKey';
 import api from '../../services/api';
 import ProductBibleViewer from '../../components/productBible/ProductBibleViewer';
 import { fetchBibleMarkets, bibleErrorText } from '../../components/productBible/bibleApi';
@@ -178,6 +179,25 @@ function QuickInfoBox({ box, initialValue, onSave, onChange }) {
 /* ------------------------------------------------------------------ */
 /*  Product Card (List View)                                          */
 /* ------------------------------------------------------------------ */
+
+/* Per-photo AI rule for statics ("use this photo whenever the ad shows the packaging with the product").
+   Saved on blur into product_profiles.image_notes, keyed by the photo's fingerprint. */
+function PhotoRule({ src, notes, onSave }) {
+  const key = useMemo(() => imageNoteKey(src), [src]);
+  const saved = (notes && typeof notes === 'object' && typeof notes[key] === 'string') ? notes[key] : '';
+  const [text, setText] = useState(saved);
+  useEffect(() => { setText(saved); }, [saved]);
+  return (
+    <textarea
+      value={text}
+      onChange={(e) => setText(e.target.value)}
+      onBlur={() => { if (key && text.trim() !== saved.trim()) onSave(key, text.trim()); }}
+      placeholder="AI rule for this photo (optional)"
+      rows={3}
+      className="w-full text-[11px] leading-snug bg-black/30 border border-white/[0.05] rounded-md px-2 py-1.5 text-zinc-300 placeholder:text-zinc-600 focus:outline-none focus:border-emerald-500/30 resize-y"
+    />
+  );
+}
 
 function ProductCard({ product, onClick, onDelete }) {
   const images = Array.isArray(product.product_images) ? product.product_images : [];
@@ -487,6 +507,19 @@ function ProductDetailView({ product, onBack, onFieldSave, onAiFill, onProductCh
     const updated = [...current.filter((img) => img), imageUrlInput.trim()];
     updateArrayField('product_images', updated, debouncedSaveImages);
     setImageUrlInput('');
+  };
+
+  const savePhotoRule = async (key, text) => {
+    const current = productRef.current.image_notes && typeof productRef.current.image_notes === 'object' ? productRef.current.image_notes : {};
+    const next = { ...current };
+    if (text) next[key] = text; else delete next[key];
+    productRef.current = { ...productRef.current, image_notes: next };
+    onProductChange(productRef.current);
+    try {
+      await onFieldSave('image_notes', next);
+    } catch (err) {
+      alert(`Failed to save the photo rule: ${err?.response?.data?.error?.message || err?.message || 'Unknown error'}`);
+    }
   };
 
   const removeImage = (i) => {
@@ -960,14 +993,18 @@ function ProductDetailView({ product, onBack, onFieldSave, onAiFill, onProductCh
             <div className="flex flex-wrap gap-3">
               {(product.product_images || []).map((url, i) =>
                 url ? (
-                  <div key={i} className="relative group w-24 h-24 rounded-lg overflow-hidden border border-white/[0.05] bg-black/30">
-                    <img src={url} alt="" className="w-full h-full object-cover" onError={(e) => { e.target.style.display = 'none'; }} />
-                    <button
-                      onClick={() => removeImage(i)}
-                      className="absolute top-1 right-1 w-5 h-5 rounded-full bg-black/70 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity text-red-400 hover:text-red-300 cursor-pointer"
-                    >
-                      <X className="w-3 h-3" />
-                    </button>
+                  <div key={i} className="w-40 flex flex-col gap-1.5">
+                    <div className="relative group w-40 h-40 rounded-lg overflow-hidden border border-white/[0.05] bg-black/30">
+                      <img src={url} alt="" className="w-full h-full object-cover" onError={(e) => { e.target.style.display = 'none'; }} />
+                      <span className="absolute bottom-1 left-1 text-[10px] px-1.5 py-0.5 rounded bg-black/70 text-zinc-300">Photo {i + 1}</span>
+                      <button
+                        onClick={() => removeImage(i)}
+                        className="absolute top-1 right-1 w-5 h-5 rounded-full bg-black/70 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity text-red-400 hover:text-red-300 cursor-pointer"
+                      >
+                        <X className="w-3 h-3" />
+                      </button>
+                    </div>
+                    <PhotoRule src={url} notes={product.image_notes} onSave={savePhotoRule} />
                   </div>
                 ) : null
               )}
@@ -1068,11 +1105,11 @@ export default function Assets() {
   // Normalize a product so JSONB fields are always arrays/objects, never strings
   const normalizeProduct = (p) => {
     if (!p) return p;
-    const jsonbFields = ['product_images', 'logos', 'fonts', 'benefits', 'angles', 'scripts', 'offers'];
+    const jsonbFields = ['product_images', 'logos', 'fonts', 'benefits', 'angles', 'scripts', 'offers', 'image_notes'];
     const out = { ...p };
     for (const f of jsonbFields) {
       if (typeof out[f] === 'string') {
-        try { out[f] = JSON.parse(out[f]); } catch { out[f] = []; }
+        try { out[f] = JSON.parse(out[f]); } catch { out[f] = f === 'image_notes' ? {} : []; }
       }
     }
     return out;

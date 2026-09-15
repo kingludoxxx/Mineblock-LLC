@@ -31,6 +31,7 @@ import {
   enforcePriceDigits,
   selectProductReferences,
   productReferencesNote,
+  notesForReferences,
   describeOfferReport,
   assessReferenceUsability,
   buildClaudeAnalysisPrompt,
@@ -3016,6 +3017,7 @@ router.post('/generate', authenticate, async (req, res) => {
       // once we have the product row.
       let productImageIndex = 0;
       let productReferenceSources = [];
+      let productImageNotes = null;
       // Image engine selector — defaults to NanoBanana for backwards compat.
       // Resolved once per /generate call; every ratio (parent + children) uses
       // the same engine so the creative is consistent.
@@ -3097,6 +3099,7 @@ router.post('/generate', authenticate, async (req, res) => {
             const dbImage = productImageAtIndex(p, productImageIndex);
             const resolvedProductImageUrl = dbImage || product.product_image_url;
             productReferenceSources = selectProductReferences(p.product_images, productImageIndex);
+            productImageNotes = p.image_notes || null;
             if (dbImage) {
               const src = explicitProductImageIndex != null ? 'explicit' : `smart(angle="${(angle||'').slice(0, 30)}")`;
               console.log(`[staticsGeneration] product_image_index=${productImageIndex}/${_pImages.length} via ${src} → ${dbImage.slice(0, 60)}...`);
@@ -3184,8 +3187,10 @@ router.post('/generate', authenticate, async (req, res) => {
 
       // Optionally include product image in Claude vision (helps with product_visual_for_generation)
       if (!productReferenceSources.length && product.product_image_url) productReferenceSources = [product.product_image_url];
+      const productReferenceNotes = notesForReferences(productReferenceSources, productImageNotes);
       const productImageBlocks = await productReferenceClaudeBlocks(productReferenceSources, '[staticsGeneration]');
-      const productImageNote = productReferencesNote(productImageBlocks.length, { firstImageNumber: 2 });
+      // Notes line up with the photos only when every photo attached; otherwise the numbering would drift.
+      const productImageNote = productReferencesNote(productImageBlocks.length, { firstImageNumber: 2, notes: productImageBlocks.length === productReferenceSources.length ? productReferenceNotes : [] });
       console.log(`[staticsGeneration] product photos: ${productImageBlocks.length}/${productReferenceSources.length} attached to analysis`);
 
       // ── STEP 1: Claude analysis ──
@@ -3341,7 +3346,7 @@ router.post('/generate', authenticate, async (req, res) => {
         : customPrompts.nanobanana_image;
       // Stamp the angle so image-prompt builder can interpolate {{ANGLE}}
       product._angle = angle_data?.name || angle || '';
-      let nbPrompt = buildNanoBananaImagePrompt(claudeResult, product, engineTemplate, {}, { maxChars: imagePromptBudget(engine), referenceCount: productHttpUrls.length });
+      let nbPrompt = buildNanoBananaImagePrompt(claudeResult, product, engineTemplate, {}, { maxChars: imagePromptBudget(engine), referenceCount: productHttpUrls.length, referenceNotes: productHttpUrls.length === productReferenceSources.length ? productReferenceNotes : [] });
 
       // STYLE DIRECTIVE prepend — injects the medium + authenticity cues +
       // style_directive Claude returned, so NanoBanana doesn't default to its
@@ -4690,6 +4695,7 @@ router.post('/iterate/:creativeId', authenticate, async (req, res) => {
           return refs.length ? refs : (perVarProductImage ? [perVarProductImage] : []);
         })();
         const productHttpUrls = await productReferenceHttpUrls(perVarSources, 'iter-product', tagPrefix);
+        const perVarNotes = productHttpUrls.length === perVarSources.length ? notesForReferences(perVarSources, productRowRef?.image_notes) : [];
         const productHttpUrl = productHttpUrls[0] || null;
         console.log(`${tagPrefix} product_image_index=${perVarIndex}/${productImagesLen}`);
         try {
@@ -4700,7 +4706,7 @@ router.post('/iterate/:creativeId', authenticate, async (req, res) => {
           const basePromptText = buildClaudeAnalysisPrompt(
             product, variationAngle, customPrompts.claude_analysis,
             {
-              PRODUCT_IMAGE_NOTE: productReferencesNote(productHttpUrls.length, { firstImageNumber: 2 }),
+              PRODUCT_IMAGE_NOTE: productReferencesNote(productHttpUrls.length, { firstImageNumber: 2, notes: perVarNotes }),
               ...(iterBible ? { ANGLE: variationAngle } : {}),
             }
           );
@@ -4775,7 +4781,7 @@ router.post('/iterate/:creativeId', authenticate, async (req, res) => {
             STRATEGY_LABEL: strategy.label,
             VARIED:         strategy.vary,
             LOCKED:         strategy.lock,
-          }, { maxChars: imagePromptBudget(iterEngine), referenceCount: productHttpUrls.length });
+          }, { maxChars: imagePromptBudget(iterEngine), referenceCount: productHttpUrls.length, referenceNotes: perVarNotes });
           // Only prepend the hardcoded directive when falling back to the
           // fresh-generation template (no dedicated iteration template yet).
           // The dedicated template has the directive built into its JSON.
@@ -7959,6 +7965,7 @@ async function _doRegenerateBrokenPreviews(req, res) {
             return refs.length ? refs : [product.product_image_url];
           })();
           const productHttpUrls = await productReferenceHttpUrls(rgnSources, 'rgn-product', tag);
+          const rgnNotes = productHttpUrls.length === rgnSources.length ? notesForReferences(rgnSources, p.image_notes) : [];
           if (!productHttpUrls.length) {
             throw new Error('no product photo is fetchable');
           }
@@ -7968,7 +7975,7 @@ async function _doRegenerateBrokenPreviews(req, res) {
           const { base64: refB64, mediaType: refMt } = await resolveImage(row.reference_thumbnail);
           const promptText = buildClaudeAnalysisPrompt(
             product, row.angle || '', customPrompts.claude_analysis,
-            { PRODUCT_IMAGE_NOTE: productReferencesNote(productHttpUrls.length, { firstImageNumber: 2 }) }
+            { PRODUCT_IMAGE_NOTE: productReferencesNote(productHttpUrls.length, { firstImageNumber: 2, notes: rgnNotes }) }
           );
           const content = [
             { type: 'text', text: promptText },
@@ -8020,7 +8027,7 @@ async function _doRegenerateBrokenPreviews(req, res) {
             ? (customPrompts.openai_image || customPrompts.nanobanana_image)
             : customPrompts.nanobanana_image;
           product._angle = row.angle || '';
-          const nbPrompt = buildNanoBananaImagePrompt(claudeResult, product, rgnTemplate, {}, { maxChars: imagePromptBudget(rgnEngine), referenceCount: productHttpUrls.length });
+          const nbPrompt = buildNanoBananaImagePrompt(claudeResult, product, rgnTemplate, {}, { maxChars: imagePromptBudget(rgnEngine), referenceCount: productHttpUrls.length, referenceNotes: rgnNotes });
           const ratio = row.aspect_ratio || '4:5';
           const nbTaskId = await rgnEngine.submit(nbPrompt, productHttpUrls, ratio);
           const tempUrl = await rgnEngine.poll(nbTaskId);
@@ -11638,7 +11645,7 @@ ${authoredCopy ? `COPY RULE — THE WORDS ARE ALREADY WRITTEN:
 RULES:
 - ${composerReferences.length > 1 ? `${composerReferences.length} product photos are attached (images 1 to ${composerReferences.length}, image 1 is the main shot). They are the product reference: match shape, colour, label and branding exactly.` : 'The attached image is the ONLY product reference. Match its shape, colour, label and branding exactly.'}
 - Only show product objects (device, case, box, packaging, patch, accessory) that appear in the attached photos. If the brief asks for one no photo shows, leave it out. Never invent a product part, accessory, case or packaging.
-- Render every piece of text crisply and spelled correctly. Do not invent claims that are not in the brief or context above.
+${(() => { const lines = notesForReferences(composerReferences, prod.image_notes).map((n, i) => (n ? `- PHOTO RULE, image ${i + 1}: ${n}` : null)).filter(Boolean); return lines.length ? lines.join('\n') + '\n' : ''; })()}- Render every piece of text crisply and spelled correctly. Do not invent claims that are not in the brief or context above.
 - No lorem ipsum, no placeholder text, no watermarks.`;
 
       storeTaskResult(taskId, { status: 'processing', progress: `Generating ${ratio} via ${engine.name}...` });
