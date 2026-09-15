@@ -8807,6 +8807,37 @@ async function explainEmptyCandidates(brandId, config) {
   }
 }
 
+let leagueSyncAllRunning = false;
+
+// The brands the Brand Follow Config modal lists — IMPORT ALL must act on the
+// same set. spy_brand_follows is the legacy follow table (nothing writes to it
+// any more), so an empty result falls back to active Brand Spy brands, exactly
+// as the modal does.
+async function leagueFollowedBrandIds() {
+  const followed = await pgQuery(`
+    SELECT b.id
+    FROM brand_spy.brands b
+    WHERE EXISTS (
+      SELECT 1 FROM spy_brand_follows sbf
+      JOIN brand_spy.brand_pages bp ON bp.meta_page_id = sbf.meta_page_id
+      WHERE bp.brand_id = b.id
+    )
+    ORDER BY b.display_name ASC NULLS LAST, b.domain ASC
+  `);
+  if (followed.length > 0) return followed.map(r => r.id);
+  const fallback = await pgQuery(`
+    SELECT b.id
+    FROM brand_spy.brands b
+    WHERE b.status = 'ACTIVE'
+    ORDER BY (SELECT COUNT(*) FROM brand_spy.ads a
+               WHERE a.brand_id = b.id AND a.is_active = TRUE
+                 AND a.display_format ILIKE 'image%') DESC,
+             b.display_name ASC NULLS LAST, b.domain ASC
+    LIMIT 100
+  `);
+  return fallback.map(r => r.id);
+}
+
 router.get('/league/brand-configs', authenticate, async (_req, res) => {
   try {
     const followedSql = `
@@ -8948,72 +8979,40 @@ router.post('/league/brand-configs/auto-sync-all', authenticate, async (req, res
   }
 });
 
-// POST /league/brand-configs/sync-all — sequential per-brand sync for every
-// brand with auto_sync_enabled OR a tier_filter/top_pct override (i.e.
-// anything the operator has touched). Returns aggregated counts so the UI
-// can show "X imported, Y skipped, Z scanned" without N round-trips.
+// POST /league/brand-configs/sync-all — IMPORT ALL: runs the per-brand import
+// for every brand the modal lists, in the background. Returns 202 at once.
 router.post('/league/brand-configs/sync-all', authenticate, async (req, res) => {
   try {
-    // Eligible = same query as GET but only rows the operator has explicitly
-    // engaged with. Falls back to ALL followed brands when no configs exist
-    // (first-run convenience).
-    const eligible = await pgQuery(`
-      SELECT b.id
-      FROM brand_spy.brands b
-      LEFT JOIN league_brand_configs c ON c.brand_id = b.id
-      WHERE EXISTS (
-        SELECT 1 FROM spy_brand_follows sbf
-        JOIN brand_spy.brand_pages bp ON bp.meta_page_id = sbf.meta_page_id
-        WHERE bp.brand_id = b.id
-      )
-      ORDER BY b.display_name ASC NULLS LAST
-    `);
-
-    let totalScanned = 0, totalImported = 0, totalSkipped = 0;
-    const errors = [];
-    // Loopback base — same pattern as _doRepairAllPreviews (prefers
-    // RENDER_EXTERNAL_URL so we hit the real listener, falls back to
-    // localhost:${PORT || 3000} for local dev).
-    const base = process.env.RENDER_EXTERNAL_URL || `http://localhost:${process.env.PORT || 3000}`;
-    const authHeaders = {};
-    if (req.headers.authorization) authHeaders.authorization = req.headers.authorization;
-
-    // Sequential to avoid stampeding the brand_spy.ads index + spy_creatives
-    // upsert path. Tens of brands × ~tens of picks = well under a minute.
-    for (const row of eligible) {
-      try {
-        const r = await fetch(
-          `${base}/api/v1/statics-generation/league/brand-configs/${row.id}/sync`,
-          {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', ...authHeaders },
-            signal: AbortSignal.timeout(60_000),
-          }
-        );
-        const j = await r.json().catch(() => ({}));
-        if (j?.success && j.data) {
-          totalScanned  += Number(j.data.scanned  || 0);
-          totalImported += Number(j.data.imported || 0);
-          totalSkipped  += Number(j.data.skipped  || 0);
-        } else {
-          errors.push({ brandId: row.id, status: r.status, error: j?.error?.message || `status ${r.status}` });
-        }
-      } catch (e) {
-        errors.push({ brandId: row.id, error: e.message });
-      }
+    if (leagueSyncAllRunning) {
+      return res.status(409).json({ success: false, error: { message: 'An Import All is already running. New cards keep landing in FROM LEAGUE.' } });
     }
+    const eligible = await leagueFollowedBrandIds();
+    leagueSyncAllRunning = true;
+    // Runs in the background: a big brand is hundreds of image downloads +
+    // R2 uploads, far past the proxy's request timeout. Cards appear in FROM
+    // LEAGUE as each brand lands.
+    (async () => {
+      let totalScanned = 0, totalImported = 0, totalSkipped = 0, failed = 0;
+      for (const id of eligible) {
+        try {
+          const d = await syncLeagueBrand(id);
+          totalScanned  += Number(d.scanned  || 0);
+          totalImported += Number(d.imported || 0);
+          totalSkipped  += Number(d.skipped  || 0);
+        } catch (e) {
+          failed++;
+          console.error(`[league/brand-configs sync-all] brand ${id} failed:`, e.message);
+        }
+      }
+      console.log(`[league/brand-configs sync-all] done brands=${eligible.length} scanned=${totalScanned} imported=${totalImported} skipped=${totalSkipped} failed=${failed}`);
+    })()
+      .catch((e) => console.error('[league/brand-configs sync-all] run failed:', e))
+      .finally(() => { leagueSyncAllRunning = false; });
 
-    res.json({
-      success: true,
-      data: {
-        brands: eligible.length,
-        scanned: totalScanned,
-        imported: totalImported,
-        skipped: totalSkipped,
-        errors,
-      },
-    });
+    console.log(`[league/brand-configs sync-all] started for ${eligible.length} brand(s)`);
+    res.status(202).json({ success: true, data: { brands: eligible.length, started: true } });
   } catch (err) {
+    leagueSyncAllRunning = false;
     console.error('[league/brand-configs sync-all] error:', err);
     res.status(500).json({ success: false, error: { message: err.message } });
   }
@@ -9137,6 +9136,21 @@ router.post('/league/brand-configs/:brandId/sync', authenticate, async (req, res
       ? Math.max(1, Math.min(500, Math.floor(Number(manualCountRaw))))
       : null;
 
+    const data = await syncLeagueBrand(brandId, manualCount);
+    res.json({ success: true, data });
+  } catch (err) {
+    console.error('[league/brand-configs sync] error:', err);
+    res.status(500).json({ success: false, error: { message: err.message } });
+  }
+});
+
+// One brand's FROM LEAGUE import. Shared by the per-brand route and IMPORT ALL,
+// which used to reach it through an HTTP loopback that forwarded only an
+// Authorization header — the browser authenticates by cookie, so every brand
+// came back 401.
+async function syncLeagueBrand(brandId, manualCount = null) {
+  {
+
     // Resolve current config (or defaults if no row yet).
     const cfgRows = await pgQuery('SELECT * FROM league_brand_configs WHERE brand_id = $1', [brandId]);
     const config = mergeBrandConfig(cfgRows[0]);
@@ -9212,14 +9226,14 @@ router.post('/league/brand-configs/:brandId/sync', authenticate, async (req, res
          ON CONFLICT (brand_id) DO UPDATE SET last_synced_at = NOW(), updated_at = NOW()`,
         [brandId]
       );
-      return res.json({ success: true, data: {
+      return {
         scanned: totalCandidates, imported: 0, skipped: 0,
         rejected_images: rejectedImages.length,
         rejected_image_reasons: rejectedImages.slice(0, 10),
         note: rejectedImages.length > 0
           ? 'Every candidate image was rejected as a non-creative (page avatar / placeholder) — the scrape resolved thumbnails to the wrong media.'
           : await explainEmptyCandidates(brandId, config),
-      } });
+      };
     }
 
     // Dedup existing imports (same pattern as /league/import).
@@ -9327,22 +9341,16 @@ router.post('/league/brand-configs/:brandId/sync', authenticate, async (req, res
     );
 
     console.log(`[league/brand-configs sync ${brandId.slice(0, 8)}…] scanned=${totalCandidates} picks=${picks.length} imported=${imported} skipped=${skipped}`);
-    res.json({
-      success: true,
-      data: {
-        scanned: totalCandidates, picked: picks.length, imported, skipped,
-        // Non-creatives dropped while filling the pick count. Reported rather
-        // than swallowed: a brand whose scrape keeps resolving to its avatar is
-        // a data problem the operator needs to see, not a silent shortfall.
-        rejected_images: rejectedImages.length,
-        rejected_image_reasons: rejectedImages.slice(0, 10),
-      },
-    });
-  } catch (err) {
-    console.error('[league/brand-configs sync] error:', err);
-    res.status(500).json({ success: false, error: { message: err.message } });
+    return {
+      scanned: totalCandidates, picked: picks.length, imported, skipped,
+      // Non-creatives dropped while filling the pick count. Reported rather
+      // than swallowed: a brand whose scrape keeps resolving to its avatar is
+      // a data problem the operator needs to see, not a silent shortfall.
+      rejected_images: rejectedImages.length,
+      rejected_image_reasons: rejectedImages.slice(0, 10),
+    };
   }
-});
+}
 
 // ── TW sync trigger (internal) ────────────────────────────────────────────
 // Calls the analytics worktree's /sync-weekly endpoint with CRON_SECRET so the

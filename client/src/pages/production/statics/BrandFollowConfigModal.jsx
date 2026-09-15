@@ -84,9 +84,12 @@ export function BrandFollowConfigModal({ isOpen, onClose, onSynced }) {
     try {
       const { data } = await api.post('/statics-generation/league/brand-configs/sync-all');
       const r = data?.data || {};
-      setSyncAllMsg(`Synced ${r.brands || 0} brands — ${r.imported || 0} imported, ${r.skipped || 0} already in library` + ((r.errors || []).length ? ` (${r.errors.length} errored)` : ''));
+      // The import runs on the server in the background (big brands take
+      // minutes). Refresh FROM LEAGUE a few times so cards appear as they land.
+      setSyncAllMsg(`Import started for ${r.brands || 0} brands. Cards appear in FROM LEAGUE as each brand finishes.`);
       await load();
       onSynced?.(r);
+      [30, 90, 180, 300].forEach((sec) => setTimeout(() => onSynced?.(r), sec * 1000));
     } catch (err) {
       setSyncAllMsg(`Sync all failed: ${err.response?.data?.error?.message || err.message}`);
     } finally {
